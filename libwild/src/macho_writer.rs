@@ -12,6 +12,7 @@ use crate::file_writer::split_output_into_sections;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
 use crate::layout::HeaderInfo;
+use crate::layout::ImportedSymbol;
 use crate::layout::Layout;
 use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
@@ -111,6 +112,7 @@ use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSlice;
 use sha2::Digest;
 use sha2::Sha256;
+use std::num::NonZeroU64;
 use std::ops::BitAnd;
 use tracing::debug_span;
 use zerocopy::FromBytes;
@@ -244,32 +246,47 @@ fn write_epilogue<A: Arch<Platform = MachO>>(
     Ok(())
 }
 
+#[derive(derive_more::Debug, Clone, Copy)]
+struct ImportedSymbolWithResolution<'data> {
+    symbol: ImportedSymbol<'data>,
+    got_address: NonZeroU64,
+    plt_address: Option<NonZeroU64>,
+}
+
+fn get_imported_sorted_by_got<'data>(
+    layout: &MachOLayout<'data>,
+) -> Result<Vec<ImportedSymbolWithResolution<'data>>> {
+    let mut imported = layout
+        .imported_symbols
+        .iter()
+        .map(|symbol| {
+            let resolution = layout
+                .local_symbol_resolution(symbol.symbol_id)
+                .with_context(|| "missing resolution for a stub library symbol".to_string())?;
+            let got_address = resolution
+                .format_specific
+                .got_address
+                .ok_or_else(|| error!("missing GOT entry for a stub library symbol"))?;
+
+            Ok(ImportedSymbolWithResolution {
+                symbol: *symbol,
+                got_address,
+                plt_address: resolution.format_specific.plt_address,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    imported.sort_by_key(|symbol| symbol.got_address);
+    Ok(imported)
+}
+
 fn write_got_entries(layout: &MachOLayout<'_>, got: &mut [u8]) -> Result {
     let got_layout = layout.section_layouts.get(output_section_id::GOT);
 
-    // TODO
-    let sorted_symbols = layout
-        .imported_symbols
-        .iter()
-        .map(|sym| {
-            (
-                sym,
-                layout.local_symbol_resolution(sym.symbol_id).expect("TODO"),
-            )
-        })
-        // TODO
-        .sorted_by_key(|(_, res)| res.format_specific.got_address.unwrap())
-        .map(|(sym, _)| sym)
-        .collect_vec();
+    let sorted_symbols = get_imported_sorted_by_got(layout)?;
     for (i, imported_symbol) in sorted_symbols.iter().enumerate() {
-        let resolution = layout
-            .local_symbol_resolution(imported_symbol.symbol_id)
-            .with_context(|| "missing resolution for a stub library symbol".to_string())?;
-        let Some(got_address) = resolution.format_specific.got_address else {
-            continue;
-        };
-
-        let offset = got_address
+        let offset = imported_symbol
+            .got_address
             .get()
             .checked_sub(got_layout.mem_offset)
             .ok_or_else(|| error!("GOT entry address is before __got"))?
@@ -290,17 +307,10 @@ fn write_plt_entries<A: Arch<Platform = MachO>>(
 ) -> Result {
     let plt_layout = layout.section_layouts.get(output_section_id::PLT_GOT);
 
-    for imported_symbol in &layout.imported_symbols {
-        let resolution = layout
-            .local_symbol_resolution(imported_symbol.symbol_id)
-            .ok_or(error!("missing resolution for a stub library symbol"))?;
-        let Some(stub_address) = resolution.format_specific.plt_address else {
+    for imported_symbol in get_imported_sorted_by_got(layout)? {
+        let Some(stub_address) = imported_symbol.plt_address else {
             continue;
         };
-        let got_address = resolution
-            .format_specific
-            .got_address
-            .ok_or(error!("missing GOT entry"))?;
 
         let offset = stub_address
             .get()
@@ -309,7 +319,11 @@ fn write_plt_entries<A: Arch<Platform = MachO>>(
             as usize;
         let end = offset + PLT_ENTRY_SIZE as usize;
 
-        A::write_plt_entry(&mut plt[offset..end], got_address.get(), stub_address.get())?;
+        A::write_plt_entry(
+            &mut plt[offset..end],
+            imported_symbol.got_address.get(),
+            stub_address.get(),
+        )?;
     }
 
     Ok(())
@@ -904,25 +918,11 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     // TODO: support more pages
     assert!(symbols.len() < MACHO_PAGE_ALIGNMENT.value() as usize / size_of::<u32>());
 
-    let sorted_symbols = symbols
-        .iter()
-        .map(|sym| {
-            (
-                sym,
-                layout
-                    .local_symbol_resolution(sym.symbol_id)
-                    .expect("TODO")
-                    .format_specific
-                    .got_address
-                    .unwrap(),
-            )
-        })
-        // TODO
-        .sorted_by_key(|(_, got_address)| *got_address)
-        .collect_vec();
+    let sorted_symbols = get_imported_sorted_by_got(layout)?;
     let mut symbol_offsets = Vec::with_capacity(sorted_symbols.len());
     let mut str_offset = 0;
-    for (symbol, _) in &sorted_symbols {
+    for imported_symbol in &sorted_symbols {
+        let symbol = imported_symbol.symbol;
         string_pool[str_offset..str_offset + symbol.name.len()].copy_from_slice(symbol.name);
         string_pool[str_offset + symbol.name.len()] = b'\0';
         symbol_offsets.push(str_offset);
