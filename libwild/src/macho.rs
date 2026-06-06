@@ -1959,10 +1959,11 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
             SequencedInput::StubLibrary(_)
         ) {
             flags_to_add |= ValueFlags::GOT;
-        }
-        // TODO: classify symbols more reliably, likely by checking whether their section is __text.
-        if rel_info.r_type == object::macho::ARM64_RELOC_BRANCH26 {
-            flags_to_add |= ValueFlags::FUNCTION | ValueFlags::PLT;
+            // TODO: classify symbols more reliably, likely by checking whether their section is
+            // __text.
+            if rel_info.r_type == object::macho::ARM64_RELOC_BRANCH26 {
+                flags_to_add |= ValueFlags::FUNCTION | ValueFlags::PLT;
+            }
         }
 
         let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
