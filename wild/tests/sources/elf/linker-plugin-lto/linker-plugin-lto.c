@@ -85,6 +85,15 @@
 //#LinkerDriver:gcc
 //#LinkArgs:-flto -nostdlib -znow
 
+//#Config:gcc-driver-with-unclaimed-llvm-ir-archive:default
+//#Compiler:clang
+//#Object:runtime.c
+//#Object:linker-plugin-lto-2.c
+//#Archive:unclaimed.c:-flto
+//#SkipLinker:ld
+//#LinkerDriver:gcc
+//#LinkArgs:-flto -nostdlib
+
 // Linker message with format string.
 //#Config:clang-format-string:error
 //#Compiler:clang

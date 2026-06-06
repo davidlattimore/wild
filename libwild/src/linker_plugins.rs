@@ -174,20 +174,23 @@ impl<'data> LinkerPlugin<'data> {
         input_ref: InputRef<'data>,
         file: &File,
         kind: FileKind,
-    ) -> Result<Box<LtoInputInfo<'data>>> {
+    ) -> Result<Option<Box<LtoInputInfo<'data>>>> {
         verbose_timing_phase!("Linker plugin process input");
 
         let fd = file.as_raw_fd();
 
-        self.claim_file(input_ref, fd)
-            .transpose()
-            .with_context(|| {
-                format!(
+        match self.claim_file(input_ref, fd)? {
+            Some(info) => Ok(Some(info)),
+            None => {
+                if input_ref.has_archive_semantics() {
+                    return Ok(None);
+                }
+                bail!(
                     "Input file {input_ref} contains {kind}, \
                             but the linker plugin ({self}) didn't claim it"
-                )
-            })
-            .flatten()
+                );
+            }
+        }
     }
 
     /// Notify the plugin that all symbols have now been read. This will cause it to build

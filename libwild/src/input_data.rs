@@ -1043,14 +1043,18 @@ impl<'data, P: Platform> LoadedInputs<'data, P> {
                     file,
                     kind,
                 } = *obj;
-                let result = plugin.as_mut()
+                let plugin_result = plugin.as_mut()
                     .with_context(|| {
                         format!(
                             "Input file {input_ref} contains {kind}, but linker plugin was not supplied"
                         )
                     })
                     .and_then(|plugin| plugin.process_input(input_ref, &file, kind));
-                self.lto_objects.push(result);
+                match plugin_result {
+                    Ok(Some(info)) => self.lto_objects.push(Ok(info)),
+                    Ok(None) => {} // Skipped, e.g. unclaimed IR member inside an archive
+                    Err(e) => self.lto_objects.push(Err(e)),
+                }
             }
         }
     }
