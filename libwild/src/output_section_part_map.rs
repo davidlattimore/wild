@@ -264,6 +264,7 @@ fn test_merge_parts() {
         output_section_id::LINK_EDIT_SEGMENT,
         output_section_id::ENTRY_POINT,
         output_section_id::DYLD_CHAINED_FIXUPS,
+        output_section_id::LOAD_DYLIB,
         output_section_id::CHAINED_FIXUP_TABLE,
         output_section_id::SYMTAB_COMMAND,
         output_section_id::CODE_SIGNATURE,
