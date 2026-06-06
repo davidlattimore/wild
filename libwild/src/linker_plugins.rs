@@ -179,7 +179,9 @@ impl<'data> LinkerPlugin<'data> {
 
         let fd = file.as_raw_fd();
 
-        if let Some(info) = self.claim_file(input_ref, fd)? { Ok(Some(info)) } else {
+        if let Some(info) = self.claim_file(input_ref, fd)? {
+            Ok(Some(info))
+        } else {
             if input_ref.has_archive_semantics() {
                 return Ok(None);
             }
@@ -300,8 +302,7 @@ impl<'data> LinkerPlugin<'data> {
             let mut claimed = 0;
 
             ctx.set_current_while(|| {
-                unsafe { cb(&raw const file, &raw mut claimed) }
-                    .to_result("claim_file")
+                unsafe { cb(&raw const file, &raw mut claimed) }.to_result("claim_file")
             })?;
 
             check_for_errors()?;
@@ -343,8 +344,12 @@ impl<'data> WrapSymbols<'data> {
         let mut wrap_args = Vec::new();
         for w in wrap {
             let w_cstring = CString::new(w.as_bytes())?;
-            wrap_args
-                .push(allocator.alloc_slice_copy(w_cstring.as_bytes()).as_ptr().cast::<libc::c_char>());
+            wrap_args.push(
+                allocator
+                    .alloc_slice_copy(w_cstring.as_bytes())
+                    .as_ptr()
+                    .cast::<libc::c_char>(),
+            );
         }
         Ok(Self(&*allocator.alloc_slice_copy(wrap_args.as_slice())))
     }
@@ -1139,8 +1144,10 @@ impl<'scope, 'data, P: Platform> AllSymbolsReadContext<'scope, 'data, P> {
     }
 
     fn set_current_while<R>(&self, cb: impl FnOnce() -> R) -> R {
-        ALL_SYMBOLS_READ_CONTEXT
-            .set(std::ptr::from_ref::<AllSymbolsReadContext<'scope, 'data, P>>(self).cast::<libc::c_void>());
+        ALL_SYMBOLS_READ_CONTEXT.set(
+            std::ptr::from_ref::<AllSymbolsReadContext<'scope, 'data, P>>(self)
+                .cast::<libc::c_void>(),
+        );
         let r = cb();
         ALL_SYMBOLS_READ_CONTEXT.take();
         r
