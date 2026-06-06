@@ -220,6 +220,15 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         });
     parser
         .declare_with_param()
+        .prefix("L")
+        .help("Add directory to library search path")
+        .execute(|args, _modifier_stack, value| {
+            args.common_mut().save_dir.handle_file(value);
+            args.lib_search_path.push(Box::from(Path::new(value)));
+            Ok(())
+        });
+    parser
+        .declare_with_param()
         .prefix("l")
         .help("Link with library")
         .sub_option_with_value(
@@ -348,6 +357,9 @@ mod tests {
         "-enable-linkonceodr-outlining",
         "-o",
         "a.out",
+        "-L/foo/lib",
+        "-L",
+        "/bar/lib",
         "main.o",
         "-lc++",
     ];
@@ -371,6 +383,16 @@ mod tests {
             InputSpec::Lib(f) => f.as_ref() == "c++",
             InputSpec::File(_) | InputSpec::Search(_) => false,
         }));
+        assert!(
+            args.lib_search_path
+                .iter()
+                .any(|p| p.as_ref() == Path::new("/foo/lib"))
+        );
+        assert!(
+            args.lib_search_path
+                .iter()
+                .any(|p| p.as_ref() == Path::new("/bar/lib"))
+        );
         assert_eq!(args.plugin_path, Some("/foo/bar/libLTO.dylib".to_owned()));
     }
 
