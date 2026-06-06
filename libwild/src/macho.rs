@@ -28,6 +28,7 @@ use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
+use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
@@ -79,13 +80,16 @@ pub(crate) const MACHO_COMMAND_ALIGNMENT: usize = 8;
 /// A path to the default dynamic linker.
 pub(crate) const DYLINKER_PATH: &[u8] = b"/usr/lib/dyld";
 pub(crate) const LIBSYSTEM_PATH: &[u8] = b"/usr/lib/libSystem.B.dylib";
-// TODO: optionality of __DATA and __CONST_DATA segments not respected
-pub(crate) const DEFAULT_SEGMENT_COUNT: usize = 5;
+
+// TODO: Getting the number of active segments in epilogue depends on determine_header_size
+// which is called later for the prologue. We potentially over-allocate a couple of bytes.
+pub(crate) const MAX_SEGMENT_COUNT: usize = 6;
 pub(crate) const CHAINED_FIXUP_TABLE_BASE_SIZE: u64 = (size_of::<ChainedFixupsHeader>()
-    + size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1)
+    + size_of::<u32>() * (MAX_SEGMENT_COUNT + /* leading segment count */ 1)
     + size_of::<DyldChainedStartsInSegment>())
     as u64;
 pub(crate) const CHAINED_FIXUP_IMPORT_SIZE: u64 = size_of::<u32>() as u64;
+pub(crate) const CHAINED_FIXUP_PAGE_START_SIZE: u64 = size_of::<u16>() as u64;
 pub(crate) const GOT_ENTRY_SIZE: u64 = 8;
 pub(crate) const PLT_ENTRY_SIZE: u64 = 12;
 
@@ -860,6 +864,7 @@ impl platform::SegmentType for SegmentType {}
 #[derive(Debug, Copy, Clone, Default, PartialEq)]
 pub(crate) struct ProgramSegmentDef {
     pub(crate) segment_type: SegmentType,
+    pub(crate) part_id: Option<PartId>,
 }
 
 impl std::fmt::Display for ProgramSegmentDef {
@@ -1331,7 +1336,7 @@ impl platform::Platform for MachO {
         // known, so reserve the fixup table entries needed to describe the GOT pages.
         extra_sizes.increment(
             part_id::CHAINED_FIXUP_TABLE,
-            size_of::<u32>() as u64
+            CHAINED_FIXUP_PAGE_START_SIZE
                 * (imported_symbols.len() as u64).div_ceil(MACHO_PAGE_ALIGNMENT.value()),
         );
 
@@ -1804,21 +1809,29 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
 pub(crate) const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
     ProgramSegmentDef {
         segment_type: SegmentType::Text,
+        // Not a real segment from the Macho-O definition.
+        part_id: Some(part_id::TEXT_SEGMENT),
     },
     ProgramSegmentDef {
+        // Not a real segment from the Macho-O definition.
         segment_type: SegmentType::LoadCommands,
+        part_id: None,
     },
     ProgramSegmentDef {
         segment_type: SegmentType::TextSections,
+        part_id: Some(part_id::TEXT_SEGMENT),
     },
     ProgramSegmentDef {
         segment_type: SegmentType::DataSections,
+        part_id: Some(part_id::DATA_SEGMENT),
     },
     ProgramSegmentDef {
         segment_type: SegmentType::DataConstSections,
+        part_id: Some(part_id::DATA_CONST_SEGMENT),
     },
     ProgramSegmentDef {
         segment_type: SegmentType::LinkeditSections,
+        part_id: Some(part_id::LINK_EDIT_SEGMENT),
     },
 ];
 
@@ -1834,7 +1847,10 @@ fn count_sections_for_segment_type(
     output_sections: &crate::output_section_id::OutputSections<MachO>,
     segment_type: SegmentType,
 ) -> usize {
-    let segment_def = ProgramSegmentDef { segment_type };
+    let segment_def = ProgramSegmentDef {
+        segment_type,
+        part_id: None,
+    };
     output_sections
         .ids_with_info()
         .filter(|(section_id, _)| {

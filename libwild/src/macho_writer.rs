@@ -19,6 +19,7 @@ use crate::layout::PreludeLayout;
 use crate::layout::Resolution;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
+use crate::macho::CHAINED_FIXUP_PAGE_START_SIZE;
 use crate::macho::CS_ADHOC;
 use crate::macho::CS_BLOB_HEADERS_SIZE;
 use crate::macho::CS_BLOCK_SIZE;
@@ -36,7 +37,6 @@ use crate::macho::CodeSignatureBlobIndex;
 use crate::macho::CodeSignatureCodeDirectory;
 use crate::macho::CodeSignatureCommand;
 use crate::macho::CodeSignatureSuperBlob;
-use crate::macho::DEFAULT_SEGMENT_COUNT;
 use crate::macho::DYLD_CHAINED_IMPORT;
 use crate::macho::DYLD_CHAINED_PTR_64_OFFSET;
 use crate::macho::DYLINKER_PATH;
@@ -50,6 +50,7 @@ use crate::macho::GOT_ENTRY_SIZE;
 use crate::macho::LIBSYSTEM_PATH;
 use crate::macho::MACHO_COMMAND_ALIGNMENT;
 use crate::macho::MACHO_START_MEM_ADDRESS;
+use crate::macho::MAX_SEGMENT_COUNT;
 use crate::macho::MachO;
 use crate::macho::PLT_ENTRY_SIZE;
 use crate::macho::PROGRAM_SEGMENT_DEFS;
@@ -826,9 +827,22 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     let symbols = &layout.imported_symbols;
     let _imported_symbols_strings_len: usize = symbols.iter().map(|sym| sym.name.len() + 1).sum();
 
-    // TODO: DEFAULT_SEGMENT_COUNT should be dynamically allocated
-    let starts_in_image_len = size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1);
-    let starts_in_segment_len = size_of::<DyldChainedStartsInSegment>() + size_of::<u16>();
+    let active_segments = PROGRAM_SEGMENT_DEFS
+        .iter()
+        .filter(|segment| {
+            segment.part_id.is_some()
+                && get_segment_sections(layout, segment.segment_type).is_some()
+        })
+        .collect_vec();
+    // The __PAGEZERO segment needs to be added manually.
+    let segment_count = active_segments.len() + 1;
+    ensure!(
+        segment_count <= MAX_SEGMENT_COUNT,
+        "unexpected number of active segments"
+    );
+    let starts_in_image_len = size_of::<u32>() * (segment_count + 1);
+    let starts_in_segment_len =
+        size_of::<DyldChainedStartsInSegment>() + CHAINED_FIXUP_PAGE_START_SIZE as usize;
     let imports_len = size_of::<u32>() * symbols.len();
 
     let starts_offset = size_of::<ChainedFixupsHeader>();
@@ -837,9 +851,8 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
 
     let (header, rest) = ChainedFixupsHeader::mut_from_prefix(chained_fixup_table)
         .map_err(|_| error!("Invalid chained fixups header allocation"))?;
-    let (starts_in_image, rest) =
-        slice_from_bytes_mut::<U32<Endianness>>(rest, DEFAULT_SEGMENT_COUNT + 1)
-            .map_err(|_| error!("Invalid chained fixups starts allocation"))?;
+    let (starts_in_image, rest) = slice_from_bytes_mut::<U32<Endianness>>(rest, segment_count + 1)
+        .map_err(|_| error!("Invalid chained fixups starts allocation"))?;
     let (starts_in_segment, rest) = DyldChainedStartsInSegment::mut_from_prefix(rest)
         .map_err(|_| error!("Invalid chained fixups starts in segment allocation"))?;
     let (page_starts, rest) = slice_from_bytes_mut::<U16<Endianness>>(rest, 1)
@@ -858,15 +871,14 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
 
     // 2) fill up dyld_chained_starts_in_image, which is `seg_count` (u32) followed by
     //    `seg_info_offset` ([u32; seg_count]); only __DATA_CONST,__got segment is covered
-    starts_in_image[0].set(LE, DEFAULT_SEGMENT_COUNT as u32);
+    starts_in_image[0].set(LE, segment_count as u32);
     starts_in_image[1..].fill(U32::new(LE, 0));
 
-    let data_const_segment_index = PROGRAM_SEGMENT_DEFS
+    let data_const_segment_index = active_segments
         .iter()
-        .filter(|segment| get_segment_sections(layout, segment.segment_type).is_some())
         .position(|segment_type| segment_type.segment_type == SegmentType::DataConstSections)
         .ok_or_else(|| error!("__DATA_CONST segment expected"))?;
-    starts_in_image[data_const_segment_index].set(LE, starts_in_image_len as u32);
+    starts_in_image[data_const_segment_index + 1].set(LE, starts_in_image_len as u32);
 
     // 3) fill up DyldChainedStartsInSegment for the __got section
     let data_const_segment = get_segment_sections(layout, SegmentType::DataConstSections)
@@ -924,6 +936,9 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     for i in 0..sorted_symbols.len() {
         imports[i].set(Endianness::Little, 1 + (symbol_offsets[i] << 9) as u32);
     }
+
+    // Pad a couple of bytes (related to the MAX_SEGMENT_COUNT).
+    string_pool[str_offset..].fill(0);
 
     Ok(())
 }
