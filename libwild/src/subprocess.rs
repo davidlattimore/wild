@@ -66,9 +66,9 @@ fn subprocess_result(mut args: Args) -> Result<i32> {
 fn inform_parent_done(fds: &[c_int]) {
     unsafe {
         libc::close(fds[0]);
-        let stream = libc::fdopen(fds[1], "w".as_ptr() as *const c_char);
+        let stream = libc::fdopen(fds[1], "w".as_ptr().cast::<c_char>());
         let bytes: [u8; 1] = *b"X";
-        libc::fwrite(bytes.as_ptr() as *const c_void, 1, 1, stream);
+        libc::fwrite(bytes.as_ptr().cast::<c_void>(), 1, 1, stream);
         libc::fclose(stream);
         libc::close(libc::STDOUT_FILENO);
         libc::close(libc::STDERR_FILENO);
@@ -83,22 +83,19 @@ fn wait_for_child_done(fds: &[c_int], child_pid: pid_t) -> i32 {
         // close our sending end of the pipe
         libc::close(fds[1]);
         // open the other end of the pipe for reading
-        let stream = libc::fdopen(fds[0], "r".as_ptr() as *const c_char);
+        let stream = libc::fdopen(fds[0], "r".as_ptr().cast::<c_char>());
 
         // Wait for child to send a byte via the pipe or for the pipe to be closed.
         let mut response: [u8; 1] = [0u8; 1];
-        match libc::fread(response.as_mut_ptr() as *mut c_void, 1, 1, stream) {
-            1 => {
-                // Child sent a byte, which indicates that it succeeded and is now shutting down in
-                // the background.
-                0
-            }
-            _ => {
-                // Child closed pipe without sending a byte - get the process exit_status
-                let mut status: libc::c_int = -1i32;
-                libc::waitpid(child_pid, &mut status, 0);
-                libc::WEXITSTATUS(status)
-            }
+        if libc::fread(response.as_mut_ptr().cast::<c_void>(), 1, 1, stream) == 1 {
+            // Child sent a byte, which indicates that it succeeded and is now shutting down in
+            // the background.
+            0
+        } else {
+            // Child closed pipe without sending a byte - get the process exit_status
+            let mut status: libc::c_int = -1i32;
+            libc::waitpid(child_pid, &raw mut status, 0);
+            libc::WEXITSTATUS(status)
         }
     }
 }

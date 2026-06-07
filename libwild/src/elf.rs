@@ -717,7 +717,7 @@ impl platform::Platform for Elf {
                     queue,
                     resources,
                     section_index,
-                    relocations.flat_map(|r| r.ok()),
+                    relocations.filter_map(|r| r.ok()),
                     scope,
                 )?;
             }
@@ -1671,7 +1671,7 @@ impl platform::Platform for Elf {
             || flags.needs_got_tls_descriptor()
         {
             return Ok(());
-        };
+        }
         if let Some(got_address) = resolution.format_specific.got_address {
             let start_offset = (got_address.get() - got.sh_addr(LittleEndian)) as usize;
             let end_offset = start_offset + size_of::<u64>();
@@ -1951,7 +1951,7 @@ impl platform::Platform for Elf {
                             ],
                         );
                         first_load = true;
-                    };
+                    }
                     if ptype == 1 {
                         let is_write = (flags & 2) != 0;
                         let is_exec = (flags & 1) != 0;
@@ -2478,7 +2478,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         } else {
             is_default = true;
             version_name = None;
-        };
+        }
 
         Ok(RawSymbolName {
             name: name_bytes,
@@ -3118,7 +3118,7 @@ fn decompress_into(
             zstd::stream::Decoder::new(input)?.read_exact(out)?;
         }
         c => bail!("Unsupported compression format: {}", c),
-    };
+    }
     Ok(())
 }
 
@@ -3752,7 +3752,7 @@ pub(crate) fn process_riscv_attributes(
                             .next()
                             .ok_or_else(|| crate::error!("Cannot parse major"))?
                             .to_string();
-                        let name = String::from_iter(it.rev());
+                        let name = it.rev().collect();
                         Ok((name, (major.parse()?, minor.parse()?)))
                     })
                     .collect::<Result<IndexMap<_, _>>>()?;

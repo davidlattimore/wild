@@ -117,7 +117,7 @@ fn section_data_with_relocations<A: Arch<Platform = crate::elf::Elf>>(
                         object,
                         section_of_interest,
                         &mut section_data,
-                        relocations.flat_map(|r| r.ok()),
+                        relocations.filter_map(|r| r.ok()),
                     )?;
                 }
             }

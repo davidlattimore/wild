@@ -239,7 +239,7 @@ impl<'a> Expression<'a> {
     pub(crate) fn visit_expressions(&self, cb: &mut impl FnMut(&Self) -> bool) {
         if !cb(self) {
             return;
-        };
+        }
         match self {
             Expression::Number(_)
             | Expression::LocationCounter
@@ -773,8 +773,8 @@ fn parse_number_with_suffix<'a>(input: &mut &'a BStr) -> winnow::Result<Expressi
     let suffix = opt(one_of(b"KkMm")).parse_next(input)?;
 
     let final_value = match suffix {
-        Some(b'K') | Some(b'k') => base_number.wrapping_mul(1024),
-        Some(b'M') | Some(b'm') => base_number.wrapping_mul(1024 * 1024),
+        Some(b'K' | b'k') => base_number.wrapping_mul(1024),
+        Some(b'M' | b'm') => base_number.wrapping_mul(1024 * 1024),
         _ => base_number,
     };
 
@@ -1282,9 +1282,9 @@ mod tests {
     #[test]
     fn test_inputs_from_script() {
         let inputs = inputs_from_script(
-            r#"/* GNU ld script */
+            r"/* GNU ld script */
             GROUP ( libgcc_s.so.1 -lgcc )
-        "#,
+        ",
         )
         .unwrap();
         assert_equal(
@@ -1311,9 +1311,9 @@ mod tests {
     #[test]
     fn test_test_inputs_from_script() {
         let inputs = inputs_from_script(
-            r#"OUTPUT_FORMAT(elf64-x86-64)
+            r"OUTPUT_FORMAT(elf64-x86-64)
             GROUP ( /lib/x86_64-linux-gnu/libc.so.6 /usr/lib/x86_64-linux-gnu/libc_nonshared.a  AS_NEEDED ( /lib64/ld-linux-x86-64.so.2 ) )
-        "#,
+        ",
         )
         .unwrap();
         assert_equal(
@@ -1501,14 +1501,14 @@ mod tests {
     #[test]
     fn test_version_command() {
         let script = parse_script(
-            r#"
+            r"
             VERSION {
                 VERS_1.0 {
                     global: foo; bar*;
                     local: *;
                 };
             }
-            "#,
+            ",
         )
         .unwrap();
 
@@ -1549,7 +1549,7 @@ mod tests {
     #[test]
     fn test_version_command_with_other_commands() {
         let script = parse_script(
-            r#"
+            r"
             ENTRY(_start)
             VERSION {
                 VERS_1.0 {
@@ -1559,7 +1559,7 @@ mod tests {
             SECTIONS {
                 .text : { *(.text) }
             }
-            "#,
+            ",
         )
         .unwrap();
 
@@ -1584,14 +1584,14 @@ mod tests {
         use crate::version_script::VersionScript;
 
         let script = parse_script(
-            r#"
+            r"
             VERSION {
                 VERS_1.0 {
                     global: foo; bar*;
                     local: *;
                 };
             }
-            "#,
+            ",
         )
         .unwrap();
 
@@ -2015,10 +2015,10 @@ mod tests {
     #[test]
     fn test_memory_block_parsing() {
         let script = parse_script(
-            r#"MEMORY {
+            r"MEMORY {
                 rom : ORIGIN = 256K, LENGTH = 1M
                 ram : org = 0x20000000, l = 32K
-            }"#,
+            }",
         )
         .unwrap();
         let Command::Memory(regions) = &script.commands[0] else {

@@ -179,7 +179,7 @@ fn normalize_arch_string(arch: &str) -> String {
     // The first part is the base ISA (e.g., "rv64i2p1").
     let base = parts[0];
     let mut extensions: Vec<&str> = parts[1..].to_vec();
-    extensions.sort();
+    extensions.sort_unstable();
     let mut result = base.to_owned();
     for ext in extensions {
         result.push('_');

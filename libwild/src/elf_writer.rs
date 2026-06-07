@@ -1662,7 +1662,7 @@ fn build_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
                         .primary_output_section(output_section_id);
                     let sym_idx = section_sym_indices.get(primary_id);
                     map[symbol_id.as_usize()] = Some(*sym_idx);
-                };
+                }
 
                 if SymbolCopyInfo::new(
                     object.object,
@@ -1903,7 +1903,7 @@ fn write_object_section<'data, A: Arch<Platform = Elf>>(
     })?;
     if section.flags.needs_got() || section.flags.needs_plt() {
         bail!("Section has GOT or PLT");
-    };
+    }
     Ok(())
 }
 
@@ -1974,7 +1974,7 @@ fn write_section_reversed<'data, A: Arch<Platform = Elf>>(
 
     if section.flags.needs_got() || section.flags.needs_plt() {
         bail!("Section has GOT or PLT");
-    };
+    }
 
     Ok(())
 }
@@ -2382,7 +2382,7 @@ fn write_eh_frame_data<'data, A: Arch<Platform = Elf>>(
             table_writer,
             trace,
             eh_frame_section,
-            relocations.flat_map(|r| r.ok()),
+            relocations.filter_map(|r| r.ok()),
         ),
     }
 }
@@ -3287,7 +3287,7 @@ fn apply_relocation<
         value,
     )? {
         value = thunked_value;
-    };
+    }
 
     rel_info.write_to_buffer(value, &mut out[offset_in_section..])?;
 
@@ -4703,7 +4703,7 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
                     layout.symbol_debug(sym_def.symbol_id)
                 )
             })?;
-    };
+    }
     Ok(())
 }
 
@@ -5299,7 +5299,7 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
                 );
                 order.next();
             }
-        };
+        }
 
         let entry = entries.next().unwrap();
         let e = LittleEndian;

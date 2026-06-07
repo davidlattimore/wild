@@ -1198,7 +1198,7 @@ fn apply_init_fini_secondaries<'data, P: Platform>(
         match slot {
             SectionSlot::Unloaded(_) | SectionSlot::MustLoad(_) => {}
             _ => continue,
-        };
+        }
 
         let sid =
             output_sections.get_or_create_init_fini_secondary(d.primary, d.priority, d.alignment);
@@ -1387,7 +1387,7 @@ fn resolve_section<'data, P: Platform>(
                 part_id::UNMAPPED,
             ));
         }
-    };
+    }
 
     if part_id == part_id::CUSTOM_PLACEHOLDER {
         let custom_section = CustomSectionDetails {

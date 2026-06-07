@@ -673,7 +673,7 @@ impl LoongArch64Instruction {
                 let high_part = ((extracted_value + 0x8000) >> 16) << 5;
                 or_from_slice(dest, &(low_part | high_part).to_le_bytes());
             }
-        };
+        }
     }
 
     #[must_use]

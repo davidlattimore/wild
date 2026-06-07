@@ -553,7 +553,7 @@ impl RiscVInstruction {
                 and_from_slice(dest, CLUITYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &(mask as u16).to_le_bytes());
             }
-        };
+        }
     }
 
     /// The inverse of `write_to_value`. Returns `(extracted_value, negative)`. Supplied `bytes`

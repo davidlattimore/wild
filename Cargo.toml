@@ -249,6 +249,17 @@ cloned_instead_of_copied = "warn"
 cast_lossless = "warn"
 needless_pass_by_ref_mut = "warn"
 
+pedantic = { level = "warn", priority = -1 }
+elidable_lifetime_names = "allow"
+used_underscore_binding = "allow"
+inline_always = "allow"
+missing_panics_doc = "allow"
+assigning_clones = "allow"
+similar_names = "allow"
+naive_bytecount = "allow"
+verbose_bit_mask = "allow"
+format_push_string = "allow"
+
 # We do a bit of hashing, especially in the integration tests. Optimising this speeds up tests.
 [profile.dev.package."foldhash"]
 opt-level = 2

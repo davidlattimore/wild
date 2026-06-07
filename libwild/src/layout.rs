@@ -527,7 +527,7 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
         };
 
         resolution.raw_value = value;
-    };
+    }
 
     Ok(())
 }
@@ -1967,9 +1967,9 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         .num_output_sections_with_content;
 
     if P::requires_symtab_shndx(num_sections as usize) {
-        group_states.iter_mut().for_each(|s| {
+        for s in group_states.iter_mut() {
             P::compute_symtab_shndx_section_size(&mut s.common.mem_sizes, &mut total_sizes);
-        });
+        }
     }
 
     Ok(total_sizes)
@@ -3250,7 +3250,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 );
                 output_section_indexes[id.as_usize()] = Some(next_output_index);
                 next_output_index += 1;
-            };
+            }
         }
         output_sections.output_section_indexes = output_section_indexes;
 
@@ -3950,7 +3950,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                     self.section_part_id(section_index, &resources.symbol_db.section_part_ids);
                 common.store_section_attributes(part_id, header);
             }
-        };
+        }
 
         Ok(())
     }
@@ -4222,33 +4222,30 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                     input_offset,
                 );
                 output_offset + section_address
+            } else if let Some(x) = get_merged_string_output_address::<P>(
+                local_symbol_index,
+                0,
+                self.object,
+                &self.sections,
+                &resources.symbol_db.section_part_ids,
+                self.section_id_range,
+                resources.merged_strings,
+                resources.merged_string_start_addresses,
+                true,
+            )? {
+                x
             } else {
-                match get_merged_string_output_address::<P>(
-                    local_symbol_index,
-                    0,
-                    self.object,
-                    &self.sections,
-                    &resources.symbol_db.section_part_ids,
-                    self.section_id_range,
-                    resources.merged_strings,
-                    resources.merged_string_start_addresses,
-                    true,
-                )? {
-                    Some(x) => x,
-                    None => {
-                        // Don't error for mapping symbols. They cannot have relocations refer to
-                        // them, so we don't need to produce a resolution.
-                        if resources.symbol_db.is_mapping_symbol(symbol_id) {
-                            return Ok(None);
-                        }
-                        bail!(
-                            "Symbol is in a section that we didn't load. \
-                             Symbol: {} Section: {} Res: {flags}",
-                            resources.symbol_debug(symbol_id),
-                            section_debug::<P>(self.object, section_index),
-                        );
-                    }
+                // Don't error for mapping symbols. They cannot have relocations refer to
+                // them, so we don't need to produce a resolution.
+                if resources.symbol_db.is_mapping_symbol(symbol_id) {
+                    return Ok(None);
                 }
+                bail!(
+                    "Symbol is in a section that we didn't load. \
+                     Symbol: {} Section: {} Res: {flags}",
+                    resources.symbol_debug(symbol_id),
+                    section_debug::<P>(self.object, section_index),
+                );
             }
         } else if let Some(common) = local_symbol.as_common() {
             let offset = memory_offsets.get_mut(common.part_id);
@@ -4677,7 +4674,7 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
                                 Ok(None) if sym.is_absolute() => {
                                     symbol_addresses[sym_id.as_usize()].store(sym.value(), Relaxed);
                                 }
-                                _ => continue,
+                                _ => {}
                             }
                         }
 
@@ -4771,9 +4768,9 @@ fn relaxation_scan_pass<'data, A: Arch>(
                     for sec_idx in &sections_to_scan {
                         let sec_idx = *sec_idx;
                         let section_index = SectionIndex(sec_idx);
-                        let relocs = match obj.object.relocations(section_index, &obj.relocations) {
-                            Ok(r) => r,
-                            Err(_) => continue,
+                        let Ok(relocs) = obj.object.relocations(section_index, &obj.relocations)
+                        else {
+                            continue;
                         };
 
                         let sec_output_addr = file_section_addrs.get(sec_idx).copied().unwrap_or(0);
@@ -4792,13 +4789,11 @@ fn relaxation_scan_pass<'data, A: Arch>(
                                 symbol_infos.resolve(def_id, per_symbol_flags)
                             };
 
-                        let section_header = match obj.object.section(section_index) {
-                            Ok(h) => h,
-                            Err(_) => continue,
+                        let Ok(section_header) = obj.object.section(section_index) else {
+                            continue;
                         };
-                        let section_bytes = match obj.object.raw_section_data(section_header) {
-                            Ok(d) => d,
-                            Err(_) => continue,
+                        let Ok(section_bytes) = obj.object.raw_section_data(section_header) else {
+                            continue;
                         };
 
                         let (raw_deltas, min_margin) = A::collect_relaxation_deltas(
@@ -5107,7 +5102,7 @@ fn layout_section_parts<'data, P: Platform>(
                         }
                     });
             }
-        };
+        }
     }
 
     Ok(records_out)

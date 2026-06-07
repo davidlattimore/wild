@@ -56,7 +56,7 @@ pub fn decode_insn_with_objdump(insn: &[u8], address: u64, arch: ArchKind) -> Re
         .split_whitespace()
         .skip(2)
         .join(" ")
-        .replacen(" ", "\t", 1)
+        .replacen(' ', "\t", 1)
         .clone())
 }
 

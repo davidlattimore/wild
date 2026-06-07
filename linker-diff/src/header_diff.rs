@@ -409,7 +409,7 @@ pub(crate) fn diff_array(
             rows[i].push(value.formatted);
         }
     }
-    rows.insert(0, Vec::from_iter(binaries.iter().map(|b| b.name.clone())));
+    rows.insert(0, binaries.iter().map(|b| b.name.clone()).collect());
 
     let mut table = Table::from_iter(rows);
     table.with(

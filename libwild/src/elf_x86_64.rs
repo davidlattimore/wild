@@ -448,7 +448,7 @@ impl crate::platform::Arch for ElfX86_64 {
                 });
             }
             _ => return None,
-        };
+        }
         None
     }
 
