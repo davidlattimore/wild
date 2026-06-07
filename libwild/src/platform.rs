@@ -1237,7 +1237,9 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn lib_search_path(&self) -> &[Box<Path>];
 
-    fn output(&self) -> &Arc<Path>;
+    fn output(&self) -> &Arc<Path> {
+        &self.common().output
+    }
 
     fn common(&self) -> &crate::args::CommonArgs;
 
@@ -1338,7 +1340,9 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         false
     }
 
-    fn relocation_model(&self) -> crate::args::RelocationModel;
+    fn relocation_model(&self) -> crate::args::RelocationModel {
+        self.common().relocation_model
+    }
 
     fn should_output_executable(&self) -> bool;
 

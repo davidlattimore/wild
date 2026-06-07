@@ -47,7 +47,6 @@ pub struct ElfArgs {
 
     pub(crate) arch: Architecture,
     pub(crate) lib_search_path: Vec<Box<Path>>,
-    pub(crate) output: Arc<Path>,
     pub(crate) dynamic_linker: Option<Box<Path>>,
     pub(crate) strip: Strip,
     pub(crate) merge_sections: bool,
@@ -123,7 +122,6 @@ pub struct ElfArgs {
     pub(crate) use_android_relr_tags: bool,
     pub(crate) discard_sframe: bool,
 
-    pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
     pub(crate) should_output_partial_object: bool,
 
@@ -263,7 +261,6 @@ impl Default for ElfArgs {
             arch: default_target_arch(),
 
             lib_search_path: Vec::new(),
-            output: Arc::from(Path::new("a.out")),
             should_output_executable: true,
             should_output_partial_object: false,
             dynamic_linker: None,
@@ -277,7 +274,6 @@ impl Default for ElfArgs {
             gc_sections: true,
             merge_sections: true,
             copy_relocations: CopyRelocations::Allowed,
-            relocation_model: RelocationModel::NonRelocatable,
             version_script_path: None,
             debug_address: None,
             should_write_eh_frame_hdr: false,
@@ -765,7 +761,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .prefix("o")
         .help("Set the output filename")
         .execute(|args, _modifier_stack, value| {
-            args.output = Arc::from(Path::new(value));
+            args.common.output = Arc::from(Path::new(value));
             Ok(())
         });
 
@@ -823,7 +819,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("pic-executable")
         .help("Create a position-independent executable")
         .execute(|args, _modifier_stack| {
-            args.relocation_model = RelocationModel::Relocatable;
+            args.common.relocation_model = RelocationModel::Relocatable;
             args.should_output_executable = true;
             Ok(())
         });
@@ -833,7 +829,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("no-pie")
         .help("Do not create a position-independent executable (default)")
         .execute(|args, _modifier_stack| {
-            args.relocation_model = RelocationModel::NonRelocatable;
+            args.common.relocation_model = RelocationModel::NonRelocatable;
             args.should_output_executable = true;
             Ok(())
         });
@@ -920,18 +916,6 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Disable symbol demangling")
         .execute(|args, _modifier_stack| {
             args.common_mut().demangle = false;
-            Ok(())
-        });
-
-    parser
-        .declare_with_optional_param()
-        .long("time")
-        .help("Show timing information")
-        .execute(|args, _modifier_stack, value| {
-            args.common.time_phase_options = match value {
-                Some(v) => Some(super::parse_time_phase_options(v)?),
-                None => Some(Vec::new()),
-            };
             Ok(())
         });
 
@@ -1194,14 +1178,6 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Disable relaxation")
         .execute(|args, _modifier_stack| {
             args.relax = false;
-            Ok(())
-        });
-
-    parser
-        .declare()
-        .long("validate-output")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().validate_output = true;
             Ok(())
         });
 
@@ -1697,15 +1673,6 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
     parser
         .declare()
-        .long("update-in-place")
-        .help("Update file in place")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().file_write_mode = Some(FileWriteMode::UpdateInPlace);
-            Ok(())
-        });
-
-    parser
-        .declare()
         .long("no-update-in-place")
         .help("Delete and recreate the file")
         .execute(|args, _modifier_stack| {
@@ -1915,10 +1882,6 @@ impl platform::Args for ElfArgs {
         &mut self.common
     }
 
-    fn output(&self) -> &Arc<Path> {
-        &self.output
-    }
-
     // TODO: Some linkers like ld and mold cleanup debug symbols when linking with -r. For now, we
     // ignore --strip-all and --strip-debug in partial link mode.
     fn should_strip_debug(&self) -> bool {
@@ -2085,10 +2048,6 @@ impl platform::Args for ElfArgs {
 
     fn should_write_trace_file(&self) -> bool {
         self.trace
-    }
-
-    fn relocation_model(&self) -> crate::args::RelocationModel {
-        self.relocation_model
     }
 
     fn should_output_executable(&self) -> bool {

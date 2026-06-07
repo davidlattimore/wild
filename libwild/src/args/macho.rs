@@ -1,11 +1,9 @@
 use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::ArgumentParser;
 use crate::args::CommonArgs;
-use crate::args::FileWriteMode;
 use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
-use crate::args::RelocationModel;
 use crate::bail;
 use crate::error::Result;
 use crate::platform;
@@ -22,9 +20,6 @@ pub struct MachOArgs {
     pub(crate) sysroot: Option<Box<Path>>,
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) plugin_path: Option<String>,
-
-    pub(crate) output: Arc<Path>,
-    pub(crate) relocation_model: RelocationModel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +47,7 @@ impl MachOArgs {
     }
 }
 
+#[expect(clippy::derivable_impls)]
 impl Default for MachOArgs {
     fn default() -> Self {
         Self {
@@ -60,10 +56,6 @@ impl Default for MachOArgs {
             sysroot: None,
             lib_search_path: Vec::new(),
             plugin_path: None,
-
-            // TODO: move to CommonArgs
-            relocation_model: RelocationModel::NonRelocatable,
-            output: Arc::from(Path::new("a.out")),
         }
     }
 }
@@ -94,10 +86,6 @@ impl platform::Args for MachOArgs {
         &self.lib_search_path
     }
 
-    fn output(&self) -> &std::sync::Arc<std::path::Path> {
-        &self.output
-    }
-
     fn common(&self) -> &crate::args::CommonArgs {
         &self.common
     }
@@ -125,10 +113,6 @@ impl platform::Args for MachOArgs {
     fn should_merge_sections(&self) -> bool {
         // TODO
         true
-    }
-
-    fn relocation_model(&self) -> crate::args::RelocationModel {
-        self.relocation_model
     }
 
     fn should_output_executable(&self) -> bool {
@@ -271,39 +255,15 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
             });
             Ok(())
         });
+    // The option declaration cannot be moved to declare_common_args as other platforms
+    // use `prefix("o")`.
     parser
         .declare_with_param()
         .long("output")
         .short("o")
         .help("Set the output filename")
         .execute(|args, _modifier_stack, value| {
-            args.output = Arc::from(Path::new(value));
-            Ok(())
-        });
-    parser
-        .declare_with_optional_param()
-        .long("time")
-        .help("Show timing information")
-        .execute(|args, _modifier_stack, value| {
-            args.common.time_phase_options = match value {
-                Some(v) => Some(super::parse_time_phase_options(v)?),
-                None => Some(Vec::new()),
-            };
-            Ok(())
-        });
-    parser
-        .declare()
-        .long("validate-output")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().validate_output = true;
-            Ok(())
-        });
-    parser
-        .declare()
-        .long("update-in-place")
-        .help("Update file in place")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().file_write_mode = Some(FileWriteMode::UpdateInPlace);
+            args.common_mut().output = Arc::from(Path::new(value));
             Ok(())
         });
     parser

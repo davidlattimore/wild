@@ -1190,6 +1190,7 @@ impl platform::Platform for Elf {
             let base_version_name = if symbol_db.args.soname.is_none() {
                 let file_name = symbol_db
                     .args
+                    .common
                     .output
                     .file_name()
                     .expect("File name should be present at this point")

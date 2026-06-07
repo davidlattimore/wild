@@ -27,9 +27,6 @@ pub(crate) const WASM_PAGE_SIZE: u64 = WASM_PAGE_ALIGNMENT.value();
 #[derive(Debug)]
 pub struct WasmArgs {
     pub(crate) common: super::CommonArgs,
-
-    pub(crate) output: Arc<Path>,
-    pub(crate) relocation_model: RelocationModel,
 }
 
 impl WasmArgs {
@@ -41,14 +38,11 @@ impl WasmArgs {
     }
 }
 
+#[expect(clippy::derivable_impls)]
 impl Default for WasmArgs {
     fn default() -> Self {
         Self {
             common: CommonArgs::default(),
-
-            // TODO: move to CommonArgs
-            relocation_model: RelocationModel::NonRelocatable,
-            output: Arc::from(Path::new("a.out")),
         }
     }
 }
@@ -80,10 +74,6 @@ impl platform::Args for WasmArgs {
         todo!()
     }
 
-    fn output(&self) -> &std::sync::Arc<std::path::Path> {
-        &self.output
-    }
-
     fn common(&self) -> &crate::args::CommonArgs {
         &self.common
     }
@@ -107,10 +97,6 @@ impl platform::Args for WasmArgs {
     fn should_merge_sections(&self) -> bool {
         // TODO
         true
-    }
-
-    fn relocation_model(&self) -> crate::args::RelocationModel {
-        self.relocation_model
     }
 
     fn should_output_executable(&self) -> bool {
@@ -148,21 +134,11 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .short("o")
         .help("Set the output filename")
         .execute(|args, _modifier_stack, value| {
-            args.output = Arc::from(Path::new(value));
+            args.common.output = Arc::from(Path::new(value));
             Ok(())
         });
 
-    parser
-        .declare_with_optional_param()
-        .long("time")
-        .help("Show timing information")
-        .execute(|args, _modifier_stack, value| {
-            args.common.time_phase_options = match value {
-                Some(v) => Some(super::parse_time_phase_options(v)?),
-                None => Some(Vec::new()),
-            };
-            Ok(())
-        });
+    super::declare_common_args(&mut parser);
 
     parser
 }

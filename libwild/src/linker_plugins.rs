@@ -382,10 +382,10 @@ impl LoadedPlugin {
             unsafe { lib.get(b"onload") }
                 .context("Failed to get `onload` function from linker plugin")?;
 
-        let output_name = CString::new(args.output.as_os_str().as_encoded_bytes())?;
+        let output_name = CString::new(args.common.output.as_os_str().as_encoded_bytes())?;
 
         let output_kind = if args.should_output_executable {
-            match args.relocation_model {
+            match args.common.relocation_model {
                 crate::args::RelocationModel::NonRelocatable => OutputFileType::Exec,
                 crate::args::RelocationModel::Relocatable => OutputFileType::Pie,
             }
