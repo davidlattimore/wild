@@ -248,15 +248,16 @@ fn write_epilogue<A: Arch<Platform = MachO>>(
 
 #[derive(derive_more::Debug, Clone, Copy)]
 struct ImportedSymbolWithResolution<'data> {
-    symbol: ImportedSymbol<'data>,
+    symbol: &'data ImportedSymbol<'data>,
     got_address: NonZeroU64,
     plt_address: Option<NonZeroU64>,
 }
 
 fn get_imported_sorted_by_got<'data>(
-    layout: &MachOLayout<'data>,
+    layout: &'data MachOLayout<'_>,
 ) -> Result<Vec<ImportedSymbolWithResolution<'data>>> {
     let mut imported = layout
+        .properties_and_attributes
         .imported_symbols
         .iter()
         .map(|symbol| {
@@ -269,7 +270,7 @@ fn get_imported_sorted_by_got<'data>(
                 .ok_or_else(|| error!("missing GOT entry for a stub library symbol"))?;
 
             Ok(ImportedSymbolWithResolution {
-                symbol: *symbol,
+                symbol,
                 got_address,
                 plt_address: resolution.format_specific.plt_address,
             })
@@ -848,7 +849,7 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
     chained_fixup_table: &mut [u8],
 ) -> Result {
-    let symbols = &layout.imported_symbols;
+    let symbols = &layout.properties_and_attributes.imported_symbols;
     let _imported_symbols_strings_len: usize = symbols.iter().map(|sym| sym.name.len() + 1).sum();
 
     let active_segments = PROGRAM_SEGMENT_DEFS

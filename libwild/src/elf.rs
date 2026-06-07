@@ -315,7 +315,7 @@ impl platform::Platform for Elf {
     type DynamicEntry = DynamicEntry;
     type DynamicSymbolDefinitionExt = DynamicSymbolDefinitionExt;
     type RelocationInfo = u32;
-    type LayoutExt = LayoutExt;
+    type LayoutExt<'data> = LayoutExt;
     type SymbolVersionIndex = Versym;
     type NonAddressableCounts = NonAddressableCounts;
     type NonAddressableIndexes = NonAddressableIndexes;

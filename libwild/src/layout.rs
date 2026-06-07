@@ -169,7 +169,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         num_symbols: 0,
     });
 
-    let properties_and_attributes = P::create_layout_properties::<A>(
+    let mut properties_and_attributes = P::create_layout_properties::<A>(
         symbol_db.args,
         objects_iter(&group_states).map(|obj| obj.object),
         objects_iter(&group_states).map(|obj| &obj.format_specific),
@@ -395,6 +395,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
 
     let num_sections = output_sections.num_sections();
+    P::set_imported_symbols(&mut properties_and_attributes, imported_symbols);
 
     let mut layout = Layout {
         symbol_db,
@@ -415,7 +416,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         relocation_statistics,
         per_symbol_flags,
         dynamic_symbol_definitions,
-        imported_symbols,
         properties_and_attributes,
         thunk_block_addresses,
         compressed_debug_sections: OutputSectionMap::with_size(num_sections),
@@ -433,7 +433,7 @@ struct FinaliseSizesResources<'data, 'scope, P: Platform> {
     imported_symbols: &'scope [ImportedSymbol<'data>],
     symbol_db: &'scope SymbolDb<'data, P>,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
-    format_specific: &'scope P::LayoutExt,
+    format_specific: &'scope P::LayoutExt<'data>,
 }
 
 /// Update resolutions for symbol redirects.
@@ -677,9 +677,7 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) has_variant_pcs: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data, P>>,
-    /// A list of imported STUB library symbols (Mach-O specific).
-    pub(crate) imported_symbols: Vec<ImportedSymbol<'data>>,
-    pub(crate) properties_and_attributes: P::LayoutExt,
+    pub(crate) properties_and_attributes: P::LayoutExt<'data>,
     /// Thunk address maps indexed by ThunkBlockId. Each entry maps SymbolId to the memory address
     /// of the thunk for that symbol within the block.
     pub(crate) thunk_block_addresses: Vec<BTreeMap<SymbolId, u64>>,
@@ -1418,7 +1416,7 @@ pub(crate) struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
     dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data, P>>,
     segment_layouts: &'scope SegmentLayouts,
     program_segments: &'scope ProgramSegments<P::ProgramSegmentDef>,
-    format_specific: &'scope P::LayoutExt,
+    format_specific: &'scope P::LayoutExt<'data>,
 
     pub(crate) thunk_blocks: &'scope [crate::thunks::ThunkBlock],
 

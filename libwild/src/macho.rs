@@ -303,6 +303,12 @@ pub(crate) fn code_signature_padded_identifier_size(args: &MachOArgs) -> u64 {
     (code_signature_identifier(args).len() as u64 + 1).next_multiple_of(CS_SECTION_ALIGNMENT)
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct LayoutExt<'data> {
+    /// A list of imported STUB library symbols.
+    pub(crate) imported_symbols: Vec<ImportedSymbol<'data>>,
+}
+
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
     #[debug(skip)]
@@ -1055,7 +1061,7 @@ impl platform::Platform for MachO {
     type ResolutionExt = ResolutionExt;
     type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
-    type LayoutExt = ();
+    type LayoutExt<'data> = LayoutExt<'data>;
     type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
     type DynamicTagValues<'data> = DynamicTagValues<'data>;
     type RelocationList<'data> = RelocationList<'data>;
@@ -1251,12 +1257,19 @@ impl platform::Platform for MachO {
         args: &Self::Args,
         objects: impl Iterator<Item = &'files Self::File<'data>>,
         states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
-    ) -> crate::error::Result<Self::LayoutExt>
+    ) -> crate::error::Result<Self::LayoutExt<'data>>
     where
         'data: 'files,
         'data: 'states,
     {
-        Ok(())
+        Ok(LayoutExt::default())
+    }
+
+    fn set_imported_symbols<'data>(
+        properties: &mut Self::LayoutExt<'data>,
+        imported_symbols: Vec<ImportedSymbol<'data>>,
+    ) {
+        properties.imported_symbols = imported_symbols;
     }
 
     fn load_exception_frame_data<'data, 'scope, A: platform::Arch<Platform = Self>>(
@@ -1307,7 +1320,7 @@ impl platform::Platform for MachO {
         state: &mut Self::EpilogueLayoutExt,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
-        properties: &Self::LayoutExt,
+        properties: &Self::LayoutExt<'data>,
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
         mem_sizes.increment(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_BASE_SIZE);
@@ -1349,7 +1362,7 @@ impl platform::Platform for MachO {
         epilogue_state: &mut Self::EpilogueLayoutExt,
         memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        common_state: &Self::LayoutExt,
+        common_state: &Self::LayoutExt<'data>,
         dynsym_start_index: u32,
         dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
     ) -> crate::error::Result {
