@@ -963,6 +963,15 @@ impl<T: platform::Args> ArgumentParser<T> {
     }
 }
 
+impl<T> ArgumentParser<T> {
+    fn insert_long_option(&mut self, name: &'static str, handler: OptionHandler<T>) {
+        assert!(
+            self.options.insert(name, handler).is_none(),
+            "Option --{name} registered more than once"
+        );
+    }
+}
+
 struct OptionHandler<T> {
     help_text: &'static str,
     handler: OptionHandlerFn<T>,
@@ -1141,7 +1150,7 @@ impl<'a, T> OptionDeclaration<'a, T, NoParam> {
         };
 
         for name in self.long_names {
-            self.parser.options.insert(name, option_handler.clone());
+            self.parser.insert_long_option(name, option_handler.clone());
         }
 
         for option in self.short_names {
@@ -1164,7 +1173,7 @@ impl<'a, T> OptionDeclaration<'a, T, WithParam> {
         };
 
         for name in self.long_names {
-            self.parser.options.insert(name, option_handler.clone());
+            self.parser.insert_long_option(name, option_handler.clone());
         }
 
         for option in self.short_names {
@@ -1194,7 +1203,7 @@ impl<'a, T> OptionDeclaration<'a, T, WithThreeParams> {
         };
 
         for name in self.long_names {
-            self.parser.options.insert(name, option_handler.clone());
+            self.parser.insert_long_option(name, option_handler.clone());
         }
 
         for option in self.short_names {
@@ -1214,7 +1223,7 @@ impl<'a, T> OptionDeclaration<'a, T, WithOptionalParam> {
         };
 
         for name in self.long_names {
-            self.parser.options.insert(name, option_handler.clone());
+            self.parser.insert_long_option(name, option_handler.clone());
         }
 
         for option in self.short_names {
