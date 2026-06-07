@@ -395,7 +395,11 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
 
     let num_sections = output_sections.num_sections();
-    P::set_imported_symbols(&mut properties_and_attributes, imported_symbols);
+    P::set_imported_symbols(
+        &mut properties_and_attributes,
+        &symbol_resolutions,
+        imported_symbols,
+    )?;
 
     let mut layout = Layout {
         symbol_db,
@@ -702,6 +706,12 @@ pub(crate) struct SegmentLayout {
 #[derive(Debug)]
 pub(crate) struct SymbolResolutions<P: Platform> {
     resolutions: Vec<Option<Resolution<P>>>,
+}
+
+impl<P: Platform> SymbolResolutions<P> {
+    pub(crate) fn get(&self, symbol_id: SymbolId) -> Option<&Resolution<P>> {
+        self.resolutions[symbol_id.as_usize()].as_ref()
+    }
 }
 
 pub(crate) enum FileLayout<'data, P: Platform> {
@@ -1502,7 +1512,7 @@ impl<'data, P: Platform> Layout<'data, P> {
     }
 
     pub(crate) fn local_symbol_resolution(&self, symbol_id: SymbolId) -> Option<&Resolution<P>> {
-        self.symbol_resolutions.resolutions[symbol_id.as_usize()].as_ref()
+        self.symbol_resolutions.get(symbol_id)
     }
 
     pub(crate) fn resolutions_in_range(

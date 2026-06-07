@@ -16,6 +16,7 @@ use crate::layout::Layout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayoutState;
+use crate::layout::SymbolResolutions;
 use crate::layout_rules;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::layout_rules::SectionRule;
@@ -491,8 +492,10 @@ pub(crate) trait Platform:
 
     fn set_imported_symbols<'data>(
         _properties: &mut Self::LayoutExt<'data>,
+        _resolutions: &SymbolResolutions<Self>,
         _imported_symbols: Vec<ImportedSymbol<'data>>,
-    ) {
+    ) -> Result {
+        Ok(())
     }
 
     fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Self>>(

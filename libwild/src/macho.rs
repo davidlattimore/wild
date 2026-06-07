@@ -18,6 +18,7 @@ use crate::layout::Layout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::Resolution;
 use crate::layout::SymbolCopyInfo;
+use crate::layout::SymbolResolutions;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
 use crate::macho_writer;
@@ -36,6 +37,7 @@ use crate::platform::ObjectFile;
 use crate::symbol_db::Visibility;
 use crate::value_flags::ValueFlags;
 use anyhow::Context;
+use itertools::Itertools;
 use linker_utils::elf::RelocationKind::TlsGdGotBase;
 use object::Endianness;
 use object::SymbolIndex;
@@ -305,8 +307,15 @@ pub(crate) fn code_signature_padded_identifier_size(args: &MachOArgs) -> u64 {
 
 #[derive(Debug, Default)]
 pub(crate) struct LayoutExt<'data> {
-    /// A list of imported STUB library symbols.
-    pub(crate) imported_symbols: Vec<ImportedSymbol<'data>>,
+    /// Imported STUB library symbols, sorted by GOT.
+    pub(crate) imported_symbols: Vec<ImportedSymbolWithResolution<'data>>,
+}
+
+#[derive(derive_more::Debug, Clone, Copy)]
+pub(crate) struct ImportedSymbolWithResolution<'data> {
+    pub(crate) symbol: ImportedSymbol<'data>,
+    pub(crate) got_address: NonZeroU64,
+    pub(crate) plt_address: Option<NonZeroU64>,
 }
 
 #[derive(derive_more::Debug)]
@@ -1267,9 +1276,34 @@ impl platform::Platform for MachO {
 
     fn set_imported_symbols<'data>(
         properties: &mut Self::LayoutExt<'data>,
+        resolutions: &SymbolResolutions<Self>,
         imported_symbols: Vec<ImportedSymbol<'data>>,
-    ) {
-        properties.imported_symbols = imported_symbols;
+    ) -> Result {
+        let mut imported_symbols = imported_symbols
+            .iter()
+            .map(|symbol| {
+                let resolution = resolutions
+                    .get(symbol.symbol_id)
+                    .with_context(|| "missing resolution for a stub library symbol".to_string())?;
+                let got_address = resolution
+                    .format_specific
+                    .got_address
+                    .ok_or_else(|| error!("missing GOT entry for a stub library symbol"))?;
+
+                Ok(ImportedSymbolWithResolution {
+                    symbol: *symbol,
+                    got_address,
+                    plt_address: resolution.format_specific.plt_address,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        properties.imported_symbols = imported_symbols
+            .into_iter()
+            .sorted_by_key(|symbol| symbol.got_address)
+            .collect();
+
+        Ok(())
     }
 
     fn load_exception_frame_data<'data, 'scope, A: platform::Arch<Platform = Self>>(
