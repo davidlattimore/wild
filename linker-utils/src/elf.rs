@@ -995,7 +995,7 @@ pub enum PageMask {
 }
 
 // Allow range (half-open) of a computed value of a relocation
-#[derive(Clone, Debug, Copy, PartialEq)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub struct AllowedRange {
     pub min: i64,
     pub max: i64,

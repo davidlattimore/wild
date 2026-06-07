@@ -260,6 +260,11 @@ naive_bytecount = "allow"
 verbose_bit_mask = "allow"
 format_push_string = "allow"
 
+# Enable some of the lints from the "nursery" group.
+redundant_clone = "warn"
+unnecessary_struct_initialization = "warn"
+derive_partial_eq_without_eq = "warn"
+
 # We do a bit of hashing, especially in the integration tests. Optimising this speeds up tests.
 [profile.dev.package."foldhash"]
 opt-level = 2

@@ -1038,9 +1038,7 @@ impl platform::Platform for MachO {
     }
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
-        Self::SectionAttributes {
-            ..Default::default()
-        }
+        Default::default()
     }
 
     fn apply_force_keep_sections(
