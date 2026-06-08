@@ -1378,6 +1378,23 @@ impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct WasmLayout<'data> {
+    pub(crate) output_types: Vec<wasmparser::FuncType>,
+    pub(crate) imports: Vec<crate::wasm_writer::OutputImport<'data>>,
+    pub(crate) function_type_indices: Vec<u32>,
+    pub(crate) globals: Vec<crate::wasm_writer::OutputGlobal<'data>>,
+    pub(crate) exports: Vec<crate::wasm_writer::OutputExport<'data>>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct WasmObjectLayout<'data> {
+    pub(crate) type_index_base: u32,
+    pub(crate) function_index_base: u32,
+    pub(crate) global_index_base: u32,
+    _phantom: std::marker::PhantomData<&'data ()>,
+}
+
 impl platform::Platform for Wasm {
     type File<'data> = File<'data>;
     type FileFlags = u32;
@@ -1403,7 +1420,7 @@ impl platform::Platform for Wasm {
     type ResolutionExt = ();
     type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
-    type LayoutExt<'data> = ();
+    type LayoutExt<'data> = WasmLayout<'data>;
     type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
     type DynamicTagValues<'data> = DynamicTagValues<'data>;
     type RelocationList<'data> = RelocationList<'data>;
@@ -1412,7 +1429,7 @@ impl platform::Platform for Wasm {
     type LayoutResourcesExt<'data> = ();
     type PreludeLayoutStateExt = ();
     type PreludeLayoutExt = ();
-    type ObjectLayoutStateExt<'data> = ();
+    type ObjectLayoutStateExt<'data> = WasmObjectLayout<'data>;
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
@@ -1599,15 +1616,15 @@ impl platform::Platform for Wasm {
     }
 
     fn create_layout_properties<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
-        args: &Self::Args,
-        objects: impl Iterator<Item = &'files Self::File<'data>>,
-        states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
+        _args: &Self::Args,
+        _objects: impl Iterator<Item = &'files Self::File<'data>>,
+        _states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
     ) -> crate::error::Result<Self::LayoutExt<'data>>
     where
         'data: 'files,
         'data: 'states,
     {
-        Ok(())
+        Ok(WasmLayout::default())
     }
 
     fn load_exception_frame_data<'data, 'scope, A: platform::Arch<Platform = Self>>(
