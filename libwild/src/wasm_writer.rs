@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::bail;
 use crate::error::Result;
 use crate::file_writer::SizedOutput;
 use crate::layout::Layout;
@@ -24,7 +25,7 @@ pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
     preamble[..4].copy_from_slice(&WASM_MAGIC);
     preamble[4..8].copy_from_slice(&WASM_VERSION.to_le_bytes());
 
-    crate::bail!("Wasm section emission is not implemented yet");
+    bail!("Wasm section emission is not implemented yet");
 }
 
 /// Build a `type` section from a list of function types in output order. Callers must have
@@ -140,8 +141,8 @@ fn convert_val_type(t: wasmparser::ValType) -> Result<wasm_encoder::ValType> {
         wasmparser::ValType::I64 => wasm_encoder::ValType::I64,
         wasmparser::ValType::F32 => wasm_encoder::ValType::F32,
         wasmparser::ValType::F64 => wasm_encoder::ValType::F64,
-        wasmparser::ValType::V128 => crate::bail!("V128 value type is not supported yet"),
-        wasmparser::ValType::Ref(_) => crate::bail!("reference value types are not supported yet"),
+        wasmparser::ValType::V128 => bail!("V128 value type is not supported yet"),
+        wasmparser::ValType::Ref(_) => bail!("reference value types are not supported yet"),
     })
 }
 

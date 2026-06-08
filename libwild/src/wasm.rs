@@ -3,6 +3,7 @@
 
 use crate::alignment::Alignment;
 use crate::args::wasm::WasmArgs;
+use crate::bail;
 use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -349,7 +350,7 @@ pub(crate) fn apply_relocation(
         | reloc_type::FUNCTION_INDEX_I32 => {
             slot.copy_from_slice(&value.to_le_bytes());
         }
-        other => crate::bail!("unsupported Wasm relocation type {other}"),
+        other => bail!("unsupported Wasm relocation type {other}"),
     }
     Ok(())
 }
@@ -1428,7 +1429,7 @@ where
             for group in types {
                 for ty in group?.into_types() {
                     let wasmparser::CompositeInnerType::Func(func) = ty.composite_type.inner else {
-                        crate::bail!("Wasm non-function types are not emitted")
+                        bail!("Wasm non-function types are not emitted")
                     };
                     layout.output_types.push(func);
                 }
@@ -1469,9 +1470,9 @@ where
                             entity: OutputImportEntity::Global(ty),
                         });
                     }
-                    TypeRef::Table(_) => crate::bail!("Wasm table imports are not emitted"),
-                    TypeRef::Memory(_) => crate::bail!("Wasm memory imports are not emitted"),
-                    TypeRef::Tag(_) => crate::bail!("Wasm tag imports are not emitted"),
+                    TypeRef::Table(_) => bail!("Wasm table imports are not emitted"),
+                    TypeRef::Memory(_) => bail!("Wasm memory imports are not emitted"),
+                    TypeRef::Tag(_) => bail!("Wasm tag imports are not emitted"),
                 }
             }
         }
@@ -1521,13 +1522,13 @@ where
                         remap_wasm_index(&map.global_indices, export.index, "global")?
                     }
                     wasmparser::ExternalKind::Table => {
-                        crate::bail!("Wasm table exports are not emitted")
+                        bail!("Wasm table exports are not emitted")
                     }
                     wasmparser::ExternalKind::Memory => {
-                        crate::bail!("Wasm memory exports are not emitted")
+                        bail!("Wasm memory exports are not emitted")
                     }
                     wasmparser::ExternalKind::Tag => {
-                        crate::bail!("Wasm tag exports are not emitted")
+                        bail!("Wasm tag exports are not emitted")
                     }
                 };
                 layout.exports.push(OutputExport {
@@ -1593,7 +1594,7 @@ impl platform::Platform for Wasm {
         args: &'data Self::Args,
     ) -> crate::error::Result<crate::LinkerOutput<'data>> {
         if !cfg!(feature = "wasm") {
-            crate::bail!(
+            bail!(
                 "Wasm support is still experimental. Rebuild with `--features wasm` to enable it."
             );
         }
