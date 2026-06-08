@@ -1391,6 +1391,74 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) globals: Vec<OutputGlobal<'data>>,
     pub(crate) exports: Vec<OutputExport<'data>>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
+    pub(crate) encoded_sections: WasmEncodedSections,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct WasmEncodedSections {
+    pub(crate) ty: Option<Vec<u8>>,
+    pub(crate) import: Option<Vec<u8>>,
+    pub(crate) function: Option<Vec<u8>>,
+    pub(crate) global: Option<Vec<u8>>,
+    pub(crate) export: Option<Vec<u8>>,
+}
+
+impl WasmEncodedSections {
+    fn add_sizes_to(&self, sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>) {
+        add_encoded_section_size(sizes, crate::part_id::WASM_TYPE, &self.ty);
+        add_encoded_section_size(sizes, crate::part_id::WASM_IMPORT, &self.import);
+        add_encoded_section_size(sizes, crate::part_id::WASM_FUNCTION, &self.function);
+        add_encoded_section_size(sizes, crate::part_id::WASM_GLOBAL, &self.global);
+        add_encoded_section_size(sizes, crate::part_id::WASM_EXPORT, &self.export);
+    }
+}
+
+fn add_encoded_section_size(
+    sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+    part_id: crate::part_id::PartId,
+    section: &Option<Vec<u8>>,
+) {
+    if let Some(bytes) = section {
+        sizes.increment(part_id, bytes.len() as u64);
+    }
+}
+
+fn encode_wasm_section(section: &impl wasm_encoder::Section) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    section.append_to(&mut bytes);
+    bytes
+}
+
+impl<'data> WasmLayout<'data> {
+    fn encode_metadata_sections(&mut self) -> Result {
+        let type_section = crate::wasm_writer::build_type_section(&self.output_types)?;
+        if !type_section.is_empty() {
+            self.encoded_sections.ty = Some(encode_wasm_section(&type_section));
+        }
+
+        let import_section = crate::wasm_writer::build_import_section(&self.imports)?;
+        if !import_section.is_empty() {
+            self.encoded_sections.import = Some(encode_wasm_section(&import_section));
+        }
+
+        let function_section =
+            crate::wasm_writer::build_function_section(&self.function_type_indices);
+        if !function_section.is_empty() {
+            self.encoded_sections.function = Some(encode_wasm_section(&function_section));
+        }
+
+        let global_section = crate::wasm_writer::build_global_section(&self.globals)?;
+        if !global_section.is_empty() {
+            self.encoded_sections.global = Some(encode_wasm_section(&global_section));
+        }
+
+        let export_section = crate::wasm_writer::build_export_section(&self.exports);
+        if !export_section.is_empty() {
+            self.encoded_sections.export = Some(encode_wasm_section(&export_section));
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1645,6 +1713,7 @@ where
         layout.exports.extend(object_layout.exports);
         layout.object_index_maps.push(object_layout.index_map);
     }
+    layout.encode_metadata_sections()?;
     Ok(layout)
 }
 
@@ -1984,11 +2053,12 @@ impl platform::Platform for Wasm {
 
     fn finalise_sizes_epilogue<'data>(
         _state: &mut Self::EpilogueLayoutExt,
-        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
-        _properties: &Self::LayoutExt<'data>,
+        properties: &Self::LayoutExt<'data>,
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
+        properties.encoded_sections.add_sizes_to(mem_sizes);
     }
 
     fn finalise_sizes_all<'data>(
