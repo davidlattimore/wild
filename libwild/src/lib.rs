@@ -37,6 +37,7 @@ mod linker_plugins;
 pub(crate) mod linker_script;
 pub(crate) mod macho;
 pub(crate) mod macho_aarch64;
+pub(crate) mod macho_object;
 pub(crate) mod macho_stub_library;
 pub(crate) mod macho_writer;
 pub(crate) mod output_kind;
