@@ -1323,7 +1323,7 @@ pub(crate) struct DynamicTagValues<'data> {
 
 impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues<'data> {
     fn lib_name(&self, input: &crate::input_data::InputRef<'data>) -> &'data [u8] {
-        todo!()
+        input.lib_name()
     }
 }
 
@@ -1477,25 +1477,24 @@ impl platform::Platform for Wasm {
     }
 
     fn activate_dynamic<'data>(
-        state: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _state: &mut crate::layout::DynamicLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) {
-        todo!()
+        // Dynamic Wasm objects are not emitted by this backend.
     }
 
     fn pre_finalise_sizes_prelude<'scope, 'data>(
-        prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        resources: &crate::layout::GraphResources<'data, 'scope, Self>,
+        _prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _resources: &crate::layout::GraphResources<'data, 'scope, Self>,
     ) {
-        todo!()
     }
 
     fn finalise_sizes_dynamic<'data>(
-        object: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _object: &mut crate::layout::DynamicLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn finalise_object_sizes<'data>(
@@ -1513,21 +1512,21 @@ impl platform::Platform for Wasm {
     }
 
     fn finalise_layout_dynamic<'data>(
-        state: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
-        resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
+        _state: &mut crate::layout::DynamicLayoutState<'data, Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
+        _resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
     ) -> crate::error::Result<Self::DynamicLayoutExt<'data>> {
-        todo!()
+        Ok(())
     }
 
     fn take_dynsym_index(
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        section_layouts: &crate::output_section_map::OutputSectionMap<
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _section_layouts: &crate::output_section_map::OutputSectionMap<
             crate::layout::OutputRecordLayout,
         >,
     ) -> crate::error::Result<u32> {
-        todo!()
+        crate::bail!("Wasm dynamic symbol table is not emitted")
     }
 
     fn compute_object_addresses<'data>(
@@ -1555,18 +1554,17 @@ impl platform::Platform for Wasm {
     }
 
     fn create_dynamic_symbol_definition<'data>(
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        symbol_id: crate::symbol_db::SymbolId,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _symbol_id: crate::symbol_db::SymbolId,
     ) -> crate::error::Result<crate::layout::DynamicSymbolDefinition<'data, Self>> {
-        todo!()
+        crate::bail!("Wasm dynamic symbol definitions are not emitted")
     }
 
     fn update_segment_keep_list(
-        program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
-        keep_segments: &mut [bool],
-        args: &Self::Args,
+        _program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
+        _keep_segments: &mut [bool],
+        _args: &Self::Args,
     ) {
-        todo!()
     }
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
@@ -1625,14 +1623,14 @@ impl platform::Platform for Wasm {
     }
 
     fn non_empty_section_loaded<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        queue: &mut crate::layout::LocalWorkQueue,
-        unloaded: crate::resolution::UnloadedSection,
-        resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
-        scope: &rayon::Scope<'scope>,
+        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _queue: &mut crate::layout::LocalWorkQueue,
+        _unloaded: crate::resolution::UnloadedSection,
+        _resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
+        _scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn new_epilogue_layout(
@@ -1660,20 +1658,18 @@ impl platform::Platform for Wasm {
     }
 
     fn finalise_sizes_epilogue<'data>(
-        state: &mut Self::EpilogueLayoutExt,
-        mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
-        properties: &Self::LayoutExt<'data>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _state: &mut Self::EpilogueLayoutExt,
+        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
+        _properties: &Self::LayoutExt<'data>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
-        todo!()
     }
 
     fn finalise_sizes_all<'data>(
-        mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
-        todo!()
     }
 
     fn apply_late_size_adjustments_epilogue(
@@ -1722,12 +1718,12 @@ impl platform::Platform for Wasm {
     }
 
     fn finalise_sizes_for_symbol<'data>(
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        symbol_id: crate::symbol_db::SymbolId,
-        flags: crate::value_flags::ValueFlags,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _symbol_id: crate::symbol_db::SymbolId,
+        _flags: crate::value_flags::ValueFlags,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn allocate_resolution(
@@ -1740,28 +1736,27 @@ impl platform::Platform for Wasm {
     }
 
     fn allocate_object_symtab_space<'data>(
-        state: &crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
+        _state: &crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn allocate_internal_symbol(
-        symbol_id: crate::symbol_db::SymbolId,
-        def_info: &crate::parsing::InternalSymDefInfo<Self>,
-        sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        symbol_db: &crate::symbol_db::SymbolDb<Self>,
+        _symbol_id: crate::symbol_db::SymbolId,
+        _def_info: &crate::parsing::InternalSymDefInfo<Self>,
+        _sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn allocate_prelude(
-        common: &mut crate::layout::CommonGroupState<Self>,
-        symbol_db: &crate::symbol_db::SymbolDb<Self>,
+        _common: &mut crate::layout::CommonGroupState<Self>,
+        _symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) {
-        todo!()
     }
 
     fn finalise_prelude_layout<'data>(
