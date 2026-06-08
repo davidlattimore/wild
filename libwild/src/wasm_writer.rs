@@ -42,29 +42,29 @@ fn copy_metadata_sections(
 ) -> Result<()> {
     let encoded = &layout.encoded_sections;
     copy_encoded_section(
-        &encoded.ty,
+        encoded.ty.as_ref(),
         section_buffers.get_mut(crate::output_section_id::WASM_TYPE),
     )?;
     copy_encoded_section(
-        &encoded.import,
+        encoded.import.as_ref(),
         section_buffers.get_mut(crate::output_section_id::WASM_IMPORT),
     )?;
     copy_encoded_section(
-        &encoded.function,
+        encoded.function.as_ref(),
         section_buffers.get_mut(crate::output_section_id::WASM_FUNCTION),
     )?;
     copy_encoded_section(
-        &encoded.global,
+        encoded.global.as_ref(),
         section_buffers.get_mut(crate::output_section_id::WASM_GLOBAL),
     )?;
     copy_encoded_section(
-        &encoded.export,
+        encoded.export.as_ref(),
         section_buffers.get_mut(crate::output_section_id::WASM_EXPORT),
     )?;
     Ok(())
 }
 
-fn copy_encoded_section(encoded: &Option<Vec<u8>>, out: &mut [u8]) -> Result<()> {
+fn copy_encoded_section(encoded: Option<&Vec<u8>>, out: &mut [u8]) -> Result<()> {
     match encoded {
         Some(encoded) => {
             if out.len() != encoded.len() {

@@ -1405,18 +1405,18 @@ pub(crate) struct WasmEncodedSections {
 
 impl WasmEncodedSections {
     fn add_sizes_to(&self, sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>) {
-        add_encoded_section_size(sizes, crate::part_id::WASM_TYPE, &self.ty);
-        add_encoded_section_size(sizes, crate::part_id::WASM_IMPORT, &self.import);
-        add_encoded_section_size(sizes, crate::part_id::WASM_FUNCTION, &self.function);
-        add_encoded_section_size(sizes, crate::part_id::WASM_GLOBAL, &self.global);
-        add_encoded_section_size(sizes, crate::part_id::WASM_EXPORT, &self.export);
+        add_encoded_section_size(sizes, crate::part_id::WASM_TYPE, self.ty.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_IMPORT, self.import.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_FUNCTION, self.function.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_GLOBAL, self.global.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_EXPORT, self.export.as_ref());
     }
 }
 
 fn add_encoded_section_size(
     sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     part_id: crate::part_id::PartId,
-    section: &Option<Vec<u8>>,
+    section: Option<&Vec<u8>>,
 ) {
     if let Some(bytes) = section {
         sizes.increment(part_id, bytes.len() as u64);
