@@ -1385,10 +1385,10 @@ impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
 #[derive(Debug, Default)]
 pub(crate) struct WasmLayout<'data> {
     pub(crate) output_types: Vec<wasmparser::FuncType>,
-    pub(crate) imports: Vec<crate::wasm_writer::OutputImport<'data>>,
+    pub(crate) imports: Vec<OutputImport<'data>>,
     pub(crate) function_type_indices: Vec<u32>,
-    pub(crate) globals: Vec<crate::wasm_writer::OutputGlobal<'data>>,
-    pub(crate) exports: Vec<crate::wasm_writer::OutputExport<'data>>,
+    pub(crate) globals: Vec<OutputGlobal<'data>>,
+    pub(crate) exports: Vec<OutputExport<'data>>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
 }
 
