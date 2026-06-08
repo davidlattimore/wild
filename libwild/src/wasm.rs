@@ -1670,17 +1670,15 @@ impl platform::Platform for Wasm {
     }
 
     fn finalise_object_sizes<'data>(
-        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) {
-        todo!()
     }
 
     fn finalise_object_layout<'data>(
-        object: &crate::layout::ObjectLayoutState<'data, Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _object: &crate::layout::ObjectLayoutState<'data, Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) {
-        todo!()
     }
 
     fn finalise_layout_dynamic<'data>(
@@ -1702,10 +1700,9 @@ impl platform::Platform for Wasm {
     }
 
     fn compute_object_addresses<'data>(
-        object: &crate::layout::ObjectLayoutState<'data, Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _object: &crate::layout::ObjectLayoutState<'data, Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) {
-        todo!()
     }
 
     fn layout_resources_ext<'data>(
@@ -1714,15 +1711,15 @@ impl platform::Platform for Wasm {
     }
 
     fn load_object_section_relocations<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        state: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        queue: &mut crate::layout::LocalWorkQueue,
-        resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
-        section: crate::layout::Section,
-        section_index: object::SectionIndex,
-        scope: &rayon::Scope<'scope>,
+        _state: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _queue: &mut crate::layout::LocalWorkQueue,
+        _resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
+        _section: crate::layout::Section,
+        _section_index: object::SectionIndex,
+        _scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn create_dynamic_symbol_definition<'data>(
@@ -1826,7 +1823,7 @@ impl platform::Platform for Wasm {
             Item = &'groups mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         >,
     ) {
-        // No-op for now.
+        // Wasm has no non-addressable side tables.
     }
 
     fn finalise_sizes_epilogue<'data>(
@@ -1899,12 +1896,11 @@ impl platform::Platform for Wasm {
     }
 
     fn allocate_resolution(
-        flags: crate::value_flags::ValueFlags,
-        mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        output_kind: crate::output_kind::OutputKind,
-        args: &Self::Args,
+        _flags: crate::value_flags::ValueFlags,
+        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _output_kind: crate::output_kind::OutputKind,
+        _args: &Self::Args,
     ) {
-        todo!()
     }
 
     fn allocate_object_symtab_space<'data>(
@@ -1943,9 +1939,14 @@ impl platform::Platform for Wasm {
         flags: crate::value_flags::ValueFlags,
         raw_value: u64,
         dynamic_symbol_index: Option<std::num::NonZeroU32>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> crate::layout::Resolution<Self> {
-        todo!()
+        crate::layout::Resolution {
+            raw_value,
+            dynamic_symbol_index,
+            flags,
+            format_specific: (),
+        }
     }
 
     fn raw_symbol_name<'data>(
