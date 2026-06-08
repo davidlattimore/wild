@@ -3,11 +3,13 @@
 use crate::bail;
 use crate::error::Result;
 use crate::file_writer::SizedOutput;
+use crate::file_writer::split_output_into_sections;
 use crate::layout::Layout;
 use crate::platform::Arch;
 use crate::wasm::WASM_MAGIC;
 use crate::wasm::WASM_VERSION;
 use crate::wasm::Wasm;
+use crate::wasm::WasmLayout;
 use wasm_encoder::ExportSection;
 use wasm_encoder::FunctionSection;
 use wasm_encoder::GlobalSection;
@@ -16,16 +18,74 @@ use wasm_encoder::TypeSection;
 
 pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
     sized_output: &mut SizedOutput,
-    _layout: &Layout<'data, Wasm>,
+    layout: &Layout<'data, Wasm>,
 ) -> Result<()> {
-    let out: &mut [u8] = &mut sized_output.out;
-    let preamble = out
+    let (mut section_buffers, mut padding) =
+        split_output_into_sections(layout, &mut sized_output.out);
+    padding.fill_zero();
+
+    let preamble = section_buffers
+        .get_mut(crate::output_section_id::FILE_HEADER)
         .get_mut(..8)
         .ok_or_else(|| crate::error!("Wasm output buffer is shorter than the 8-byte preamble"))?;
     preamble[..4].copy_from_slice(&WASM_MAGIC);
     preamble[4..8].copy_from_slice(&WASM_VERSION.to_le_bytes());
 
-    bail!("Wasm section emission is not implemented yet");
+    copy_metadata_sections(&layout.properties_and_attributes, &mut section_buffers)?;
+
+    bail!("Wasm code and data section emission is not implemented yet");
+}
+
+fn copy_metadata_sections(
+    layout: &WasmLayout<'_>,
+    section_buffers: &mut crate::output_section_map::OutputSectionMap<&mut [u8]>,
+) -> Result<()> {
+    let encoded = &layout.encoded_sections;
+    copy_encoded_section(
+        &encoded.ty,
+        section_buffers.get_mut(crate::output_section_id::WASM_TYPE),
+    )?;
+    copy_encoded_section(
+        &encoded.import,
+        section_buffers.get_mut(crate::output_section_id::WASM_IMPORT),
+    )?;
+    copy_encoded_section(
+        &encoded.function,
+        section_buffers.get_mut(crate::output_section_id::WASM_FUNCTION),
+    )?;
+    copy_encoded_section(
+        &encoded.global,
+        section_buffers.get_mut(crate::output_section_id::WASM_GLOBAL),
+    )?;
+    copy_encoded_section(
+        &encoded.export,
+        section_buffers.get_mut(crate::output_section_id::WASM_EXPORT),
+    )?;
+    Ok(())
+}
+
+fn copy_encoded_section(encoded: &Option<Vec<u8>>, out: &mut [u8]) -> Result<()> {
+    match encoded {
+        Some(encoded) => {
+            if out.len() != encoded.len() {
+                bail!(
+                    "Wasm metadata section size mismatch: allocated {}, encoded {}",
+                    out.len(),
+                    encoded.len()
+                );
+            }
+            out.copy_from_slice(encoded);
+        }
+        None => {
+            if !out.is_empty() {
+                bail!(
+                    "Wasm metadata section unexpectedly allocated {} bytes",
+                    out.len()
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Build a `type` section from a list of function types in output order. Callers must have
