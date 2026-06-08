@@ -1,6 +1,3 @@
-// TODO
-#![allow(unused)]
-
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
@@ -38,7 +35,6 @@ use crate::symbol_db::Visibility;
 use crate::value_flags::ValueFlags;
 use anyhow::Context;
 use itertools::Itertools;
-use linker_utils::elf::RelocationKind::TlsGdGotBase;
 use object::Endianness;
 use object::SymbolIndex;
 use object::macho;
@@ -46,7 +42,6 @@ use object::macho::N_ABS;
 use object::macho::N_EXT;
 use object::macho::N_PEXT;
 use object::macho::N_SECT;
-use object::macho::N_TYPE;
 use object::macho::N_WEAK_DEF;
 use object::macho::SEG_DATA;
 use object::macho::SEG_LINKEDIT;
@@ -58,7 +53,6 @@ use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
 use std::borrow::Cow;
-use std::io::Read;
 use std::num::NonZeroU64;
 use zerocopy::BigEndian;
 use zerocopy::FromBytes;
@@ -326,13 +320,14 @@ pub(crate) struct File<'data> {
     pub(crate) sections: SectionTable<'data>,
     #[debug(skip)]
     pub(crate) symbols: SymbolTable<'data>,
+    #[allow(unused)]
     pub(crate) flags: object::macho::FileFlags,
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
     type Platform = MachO;
 
-    fn parse_bytes(input: &'data [u8], is_dynamic: bool) -> crate::error::Result<Self> {
+    fn parse_bytes(input: &'data [u8], _is_dynamic: bool) -> crate::error::Result<Self> {
         let header = macho::MachHeader64::<object::Endianness>::parse(input, 0)?;
         let mut commands = header.load_commands(LE, input, 0)?;
 
@@ -360,7 +355,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn parse(
         input: &crate::input_data::InputBytes<'data>,
-        args: &<Self::Platform as platform::Platform>::Args,
+        _args: &<Self::Platform as platform::Platform>::Args,
     ) -> crate::error::Result<Self> {
         // TODO
         Self::parse_bytes(input.data, false)
@@ -448,7 +443,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn section_by_name(
         &self,
-        name: &str,
+        _name: &str,
     ) -> Option<(
         object::SectionIndex,
         &<Self::Platform as platform::Platform>::SectionHeader,
@@ -475,26 +470,26 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn dynamic_symbol_used(
         &self,
-        symbol_index: object::SymbolIndex,
-        state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
+        _symbol_index: object::SymbolIndex,
+        _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
     ) -> crate::error::Result {
         todo!()
     }
 
     fn finalise_sizes_dynamic(
         &self,
-        lib_name: &[u8],
-        state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
-        mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _lib_name: &[u8],
+        _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
+        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> crate::error::Result {
         todo!()
     }
 
     fn apply_non_addressable_indexes_dynamic(
         &self,
-        indexes: &mut <Self::Platform as platform::Platform>::NonAddressableIndexes,
-        counts: &mut <Self::Platform as platform::Platform>::NonAddressableCounts,
-        state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
+        _indexes: &mut <Self::Platform as platform::Platform>::NonAddressableIndexes,
+        _counts: &mut <Self::Platform as platform::Platform>::NonAddressableCounts,
+        _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
     ) -> crate::error::Result {
         todo!()
     }
@@ -509,16 +504,16 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn raw_section_data(
         &self,
-        section: &<Self::Platform as platform::Platform>::SectionHeader,
+        _section: &<Self::Platform as platform::Platform>::SectionHeader,
     ) -> crate::error::Result<&'data [u8]> {
         todo!()
     }
 
     fn section_data(
         &self,
-        section: &<Self::Platform as platform::Platform>::SectionHeader,
-        member: &bumpalo_herd::Member<'data>,
-        loaded_metrics: &crate::resolution::LoadedMetrics,
+        _section: &<Self::Platform as platform::Platform>::SectionHeader,
+        _member: &bumpalo_herd::Member<'data>,
+        _loaded_metrics: &crate::resolution::LoadedMetrics,
     ) -> crate::error::Result<&'data [u8]> {
         todo!()
     }
@@ -534,7 +529,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn section_data_cow(
         &self,
-        section: &<Self::Platform as platform::Platform>::SectionHeader,
+        _section: &<Self::Platform as platform::Platform>::SectionHeader,
     ) -> crate::error::Result<std::borrow::Cow<'data, [u8]>> {
         todo!()
     }
@@ -549,7 +544,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn relocations(
         &self,
         index: object::SectionIndex,
-        relocations: &<Self::Platform as platform::Platform>::RelocationSections,
+        _relocations: &<Self::Platform as platform::Platform>::RelocationSections,
     ) -> crate::error::Result<<Self::Platform as platform::Platform>::RelocationList<'data>> {
         Ok(RelocationList {
             relocations: self
@@ -566,7 +561,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn symbol_version_debug(&self, symbol_index: object::SymbolIndex) -> Option<String> {
+    fn symbol_version_debug(&self, _symbol_index: object::SymbolIndex) -> Option<String> {
         None
     }
 
@@ -591,16 +586,16 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn get_symbol_name_and_version(
         &self,
-        symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
-        local_index: usize,
-        version_names: &<Self::Platform as platform::Platform>::VersionNames<'data>,
+        _symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
+        _local_index: usize,
+        _version_names: &<Self::Platform as platform::Platform>::VersionNames<'data>,
     ) -> crate::error::Result<<Self::Platform as platform::Platform>::RawSymbolName<'data>> {
-        todo!()
+        bail!("Mach-O does not support versioned symbols")
     }
 
     fn should_enforce_undefined(
         &self,
-        resources: &crate::layout::GraphResources<'data, '_, Self::Platform>,
+        _resources: &crate::layout::GraphResources<'data, '_, Self::Platform>,
     ) -> bool {
         todo!()
     }
@@ -613,8 +608,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn process_gnu_note_section(
         &self,
-        state: &mut <Self::Platform as platform::Platform>::ObjectLayoutStateExt<'data>,
-        section_index: object::SectionIndex,
+        _state: &mut <Self::Platform as platform::Platform>::ObjectLayoutStateExt<'data>,
+        _section_index: object::SectionIndex,
     ) -> crate::error::Result {
         todo!()
     }
@@ -813,8 +808,8 @@ impl platform::SectionAttributes for SectionAttributes {
 
     fn apply(
         &self,
-        output_sections: &mut crate::output_section_id::OutputSections<Self::Platform>,
-        section_id: crate::output_section_id::OutputSectionId,
+        _output_sections: &mut crate::output_section_id::OutputSections<Self::Platform>,
+        _section_id: crate::output_section_id::OutputSectionId,
     ) {
     }
 
@@ -856,7 +851,7 @@ impl platform::SectionAttributes for SectionAttributes {
 pub(crate) struct NonAddressableIndexes {}
 
 impl platform::NonAddressableIndexes for NonAddressableIndexes {
-    fn new<P: platform::Platform>(symbol_db: &crate::symbol_db::SymbolDb<P>) -> Self {
+    fn new<P: platform::Platform>(_symbol_db: &crate::symbol_db::SymbolDb<P>) -> Self {
         NonAddressableIndexes {}
     }
 }
@@ -929,7 +924,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
 
     fn should_include_section(
         self,
-        section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
+        _section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
         section_id: crate::output_section_id::OutputSectionId,
         _rosegment: bool,
     ) -> bool {
@@ -969,7 +964,6 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) kind: SectionKind<'static>,
     pub(crate) section_flags: SectionFlags,
     pub(crate) min_alignment: Alignment,
-    pub(crate) target_segment_type: Option<SegmentType>,
 }
 
 impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
@@ -978,9 +972,9 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     kind: SectionKind::Primary(SectionName(&[])),
     section_flags: SectionFlags(0),
     min_alignment: alignment::MIN,
-    target_segment_type: None,
 };
 
+#[allow(unused)]
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct DynamicTagValues<'data> {
     phantom: &'data [u8],
@@ -998,7 +992,7 @@ impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
 }
 
 impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues<'data> {
-    fn lib_name(&self, input: &crate::input_data::InputRef<'data>) -> &'data [u8] {
+    fn lib_name(&self, _input: &crate::input_data::InputRef<'data>) -> &'data [u8] {
         todo!()
     }
 }
@@ -1030,7 +1024,7 @@ impl<'data> platform::RawSymbolName<'data> for RawSymbolName<'data> {
 
 impl std::fmt::Display for RawSymbolName<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        std::fmt::Display::fmt(&String::from_utf8_lossy(self.name), f)
     }
 }
 
@@ -1040,7 +1034,7 @@ pub(crate) struct VerneedTable<'data> {
 }
 
 impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
-    fn version_name(&self, local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
+    fn version_name(&self, _local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
         todo!()
     }
 }
@@ -1104,18 +1098,18 @@ impl platform::Platform for MachO {
         output.write(layout, macho_writer::write::<A>)
     }
 
-    fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
+    fn section_attributes(_header: &Self::SectionHeader) -> Self::SectionAttributes {
         Default::default()
     }
 
     fn apply_force_keep_sections(
-        keep_sections: &mut crate::output_section_map::OutputSectionMap<bool>,
-        args: &Self::Args,
+        _keep_sections: &mut crate::output_section_map::OutputSectionMap<bool>,
+        _args: &Self::Args,
     ) {
     }
 
     fn is_zero_sized_section_content(
-        section_id: crate::output_section_id::OutputSectionId,
+        _section_id: crate::output_section_id::OutputSectionId,
     ) -> bool {
         todo!()
     }
@@ -1125,61 +1119,61 @@ impl platform::Platform for MachO {
     }
 
     fn finalise_group_layout(
-        memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> Self::GroupLayoutExt {
     }
 
     fn frame_data_base_address(
-        memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> u64 {
         todo!()
     }
 
     fn activate_dynamic<'data>(
-        state: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _state: &mut crate::layout::DynamicLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) {
         todo!()
     }
 
     fn pre_finalise_sizes_prelude<'scope, 'data>(
-        prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        resources: &crate::layout::GraphResources<'data, 'scope, Self>,
+        _prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _resources: &crate::layout::GraphResources<'data, 'scope, Self>,
     ) {
     }
 
     fn finalise_sizes_dynamic<'data>(
-        object: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _object: &mut crate::layout::DynamicLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) -> crate::error::Result {
         todo!()
     }
 
     fn finalise_object_sizes<'data>(
-        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) {
     }
 
     fn finalise_object_layout<'data>(
-        object: &crate::layout::ObjectLayoutState<'data, Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _object: &crate::layout::ObjectLayoutState<'data, Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) {
     }
 
     fn finalise_layout_dynamic<'data>(
-        state: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
-        resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
+        _state: &mut crate::layout::DynamicLayoutState<'data, Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
+        _resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
     ) -> crate::error::Result<Self::DynamicLayoutExt<'data>> {
         todo!()
     }
 
     fn take_dynsym_index(
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        section_layouts: &crate::output_section_map::OutputSectionMap<
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _section_layouts: &crate::output_section_map::OutputSectionMap<
             crate::layout::OutputRecordLayout,
         >,
     ) -> crate::error::Result<u32> {
@@ -1187,44 +1181,44 @@ impl platform::Platform for MachO {
     }
 
     fn compute_object_addresses<'data>(
-        object: &crate::layout::ObjectLayoutState<'data, Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _object: &crate::layout::ObjectLayoutState<'data, Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) {
         todo!()
     }
 
     fn layout_resources_ext<'data>(
-        groups: &[crate::grouping::Group<'data, Self>],
+        _groups: &[crate::grouping::Group<'data, Self>],
     ) -> Self::LayoutResourcesExt<'data> {
     }
 
     fn load_object_section_relocations<'data, 'scope, A: platform::Arch<Platform = Self>>(
         state: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
         queue: &mut crate::layout::LocalWorkQueue,
         resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
-        section: crate::layout::Section,
+        _section: crate::layout::Section,
         section_index: object::SectionIndex,
         scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
         // TODO
         for rel in state.relocations(section_index)?.relocations {
-            process_relocation::<A>(state, common, rel, section, resources, queue, false, scope)?;
+            process_relocation::<A>(state, rel, resources, queue, scope)?;
         }
         Ok(())
     }
 
     fn create_dynamic_symbol_definition<'data>(
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        symbol_id: crate::symbol_db::SymbolId,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _symbol_id: crate::symbol_db::SymbolId,
     ) -> crate::error::Result<crate::layout::DynamicSymbolDefinition<'data, Self>> {
         todo!()
     }
 
     fn update_segment_keep_list(
-        program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
-        keep_segments: &mut [bool],
-        args: &Self::Args,
+        _program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
+        _keep_segments: &mut [bool],
+        _args: &Self::Args,
     ) {
     }
 
@@ -1237,9 +1231,9 @@ impl platform::Platform for MachO {
     }
 
     fn create_linker_defined_symbols(
-        symbols: &mut crate::parsing::InternalSymbolsBuilder<Self>,
-        output_kind: crate::output_kind::OutputKind,
-        args: &Self::Args,
+        _symbols: &mut crate::parsing::InternalSymbolsBuilder<Self>,
+        _output_kind: crate::output_kind::OutputKind,
+        _args: &Self::Args,
     ) {
     }
 
@@ -1261,9 +1255,9 @@ impl platform::Platform for MachO {
     }
 
     fn create_layout_properties<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
-        args: &Self::Args,
-        objects: impl Iterator<Item = &'files Self::File<'data>>,
-        states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
+        _args: &Self::Args,
+        _objects: impl Iterator<Item = &'files Self::File<'data>>,
+        _states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
     ) -> crate::error::Result<Self::LayoutExt<'data>>
     where
         'data: 'files,
@@ -1277,7 +1271,7 @@ impl platform::Platform for MachO {
         resolutions: &SymbolResolutions<Self>,
         imported_symbols: Vec<ImportedSymbol<'data>>,
     ) -> Result {
-        let mut imported_symbols = imported_symbols
+        let imported_symbols = imported_symbols
             .iter()
             .map(|symbol| {
                 let resolution = resolutions
@@ -1305,72 +1299,72 @@ impl platform::Platform for MachO {
     }
 
     fn load_exception_frame_data<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        eh_frame_section_index: object::SectionIndex,
-        resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
-        queue: &mut crate::layout::LocalWorkQueue,
-        scope: &rayon::Scope<'scope>,
+        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _eh_frame_section_index: object::SectionIndex,
+        _resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
+        _queue: &mut crate::layout::LocalWorkQueue,
+        _scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
         todo!()
     }
 
     fn non_empty_section_loaded<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        queue: &mut crate::layout::LocalWorkQueue,
-        unloaded: crate::resolution::UnloadedSection,
-        resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
-        scope: &rayon::Scope<'scope>,
+        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _queue: &mut crate::layout::LocalWorkQueue,
+        _unloaded: crate::resolution::UnloadedSection,
+        _resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
+        _scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
         Ok(())
     }
 
     fn new_epilogue_layout(
-        args: &Self::Args,
-        output_kind: crate::output_kind::OutputKind,
-        dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'_, Self>],
+        _args: &Self::Args,
+        _output_kind: crate::output_kind::OutputKind,
+        _dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'_, Self>],
     ) -> Self::EpilogueLayoutExt {
     }
 
     fn apply_non_addressable_indexes_epilogue(
-        counts: &mut Self::NonAddressableCounts,
-        state: &mut Self::EpilogueLayoutExt,
+        _counts: &mut Self::NonAddressableCounts,
+        _state: &mut Self::EpilogueLayoutExt,
     ) {
     }
 
     fn apply_non_addressable_indexes<'data, 'groups>(
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        counts: &Self::NonAddressableCounts,
-        mem_sizes_iter: impl Iterator<
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _counts: &Self::NonAddressableCounts,
+        _mem_sizes_iter: impl Iterator<
             Item = &'groups mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         >,
     ) {
     }
 
     fn finalise_sizes_epilogue<'data>(
-        state: &mut Self::EpilogueLayoutExt,
+        _state: &mut Self::EpilogueLayoutExt,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
-        properties: &Self::LayoutExt<'data>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
+        _properties: &Self::LayoutExt<'data>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
         mem_sizes.increment(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_BASE_SIZE);
     }
 
     fn finalise_sizes_all<'data>(
-        mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
     }
 
     fn apply_late_size_adjustments_epilogue(
-        state: &mut Self::EpilogueLayoutExt,
-        current_sizes: &crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _state: &mut Self::EpilogueLayoutExt,
+        _current_sizes: &crate::output_section_part_map::OutputSectionPartMap<u64>,
         extra_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
+        _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
         imported_symbols: &[ImportedSymbol],
-        args: &Self::Args,
+        _args: &Self::Args,
     ) -> crate::error::Result {
         extra_sizes.increment(
             part_id::CHAINED_FIXUP_TABLE,
@@ -1391,32 +1385,32 @@ impl platform::Platform for MachO {
     }
 
     fn finalise_layout_epilogue<'data>(
-        epilogue_state: &mut Self::EpilogueLayoutExt,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        common_state: &Self::LayoutExt<'data>,
-        dynsym_start_index: u32,
-        dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
+        _epilogue_state: &mut Self::EpilogueLayoutExt,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _common_state: &Self::LayoutExt<'data>,
+        _dynsym_start_index: u32,
+        _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
     ) -> crate::error::Result {
         Ok(())
     }
 
     fn is_symbol_non_interposable<'data>(
-        object: &Self::File<'data>,
-        args: &Self::Args,
-        sym: &Self::SymtabEntry,
-        output_kind: crate::output_kind::OutputKind,
-        export_list: Option<&crate::export_list::ExportList>,
-        lib_name: &[u8],
-        archive_semantics: bool,
-        is_undefined: bool,
+        _object: &Self::File<'data>,
+        _args: &Self::Args,
+        _sym: &Self::SymtabEntry,
+        _output_kind: crate::output_kind::OutputKind,
+        _export_list: Option<&crate::export_list::ExportList>,
+        _lib_name: &[u8],
+        _archive_semantics: bool,
+        _is_undefined: bool,
     ) -> bool {
         // TODO
         true
     }
 
     fn allocate_header_sizes(
-        prelude: &mut crate::layout::PreludeLayoutState<Self>,
+        _prelude: &mut crate::layout::PreludeLayoutState<Self>,
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         header_info: &crate::layout::HeaderInfo,
         output_sections: &crate::output_section_id::OutputSections<Self>,
@@ -1512,7 +1506,7 @@ impl platform::Platform for MachO {
     fn allocate_resolution(
         flags: crate::value_flags::ValueFlags,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        output_kind: crate::output_kind::OutputKind,
+        _output_kind: crate::output_kind::OutputKind,
         _args: &Self::Args,
     ) {
         if flags.is_dynamic() && flags.needs_plt() {
@@ -1558,10 +1552,10 @@ impl platform::Platform for MachO {
     }
 
     fn allocate_internal_symbol(
-        symbol_id: crate::symbol_db::SymbolId,
-        def_info: &crate::parsing::InternalSymDefInfo<Self>,
-        sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        symbol_db: &crate::symbol_db::SymbolDb<Self>,
+        _symbol_id: crate::symbol_db::SymbolId,
+        _def_info: &crate::parsing::InternalSymDefInfo<Self>,
+        _sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) -> crate::error::Result {
         todo!()
     }
@@ -1579,9 +1573,9 @@ impl platform::Platform for MachO {
     }
 
     fn finalise_prelude_layout<'data>(
-        prelude: &crate::layout::PreludeLayoutState<Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
+        _prelude: &crate::layout::PreludeLayoutState<Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
     ) -> crate::error::Result<Self::PreludeLayoutExt> {
         Ok(())
     }
@@ -1624,12 +1618,12 @@ impl platform::Platform for MachO {
         RawSymbolName { name: name_bytes }
     }
 
-    fn default_layout_rules(args: &Self::Args) -> Vec<crate::layout_rules::SectionRule<'static>> {
+    fn default_layout_rules(_args: &Self::Args) -> Vec<crate::layout_rules::SectionRule<'static>> {
         DEFAULT_SECTION_RULES.to_vec()
     }
 
     fn build_output_order_and_program_segments<'data>(
-        custom: &crate::output_section_id::CustomSectionIds,
+        _custom: &crate::output_section_id::CustomSectionIds,
         output_kind: OutputKind,
         output_sections: &crate::output_section_id::OutputSections<'data, Self>,
         secondary: &crate::output_section_map::OutputSectionMap<
@@ -1670,7 +1664,7 @@ impl platform::Platform for MachO {
         builder.build()
     }
 
-    fn start_memory_address(output_kind: OutputKind) -> u64 {
+    fn start_memory_address(_output_kind: OutputKind) -> u64 {
         MACHO_START_MEM_ADDRESS
     }
 
@@ -1723,83 +1717,67 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
 
     defs[output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"FILE_HEADER")),
-        target_segment_type: Some(SegmentType::Text),
         ..DEFAULT_DEFS
     };
     // Load commands
     defs[output_section_id::PAGEZERO_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_PAGEZERO.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::TEXT_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_TEXT.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::DATA_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_DATA.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::DATA_CONST_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_DATA_CONST.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::LINK_EDIT_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_LINKEDIT.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::ENTRY_POINT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"LC_MAIN")),
-        target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::INTERP.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"LC_LOAD_DYLINKER")),
-        target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::LOAD_DYLIB.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"LC_LOAD_DYLIB")),
-        target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::DYLD_CHAINED_FIXUPS.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"LC_DYLD_CHAINED_FIXUPS")),
-        target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::SYMTAB_COMMAND.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"LC_SYMTAB")),
-        target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::CODE_SIGNATURE_COMMAND.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"LC_CODE_SIGNATURE")),
-        target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"STRTAB")),
-        target_segment_type: Some(SegmentType::LinkeditSections),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::CHAINED_FIXUP_TABLE.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"DYLD_CHAINED_FIXUPS_TABLE")),
-        target_segment_type: Some(SegmentType::LinkeditSections),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"SYMTAB")),
-        target_segment_type: Some(SegmentType::LinkeditSections),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::CODE_SIGNATURE.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"CODE_SIGNATURE")),
-        target_segment_type: Some(SegmentType::LinkeditSections),
         min_alignment: Alignment {
             exponent: CS_SECTION_ALIGNMENT_EXP,
         },
@@ -1980,12 +1958,9 @@ pub(crate) fn get_segment_sections<'data>(
 #[inline(always)]
 fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
     object: &layout::ObjectLayoutState<'data, MachO>,
-    common: &layout::CommonGroupState<'data, MachO>,
     rel: &Relocation,
-    section: layout::Section,
     resources: &'scope layout::GraphResources<'data, '_, MachO>,
     queue: &mut layout::LocalWorkQueue,
-    is_debug_section: bool,
     scope: &rayon::Scope<'scope>,
 ) -> Result {
     let rel_info = rel.info(LE);
@@ -1997,7 +1972,6 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
         let symbol_id = symbol_db.definition(local_symbol_id);
         let mut flags = resources.local_flags_for_symbol(symbol_id);
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
-        let rel_offset = rel_info.r_address;
 
         let relocation = A::relocation_from_raw(rel_info)?;
         let mut flags_to_add = layout::resolution_flags(relocation.kind);
