@@ -11,6 +11,7 @@ use crate::layout::ImportedSymbol;
 use crate::layout_rules::SectionKind;
 use crate::output_section_id::SectionName;
 use crate::platform;
+use crate::wasm_writer::OutputDataSegment;
 use crate::wasm_writer::OutputExport;
 use crate::wasm_writer::OutputFunctionBody;
 use crate::wasm_writer::OutputGlobal;
@@ -31,6 +32,8 @@ use wasmparser::GlobalType;
 use wasmparser::ImportSectionReader;
 use wasmparser::KnownCustom;
 use wasmparser::Linking;
+use wasmparser::MemorySectionReader;
+use wasmparser::MemoryType;
 use wasmparser::Parser;
 use wasmparser::Payload;
 use wasmparser::RelocationEntry;
@@ -444,6 +447,12 @@ impl<'data> File<'data> {
             .transpose()
     }
 
+    pub(crate) fn memory_section_reader(&self) -> Result<Option<MemorySectionReader<'data>>> {
+        self.standard_section_reader(section_id::MEMORY)
+            .map(|r| MemorySectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
     pub(crate) fn export_section_reader(&self) -> Result<Option<ExportSectionReader<'data>>> {
         self.standard_section_reader(section_id::EXPORT)
             .map(|r| ExportSectionReader::new(r).map_err(Into::into))
@@ -526,6 +535,16 @@ impl<'data> File<'data> {
                 })
                 .map_err(Into::into)
             })
+            .collect()
+    }
+
+    pub(crate) fn memories(&self) -> Result<Vec<MemoryType>> {
+        let Some(reader) = self.memory_section_reader()? else {
+            return Ok(Vec::new());
+        };
+        reader
+            .into_iter()
+            .map(|res| res.map_err(Into::into))
             .collect()
     }
 
@@ -1420,6 +1439,9 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) globals: Vec<OutputGlobal<'data>>,
     pub(crate) exports: Vec<OutputExport<'data>>,
     pub(crate) function_bodies: Vec<OutputFunctionBody<'data>>,
+    pub(crate) memories: Vec<MemoryType>,
+    pub(crate) data_segments: Vec<OutputDataSegment<'data>>,
+    pub(crate) unsupported_output: Vec<&'static str>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
     pub(crate) encoded_sections: WasmEncodedSections,
 }
@@ -1432,6 +1454,8 @@ pub(crate) struct WasmEncodedSections {
     pub(crate) global: Option<Vec<u8>>,
     pub(crate) export: Option<Vec<u8>>,
     pub(crate) code: Option<Vec<u8>>,
+    pub(crate) memory: Option<Vec<u8>>,
+    pub(crate) data: Option<Vec<u8>>,
 }
 
 impl WasmEncodedSections {
@@ -1442,6 +1466,8 @@ impl WasmEncodedSections {
         add_encoded_section_size(sizes, crate::part_id::WASM_GLOBAL, self.global.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_EXPORT, self.export.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_CODE, self.code.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_MEMORY, self.memory.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_DATA, self.data.as_ref());
     }
 }
 
@@ -1489,9 +1515,19 @@ impl<'data> WasmLayout<'data> {
             self.encoded_sections.export = Some(encode_wasm_section(&export_section));
         }
 
+        let memory_section = crate::wasm_writer::build_memory_section(&self.memories);
+        if !memory_section.is_empty() {
+            self.encoded_sections.memory = Some(encode_wasm_section(&memory_section));
+        }
+
         let code_section = crate::wasm_writer::build_code_section(&self.function_bodies);
         if !code_section.is_empty() {
             self.encoded_sections.code = Some(encode_wasm_section(&code_section));
+        }
+
+        let data_section = crate::wasm_writer::build_data_section(&self.data_segments)?;
+        if !data_section.is_empty() {
+            self.encoded_sections.data = Some(encode_wasm_section(&data_section));
         }
 
         Ok(())
@@ -1503,6 +1539,7 @@ pub(crate) struct WasmObjectIndexMap {
     pub(crate) type_index_base: u32,
     pub(crate) function_indices: Vec<u32>,
     pub(crate) global_indices: Vec<u32>,
+    pub(crate) memory_indices: Vec<u32>,
 }
 
 #[derive(Debug, Default)]
@@ -1522,6 +1559,9 @@ struct WasmObjectLayoutInput<'data> {
     globals: Vec<OutputGlobal<'data>>,
     exports: Vec<OutputExport<'data>>,
     function_bodies: Vec<OutputFunctionBody<'data>>,
+    memories: Vec<MemoryType>,
+    data_segments: Vec<OutputDataSegment<'data>>,
+    unsupported_output: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1531,6 +1571,7 @@ struct WasmObjectIndexBases {
     defined_function_base: u32,
     global_import_base: u32,
     defined_global_base: u32,
+    memory_base: u32,
 }
 
 #[derive(Debug)]
@@ -1541,6 +1582,9 @@ struct WasmObjectOutputLayout<'data> {
     globals: Vec<OutputGlobal<'data>>,
     exports: Vec<OutputExport<'data>>,
     function_bodies: Vec<OutputFunctionBody<'data>>,
+    memories: Vec<MemoryType>,
+    data_segments: Vec<OutputDataSegment<'data>>,
+    unsupported_output: Vec<&'static str>,
     index_map: WasmObjectIndexMap,
 }
 
@@ -1585,8 +1629,21 @@ impl<'data> WasmObjectLayoutInput<'data> {
             }
         }
 
+        let mut unsupported_output = Vec::new();
         if !file.reloc_sections.is_empty() {
-            bail!("Wasm relocations are not applied during code emission")
+            unsupported_output.push("relocation");
+        }
+        if file.standard_section_index[section_id::TABLE as usize].is_some() {
+            unsupported_output.push("table");
+        }
+        if file.standard_section_index[section_id::ELEMENT as usize].is_some() {
+            unsupported_output.push("element");
+        }
+        if file.standard_section_index[section_id::START as usize].is_some() {
+            unsupported_output.push("start");
+        }
+        if file.standard_section_index[section_id::DATA_COUNT as usize].is_some() {
+            unsupported_output.push("data_count");
         }
 
         let module_functions = file.module_functions()?;
@@ -1595,10 +1652,15 @@ impl<'data> WasmObjectLayoutInput<'data> {
             module_functions.len() == function_bodies.len(),
             "Wasm function and code section counts differ"
         );
-        ensure!(
-            file.data_segments()?.is_empty(),
-            "Wasm data section emission is not implemented"
-        );
+        let memories = file.memories()?;
+        let data_segments = file
+            .data_segments()?
+            .into_iter()
+            .map(|segment| OutputDataSegment {
+                kind: segment.kind,
+                data: segment.data,
+            })
+            .collect();
 
         let globals = file
             .module_globals()?
@@ -1638,6 +1700,9 @@ impl<'data> WasmObjectLayoutInput<'data> {
                 .into_iter()
                 .map(|body| OutputFunctionBody { bytes: body.bytes })
                 .collect(),
+            memories,
+            data_segments,
+            unsupported_output,
         })
     }
 
@@ -1651,6 +1716,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
                 self.function_imports.len() + self.module_functions.len(),
             ),
             global_indices: Vec::with_capacity(self.global_imports.len() + self.globals.len()),
+            memory_indices: Vec::with_capacity(self.memories.len()),
         };
 
         let mut imports =
@@ -1709,6 +1775,20 @@ impl<'data> WasmObjectLayoutInput<'data> {
             index_map.global_indices.push(output_global_index);
         }
 
+        for i in 0..self.memories.len() {
+            let output_memory_index = index_bases
+                .memory_base
+                .checked_add(u32::try_from(i).context("too many Wasm memories")?)
+                .ok_or_else(|| crate::error!("Wasm memory index overflow"))?;
+            index_map.memory_indices.push(output_memory_index);
+        }
+
+        let data_segments = self
+            .data_segments
+            .into_iter()
+            .map(|segment| remap_data_segment(segment, &index_map))
+            .collect::<Result<Vec<_>>>()?;
+
         let exports = self
             .exports
             .into_iter()
@@ -1720,10 +1800,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
                     wasmparser::ExternalKind::Global => {
                         remap_wasm_index(&index_map.global_indices, export.index, "global")?
                     }
-                    wasmparser::ExternalKind::Table => bail!("Wasm table exports are not emitted"),
                     wasmparser::ExternalKind::Memory => {
-                        bail!("Wasm memory exports are not emitted")
+                        remap_wasm_index(&index_map.memory_indices, export.index, "memory")?
                     }
+                    wasmparser::ExternalKind::Table => bail!("Wasm table exports are not emitted"),
                     wasmparser::ExternalKind::Tag => bail!("Wasm tag exports are not emitted"),
                 };
                 Ok(OutputExport { index, ..export })
@@ -1737,6 +1817,9 @@ impl<'data> WasmObjectLayoutInput<'data> {
             globals: self.globals,
             exports,
             function_bodies: self.function_bodies,
+            memories: self.memories,
+            data_segments,
+            unsupported_output: self.unsupported_output,
             index_map,
         })
     }
@@ -1770,6 +1853,11 @@ where
         layout.globals.extend(object_layout.globals);
         layout.exports.extend(object_layout.exports);
         layout.function_bodies.extend(object_layout.function_bodies);
+        layout.memories.extend(object_layout.memories);
+        layout.data_segments.extend(object_layout.data_segments);
+        layout
+            .unsupported_output
+            .extend(object_layout.unsupported_output);
         layout.object_index_maps.push(object_layout.index_map);
     }
     layout.encode_metadata_sections()?;
@@ -1783,6 +1871,7 @@ fn allocate_wasm_object_index_bases(
     let mut next_type_index = 0u32;
     let mut next_function_import_index = 0u32;
     let mut next_global_import_index = 0u32;
+    let mut next_memory_index = 0u32;
 
     for input in layout_inputs {
         index_bases.push(WasmObjectIndexBases {
@@ -1791,6 +1880,7 @@ fn allocate_wasm_object_index_bases(
             defined_function_base: 0,
             global_import_base: next_global_import_index,
             defined_global_base: 0,
+            memory_base: next_memory_index,
         });
         next_type_index = next_type_index
             .checked_add(u32::try_from(input.types.len()).context("too many Wasm types")?)
@@ -1807,6 +1897,9 @@ fn allocate_wasm_object_index_bases(
                     .context("too many Wasm global imports")?,
             )
             .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+        next_memory_index = next_memory_index
+            .checked_add(u32::try_from(input.memories.len()).context("too many Wasm memories")?)
+            .ok_or_else(|| crate::error!("Wasm memory index overflow"))?;
     }
 
     let mut next_defined_function_index = next_function_import_index;
@@ -1832,6 +1925,26 @@ fn remap_wasm_index(indices: &[u32], index: u32, kind: &str) -> Result<u32> {
         .get(index as usize)
         .copied()
         .ok_or_else(|| crate::error!("Wasm {kind} index {index} out of range"))
+}
+
+fn remap_data_segment<'data>(
+    segment: OutputDataSegment<'data>,
+    index_map: &WasmObjectIndexMap,
+) -> Result<OutputDataSegment<'data>> {
+    let kind = match segment.kind {
+        DataKind::Active {
+            memory_index,
+            offset_expr,
+        } => DataKind::Active {
+            memory_index: remap_wasm_index(&index_map.memory_indices, memory_index, "memory")?,
+            offset_expr,
+        },
+        DataKind::Passive => DataKind::Passive,
+    };
+    Ok(OutputDataSegment {
+        kind,
+        data: segment.data,
+    })
 }
 
 impl platform::Platform for Wasm {

@@ -11,10 +11,12 @@ use crate::wasm::WASM_VERSION;
 use crate::wasm::Wasm;
 use crate::wasm::WasmLayout;
 use wasm_encoder::CodeSection;
+use wasm_encoder::DataSection;
 use wasm_encoder::ExportSection;
 use wasm_encoder::FunctionSection;
 use wasm_encoder::GlobalSection;
 use wasm_encoder::ImportSection;
+use wasm_encoder::MemorySection;
 use wasm_encoder::TypeSection;
 
 pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
@@ -34,7 +36,11 @@ pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
 
     copy_metadata_sections(&layout.properties_and_attributes, &mut section_buffers)?;
 
-    bail!("Wasm data and remaining section emission is not implemented yet")
+    if let Some(unsupported) = layout.properties_and_attributes.unsupported_output.first() {
+        bail!("Wasm {unsupported} emission is not implemented yet");
+    }
+
+    Ok(())
 }
 
 fn copy_metadata_sections(
@@ -65,6 +71,14 @@ fn copy_metadata_sections(
     copy_encoded_section(
         encoded.code.as_ref(),
         section_buffers.get_mut(crate::output_section_id::WASM_CODE),
+    )?;
+    copy_encoded_section(
+        encoded.memory.as_ref(),
+        section_buffers.get_mut(crate::output_section_id::WASM_MEMORY),
+    )?;
+    copy_encoded_section(
+        encoded.data.as_ref(),
+        section_buffers.get_mut(crate::output_section_id::WASM_DATA),
     )?;
     Ok(())
 }
@@ -170,6 +184,26 @@ pub(crate) fn build_code_section(function_bodies: &[OutputFunctionBody<'_>]) -> 
     section
 }
 
+pub(crate) fn build_data_section(data_segments: &[OutputDataSegment<'_>]) -> Result<DataSection> {
+    let mut section = DataSection::new();
+    for segment in data_segments {
+        match &segment.kind {
+            wasmparser::DataKind::Active {
+                memory_index,
+                offset_expr,
+            } => {
+                let offset_body = const_expr_body(offset_expr).ok_or_else(|| {
+                    crate::error!("Wasm data segment offset expression is missing end opcode")
+                })?;
+                let offset = wasm_encoder::ConstExpr::raw(offset_body.iter().copied());
+                section.active(*memory_index, &offset, segment.data.iter().copied());
+            }
+            wasmparser::DataKind::Passive => bail!("Wasm passive data segments are not emitted"),
+        }
+    }
+    Ok(section)
+}
+
 /// Build an `export` section.
 pub(crate) fn build_export_section(exports: &[OutputExport<'_>]) -> ExportSection {
     let mut section = ExportSection::new();
@@ -202,6 +236,12 @@ pub(crate) struct OutputGlobal<'a> {
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct OutputFunctionBody<'a> {
     pub(crate) bytes: &'a [u8],
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct OutputDataSegment<'a> {
+    pub(crate) kind: wasmparser::DataKind<'a>,
+    pub(crate) data: &'a [u8],
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -238,6 +278,16 @@ fn convert_global_type(t: wasmparser::GlobalType) -> Result<wasm_encoder::Global
         mutable: t.mutable,
         shared: t.shared,
     })
+}
+
+fn convert_memory_type(t: wasmparser::MemoryType) -> wasm_encoder::MemoryType {
+    wasm_encoder::MemoryType {
+        minimum: t.initial,
+        maximum: t.maximum,
+        memory64: t.memory64,
+        shared: t.shared,
+        page_size_log2: t.page_size_log2,
+    }
 }
 
 fn convert_export_kind(k: wasmparser::ExternalKind) -> wasm_encoder::ExportKind {
