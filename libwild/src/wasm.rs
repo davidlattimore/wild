@@ -1881,12 +1881,12 @@ impl platform::Platform for Wasm {
     }
 
     fn allocate_header_sizes(
-        prelude: &mut crate::layout::PreludeLayoutState<Self>,
+        _prelude: &mut crate::layout::PreludeLayoutState<Self>,
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        header_info: &crate::layout::HeaderInfo,
-        output_sections: &crate::output_section_id::OutputSections<Self>,
+        _header_info: &crate::layout::HeaderInfo,
+        _output_sections: &crate::output_section_id::OutputSections<Self>,
     ) {
-        todo!()
+        sizes.increment(crate::part_id::FILE_HEADER, (WASM_MAGIC.len() + 4) as u64);
     }
 
     fn finalise_sizes_for_symbol<'data>(
