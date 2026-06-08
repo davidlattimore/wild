@@ -285,6 +285,12 @@ queries, please email wild-mod@googlegroups.com.
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT)
 at your option.
 
+For clarity, this is a documentation clarification and not legal advice: the licensing above applies
+to Wild's own source code and does not place any licensing or attribution requirements on binaries
+you produce with Wild. Wild does not embed its own copyrighted material in output files; it emits
+only short PLT stubs defined by the platform psABI. If Wild ever embeds substantial material in
+output files, that material will be under a very permissive license.
+
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
 Wild by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any
 additional terms or conditions.
