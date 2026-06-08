@@ -10,6 +10,7 @@ use crate::wasm::WASM_MAGIC;
 use crate::wasm::WASM_VERSION;
 use crate::wasm::Wasm;
 use crate::wasm::WasmLayout;
+use wasm_encoder::CodeSection;
 use wasm_encoder::ExportSection;
 use wasm_encoder::FunctionSection;
 use wasm_encoder::GlobalSection;
@@ -33,7 +34,7 @@ pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
 
     copy_metadata_sections(&layout.properties_and_attributes, &mut section_buffers)?;
 
-    bail!("Wasm code and data section emission is not implemented yet");
+    bail!("Wasm data and remaining section emission is not implemented yet")
 }
 
 fn copy_metadata_sections(
@@ -60,6 +61,10 @@ fn copy_metadata_sections(
     copy_encoded_section(
         encoded.export.as_ref(),
         section_buffers.get_mut(crate::output_section_id::WASM_EXPORT),
+    )?;
+    copy_encoded_section(
+        encoded.code.as_ref(),
+        section_buffers.get_mut(crate::output_section_id::WASM_CODE),
     )?;
     Ok(())
 }
@@ -149,6 +154,22 @@ pub(crate) fn build_global_section(globals: &[OutputGlobal<'_>]) -> Result<Globa
     Ok(section)
 }
 
+pub(crate) fn build_memory_section(memories: &[wasmparser::MemoryType]) -> MemorySection {
+    let mut section = MemorySection::new();
+    for &memory in memories {
+        section.memory(convert_memory_type(memory));
+    }
+    section
+}
+
+pub(crate) fn build_code_section(function_bodies: &[OutputFunctionBody<'_>]) -> CodeSection {
+    let mut section = CodeSection::new();
+    for body in function_bodies {
+        section.raw(body.bytes);
+    }
+    section
+}
+
 /// Build an `export` section.
 pub(crate) fn build_export_section(exports: &[OutputExport<'_>]) -> ExportSection {
     let mut section = ExportSection::new();
@@ -176,6 +197,11 @@ pub(crate) struct OutputGlobal<'a> {
     pub(crate) ty: wasmparser::GlobalType,
     /// Const-expression body without the trailing `end` opcode.
     pub(crate) init_expr_body: &'a [u8],
+}
+
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct OutputFunctionBody<'a> {
+    pub(crate) bytes: &'a [u8],
 }
 
 #[derive(Debug, Copy, Clone)]

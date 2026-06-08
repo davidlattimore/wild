@@ -12,6 +12,7 @@ use crate::layout_rules::SectionKind;
 use crate::output_section_id::SectionName;
 use crate::platform;
 use crate::wasm_writer::OutputExport;
+use crate::wasm_writer::OutputFunctionBody;
 use crate::wasm_writer::OutputGlobal;
 use crate::wasm_writer::OutputImport;
 use crate::wasm_writer::OutputImportEntity;
@@ -19,6 +20,7 @@ use linker_utils::utils::u32_from_slice;
 use rayon::prelude::*;
 use std::ops::Range;
 use wasmparser::BinaryReader;
+use wasmparser::CodeSectionReader;
 use wasmparser::ConstExpr;
 use wasmparser::DataKind;
 use wasmparser::DataSectionReader;
@@ -394,6 +396,11 @@ pub(crate) struct WasmDataSegment<'data> {
     pub(crate) data: &'data [u8],
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct WasmFunctionBody<'data> {
+    pub(crate) bytes: &'data [u8],
+}
+
 impl<'data> File<'data> {
     /// Construct a `BinaryReader` over the payload of the standard section with the given id,
     /// or `None` if the input has no such section.
@@ -428,6 +435,12 @@ impl<'data> File<'data> {
     pub(crate) fn data_section_reader(&self) -> Result<Option<DataSectionReader<'data>>> {
         self.standard_section_reader(section_id::DATA)
             .map(|r| DataSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    pub(crate) fn code_section_reader(&self) -> Result<Option<CodeSectionReader<'data>>> {
+        self.standard_section_reader(section_id::CODE)
+            .map(|r| CodeSectionReader::new(r).map_err(Into::into))
             .transpose()
     }
 
@@ -510,6 +523,22 @@ impl<'data> File<'data> {
                 res.map(|g| WasmModuleGlobal {
                     ty: g.ty,
                     init_expr: g.init_expr,
+                })
+                .map_err(Into::into)
+            })
+            .collect()
+    }
+
+    /// Function bodies in code-section order. The returned bytes include the body size prefix.
+    pub(crate) fn function_bodies(&self) -> Result<Vec<WasmFunctionBody<'data>>> {
+        let Some(reader) = self.code_section_reader()? else {
+            return Ok(Vec::new());
+        };
+        reader
+            .into_iter()
+            .map(|res| {
+                res.map(|body| WasmFunctionBody {
+                    bytes: &self.data[body.range()],
                 })
                 .map_err(Into::into)
             })
@@ -1390,6 +1419,7 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) function_type_indices: Vec<u32>,
     pub(crate) globals: Vec<OutputGlobal<'data>>,
     pub(crate) exports: Vec<OutputExport<'data>>,
+    pub(crate) function_bodies: Vec<OutputFunctionBody<'data>>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
     pub(crate) encoded_sections: WasmEncodedSections,
 }
@@ -1401,6 +1431,7 @@ pub(crate) struct WasmEncodedSections {
     pub(crate) function: Option<Vec<u8>>,
     pub(crate) global: Option<Vec<u8>>,
     pub(crate) export: Option<Vec<u8>>,
+    pub(crate) code: Option<Vec<u8>>,
 }
 
 impl WasmEncodedSections {
@@ -1410,6 +1441,7 @@ impl WasmEncodedSections {
         add_encoded_section_size(sizes, crate::part_id::WASM_FUNCTION, self.function.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_GLOBAL, self.global.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_EXPORT, self.export.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_CODE, self.code.as_ref());
     }
 }
 
@@ -1457,6 +1489,11 @@ impl<'data> WasmLayout<'data> {
             self.encoded_sections.export = Some(encode_wasm_section(&export_section));
         }
 
+        let code_section = crate::wasm_writer::build_code_section(&self.function_bodies);
+        if !code_section.is_empty() {
+            self.encoded_sections.code = Some(encode_wasm_section(&code_section));
+        }
+
         Ok(())
     }
 }
@@ -1484,6 +1521,7 @@ struct WasmObjectLayoutInput<'data> {
     module_functions: Vec<WasmModuleFunction>,
     globals: Vec<OutputGlobal<'data>>,
     exports: Vec<OutputExport<'data>>,
+    function_bodies: Vec<OutputFunctionBody<'data>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1502,6 +1540,7 @@ struct WasmObjectOutputLayout<'data> {
     function_type_indices: Vec<u32>,
     globals: Vec<OutputGlobal<'data>>,
     exports: Vec<OutputExport<'data>>,
+    function_bodies: Vec<OutputFunctionBody<'data>>,
     index_map: WasmObjectIndexMap,
 }
 
@@ -1546,7 +1585,21 @@ impl<'data> WasmObjectLayoutInput<'data> {
             }
         }
 
+        if !file.reloc_sections.is_empty() {
+            bail!("Wasm relocations are not applied during code emission")
+        }
+
         let module_functions = file.module_functions()?;
+        let function_bodies = file.function_bodies()?;
+        ensure!(
+            module_functions.len() == function_bodies.len(),
+            "Wasm function and code section counts differ"
+        );
+        ensure!(
+            file.data_segments()?.is_empty(),
+            "Wasm data section emission is not implemented"
+        );
+
         let globals = file
             .module_globals()?
             .into_iter()
@@ -1581,6 +1634,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
             module_functions,
             globals,
             exports,
+            function_bodies: function_bodies
+                .into_iter()
+                .map(|body| OutputFunctionBody { bytes: body.bytes })
+                .collect(),
         })
     }
 
@@ -1679,6 +1736,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             function_type_indices,
             globals: self.globals,
             exports,
+            function_bodies: self.function_bodies,
             index_map,
         })
     }
@@ -1711,6 +1769,7 @@ where
             .extend(object_layout.function_type_indices);
         layout.globals.extend(object_layout.globals);
         layout.exports.extend(object_layout.exports);
+        layout.function_bodies.extend(object_layout.function_bodies);
         layout.object_index_maps.push(object_layout.index_map);
     }
     layout.encode_metadata_sections()?;
