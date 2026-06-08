@@ -2079,13 +2079,14 @@ impl platform::Platform for Wasm {
     }
 
     fn finalise_layout_epilogue<'data>(
-        epilogue_state: &mut Self::EpilogueLayoutExt,
+        _epilogue_state: &mut Self::EpilogueLayoutExt,
         memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
         common_state: &Self::LayoutExt<'data>,
-        dynsym_start_index: u32,
-        dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
+        _dynsym_start_index: u32,
+        _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
     ) -> crate::error::Result {
+        common_state.encoded_sections.add_sizes_to(memory_offsets);
         Ok(())
     }
 
