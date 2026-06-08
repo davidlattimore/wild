@@ -16,6 +16,7 @@ use crate::wasm_writer::OutputGlobal;
 use crate::wasm_writer::OutputImport;
 use crate::wasm_writer::OutputImportEntity;
 use linker_utils::utils::u32_from_slice;
+use rayon::prelude::*;
 use std::ops::Range;
 use wasmparser::BinaryReader;
 use wasmparser::ConstExpr;
@@ -1407,67 +1408,67 @@ pub(crate) struct WasmObjectLayout<'data> {
     _phantom: std::marker::PhantomData<&'data ()>,
 }
 
-fn build_output_module_layout<'data, 'files>(
-    objects: impl Iterator<Item = &'files File<'data>>,
-) -> Result<WasmLayout<'data>>
-where
-    'data: 'files,
-{
-    let objects = objects.collect::<Vec<_>>();
-    let mut layout = WasmLayout::default();
-    let mut next_function_import_index = 0u32;
-    let mut next_global_import_index = 0u32;
+#[derive(Debug)]
+struct WasmObjectLayoutInput<'data> {
+    types: Vec<wasmparser::FuncType>,
+    function_imports: Vec<WasmFunctionImport<'data>>,
+    global_imports: Vec<WasmGlobalImport<'data>>,
+    module_functions: Vec<WasmModuleFunction>,
+    globals: Vec<OutputGlobal<'data>>,
+    exports: Vec<OutputExport<'data>>,
+}
 
-    for object in &objects {
-        let mut map = WasmObjectIndexMap {
-            type_index_base: u32::try_from(layout.output_types.len())
-                .context("too many Wasm types")?,
-            ..Default::default()
-        };
+#[derive(Debug, Clone, Copy)]
+struct WasmObjectIndexBases {
+    type_index_base: u32,
+    function_import_base: u32,
+    defined_function_base: u32,
+    global_import_base: u32,
+    defined_global_base: u32,
+}
 
-        if let Some(types) = object.type_section_reader()? {
-            for group in types {
+#[derive(Debug)]
+struct WasmObjectOutputLayout<'data> {
+    types: Vec<wasmparser::FuncType>,
+    imports: Vec<OutputImport<'data>>,
+    function_type_indices: Vec<u32>,
+    globals: Vec<OutputGlobal<'data>>,
+    exports: Vec<OutputExport<'data>>,
+    index_map: WasmObjectIndexMap,
+}
+
+impl<'data> WasmObjectLayoutInput<'data> {
+    fn from_file(file: &File<'data>) -> Result<Self> {
+        let mut types = Vec::new();
+        if let Some(type_section) = file.type_section_reader()? {
+            for group in type_section {
                 for ty in group?.into_types() {
                     let wasmparser::CompositeInnerType::Func(func) = ty.composite_type.inner else {
                         bail!("Wasm non-function types are not emitted")
                     };
-                    layout.output_types.push(func);
+                    types.push(func);
                 }
             }
         }
 
-        if let Some(imports) = object.import_section_reader()? {
+        let mut function_imports = Vec::new();
+        let mut global_imports = Vec::new();
+        if let Some(imports) = file.import_section_reader()? {
             for import in imports.into_imports() {
                 let import = import?;
                 match import.ty {
                     TypeRef::Func(type_index) | TypeRef::FuncExact(type_index) => {
-                        let output_type_index = map
-                            .type_index_base
-                            .checked_add(type_index)
-                            .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
-                        let output_function_index = next_function_import_index;
-                        next_function_import_index = next_function_import_index
-                            .checked_add(1)
-                            .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
-                        map.function_indices.push(output_function_index);
-                        layout.imports.push(OutputImport {
+                        function_imports.push(WasmFunctionImport {
                             module: import.module,
                             name: import.name,
-                            entity: OutputImportEntity::Function {
-                                type_index: output_type_index,
-                            },
+                            type_index,
                         });
                     }
                     TypeRef::Global(ty) => {
-                        let output_global_index = next_global_import_index;
-                        next_global_import_index = next_global_import_index
-                            .checked_add(1)
-                            .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-                        map.global_indices.push(output_global_index);
-                        layout.imports.push(OutputImport {
+                        global_imports.push(WasmGlobalImport {
                             module: import.module,
                             name: import.name,
-                            entity: OutputImportEntity::Global(ty),
+                            ty,
                         });
                     }
                     TypeRef::Table(_) => bail!("Wasm table imports are not emitted"),
@@ -1477,70 +1478,225 @@ where
             }
         }
 
-        layout.object_index_maps.push(map);
-    }
+        let module_functions = file.module_functions()?;
+        let globals = file
+            .module_globals()?
+            .into_iter()
+            .map(|global| {
+                let init_expr_body = crate::wasm_writer::const_expr_body(&global.init_expr)
+                    .ok_or_else(|| {
+                        crate::error!("Wasm global initializer is missing end opcode")
+                    })?;
+                Ok(OutputGlobal {
+                    ty: global.ty,
+                    init_expr_body,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-    let mut next_function_index = next_function_import_index;
-    let mut next_global_index = next_global_import_index;
-
-    for (object, map) in objects.iter().zip(layout.object_index_maps.iter_mut()) {
-        for function in object.module_functions()? {
-            let output_type_index = map
-                .type_index_base
-                .checked_add(function.type_index)
-                .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
-            layout.function_type_indices.push(output_type_index);
-            map.function_indices.push(next_function_index);
-            next_function_index = next_function_index
-                .checked_add(1)
-                .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
-        }
-
-        for global in object.module_globals()? {
-            let init_expr_body = crate::wasm_writer::const_expr_body(&global.init_expr)
-                .ok_or_else(|| crate::error!("Wasm global initializer is missing end opcode"))?;
-            layout.globals.push(OutputGlobal {
-                ty: global.ty,
-                init_expr_body,
-            });
-            map.global_indices.push(next_global_index);
-            next_global_index = next_global_index
-                .checked_add(1)
-                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-        }
-    }
-
-    for (object, map) in objects.iter().zip(layout.object_index_maps.iter()) {
-        if let Some(exports) = object.export_section_reader()? {
-            for export in exports {
+        let mut exports = Vec::new();
+        if let Some(export_section) = file.export_section_reader()? {
+            for export in export_section {
                 let export = export?;
-                let index = match export.kind {
-                    wasmparser::ExternalKind::Func | wasmparser::ExternalKind::FuncExact => {
-                        remap_wasm_index(&map.function_indices, export.index, "function")?
-                    }
-                    wasmparser::ExternalKind::Global => {
-                        remap_wasm_index(&map.global_indices, export.index, "global")?
-                    }
-                    wasmparser::ExternalKind::Table => {
-                        bail!("Wasm table exports are not emitted")
-                    }
-                    wasmparser::ExternalKind::Memory => {
-                        bail!("Wasm memory exports are not emitted")
-                    }
-                    wasmparser::ExternalKind::Tag => {
-                        bail!("Wasm tag exports are not emitted")
-                    }
-                };
-                layout.exports.push(OutputExport {
+                exports.push(OutputExport {
                     name: export.name,
                     kind: export.kind,
-                    index,
+                    index: export.index,
                 });
             }
         }
+
+        Ok(Self {
+            types,
+            function_imports,
+            global_imports,
+            module_functions,
+            globals,
+            exports,
+        })
     }
 
+    fn into_output_layout(
+        self,
+        index_bases: WasmObjectIndexBases,
+    ) -> Result<WasmObjectOutputLayout<'data>> {
+        let mut index_map = WasmObjectIndexMap {
+            type_index_base: index_bases.type_index_base,
+            function_indices: Vec::with_capacity(
+                self.function_imports.len() + self.module_functions.len(),
+            ),
+            global_indices: Vec::with_capacity(self.global_imports.len() + self.globals.len()),
+        };
+
+        let mut imports =
+            Vec::with_capacity(self.function_imports.len() + self.global_imports.len());
+        for (i, import) in self.function_imports.iter().enumerate() {
+            let output_type_index = index_bases
+                .type_index_base
+                .checked_add(import.type_index)
+                .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+            let output_function_index = index_bases
+                .function_import_base
+                .checked_add(u32::try_from(i).context("too many Wasm function imports")?)
+                .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+            index_map.function_indices.push(output_function_index);
+            imports.push(OutputImport {
+                module: import.module,
+                name: import.name,
+                entity: OutputImportEntity::Function {
+                    type_index: output_type_index,
+                },
+            });
+        }
+
+        for (i, import) in self.global_imports.iter().enumerate() {
+            let output_global_index = index_bases
+                .global_import_base
+                .checked_add(u32::try_from(i).context("too many Wasm global imports")?)
+                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+            index_map.global_indices.push(output_global_index);
+            imports.push(OutputImport {
+                module: import.module,
+                name: import.name,
+                entity: OutputImportEntity::Global(import.ty),
+            });
+        }
+
+        let mut function_type_indices = Vec::with_capacity(self.module_functions.len());
+        for (i, function) in self.module_functions.iter().enumerate() {
+            let output_type_index = index_bases
+                .type_index_base
+                .checked_add(function.type_index)
+                .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+            let output_function_index = index_bases
+                .defined_function_base
+                .checked_add(u32::try_from(i).context("too many Wasm functions")?)
+                .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+            function_type_indices.push(output_type_index);
+            index_map.function_indices.push(output_function_index);
+        }
+
+        for i in 0..self.globals.len() {
+            let output_global_index = index_bases
+                .defined_global_base
+                .checked_add(u32::try_from(i).context("too many Wasm globals")?)
+                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+            index_map.global_indices.push(output_global_index);
+        }
+
+        let exports = self
+            .exports
+            .into_iter()
+            .map(|export| {
+                let index = match export.kind {
+                    wasmparser::ExternalKind::Func | wasmparser::ExternalKind::FuncExact => {
+                        remap_wasm_index(&index_map.function_indices, export.index, "function")?
+                    }
+                    wasmparser::ExternalKind::Global => {
+                        remap_wasm_index(&index_map.global_indices, export.index, "global")?
+                    }
+                    wasmparser::ExternalKind::Table => bail!("Wasm table exports are not emitted"),
+                    wasmparser::ExternalKind::Memory => {
+                        bail!("Wasm memory exports are not emitted")
+                    }
+                    wasmparser::ExternalKind::Tag => bail!("Wasm tag exports are not emitted"),
+                };
+                Ok(OutputExport { index, ..export })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(WasmObjectOutputLayout {
+            types: self.types,
+            imports,
+            function_type_indices,
+            globals: self.globals,
+            exports,
+            index_map,
+        })
+    }
+}
+
+fn build_output_module_layout<'data, 'files>(
+    objects: impl Iterator<Item = &'files File<'data>>,
+) -> Result<WasmLayout<'data>>
+where
+    'data: 'files,
+{
+    let objects = objects.collect::<Vec<_>>();
+    let layout_inputs = objects
+        .par_iter()
+        .map(|object| WasmObjectLayoutInput::from_file(object))
+        .collect::<Result<Vec<_>>>()?;
+    let index_bases = allocate_wasm_object_index_bases(&layout_inputs)?;
+    let object_layouts = layout_inputs
+        .into_par_iter()
+        .zip(index_bases.into_par_iter())
+        .map(|(input, index_bases)| input.into_output_layout(index_bases))
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut layout = WasmLayout::default();
+    for object_layout in object_layouts {
+        layout.output_types.extend(object_layout.types);
+        layout.imports.extend(object_layout.imports);
+        layout
+            .function_type_indices
+            .extend(object_layout.function_type_indices);
+        layout.globals.extend(object_layout.globals);
+        layout.exports.extend(object_layout.exports);
+        layout.object_index_maps.push(object_layout.index_map);
+    }
     Ok(layout)
+}
+
+fn allocate_wasm_object_index_bases(
+    layout_inputs: &[WasmObjectLayoutInput<'_>],
+) -> Result<Vec<WasmObjectIndexBases>> {
+    let mut index_bases = Vec::with_capacity(layout_inputs.len());
+    let mut next_type_index = 0u32;
+    let mut next_function_import_index = 0u32;
+    let mut next_global_import_index = 0u32;
+
+    for input in layout_inputs {
+        index_bases.push(WasmObjectIndexBases {
+            type_index_base: next_type_index,
+            function_import_base: next_function_import_index,
+            defined_function_base: 0,
+            global_import_base: next_global_import_index,
+            defined_global_base: 0,
+        });
+        next_type_index = next_type_index
+            .checked_add(u32::try_from(input.types.len()).context("too many Wasm types")?)
+            .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+        next_function_import_index = next_function_import_index
+            .checked_add(
+                u32::try_from(input.function_imports.len())
+                    .context("too many Wasm function imports")?,
+            )
+            .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+        next_global_import_index = next_global_import_index
+            .checked_add(
+                u32::try_from(input.global_imports.len())
+                    .context("too many Wasm global imports")?,
+            )
+            .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+    }
+
+    let mut next_defined_function_index = next_function_import_index;
+    let mut next_defined_global_index = next_global_import_index;
+    for (input, index_base) in layout_inputs.iter().zip(index_bases.iter_mut()) {
+        index_base.defined_function_base = next_defined_function_index;
+        index_base.defined_global_base = next_defined_global_index;
+        next_defined_function_index = next_defined_function_index
+            .checked_add(
+                u32::try_from(input.module_functions.len()).context("too many Wasm functions")?,
+            )
+            .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+        next_defined_global_index = next_defined_global_index
+            .checked_add(u32::try_from(input.globals.len()).context("too many Wasm globals")?)
+            .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+    }
+
+    Ok(index_bases)
 }
 
 fn remap_wasm_index(indices: &[u32], index: u32, kind: &str) -> Result<u32> {
