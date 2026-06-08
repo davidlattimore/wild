@@ -11,6 +11,10 @@ use crate::layout::ImportedSymbol;
 use crate::layout_rules::SectionKind;
 use crate::output_section_id::SectionName;
 use crate::platform;
+use crate::wasm_writer::OutputExport;
+use crate::wasm_writer::OutputGlobal;
+use crate::wasm_writer::OutputImport;
+use crate::wasm_writer::OutputImportEntity;
 use linker_utils::utils::u32_from_slice;
 use std::ops::Range;
 use wasmparser::BinaryReader;
@@ -1385,6 +1389,14 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) function_type_indices: Vec<u32>,
     pub(crate) globals: Vec<crate::wasm_writer::OutputGlobal<'data>>,
     pub(crate) exports: Vec<crate::wasm_writer::OutputExport<'data>>,
+    pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct WasmObjectIndexMap {
+    pub(crate) type_index_base: u32,
+    pub(crate) function_indices: Vec<u32>,
+    pub(crate) global_indices: Vec<u32>,
 }
 
 #[derive(Debug, Default)]
@@ -1393,6 +1405,149 @@ pub(crate) struct WasmObjectLayout<'data> {
     pub(crate) function_index_base: u32,
     pub(crate) global_index_base: u32,
     _phantom: std::marker::PhantomData<&'data ()>,
+}
+
+fn build_output_module_layout<'data, 'files>(
+    objects: impl Iterator<Item = &'files File<'data>>,
+) -> Result<WasmLayout<'data>>
+where
+    'data: 'files,
+{
+    let objects = objects.collect::<Vec<_>>();
+    let mut layout = WasmLayout::default();
+    let mut next_function_import_index = 0u32;
+    let mut next_global_import_index = 0u32;
+
+    for object in &objects {
+        let mut map = WasmObjectIndexMap {
+            type_index_base: u32::try_from(layout.output_types.len())
+                .context("too many Wasm types")?,
+            ..Default::default()
+        };
+
+        if let Some(types) = object.type_section_reader()? {
+            for group in types {
+                for ty in group?.into_types() {
+                    let wasmparser::CompositeInnerType::Func(func) = ty.composite_type.inner else {
+                        crate::bail!("Wasm non-function types are not emitted")
+                    };
+                    layout.output_types.push(func);
+                }
+            }
+        }
+
+        if let Some(imports) = object.import_section_reader()? {
+            for import in imports.into_imports() {
+                let import = import?;
+                match import.ty {
+                    TypeRef::Func(type_index) | TypeRef::FuncExact(type_index) => {
+                        let output_type_index = map
+                            .type_index_base
+                            .checked_add(type_index)
+                            .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+                        let output_function_index = next_function_import_index;
+                        next_function_import_index = next_function_import_index
+                            .checked_add(1)
+                            .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+                        map.function_indices.push(output_function_index);
+                        layout.imports.push(OutputImport {
+                            module: import.module,
+                            name: import.name,
+                            entity: OutputImportEntity::Function {
+                                type_index: output_type_index,
+                            },
+                        });
+                    }
+                    TypeRef::Global(ty) => {
+                        let output_global_index = next_global_import_index;
+                        next_global_import_index = next_global_import_index
+                            .checked_add(1)
+                            .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+                        map.global_indices.push(output_global_index);
+                        layout.imports.push(OutputImport {
+                            module: import.module,
+                            name: import.name,
+                            entity: OutputImportEntity::Global(ty),
+                        });
+                    }
+                    TypeRef::Table(_) => crate::bail!("Wasm table imports are not emitted"),
+                    TypeRef::Memory(_) => crate::bail!("Wasm memory imports are not emitted"),
+                    TypeRef::Tag(_) => crate::bail!("Wasm tag imports are not emitted"),
+                }
+            }
+        }
+
+        layout.object_index_maps.push(map);
+    }
+
+    let mut next_function_index = next_function_import_index;
+    let mut next_global_index = next_global_import_index;
+
+    for (object, map) in objects.iter().zip(layout.object_index_maps.iter_mut()) {
+        for function in object.module_functions()? {
+            let output_type_index = map
+                .type_index_base
+                .checked_add(function.type_index)
+                .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+            layout.function_type_indices.push(output_type_index);
+            map.function_indices.push(next_function_index);
+            next_function_index = next_function_index
+                .checked_add(1)
+                .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+        }
+
+        for global in object.module_globals()? {
+            let init_expr_body = crate::wasm_writer::const_expr_body(&global.init_expr)
+                .ok_or_else(|| crate::error!("Wasm global initializer is missing end opcode"))?;
+            layout.globals.push(OutputGlobal {
+                ty: global.ty,
+                init_expr_body,
+            });
+            map.global_indices.push(next_global_index);
+            next_global_index = next_global_index
+                .checked_add(1)
+                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+        }
+    }
+
+    for (object, map) in objects.iter().zip(layout.object_index_maps.iter()) {
+        if let Some(exports) = object.export_section_reader()? {
+            for export in exports {
+                let export = export?;
+                let index = match export.kind {
+                    wasmparser::ExternalKind::Func | wasmparser::ExternalKind::FuncExact => {
+                        remap_wasm_index(&map.function_indices, export.index, "function")?
+                    }
+                    wasmparser::ExternalKind::Global => {
+                        remap_wasm_index(&map.global_indices, export.index, "global")?
+                    }
+                    wasmparser::ExternalKind::Table => {
+                        crate::bail!("Wasm table exports are not emitted")
+                    }
+                    wasmparser::ExternalKind::Memory => {
+                        crate::bail!("Wasm memory exports are not emitted")
+                    }
+                    wasmparser::ExternalKind::Tag => {
+                        crate::bail!("Wasm tag exports are not emitted")
+                    }
+                };
+                layout.exports.push(OutputExport {
+                    name: export.name,
+                    kind: export.kind,
+                    index,
+                });
+            }
+        }
+    }
+
+    Ok(layout)
+}
+
+fn remap_wasm_index(indices: &[u32], index: u32, kind: &str) -> Result<u32> {
+    indices
+        .get(index as usize)
+        .copied()
+        .ok_or_else(|| crate::error!("Wasm {kind} index {index} out of range"))
 }
 
 impl platform::Platform for Wasm {
@@ -1617,14 +1772,14 @@ impl platform::Platform for Wasm {
 
     fn create_layout_properties<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
         _args: &Self::Args,
-        _objects: impl Iterator<Item = &'files Self::File<'data>>,
+        objects: impl Iterator<Item = &'files Self::File<'data>>,
         _states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
     ) -> crate::error::Result<Self::LayoutExt<'data>>
     where
         'data: 'files,
         'data: 'states,
     {
-        Ok(WasmLayout::default())
+        build_output_module_layout(objects)
     }
 
     fn load_exception_frame_data<'data, 'scope, A: platform::Arch<Platform = Self>>(
