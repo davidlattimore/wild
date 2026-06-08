@@ -1,5 +1,4 @@
 // TODO
-#![allow(unused_variables)]
 #![allow(unused)]
 
 use crate::alignment::Alignment;
