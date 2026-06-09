@@ -86,7 +86,7 @@ serde = { version = "1.0.225", features = ["derive"] }
 serde-keyvalue = "0.1.0"
 serde_yaml = "0.9"
 sha2 = "0.11.0"
-sharded-offset-map = "0.2.0"
+sharded-offset-map = "0.3.0"
 sharded-vec-writer = "0.4.0"
 smallvec = "1.6.1"
 strum = { version = "0.28.0", features = ["derive"] }

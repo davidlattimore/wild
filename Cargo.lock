@@ -929,7 +929,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "sharded-offset-map",
- "sharded-vec-writer 0.4.0",
+ "sharded-vec-writer",
  "smallvec",
  "symbolic-common",
  "symbolic-demangle",
@@ -1780,11 +1780,11 @@ dependencies = [
 
 [[package]]
 name = "sharded-offset-map"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a420d414434523aec9421abd8cc7e674795d6cd3eec9a4080c35ea16a82754c6"
+checksum = "d2b71ad2c1fdc235dc70668aff10a50040624596781d443a3389b1203d18e6b7"
 dependencies = [
- "sharded-vec-writer 0.3.0",
+ "sharded-vec-writer",
 ]
 
 [[package]]
@@ -1795,12 +1795,6 @@ checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
 ]
-
-[[package]]
-name = "sharded-vec-writer"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0e1e51ad52f9ead5d806e61860fd595da6c76f061a6324bd13aa4f437a29681"
 
 [[package]]
 name = "sharded-vec-writer"
