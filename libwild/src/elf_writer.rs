@@ -2854,9 +2854,22 @@ fn apply_relocation<
 
             return Ok(RelocationModifier::Normal);
         }
+        RelocationKind::Relative if rel.symbol().is_none() => {
+            if layout.symbol_db.output_kind.is_relocatable() {
+                bail!(
+                    "relocation of type {} to absolute address cannot be used in \
+                    position-independent output; recompile with -fPIC",
+                    rel.raw_type()
+                );
+            }
+            let place = section_info.section_address + offset_in_section;
+            let value = (rel.addend() as u64).wrapping_sub(place);
+            A::relocation_from_raw(r_type)?
+                .write_to_buffer(value, &mut out[offset_in_section as usize..])?;
+            return Ok(RelocationModifier::Normal);
+        }
         _ => {}
     }
-
     let (resolution, symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
     let flags = layout.flags_for_symbol(local_symbol_id);
     let mut next_modifier = RelocationModifier::Normal;
