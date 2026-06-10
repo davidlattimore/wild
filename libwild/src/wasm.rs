@@ -400,6 +400,8 @@ pub(crate) struct WasmDataSegment<'data> {
 #[derive(Debug, Clone)]
 pub(crate) struct WasmFunctionBody<'data> {
     pub(crate) bytes: &'data [u8],
+    /// Byte offset of this body (starting at its size prefix) within the code section payload.
+    pub(crate) code_offset: u32,
 }
 
 impl<'data> File<'data> {
@@ -551,11 +553,19 @@ impl<'data> File<'data> {
         let Some(reader) = self.code_section_reader()? else {
             return Ok(Vec::new());
         };
+        let code_payload_start = self
+            .standard_section_index[section_id::CODE as usize]
+            .and_then(|i| self.sections.get(i as usize))
+            .map_or(0, |h| h.payload_range.start);
         reader
             .into_iter()
             .map(|res| {
-                res.map(|body| WasmFunctionBody {
-                    bytes: &self.data[body.range()],
+                res.map(|body| {
+                    let range = body.range();
+                    WasmFunctionBody {
+                        bytes: &self.data[range.clone()],
+                        code_offset: range.start as u32 - code_payload_start,
+                    }
                 })
                 .map_err(Into::into)
             })
