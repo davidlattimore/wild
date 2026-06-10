@@ -399,7 +399,9 @@ pub(crate) struct WasmDataSegment<'data> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct WasmFunctionBody<'data> {
-    pub(crate) bytes: &'data [u8],
+    /// Raw body bytes including the size prefix. Borrowed when no relocations are applied;
+    /// owned when the body has been patched.
+    pub(crate) bytes: std::borrow::Cow<'data, [u8]>,
     /// Byte offset of this body (starting at its size prefix) within the code section payload.
     pub(crate) code_offset: u32,
 }
@@ -553,8 +555,7 @@ impl<'data> File<'data> {
         let Some(reader) = self.code_section_reader()? else {
             return Ok(Vec::new());
         };
-        let code_payload_start = self
-            .standard_section_index[section_id::CODE as usize]
+        let code_payload_start = self.standard_section_index[section_id::CODE as usize]
             .and_then(|i| self.sections.get(i as usize))
             .map_or(0, |h| h.payload_range.start);
         reader
@@ -563,7 +564,7 @@ impl<'data> File<'data> {
                 res.map(|body| {
                     let range = body.range();
                     WasmFunctionBody {
-                        bytes: &self.data[range.clone()],
+                        bytes: std::borrow::Cow::Borrowed(&self.data[range.clone()]),
                         code_offset: range.start as u32 - code_payload_start,
                     }
                 })
@@ -1526,7 +1527,7 @@ impl<'data> WasmLayout<'data> {
         }
 
         let code_section = crate::wasm_writer::build_code_section(
-            self.function_bodies.iter().map(|body| body.bytes),
+            self.function_bodies.iter().map(|body| body.bytes.as_ref()),
         );
         if !code_section.is_empty() {
             self.encoded_sections.code = Some(encode_wasm_section(&code_section));
@@ -1589,8 +1590,7 @@ impl WasmObjectIndexMap {
             | reloc_type::MEMORY_ADDR_I32 => {
                 bail!("memory address relocations are not supported yet");
             }
-            reloc_type::TABLE_INDEX_SLEB
-            | reloc_type::TABLE_INDEX_I32 => {
+            reloc_type::TABLE_INDEX_SLEB | reloc_type::TABLE_INDEX_I32 => {
                 bail!("table index relocations are not supported yet");
             }
             reloc_type::EVENT_INDEX_LEB => {
@@ -1626,6 +1626,8 @@ struct WasmObjectLayoutInput<'data> {
     function_bodies: Vec<WasmFunctionBody<'data>>,
     memories: Vec<MemoryType>,
     unsupported_output: Vec<&'static str>,
+    code_relocations: Vec<WasmRelocation>,
+    symbols: Vec<WasmSymbol>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1692,9 +1694,24 @@ impl<'data> WasmObjectLayoutInput<'data> {
             }
         }
 
+        let code_section_index = file.standard_section_index[section_id::CODE as usize];
+        let code_relocations: Vec<WasmRelocation> = code_section_index
+            .and_then(|code_idx| {
+                file.reloc_sections
+                    .iter()
+                    .find(|s| s.target_section_index == code_idx)
+            })
+            .map(|s| s.entries.clone())
+            .unwrap_or_default();
+
+        let has_non_code_relocs = file
+            .reloc_sections
+            .iter()
+            .any(|s| code_section_index != Some(s.target_section_index));
+
         let mut unsupported_output = Vec::new();
-        if !file.reloc_sections.is_empty() {
-            unsupported_output.push("relocation");
+        if has_non_code_relocs {
+            unsupported_output.push("non-code relocation");
         }
         if file.standard_section_index[section_id::TABLE as usize].is_some() {
             unsupported_output.push("table");
@@ -1757,6 +1774,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
             function_bodies,
             memories,
             unsupported_output,
+            code_relocations,
+            symbols: file.symbols.clone(),
         })
     }
 
@@ -1853,13 +1872,20 @@ impl<'data> WasmObjectLayoutInput<'data> {
             })
             .collect::<Result<Vec<_>>>()?;
 
+        let function_bodies = apply_code_relocations(
+            self.function_bodies,
+            &self.code_relocations,
+            &self.symbols,
+            &index_map,
+        )?;
+
         Ok(WasmObjectOutputLayout {
             types: self.types,
             imports,
             function_type_indices,
             globals: self.globals,
             exports,
-            function_bodies: self.function_bodies,
+            function_bodies,
             memories: self.memories,
             unsupported_output: self.unsupported_output,
             index_map,
@@ -1959,6 +1985,55 @@ fn allocate_wasm_object_index_bases(
     }
 
     Ok(index_bases)
+}
+
+/// Apply code relocations to function bodies. Bodies with relocations get an owned copy;
+/// bodies without relocations remain borrowed from the input.
+fn apply_code_relocations<'data>(
+    mut bodies: Vec<WasmFunctionBody<'data>>,
+    relocs: &[WasmRelocation],
+    symbols: &[WasmSymbol],
+    index_map: &WasmObjectIndexMap,
+) -> Result<Vec<WasmFunctionBody<'data>>> {
+    if relocs.is_empty() {
+        return Ok(bodies);
+    }
+
+    // Group relocations by body. Both relocs (by offset) and bodies (by code_offset) are ordered.
+    let mut reloc_iter = relocs.iter().peekable();
+    for body in &mut bodies {
+        let body_start = body.code_offset;
+        let body_end = body_start + body.bytes.len() as u32;
+
+        // Collect relocations that fall within this body's range.
+        let mut body_relocs: Vec<WasmRelocation> = Vec::new();
+        while let Some(reloc) = reloc_iter.peek().copied() {
+            if reloc.offset >= body_end {
+                break;
+            }
+            reloc_iter.next();
+            if reloc.offset >= body_start {
+                body_relocs.push(*reloc);
+            }
+        }
+
+        if body_relocs.is_empty() {
+            continue;
+        }
+
+        let mut patched = body.bytes.to_vec();
+        for reloc in &body_relocs {
+            let value = index_map.resolve_reloc(reloc, symbols)?;
+            let local_reloc = WasmRelocation {
+                offset: reloc.offset - body_start,
+                ..*reloc
+            };
+            apply_relocation(&mut patched, &local_reloc, value)?;
+        }
+        body.bytes = std::borrow::Cow::Owned(patched);
+    }
+
+    Ok(bodies)
 }
 
 fn remap_wasm_index(indices: &[u32], index: u32, kind: &str) -> Result<u32> {

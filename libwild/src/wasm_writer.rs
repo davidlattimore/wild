@@ -9,6 +9,7 @@ use crate::platform::Arch;
 use crate::wasm::WASM_MAGIC;
 use crate::wasm::WASM_VERSION;
 use crate::wasm::Wasm;
+use crate::wasm::WasmFunctionBody;
 use crate::wasm::WasmLayout;
 use wasm_encoder::CodeSection;
 use wasm_encoder::ExportSection;
