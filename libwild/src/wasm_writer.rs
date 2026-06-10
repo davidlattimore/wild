@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::bail;
 use crate::error::Result;
 use crate::file_writer::SizedOutput;
