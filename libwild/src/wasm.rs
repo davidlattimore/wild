@@ -1544,6 +1544,69 @@ pub(crate) struct WasmObjectIndexMap {
     pub(crate) memory_indices: Vec<u32>,
 }
 
+impl WasmObjectIndexMap {
+    /// Resolve a code relocation to its output value using the symbol table from the same object.
+    pub(crate) fn resolve_reloc(
+        &self,
+        reloc: &WasmRelocation,
+        symbols: &[WasmSymbol],
+    ) -> Result<u32> {
+        if reloc.ty == R_WASM_TYPE_INDEX_LEB {
+            return self
+                .type_index_base
+                .checked_add(reloc.index)
+                .ok_or_else(|| crate::error!("Wasm type index overflow"));
+        }
+
+        let sym = symbols
+            .get(reloc.index as usize)
+            .ok_or_else(|| crate::error!("relocation symbol index {} out of range", reloc.index))?;
+
+        match reloc.ty {
+            reloc_type::FUNCTION_INDEX_LEB | reloc_type::FUNCTION_INDEX_I32 => {
+                ensure!(
+                    sym.kind == WasmSymbolKind::Func,
+                    "R_WASM_FUNCTION_INDEX_* references non-function symbol"
+                );
+                remap_wasm_index(&self.function_indices, sym.index, "function")
+            }
+            reloc_type::GLOBAL_INDEX_LEB | reloc_type::GLOBAL_INDEX_I32 => {
+                ensure!(
+                    sym.kind == WasmSymbolKind::Global,
+                    "R_WASM_GLOBAL_INDEX_* references non-global symbol"
+                );
+                remap_wasm_index(&self.global_indices, sym.index, "global")
+            }
+            reloc_type::TABLE_NUMBER_LEB => {
+                ensure!(
+                    sym.kind == WasmSymbolKind::Table,
+                    "R_WASM_TABLE_NUMBER_LEB references non-table symbol"
+                );
+                bail!("table relocations are not supported yet");
+            }
+            reloc_type::MEMORY_ADDR_LEB
+            | reloc_type::MEMORY_ADDR_SLEB
+            | reloc_type::MEMORY_ADDR_I32 => {
+                bail!("memory address relocations are not supported yet");
+            }
+            reloc_type::TABLE_INDEX_SLEB
+            | reloc_type::TABLE_INDEX_I32 => {
+                bail!("table index relocations are not supported yet");
+            }
+            reloc_type::EVENT_INDEX_LEB => {
+                bail!("event index relocations are not supported yet");
+            }
+            reloc_type::FUNCTION_OFFSET_I32 => {
+                bail!("function offset relocations are not supported yet");
+            }
+            reloc_type::SECTION_OFFSET_I32 => {
+                bail!("section offset relocations are not supported yet");
+            }
+            other => bail!("unsupported Wasm relocation type {other}"),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct WasmObjectLayout<'data> {
     pub(crate) type_index_base: u32,
