@@ -11,9 +11,7 @@ use crate::layout::ImportedSymbol;
 use crate::layout_rules::SectionKind;
 use crate::output_section_id::SectionName;
 use crate::platform;
-use crate::wasm_writer::OutputDataSegment;
 use crate::wasm_writer::OutputExport;
-use crate::wasm_writer::OutputFunctionBody;
 use crate::wasm_writer::OutputGlobal;
 use crate::wasm_writer::OutputImport;
 use crate::wasm_writer::OutputImportEntity;
@@ -1438,9 +1436,8 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) function_type_indices: Vec<u32>,
     pub(crate) globals: Vec<OutputGlobal<'data>>,
     pub(crate) exports: Vec<OutputExport<'data>>,
-    pub(crate) function_bodies: Vec<OutputFunctionBody<'data>>,
+    pub(crate) function_bodies: Vec<WasmFunctionBody<'data>>,
     pub(crate) memories: Vec<MemoryType>,
-    pub(crate) data_segments: Vec<OutputDataSegment<'data>>,
     pub(crate) unsupported_output: Vec<&'static str>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
     pub(crate) encoded_sections: WasmEncodedSections,
@@ -1455,7 +1452,6 @@ pub(crate) struct WasmEncodedSections {
     pub(crate) export: Option<Vec<u8>>,
     pub(crate) code: Option<Vec<u8>>,
     pub(crate) memory: Option<Vec<u8>>,
-    pub(crate) data: Option<Vec<u8>>,
 }
 
 impl WasmEncodedSections {
@@ -1467,7 +1463,6 @@ impl WasmEncodedSections {
         add_encoded_section_size(sizes, crate::part_id::WASM_EXPORT, self.export.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_CODE, self.code.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_MEMORY, self.memory.as_ref());
-        add_encoded_section_size(sizes, crate::part_id::WASM_DATA, self.data.as_ref());
     }
 }
 
@@ -1520,14 +1515,11 @@ impl<'data> WasmLayout<'data> {
             self.encoded_sections.memory = Some(encode_wasm_section(&memory_section));
         }
 
-        let code_section = crate::wasm_writer::build_code_section(&self.function_bodies);
+        let code_section = crate::wasm_writer::build_code_section(
+            self.function_bodies.iter().map(|body| body.bytes),
+        );
         if !code_section.is_empty() {
             self.encoded_sections.code = Some(encode_wasm_section(&code_section));
-        }
-
-        let data_section = crate::wasm_writer::build_data_section(&self.data_segments)?;
-        if !data_section.is_empty() {
-            self.encoded_sections.data = Some(encode_wasm_section(&data_section));
         }
 
         Ok(())
@@ -1558,9 +1550,8 @@ struct WasmObjectLayoutInput<'data> {
     module_functions: Vec<WasmModuleFunction>,
     globals: Vec<OutputGlobal<'data>>,
     exports: Vec<OutputExport<'data>>,
-    function_bodies: Vec<OutputFunctionBody<'data>>,
+    function_bodies: Vec<WasmFunctionBody<'data>>,
     memories: Vec<MemoryType>,
-    data_segments: Vec<OutputDataSegment<'data>>,
     unsupported_output: Vec<&'static str>,
 }
 
@@ -1581,9 +1572,8 @@ struct WasmObjectOutputLayout<'data> {
     function_type_indices: Vec<u32>,
     globals: Vec<OutputGlobal<'data>>,
     exports: Vec<OutputExport<'data>>,
-    function_bodies: Vec<OutputFunctionBody<'data>>,
+    function_bodies: Vec<WasmFunctionBody<'data>>,
     memories: Vec<MemoryType>,
-    data_segments: Vec<OutputDataSegment<'data>>,
     unsupported_output: Vec<&'static str>,
     index_map: WasmObjectIndexMap,
 }
@@ -1645,6 +1635,9 @@ impl<'data> WasmObjectLayoutInput<'data> {
         if file.standard_section_index[section_id::DATA_COUNT as usize].is_some() {
             unsupported_output.push("data_count");
         }
+        if file.standard_section_index[section_id::DATA as usize].is_some() {
+            unsupported_output.push("data");
+        }
 
         let module_functions = file.module_functions()?;
         let function_bodies = file.function_bodies()?;
@@ -1653,14 +1646,6 @@ impl<'data> WasmObjectLayoutInput<'data> {
             "Wasm function and code section counts differ"
         );
         let memories = file.memories()?;
-        let data_segments = file
-            .data_segments()?
-            .into_iter()
-            .map(|segment| OutputDataSegment {
-                kind: segment.kind,
-                data: segment.data,
-            })
-            .collect();
 
         let globals = file
             .module_globals()?
@@ -1696,12 +1681,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
             module_functions,
             globals,
             exports,
-            function_bodies: function_bodies
-                .into_iter()
-                .map(|body| OutputFunctionBody { bytes: body.bytes })
-                .collect(),
+            function_bodies,
             memories,
-            data_segments,
             unsupported_output,
         })
     }
@@ -1775,19 +1756,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
             index_map.global_indices.push(output_global_index);
         }
 
-        for i in 0..self.memories.len() {
-            let output_memory_index = index_bases
-                .memory_base
-                .checked_add(u32::try_from(i).context("too many Wasm memories")?)
-                .ok_or_else(|| crate::error!("Wasm memory index overflow"))?;
-            index_map.memory_indices.push(output_memory_index);
-        }
-
-        let data_segments = self
-            .data_segments
-            .into_iter()
-            .map(|segment| remap_data_segment(segment, &index_map))
-            .collect::<Result<Vec<_>>>()?;
+        index_map.memory_indices =
+            wasm_index_range(index_bases.memory_base, self.memories.len(), "memories")?;
 
         let exports = self
             .exports
@@ -1818,7 +1788,6 @@ impl<'data> WasmObjectLayoutInput<'data> {
             exports,
             function_bodies: self.function_bodies,
             memories: self.memories,
-            data_segments,
             unsupported_output: self.unsupported_output,
             index_map,
         })
@@ -1854,7 +1823,6 @@ where
         layout.exports.extend(object_layout.exports);
         layout.function_bodies.extend(object_layout.function_bodies);
         layout.memories.extend(object_layout.memories);
-        layout.data_segments.extend(object_layout.data_segments);
         layout
             .unsupported_output
             .extend(object_layout.unsupported_output);
@@ -1927,24 +1895,12 @@ fn remap_wasm_index(indices: &[u32], index: u32, kind: &str) -> Result<u32> {
         .ok_or_else(|| crate::error!("Wasm {kind} index {index} out of range"))
 }
 
-fn remap_data_segment<'data>(
-    segment: OutputDataSegment<'data>,
-    index_map: &WasmObjectIndexMap,
-) -> Result<OutputDataSegment<'data>> {
-    let kind = match segment.kind {
-        DataKind::Active {
-            memory_index,
-            offset_expr,
-        } => DataKind::Active {
-            memory_index: remap_wasm_index(&index_map.memory_indices, memory_index, "memory")?,
-            offset_expr,
-        },
-        DataKind::Passive => DataKind::Passive,
-    };
-    Ok(OutputDataSegment {
-        kind,
-        data: segment.data,
-    })
+fn wasm_index_range(base: u32, len: usize, kind: &str) -> Result<Vec<u32>> {
+    let len = u32::try_from(len).with_context(|| format!("too many Wasm {kind}"))?;
+    let end = base
+        .checked_add(len)
+        .ok_or_else(|| crate::error!("too many Wasm {kind}"))?;
+    Ok((base..end).collect())
 }
 
 impl platform::Platform for Wasm {
