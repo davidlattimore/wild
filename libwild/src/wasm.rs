@@ -296,6 +296,33 @@ impl WasmRelocation {
     }
 }
 
+/// Number of bytes needed to encode `value` as an unsigned LEB128.
+pub(crate) fn uleb128_size(mut value: u32) -> usize {
+    let mut size = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        size += 1;
+    }
+    size
+}
+
+/// Write `value` as an unsigned LEB128 into `buf`, returning the number of bytes written.
+pub(crate) fn write_uleb128(buf: &mut [u8], mut value: u32) -> usize {
+    let mut i = 0;
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        buf[i] = byte;
+        i += 1;
+        if value == 0 {
+            return i;
+        }
+    }
+}
+
 /// Write `value` as a 5-byte fixed-width unsigned LEB128. Used for wasm reloc slots that reserve
 /// exactly 5 bytes regardless of the encoded value.
 pub(crate) fn write_uleb128_5(buf: &mut [u8; 5], value: u32) {
@@ -399,8 +426,8 @@ pub(crate) struct WasmDataSegment<'data> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct WasmFunctionBody<'data> {
-    /// Raw body bytes including the size prefix. Borrowed when no relocations are applied;
-    /// owned when the body has been patched.
+    /// Raw body bytes (locals + operators) without the LEB128 size prefix. Borrowed when no
+    /// relocations are applied; owned when the body has been patched.
     pub(crate) bytes: std::borrow::Cow<'data, [u8]>,
     /// Byte offset of this body (starting at its size prefix) within the code section payload.
     pub(crate) code_offset: u32,
@@ -1452,6 +1479,7 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) unsupported_output: Vec<&'static str>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
     pub(crate) encoded_sections: WasmEncodedSections,
+    pub(crate) code_section_size: u64,
 }
 
 #[derive(Debug, Default)]
@@ -1461,7 +1489,6 @@ pub(crate) struct WasmEncodedSections {
     pub(crate) function: Option<Vec<u8>>,
     pub(crate) global: Option<Vec<u8>>,
     pub(crate) export: Option<Vec<u8>>,
-    pub(crate) code: Option<Vec<u8>>,
     pub(crate) memory: Option<Vec<u8>>,
 }
 
@@ -1472,7 +1499,6 @@ impl WasmEncodedSections {
         add_encoded_section_size(sizes, crate::part_id::WASM_FUNCTION, self.function.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_GLOBAL, self.global.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_EXPORT, self.export.as_ref());
-        add_encoded_section_size(sizes, crate::part_id::WASM_CODE, self.code.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_MEMORY, self.memory.as_ref());
     }
 }
@@ -1526,15 +1552,39 @@ impl<'data> WasmLayout<'data> {
             self.encoded_sections.memory = Some(encode_wasm_section(&memory_section));
         }
 
-        let code_section = crate::wasm_writer::build_code_section(
-            self.function_bodies.iter().map(|body| body.bytes.as_ref()),
-        );
-        if !code_section.is_empty() {
-            self.encoded_sections.code = Some(encode_wasm_section(&code_section));
-        }
+        self.code_section_size = compute_code_section_size(&self.function_bodies);
 
         Ok(())
     }
+
+    fn add_code_section_size(
+        &self,
+        sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+    ) {
+        if self.code_section_size > 0 {
+            sizes.increment(crate::part_id::WASM_CODE, self.code_section_size);
+        }
+    }
+}
+
+fn compute_code_section_size(bodies: &[WasmFunctionBody<'_>]) -> u64 {
+    if bodies.is_empty() {
+        return 0;
+    }
+    let count = bodies.len() as u32;
+    let count_leb_size = uleb128_size(count) as u64;
+    let bodies_with_prefix_total: u64 = bodies
+        .iter()
+        .map(|b| {
+            let body_len = b.bytes.len() as u32;
+            uleb128_size(body_len) as u64 + b.bytes.len() as u64
+        })
+        .sum();
+    let payload_size = count_leb_size + bodies_with_prefix_total;
+    let payload_size_leb_size = uleb128_size(payload_size as u32) as u64;
+
+    // section id (1 byte) + payload size LEB + payload
+    1 + payload_size_leb_size + payload_size
 }
 
 #[derive(Debug, Default)]
@@ -2337,6 +2387,7 @@ impl platform::Platform for Wasm {
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
         properties.encoded_sections.add_sizes_to(mem_sizes);
+        properties.add_code_section_size(mem_sizes);
     }
 
     fn finalise_sizes_all<'data>(
@@ -2365,6 +2416,7 @@ impl platform::Platform for Wasm {
         _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
     ) -> crate::error::Result {
         common_state.encoded_sections.add_sizes_to(memory_offsets);
+        common_state.add_code_section_size(memory_offsets);
         Ok(())
     }
 
