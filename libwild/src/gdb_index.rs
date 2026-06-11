@@ -24,6 +24,8 @@ use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME_STR;
 use linker_utils::utils::u32_from_slice;
 use linker_utils::utils::u64_from_slice;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
 use std::collections::BTreeSet;
 use std::mem::size_of;
 use zerocopy::FromBytes;
@@ -238,20 +240,10 @@ fn raw_section_by_name<'data>(
     Ok(Some(object.raw_section_data(header)?))
 }
 
-/// Pre-scan all input objects to compute the `.gdb_index` section size.
-pub(crate) fn compute_gdb_index_size(groups: &[GroupState<'_, Elf>]) -> Result<u64> {
-    timing_phase!("Compute GDB index size");
-
-    let objects = groups.iter().flat_map(|g| g.files.iter()).filter_map(|f| {
-        let FileLayoutState::Object(obj) = f else {
-            return None;
-        };
-        Some((obj.object, obj.sections.as_slice()))
-    });
-    let scan = scan_objects_for_gdb_index(objects)?;
-
+/// Compute the size from a scan result.
+fn gdb_index_size_from_scan(scan: &GdbIndexScanResult<'_>) -> u64 {
     if scan.total_cus == 0 {
-        return Ok(0);
+        return 0;
     }
 
     let mut cv_bytes = 0usize;
@@ -262,44 +254,61 @@ pub(crate) fn compute_gdb_index_size(groups: &[GroupState<'_, Elf>]) -> Result<u
         str_bytes += name.len() + 1;
     }
 
-    Ok((HEADER_SIZE
+    (HEADER_SIZE
         + scan.total_cus * CU_ENTRY_SIZE
         + scan.total_addr_entries * ADDRESS_ENTRY_SIZE
         + scan.ht_slots * HASH_SLOT_SIZE
         + SHORTCUT_TABLE_SIZE
         + cv_bytes
-        + str_bytes) as u64)
+        + str_bytes) as u64
+}
+
+/// Pre-scan all input objects to compute the `.gdb_index` section size and return the scan result
+/// for later use during the write phase.
+pub(crate) fn compute_gdb_index_size<'data>(
+    groups: &[GroupState<'data, Elf>],
+) -> Result<(u64, Option<GdbIndexScanResult<'data>>)> {
+    timing_phase!("Compute GDB index size");
+
+    let objects: Vec<_> = groups
+        .iter()
+        .flat_map(|g| g.files.iter())
+        .filter_map(|f| {
+            let FileLayoutState::Object(obj) = f else {
+                return None;
+            };
+            Some((obj.object, obj.sections.as_slice()))
+        })
+        .collect();
+    let scan = scan_objects_for_gdb_index(&objects)?;
+
+    let size = gdb_index_size_from_scan(&scan);
+    if size == 0 {
+        Ok((0, None))
+    } else {
+        Ok((size, Some(scan)))
+    }
 }
 
 /// Write the `.gdb_index` section into `buf`.
 ///
 /// Reads the output `.debug_info` (already written into `output_buf`) for the CU list,
-/// and re-scans input objects for address ranges and pubnames/pubtypes symbols.
+/// and uses the pre-computed scan result for symbol data.
 pub(crate) fn write_gdb_index(
     buf: &mut [u8],
     output_buf: &[u8],
     layout: &Layout<'_, Elf>,
+    scan: &GdbIndexScanResult<'_>,
 ) -> Result {
     if buf.is_empty() {
         return Ok(());
     }
 
+    timing_phase!("Write GDB index");
+
     let cu_entries = build_cu_list(output_buf, layout)?;
-    let objects = layout
-        .group_layouts
-        .iter()
-        .flat_map(|g| g.files.iter())
-        .filter_map(|f| {
-            let FileLayout::Object(obj) = f else {
-                return None;
-            };
-            Some((obj.object, obj.sections.as_slice()))
-        });
-    let GdbIndexScanResult {
-        sorted_symbols: sorted_names,
-        ht_slots,
-        ..
-    } = scan_objects_for_gdb_index(objects)?;
+    let sorted_names = &scan.sorted_symbols;
+    let ht_slots = scan.ht_slots;
     if !cu_entries.is_empty() && sorted_names.is_empty() {
         layout.symbol_db.warning(
             "Objects lack .debug_gnu_pubnames/.debug_gnu_pubtypes sections, so the symbol table in .gdb_index will be empty. \
@@ -318,7 +327,7 @@ pub(crate) fn write_gdb_index(
     // Write constant pool: CU vectors first, then name strings.
     let mut cv_offsets = Vec::with_capacity(sorted_names.len());
     let mut off = cp_off as usize;
-    for (_, sd) in &sorted_names {
+    for (_, sd) in sorted_names {
         cv_offsets.push((off - cp_off as usize) as u32);
         buf[off..off + 4].copy_from_slice(&(sd.cv_entries.len() as u32).to_le_bytes());
         off += 4;
@@ -328,7 +337,7 @@ pub(crate) fn write_gdb_index(
         }
     }
     let mut name_offsets = Vec::with_capacity(sorted_names.len());
-    for (name, _) in &sorted_names {
+    for (name, _) in sorted_names {
         name_offsets.push((off - cp_off as usize) as u32);
         buf[off..off + name.len()].copy_from_slice(name);
         off += name.len();
@@ -363,7 +372,7 @@ pub(crate) fn write_gdb_index(
         buf,
         ht_slots,
         sym_off as usize,
-        &sorted_names,
+        sorted_names,
         &name_offsets,
         &cv_offsets,
     )?;
@@ -410,59 +419,94 @@ struct SymData {
     hash: u32,
 }
 
-struct GdbIndexScanResult<'data> {
+pub(crate) struct GdbIndexScanResult<'data> {
     total_cus: usize,
     total_addr_entries: usize,
     sorted_symbols: Vec<(&'data [u8], SymData)>,
     ht_slots: usize,
 }
 
-/// Scan input objects to build the symbol table and count CUs / address entries.
-fn scan_objects_for_gdb_index<'data>(
-    objects: impl Iterator<Item = (&'data crate::elf::File<'data>, &'data [SectionSlot])>,
-) -> Result<GdbIndexScanResult<'data>> {
-    timing_phase!("Scan objects for GDB index");
+/// Result of scanning a single input object for GDB index data.
+struct PerObjectGdbScan<'data> {
+    num_cus: usize,
+    num_addr_entries: usize,
+    /// `(name, local_cu_index, attrs)`. CU index is 0-based within this object.
+    symbol_entries: Vec<(&'data [u8], u32, u8)>,
+}
+
+/// Scan a single input object, returning per-object GDB index data with 0-based CU indices.
+fn scan_one_object<'data>(
+    object: &crate::elf::File<'data>,
+    sections: &[SectionSlot],
+) -> Result<Option<PerObjectGdbScan<'data>>> {
+    let boundaries = match raw_section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)? {
+        Some(data) => parse_cu_boundaries(data),
+        None => return Ok(None),
+    };
+    if boundaries.is_empty() {
+        return Ok(None);
+    }
+
+    let mut num_addr_entries = 0usize;
+    for (si, slot) in sections.iter().enumerate() {
+        let SectionSlot::Loaded(section) = slot else {
+            continue;
+        };
+        if section.size == 0 {
+            continue;
+        }
+        let header = object.section(object::SectionIndex(si))?;
+        if header.is_alloc() && header.is_executable() {
+            num_addr_entries += 1;
+        }
+    }
+
+    // Build offset-to-local-index map for this object's CUs.
+    let mut offset_to_idx: HashMap<u64, u32> = HashMap::with_capacity(boundaries.len());
+    for (i, cu) in boundaries.iter().enumerate() {
+        offset_to_idx.insert(cu.offset, i as u32);
+    }
+
+    // Collect raw pubname entries with local CU indices and raw attrs.
+    let mut symbol_entries = Vec::new();
+    for section_name in [".debug_gnu_pubnames", ".debug_gnu_pubtypes"] {
+        let Some(data) = raw_section_by_name(object, section_name)? else {
+            continue;
+        };
+        for set in parse_pubnames_sets(data) {
+            let Some(&local_cu_idx) = offset_to_idx.get(&set.debug_info_offset) else {
+                continue;
+            };
+            for (name, attrs) in set.entries {
+                symbol_entries.push((name, local_cu_idx, attrs));
+            }
+        }
+    }
+
+    Ok(Some(PerObjectGdbScan {
+        num_cus: boundaries.len(),
+        num_addr_entries,
+        symbol_entries,
+    }))
+}
+
+/// Merge per-object scan results into a single `GdbIndexScanResult`, assigning global CU indices.
+fn merge_gdb_index_scans<'data>(
+    per_object: Vec<Option<PerObjectGdbScan<'data>>>,
+) -> GdbIndexScanResult<'data> {
+    timing_phase!("Merge GDB index scans");
 
     let mut total_cus = 0usize;
     let mut total_addr_entries = 0usize;
     let mut sym_map: HashMap<&'data [u8], SymData> = HashMap::new();
-    let mut cu_offset = 0u32;
 
-    for (object, sections) in objects {
-        let boundaries = match raw_section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)? {
-            Some(data) => parse_cu_boundaries(data),
-            None => continue,
-        };
-        if boundaries.is_empty() {
-            continue;
-        }
+    for scan in per_object.into_iter().flatten() {
+        let base = total_cus as u32;
+        total_cus += scan.num_cus;
+        total_addr_entries += scan.num_addr_entries;
 
-        let base = cu_offset;
-
-        let mut obj_addr_count = 0usize;
-        for (si, slot) in sections.iter().enumerate() {
-            let SectionSlot::Loaded(section) = slot else {
-                continue;
-            };
-            if section.size == 0 {
-                continue;
-            }
-            let header = object.section(object::SectionIndex(si))?;
-            if header.is_alloc() && header.is_executable() {
-                obj_addr_count += 1;
-            }
-        }
-
-        total_cus += boundaries.len();
-        total_addr_entries += obj_addr_count;
-
-        let mut offset_to_idx: HashMap<u64, u32> = HashMap::with_capacity(boundaries.len());
-        for (i, cu) in boundaries.iter().enumerate() {
-            offset_to_idx.insert(cu.offset, base + i as u32);
-        }
-        cu_offset += boundaries.len() as u32;
-
-        for (name, entry) in collect_pubname_entries(object, &offset_to_idx)? {
+        for (name, local_cu_idx, attrs) in scan.symbol_entries {
+            let entry = encode_cu_vector_entry(base + local_cu_idx, attrs);
             let sd = sym_map.entry(name).or_insert_with(|| SymData {
                 cv_entries: BTreeSet::new(),
                 hash: gdb_hash(name),
@@ -476,12 +520,27 @@ fn scan_objects_for_gdb_index<'data>(
         .sorted_unstable_by_key(|(name, _)| *name)
         .collect();
     let ht_slots = compute_hash_table_slots(sorted.len());
-    Ok(GdbIndexScanResult {
+
+    GdbIndexScanResult {
         total_cus,
         total_addr_entries,
         sorted_symbols: sorted,
         ht_slots,
-    })
+    }
+}
+
+/// Scan all input objects in parallel to build the GDB index symbol table.
+fn scan_objects_for_gdb_index<'data>(
+    objects: &[(&'data crate::elf::File<'data>, &[SectionSlot])],
+) -> Result<GdbIndexScanResult<'data>> {
+    timing_phase!("Scan objects for GDB index");
+
+    let per_object: Result<Vec<_>> = objects
+        .par_iter()
+        .map(|(object, sections)| scan_one_object(object, sections))
+        .collect();
+
+    Ok(merge_gdb_index_scans(per_object?))
 }
 
 /// Build address entries using resolved addresses from the final layout.
@@ -526,29 +585,6 @@ fn build_address_entries(layout: &Layout<'_, Elf>) -> Result<Vec<GdbIndexAddress
             }
 
             cu_offset += obj_cu_count;
-        }
-    }
-    Ok(entries)
-}
-
-/// Collect encoded pubname/pubtype entries from an object's `.debug_gnu_pubnames`
-/// and `.debug_gnu_pubtypes` sections, returning `(name, encoded_cu_vector_entry)` pairs.
-fn collect_pubname_entries<'data>(
-    object: &crate::elf::File<'data>,
-    offset_to_idx: &HashMap<u64, u32>,
-) -> Result<Vec<(&'data [u8], u32)>> {
-    let mut entries = Vec::new();
-    for section_name in [".debug_gnu_pubnames", ".debug_gnu_pubtypes"] {
-        let Some(data) = raw_section_by_name(object, section_name)? else {
-            continue;
-        };
-        for set in parse_pubnames_sets(data) {
-            let Some(&cu_idx) = offset_to_idx.get(&set.debug_info_offset) else {
-                continue;
-            };
-            for (name, attrs) in set.entries {
-                entries.push((name, encode_cu_vector_entry(cu_idx, attrs)));
-            }
         }
     }
     Ok(entries)
