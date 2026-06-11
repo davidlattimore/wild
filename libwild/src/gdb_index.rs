@@ -574,6 +574,7 @@ fn write_hash_table(
         let h = sd.hash;
         let step = (h.wrapping_mul(17) & mask) | 1;
         let mut slot = h & mask;
+        let initial_slot = slot;
         loop {
             let so = ht_start + slot as usize * HASH_SLOT_SIZE;
             let existing = GdbIndexHashSlot::read_from_bytes(&buf[so..so + HASH_SLOT_SIZE])
@@ -587,6 +588,7 @@ fn write_hash_table(
                 break;
             }
             slot = (slot + step) & mask;
+            crate::ensure!(slot != initial_slot, "gdb_index hash table is full");
         }
     }
     Ok(())
