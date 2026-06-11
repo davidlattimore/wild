@@ -766,12 +766,12 @@ pub(crate) trait Platform:
     }
 
     /// Scan result for the `.gdb_index` section, if applicable.
-    type GdbIndexScanResult<'data>;
+    type GdbIndexScanResult: Send + Sync;
 
     /// Compute the size of the `.gdb_index` section and return the scan result for the write phase.
-    fn compute_gdb_index_size<'data>(
-        _groups: &[crate::layout::GroupState<'data, Self>],
-    ) -> crate::error::Result<(u64, Option<Self::GdbIndexScanResult<'data>>)> {
+    fn compute_gdb_index_size(
+        _groups: &[crate::layout::GroupState<Self>],
+    ) -> crate::error::Result<(u64, Option<Self::GdbIndexScanResult>)> {
         Ok((0, None))
     }
 }
