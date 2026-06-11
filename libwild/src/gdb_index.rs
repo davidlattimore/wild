@@ -25,6 +25,7 @@ use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME_STR;
 use linker_utils::utils::u32_from_slice;
 use linker_utils::utils::u64_from_slice;
+use object::read::elf::SectionHeader as _;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use std::borrow::Cow;
@@ -565,6 +566,14 @@ fn build_address_entries(
             }
             let base_cu = cu_offset;
 
+            // For objects with multiple CUs, build a section_index to local CU index map so each
+            // section is assigned to the correct CU.
+            let section_cu_map = if obj_cu_count > 1 {
+                build_section_cu_map(obj.object, obj_cu_count)?
+            } else {
+                HashMap::new()
+            };
+
             for (si, slot) in obj.sections.iter().enumerate() {
                 let SectionSlot::Loaded(section) = slot else {
                     continue;
@@ -579,10 +588,11 @@ fn build_address_entries(
                 if let Some(addr) = obj.section_resolutions[si].address()
                     && addr != 0
                 {
+                    let local_cu = section_cu_map.get(&si).copied().unwrap_or(0);
                     entries.push(GdbIndexAddressEntry {
                         low_address: addr,
                         high_address: addr + section.size,
-                        cu_index: base_cu,
+                        cu_index: base_cu + local_cu,
                     });
                 }
             }
@@ -591,6 +601,65 @@ fn build_address_entries(
         }
     }
     Ok(entries)
+}
+
+/// Build a mapping from section index to local CU index for an input object with multiple CUs.
+fn build_section_cu_map(
+    object: &crate::elf::File<'_>,
+    cu_count: u32,
+) -> Result<HashMap<usize, u32>> {
+    let boundaries = match section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)? {
+        Some(data) => parse_cu_boundaries(&data)?,
+        None => return Ok(HashMap::new()),
+    };
+    if boundaries.len() != cu_count as usize {
+        return Ok(HashMap::new());
+    }
+
+    // Find the relocation section for .debug_info.
+    let rela_section = object
+        .section_by_name(".rela.debug_info")
+        .or_else(|| object.section_by_name(".rel.debug_info"));
+    let Some((_rela_idx, rela_header)) = rela_section else {
+        return Ok(HashMap::new());
+    };
+
+    let mut map: HashMap<usize, u32> = HashMap::new();
+
+    if let Some((relas, _)) = rela_header.rela(object::LittleEndian, object.data)? {
+        for rela in relas {
+            let offset = object::read::elf::Rela::r_offset(rela, object::LittleEndian);
+            let Some(sym_idx) = object::read::elf::Rela::symbol(rela, object::LittleEndian, false)
+            else {
+                continue;
+            };
+            let symbol = object.symbol(sym_idx)?;
+            let Some(sec_idx) = object.symbol_section(symbol, sym_idx)? else {
+                continue;
+            };
+            // Only record the first mapping for each section (a CU may reference the same
+            // section many times via line tables, address ranges, etc.).
+            if map.contains_key(&sec_idx.0) {
+                continue;
+            }
+            // Find which CU this relocation offset belongs to.
+            if let Some(local_cu) = cu_index_for_offset(&boundaries, offset) {
+                map.insert(sec_idx.0, local_cu);
+            }
+        }
+    }
+
+    Ok(map)
+}
+
+/// Given a relocation offset within `.debug_info`, return the 0-based CU index it falls into.
+fn cu_index_for_offset(boundaries: &[CuBoundary], offset: u64) -> Option<u32> {
+    for (i, cu) in boundaries.iter().enumerate() {
+        if offset >= cu.offset && offset < cu.offset + cu.length {
+            return Some(i as u32);
+        }
+    }
+    None
 }
 
 /// Write the constant pool (CU vectors followed by name strings) into `buf` starting at `cp_start`.

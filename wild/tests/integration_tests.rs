@@ -80,6 +80,9 @@
 //! ExpectGdbIndexSymbol:{name} Checks that the `.gdb_index` symbol table contains an entry for the
 //! specified symbol name.
 //!
+//! ExpectGdbIndexDistinctAddrCus:{count} Checks that the `.gdb_index` address area references at
+//! least {count} distinct CU indices.
+//!
 //! Mode:{mode} Set linking mode to static (default), dynamic or unspecified. Cannot be used
 //! together with LinkerDriver.
 //!
@@ -1276,6 +1279,7 @@ struct Assertions {
     expected_section_bytes: Vec<ExpectedSectionBytes>,
     expected_gdb_index_cu_count: Option<usize>,
     expected_gdb_index_symbols: Vec<String>,
+    expected_gdb_index_distinct_addr_cus: Option<usize>,
     output_file_matches: Vec<OutputFileMatch>,
     max_thunks: u64,
     expected_program_headers: Vec<ExpectedProgramHeaders>,
@@ -1646,6 +1650,13 @@ fn process_directive(
             .assertions
             .expected_gdb_index_symbols
             .push(arg.trim().to_owned()),
+        "ExpectGdbIndexDistinctAddrCus" => {
+            config.assertions.expected_gdb_index_distinct_addr_cus = Some(
+                arg.trim()
+                    .parse::<usize>()
+                    .with_context(|| format!("Invalid distinct addr CU count: {arg}"))?,
+            );
+        }
         "ExpectSectionBytes" => {
             let (section_name, hex_str) = arg.split_once('=').with_context(|| {
                 format!("ExpectSectionBytes requires section_name=0xhex_bytes, got `{arg}`")
@@ -3643,6 +3654,7 @@ impl Assertions {
         self.verify_section_bytes(&obj)?;
         self.verify_gdb_index_cu_count(&obj)?;
         self.verify_gdb_index_symbols(&obj)?;
+        self.verify_gdb_index_distinct_addr_cus(&obj)?;
         self.verify_strings(&bytes)?;
         verify_no_overlapping_sections(&obj)?;
         verify_no_overlapping_segments(&obj)?;
@@ -3767,6 +3779,34 @@ impl Assertions {
                 }
             );
         }
+        Ok(())
+    }
+
+    fn verify_gdb_index_distinct_addr_cus(&self, obj: &object::File) -> Result {
+        let Some(expected) = self.expected_gdb_index_distinct_addr_cus else {
+            return Ok(());
+        };
+        let data = gdb_index_section_data(obj, "ExpectGdbIndexDistinctAddrCus")?;
+        let hdr = GdbIndexOffsets::parse(&data)?;
+        // Each address entry is 20 bytes: low_address(u64) + high_address(u64) + cu_index(u32).
+        let entry_size = 20;
+        let area = &data[hdr.address_area..hdr.symbol_table];
+        let mut distinct_cus: HashSet<u32> = HashSet::new();
+        for chunk in area.chunks_exact(entry_size) {
+            let cu_index = u32::from_le_bytes(chunk[16..20].try_into().unwrap());
+            distinct_cus.insert(cu_index);
+        }
+        ensure!(
+            distinct_cus.len() >= expected,
+            "ExpectGdbIndexDistinctAddrCus: expected at least {expected} distinct CU indices \
+             in address area, got {} (indices: {:?})",
+            distinct_cus.len(),
+            {
+                let mut v: Vec<_> = distinct_cus.iter().copied().collect();
+                v.sort();
+                v
+            }
+        );
         Ok(())
     }
 
@@ -4139,6 +4179,7 @@ impl Assertions {
 struct GdbIndexOffsets {
     cu_list: usize,
     tu_list: usize,
+    address_area: usize,
     symbol_table: usize,
     constant_pool: usize,
 }
@@ -4151,6 +4192,7 @@ impl GdbIndexOffsets {
         let version = u32::from_le_bytes(data[0..4].try_into().unwrap());
         let cu_list = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
         let tu_list = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
+        let address_area = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
         let symbol_table = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
         let constant_pool = if version >= 8 {
             ensure!(
@@ -4168,6 +4210,7 @@ impl GdbIndexOffsets {
         Ok(Self {
             cu_list,
             tu_list,
+            address_area,
             symbol_table,
             constant_pool,
         })
