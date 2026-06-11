@@ -16,6 +16,7 @@ use crate::output_section_id::SectionName;
 use crate::platform::ObjectFile as _;
 use crate::platform::SectionHeader as _;
 use crate::resolution::SectionSlot;
+use crate::timing_phase;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
 use linker_utils::bit_misc::BitExtraction;
@@ -239,6 +240,8 @@ fn raw_section_by_name<'data>(
 
 /// Pre-scan all input objects to compute the `.gdb_index` section size.
 pub(crate) fn compute_gdb_index_size(groups: &[GroupState<'_, Elf>]) -> Result<u64> {
+    timing_phase!("Compute GDB index size");
+
     let objects = groups.iter().flat_map(|g| g.files.iter()).filter_map(|f| {
         let FileLayoutState::Object(obj) = f else {
             return None;
@@ -418,6 +421,8 @@ struct GdbIndexScanResult<'data> {
 fn scan_objects_for_gdb_index<'data>(
     objects: impl Iterator<Item = (&'data crate::elf::File<'data>, &'data [SectionSlot])>,
 ) -> Result<GdbIndexScanResult<'data>> {
+    timing_phase!("Scan objects for GDB index");
+
     let mut total_cus = 0usize;
     let mut total_addr_entries = 0usize;
     let mut sym_map: HashMap<&'data [u8], SymData> = HashMap::new();
