@@ -2078,7 +2078,7 @@ impl platform::Args for ElfArgs {
     }
 
     fn should_write_gdb_index(&self) -> bool {
-        self.gdb_index
+        self.gdb_index && !self.should_strip_debug()
     }
 }
 

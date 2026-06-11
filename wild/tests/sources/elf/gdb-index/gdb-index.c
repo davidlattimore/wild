@@ -18,6 +18,15 @@
 //#LinkArgs:--gdb-index --no-gdb-index
 //#NoSection:.gdb_index
 
+//#Config:with-strip-debug:default
+//#LinkArgs:--gdb-index --strip-debug
+//#NoSection:.gdb_index
+
+//#Config:with-strip-all:default
+//#LinkArgs:--gdb-index --strip-all
+//#DiffIgnore:file-header.entry
+//#NoSection:.gdb_index
+
 #include "../common/runtime.h"
 
 int foo(int a, int b);
