@@ -17,6 +17,7 @@ use crate::platform::ObjectFile as _;
 use crate::platform::SectionHeader as _;
 use crate::resolution::SectionSlot;
 use crate::timing_phase;
+use crate::verbose_timing_phase;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
 use linker_utils::bit_misc::BitExtraction;
@@ -304,8 +305,6 @@ pub(crate) fn write_gdb_index(
         return Ok(());
     }
 
-    timing_phase!("Write GDB index");
-
     let cu_entries = build_cu_list(output_buf, layout)?;
     let sorted_names = &scan.sorted_symbols;
     let ht_slots = scan.ht_slots;
@@ -315,7 +314,7 @@ pub(crate) fn write_gdb_index(
              Compile with -ggnu-pubnames to populate it.",
         );
     }
-    let addr_entries = build_address_entries(layout)?;
+    let addr_entries = build_address_entries(layout, &scan.per_object_cu_counts)?;
 
     let cu_list_off = HEADER_SIZE as u32;
     let tu_list_off = cu_list_off + (cu_entries.len() * CU_ENTRY_SIZE) as u32;
@@ -324,26 +323,7 @@ pub(crate) fn write_gdb_index(
     let short_off = sym_off + (ht_slots * HASH_SLOT_SIZE) as u32;
     let cp_off = short_off + SHORTCUT_TABLE_SIZE as u32;
 
-    // Write constant pool: CU vectors first, then name strings.
-    let mut cv_offsets = Vec::with_capacity(sorted_names.len());
-    let mut off = cp_off as usize;
-    for (_, sd) in sorted_names {
-        cv_offsets.push((off - cp_off as usize) as u32);
-        buf[off..off + 4].copy_from_slice(&(sd.cv_entries.len() as u32).to_le_bytes());
-        off += 4;
-        for &e in &sd.cv_entries {
-            buf[off..off + 4].copy_from_slice(&e.to_le_bytes());
-            off += 4;
-        }
-    }
-    let mut name_offsets = Vec::with_capacity(sorted_names.len());
-    for (name, _) in sorted_names {
-        name_offsets.push((off - cp_off as usize) as u32);
-        buf[off..off + name.len()].copy_from_slice(name);
-        off += name.len();
-        buf[off] = 0;
-        off += 1;
-    }
+    let (cv_offsets, name_offsets) = write_constant_pool(buf, cp_off as usize, sorted_names);
 
     let hdr = GdbIndexHeader {
         version: GDB_INDEX_VERSION,
@@ -424,6 +404,9 @@ pub(crate) struct GdbIndexScanResult<'data> {
     total_addr_entries: usize,
     sorted_symbols: Vec<(&'data [u8], SymData)>,
     ht_slots: usize,
+    /// CU count for each object that has debug info, in input order. Used by
+    /// `build_address_entries` to assign global CU indices.
+    per_object_cu_counts: Vec<u32>,
 }
 
 /// Result of scanning a single input object for GDB index data.
@@ -499,11 +482,17 @@ fn merge_gdb_index_scans<'data>(
     let mut total_cus = 0usize;
     let mut total_addr_entries = 0usize;
     let mut sym_map: HashMap<&'data [u8], SymData> = HashMap::new();
+    let mut per_object_cu_counts = Vec::new();
 
-    for scan in per_object.into_iter().flatten() {
+    for scan in per_object {
+        let Some(scan) = scan else {
+            per_object_cu_counts.push(0);
+            continue;
+        };
         let base = total_cus as u32;
         total_cus += scan.num_cus;
         total_addr_entries += scan.num_addr_entries;
+        per_object_cu_counts.push(scan.num_cus as u32);
 
         for (name, local_cu_idx, attrs) in scan.symbol_entries {
             let entry = encode_cu_vector_entry(base + local_cu_idx, attrs);
@@ -526,6 +515,7 @@ fn merge_gdb_index_scans<'data>(
         total_addr_entries,
         sorted_symbols: sorted,
         ht_slots,
+        per_object_cu_counts,
     }
 }
 
@@ -544,19 +534,21 @@ fn scan_objects_for_gdb_index<'data>(
 }
 
 /// Build address entries using resolved addresses from the final layout.
-fn build_address_entries(layout: &Layout<'_, Elf>) -> Result<Vec<GdbIndexAddressEntry>> {
+fn build_address_entries(
+    layout: &Layout<'_, Elf>,
+    per_object_cu_counts: &[u32],
+) -> Result<Vec<GdbIndexAddressEntry>> {
+    verbose_timing_phase!("Build GDB address entries");
     let mut entries = Vec::new();
     let mut cu_offset = 0u32;
+    let mut cu_count_iter = per_object_cu_counts.iter();
 
     for group in &layout.group_layouts {
         for file in &group.files {
             let FileLayout::Object(obj) = file else {
                 continue;
             };
-            let object = obj.object;
-
-            let obj_cu_count = raw_section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)?
-                .map_or(0, |data| parse_cu_boundaries(data).len() as u32);
+            let &obj_cu_count = cu_count_iter.next().unwrap_or(&0);
             if obj_cu_count == 0 {
                 continue;
             }
@@ -569,7 +561,7 @@ fn build_address_entries(layout: &Layout<'_, Elf>) -> Result<Vec<GdbIndexAddress
                 if section.size == 0 {
                     continue;
                 }
-                let header = object.section(object::SectionIndex(si))?;
+                let header = obj.object.section(object::SectionIndex(si))?;
                 if !header.is_alloc() || !header.is_executable() {
                     continue;
                 }
@@ -590,6 +582,34 @@ fn build_address_entries(layout: &Layout<'_, Elf>) -> Result<Vec<GdbIndexAddress
     Ok(entries)
 }
 
+/// Write the constant pool (CU vectors followed by name strings) into `buf` starting at `cp_start`.
+fn write_constant_pool(
+    buf: &mut [u8],
+    cp_start: usize,
+    sorted: &[(&[u8], SymData)],
+) -> (Vec<u32>, Vec<u32>) {
+    let mut cv_offsets = Vec::with_capacity(sorted.len());
+    let mut off = cp_start;
+    for (_, sd) in sorted {
+        cv_offsets.push((off - cp_start) as u32);
+        buf[off..off + 4].copy_from_slice(&(sd.cv_entries.len() as u32).to_le_bytes());
+        off += 4;
+        for &e in &sd.cv_entries {
+            buf[off..off + 4].copy_from_slice(&e.to_le_bytes());
+            off += 4;
+        }
+    }
+    let mut name_offsets = Vec::with_capacity(sorted.len());
+    for (name, _) in sorted {
+        name_offsets.push((off - cp_start) as u32);
+        buf[off..off + name.len()].copy_from_slice(name);
+        off += name.len();
+        buf[off] = 0;
+        off += 1;
+    }
+    (cv_offsets, name_offsets)
+}
+
 /// Insert symbols into the open-addressing hash table region of `buf`.
 fn write_hash_table(
     buf: &mut [u8],
@@ -599,6 +619,7 @@ fn write_hash_table(
     name_offsets: &[u32],
     cv_offsets: &[u32],
 ) -> Result {
+    verbose_timing_phase!("Write GDB hash table");
     let ht_end = ht_start + ht_slots * HASH_SLOT_SIZE;
     buf[ht_start..ht_end].fill(0);
 
