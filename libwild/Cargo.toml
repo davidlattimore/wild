@@ -36,7 +36,6 @@ libc.workspace = true
 libloading = { workspace = true, optional = true }
 memchr.workspace = true
 memmap2.workspace = true
-nix = { workspace = true, optional = true }
 object.workspace = true
 perfetto-recorder.workspace = true
 rayon.workspace = true
@@ -61,6 +60,9 @@ zstd.workspace = true
 [target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 perf-event.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
 [build-dependencies]
 cc = "1.1.12"
 
@@ -73,7 +75,7 @@ tempfile.workspace = true
 fork = []
 
 # Support for linker-plugins.
-plugins = ["libloading", "nix"]
+plugins = ["libloading"]
 
 # Enable support for emitting a perfetto trace.
 perfetto = ["perfetto-recorder/enable", "tracing/release_max_level_info"]

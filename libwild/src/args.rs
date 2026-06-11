@@ -35,6 +35,7 @@ pub mod macho;
 pub mod wasm;
 
 use crate::error::Warning;
+use crate::file_writer::FileWriteMode;
 use crate::platform;
 use crate::platform::Args as _;
 use crate::timing_phase;
@@ -69,13 +70,13 @@ pub struct CommonArgs {
     jobserver_client: Option<Client>,
     pub(crate) inputs: Vec<Input>,
     pub(crate) file_replacement_mode: Option<FileReplacementMode>,
+    pub(crate) file_write_mode: Option<FileWriteMode>,
     pub(crate) save_dir: SaveDir,
 
     pub(crate) prepopulate_maps: bool,
     pub(crate) debug_fuel: Option<AtomicI64>,
     pub(crate) should_fork: bool,
     pub(crate) demangle: bool,
-    pub(crate) mmap_output_file: bool,
     pub(crate) validate_output: bool,
     pub(crate) verify_allocation_consistency: bool,
     pub(crate) write_layout: bool,
@@ -284,7 +285,7 @@ impl Default for CommonArgs {
             file_replacement_mode: None,
             unrecognized_options: Vec::new(),
             save_dir: SaveDir::default(),
-            mmap_output_file: true,
+            file_write_mode: None,
             prepopulate_maps: false,
             debug_fuel: None,
             should_fork: true,

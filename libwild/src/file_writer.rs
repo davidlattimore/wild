@@ -40,7 +40,13 @@ pub struct Output {
 struct OutputConfig {
     file_replacement_mode: FileReplacementMode,
     should_write_trace: bool,
-    use_mmap: bool,
+    file_write_mode: Option<FileWriteMode>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum FileWriteMode {
+    Mmap,
+    BufferThenWrite,
 }
 
 enum FileCreator {
@@ -67,17 +73,25 @@ pub(crate) enum OutputBuffer {
 
 impl OutputBuffer {
     fn new(file: &std::fs::File, file_size: u64, output_config: OutputConfig) -> Self {
-        if output_config.use_mmap {
-            // For some types of output file (e.g. character devices) we can't mmap, so we try to
-            // mmap the file and if it fails, fall back to non-mmapped output.
-            Self::new_mmapped(file, file_size)
-                .unwrap_or_else(|| Self::InMemory(vec![0; file_size as usize]))
-        } else {
-            // Try to set the length of the file. We ignore failures here because it's expected to
-            // fail for some types of files, e.g. /dev/null. If there's actually a problem writing
-            // to the file, we'll discover that when we go to write the content later on.
-            let _ = file.set_len(file_size);
-            Self::InMemory(vec![0; file_size as usize])
+        let file_write_mode = output_config
+            .file_write_mode
+            .unwrap_or_else(|| default_file_write_mode_for_file(file));
+
+        match file_write_mode {
+            FileWriteMode::Mmap => {
+                // For some types of output file (e.g. character devices) we can't mmap, so we try
+                // to mmap the file and if it fails, fall back to non-mmapped output.
+                Self::new_mmapped(file, file_size)
+                    .unwrap_or_else(|| Self::InMemory(vec![0; file_size as usize]))
+            }
+            FileWriteMode::BufferThenWrite => {
+                // Try to set the length of the file. We ignore failures here because it's expected
+                // to fail for some types of files, e.g. /dev/null. If there's actually a problem
+                // writing to the file, we'll discover that when we go to write the content later
+                // on.
+                let _ = file.set_len(file_size);
+                Self::InMemory(vec![0; file_size as usize])
+            }
         }
     }
 
@@ -85,6 +99,29 @@ impl OutputBuffer {
         file.set_len(file_size).ok()?;
         let mmap = unsafe { MmapOptions::new().map_mut(file) }.ok()?;
         Some(Self::Mmap(mmap))
+    }
+}
+
+fn default_file_write_mode_for_file(file: &std::fs::File) -> FileWriteMode {
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    {
+        match nix::sys::statfs::fstatfs(file)
+            .map(|stat| stat.filesystem_type())
+            .ok()
+        {
+            // Multi-threaded write performance with BTRFS is terrible. It's substantially faster to
+            // just buffer it all in memory then write it afterwards.
+            Some(nix::sys::statfs::BTRFS_SUPER_MAGIC) => FileWriteMode::BufferThenWrite,
+            // vfat isn't quite as bad as BTRFS in this regard, but it's still at least 4-10% faster
+            // if we avoid mmap.
+            Some(nix::sys::statfs::MSDOS_SUPER_MAGIC) => FileWriteMode::BufferThenWrite,
+            _ => FileWriteMode::Mmap,
+        }
+    }
+    #[cfg(not(any(target_os = "android", target_os = "linux")))]
+    {
+        let _ = file;
+        FileWriteMode::Mmap
     }
 }
 
@@ -138,7 +175,7 @@ impl Output {
             config: OutputConfig {
                 file_replacement_mode,
                 should_write_trace: args.common().write_trace,
-                use_mmap: args.common().mmap_output_file,
+                file_write_mode: args.common().file_write_mode,
             },
         }
     }
