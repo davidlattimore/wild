@@ -1,5 +1,5 @@
 use crate::OutputKind;
-use crate::args::FileWriteMode;
+use crate::args::FileReplacementMode;
 use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
 use crate::error;
 use crate::error::Context as _;
@@ -38,7 +38,7 @@ pub struct Output {
 
 #[derive(Clone, Copy)]
 struct OutputConfig {
-    file_write_mode: FileWriteMode,
+    file_replacement_mode: FileReplacementMode,
     should_write_trace: bool,
     use_mmap: bool,
 }
@@ -117,10 +117,10 @@ struct SectionAllocation {
 
 impl Output {
     pub(crate) fn new(args: &impl platform::Args, output_kind: OutputKind) -> Output {
-        let file_write_mode = args
+        let file_replacement_mode = args
             .common()
-            .file_write_mode
-            .unwrap_or_else(|| default_file_write_mode(args, output_kind));
+            .file_replacement_mode
+            .unwrap_or_else(|| default_file_replacement_mode(args, output_kind));
 
         let creator = if args.common().available_threads.get() > 1 {
             let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
@@ -136,7 +136,7 @@ impl Output {
             path: args.output().clone(),
             creator,
             config: OutputConfig {
-                file_write_mode,
+                file_replacement_mode,
                 should_write_trace: args.common().write_trace,
                 use_mmap: args.common().mmap_output_file,
             },
@@ -159,7 +159,8 @@ impl Output {
                 rayon::spawn(move || {
                     verbose_timing_phase!("Create output file");
 
-                    if output_config.file_write_mode == FileWriteMode::UnlinkAndReplace {
+                    if output_config.file_replacement_mode == FileReplacementMode::UnlinkAndReplace
+                    {
                         // Rename the old output file so that we can create a new file in its place.
                         // Reusing the existing file would also be an option, but that wouldn't
                         // error if the file is currently being executed.
@@ -236,17 +237,20 @@ impl Output {
     }
 }
 
-/// Returns the file write mode that we should use to write to the specified path.
-fn default_file_write_mode(args: &impl platform::Args, output_kind: OutputKind) -> FileWriteMode {
+/// Returns the file replacement mode that we should use to write to the specified path.
+fn default_file_replacement_mode(
+    args: &impl platform::Args,
+    output_kind: OutputKind,
+) -> FileReplacementMode {
     if output_kind.is_shared_object() {
-        return FileWriteMode::UnlinkAndReplace;
+        return FileReplacementMode::UnlinkAndReplace;
     }
 
     if std::fs::metadata(args.output()).is_err() {
-        return FileWriteMode::UnlinkAndReplace;
+        return FileReplacementMode::UnlinkAndReplace;
     }
 
-    FileWriteMode::UpdateInPlaceWithFallback
+    FileReplacementMode::UpdateInPlaceWithFallback
 }
 
 /// Delete the old output file. Note, this is only used when running from a single thread.
@@ -264,11 +268,11 @@ impl SizedOutput {
     fn new(path: Arc<Path>, output_config: OutputConfig, file_size: u64) -> Result<SizedOutput> {
         let mut open_options = std::fs::OpenOptions::new();
 
-        match output_config.file_write_mode {
-            FileWriteMode::UnlinkAndReplace => {
+        match output_config.file_replacement_mode {
+            FileReplacementMode::UnlinkAndReplace => {
                 open_options.truncate(true);
             }
-            FileWriteMode::UpdateInPlace | FileWriteMode::UpdateInPlaceWithFallback => {
+            FileReplacementMode::UpdateInPlace | FileReplacementMode::UpdateInPlaceWithFallback => {
                 open_options.truncate(false);
             }
         }
@@ -280,8 +284,8 @@ impl SizedOutput {
                 // falllback is permitted.
                 if error.kind() == ErrorKind::ExecutableFileBusy
                     && matches!(
-                        output_config.file_write_mode,
-                        FileWriteMode::UpdateInPlaceWithFallback
+                        output_config.file_replacement_mode,
+                        FileReplacementMode::UpdateInPlaceWithFallback
                     )
                 {
                     // If the file is being executed, we can't modify it, but we can delete it.

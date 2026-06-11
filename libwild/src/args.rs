@@ -68,7 +68,7 @@ pub struct CommonArgs {
 
     jobserver_client: Option<Client>,
     pub(crate) inputs: Vec<Input>,
-    pub(crate) file_write_mode: Option<FileWriteMode>,
+    pub(crate) file_replacement_mode: Option<FileReplacementMode>,
     pub(crate) save_dir: SaveDir,
 
     pub(crate) prepopulate_maps: bool,
@@ -281,7 +281,7 @@ impl Default for CommonArgs {
             jobserver_client: None,
             files_per_group: None,
             inputs: Vec::new(),
-            file_write_mode: None,
+            file_replacement_mode: None,
             unrecognized_options: Vec::new(),
             save_dir: SaveDir::default(),
             mmap_output_file: true,
@@ -463,7 +463,7 @@ pub(crate) enum Experiment {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FileWriteMode {
+pub(crate) enum FileReplacementMode {
     /// The existing output file, if any, will be unlinked (deleted) and a new file with the same
     /// name put in its place. Any hard links to the file will not be affected.
     UnlinkAndReplace,
@@ -1367,7 +1367,7 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
         .long("update-in-place")
         .help("Update file in place")
         .execute(|args, _modifier_stack| {
-            args.common_mut().file_write_mode = Some(FileWriteMode::UpdateInPlace);
+            args.common_mut().file_replacement_mode = Some(FileReplacementMode::UpdateInPlace);
             Ok(())
         });
     parser
