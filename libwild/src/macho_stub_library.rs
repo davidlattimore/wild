@@ -80,9 +80,9 @@ struct Exports<'a> {
 #[derive(Debug, Clone)]
 pub(crate) struct DefinedStubLibrary<'a> {
     /// Install name of the dynamic library, including its `.dylib` suffix.    
-    pub(crate) install_name: String,
+    pub(crate) install_name: &'a str,
     /// Current version recorded for the library, if present.
-    pub(crate) current_version: String,
+    pub(crate) current_version: &'a str,
     /// Global symbols defined by the library or by any reexported child library.
     pub(crate) symbols: Vec<&'a str>,
     /// Weak symbols defined by the library or by any reexported child library.
@@ -113,8 +113,8 @@ pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibr
         "Missing library version of the main library"
     );
     let mut defined_library = DefinedStubLibrary {
-        install_name: main_library.install_name.to_string(),
-        current_version: main_library.current_version.to_string(),
+        install_name: main_library.install_name,
+        current_version: main_library.current_version,
         symbols: Vec::with_capacity(
             library_definitions
                 .iter()

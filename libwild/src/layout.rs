@@ -75,6 +75,7 @@ use crate::verbose_timing_phase;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
+use hashbrown::HashSet;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
 use linker_utils::relaxation::RelaxDeltaMap;
@@ -810,6 +811,7 @@ pub(crate) struct PreludeLayoutState<'data, P: Platform> {
     identity: String,
     header_info: Option<HeaderInfo>,
     dynamic_linker: Option<CString>,
+    pub(crate) imported_library_paths: Vec<String>,
     pub(crate) format_specific: P::PreludeLayoutStateExt,
 }
 
@@ -881,6 +883,7 @@ pub(crate) struct PreludeLayout<'data, P: Platform> {
     pub(crate) header_info: HeaderInfo,
     pub(crate) internal_symbols: InternalSymbols<'data, P>,
     pub(crate) dynamic_linker: Option<CString>,
+    pub(crate) imported_library_paths: Vec<String>,
     pub(crate) format_specific: P::PreludeLayoutExt,
 }
 
@@ -1188,6 +1191,7 @@ pub(crate) struct CommonGroupState<'data, P: Platform> {
 
     /// A list of imported STUB library symbols (Mach-O specific).
     imported_symbols: Vec<ImportedSymbol<'data>>,
+    imported_library_paths: HashSet<(u8, &'data str)>,
 
     pub(crate) format_specific: P::CommonGroupStateExt,
 }
@@ -1199,6 +1203,7 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
             section_attributes: output_sections.new_section_map(),
             dynamic_symbol_definitions: Default::default(),
             imported_symbols: Default::default(),
+            imported_library_paths: Default::default(),
             format_specific: Default::default(),
         }
     }
@@ -1254,12 +1259,15 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
         symbol_id: SymbolId,
         name: &'data [u8],
         library_index: u8,
+        library_path: &'data str,
     ) {
         self.imported_symbols.push(ImportedSymbol {
             symbol_id,
             name,
             library_index,
         });
+        self.imported_library_paths
+            .insert((library_index, library_path));
     }
 
     /// Allocate resources and update attributes based on a section having been loaded.
@@ -2985,6 +2993,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             identity: format!("Linker: {}\0", args.common().linker_identity()),
             header_info: None,
             dynamic_linker: None,
+            imported_library_paths: Vec::new(),
             format_specific: Default::default(),
         }
     }
@@ -3117,6 +3126,12 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         per_symbol_flags: &mut PerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
+        self.imported_library_paths = common
+            .imported_library_paths
+            .iter()
+            .map(|(_, lib_name)| lib_name.to_string())
+            .collect();
+
         // Total section  sizes have already been computed. So any allocations we do need to update
         // both `total_sizes` and the size records in `common`. We track the extra sizes in
         // `extra_sizes` which we can then later add to both.
@@ -3411,6 +3426,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             header_info: self
                 .header_info
                 .expect("we should have computed header info by now"),
+            imported_library_paths: self.imported_library_paths,
             format_specific,
         })
     }

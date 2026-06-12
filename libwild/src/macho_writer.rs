@@ -188,6 +188,7 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
     layout: &MachOLayout<'data>,
 ) -> Result {
     verbose_timing_phase!("Write prelude");
+    debug_assert!(prelude.imported_library_paths.len() <= 1);
 
     let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
         .map_err(|_| error!("Invalid file header allocation"))?
@@ -207,10 +208,12 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
             .map_err(|_| error!("Invalid INTERP command allocation"))?;
     write_dylinker_command::<A>(dylinker_command, dylinker_path_buffer);
 
-    let (dylib_command, dylib_path_buffer): (&mut DylibCommand, &mut [u8]) =
-        from_bytes_mut(buffers.get_mut(part_id::LOAD_DYLIB))
-            .map_err(|_| error!("Invalid LOAD_DYLIB command allocation"))?;
-    write_dylib_command::<A>(dylib_command, dylib_path_buffer);
+    if !prelude.imported_library_paths.is_empty() {
+        let (dylib_command, dylib_path_buffer): (&mut DylibCommand, &mut [u8]) =
+            from_bytes_mut(buffers.get_mut(part_id::LOAD_DYLIB))
+                .map_err(|_| error!("Invalid LOAD_DYLIB command allocation"))?;
+        write_dylib_command::<A>(dylib_command, dylib_path_buffer);
+    }
 
     let chained_fixups_command: &mut DyldChainedFixupsCommand =
         from_bytes_mut(buffers.get_mut(part_id::DYLD_CHAINED_FIXUPS))

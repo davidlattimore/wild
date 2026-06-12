@@ -1246,7 +1246,7 @@ impl platform::Platform for MachO {
     }
 
     fn allocate_header_sizes(
-        _prelude: &mut crate::layout::PreludeLayoutState<Self>,
+        prelude: &mut crate::layout::PreludeLayoutState<Self>,
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         header_info: &crate::layout::HeaderInfo,
         output_sections: &crate::output_section_id::OutputSections<Self>,
@@ -1295,11 +1295,14 @@ impl platform::Platform for MachO {
             ((size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
                 .next_multiple_of(MACHO_COMMAND_ALIGNMENT)) as u64,
         );
-        sizes.increment(
-            part_id::LOAD_DYLIB,
-            ((size_of::<DylibCommand>() + LIBSYSTEM_PATH.len())
-                .next_multiple_of(MACHO_COMMAND_ALIGNMENT)) as u64,
-        );
+        for imported_lib in &prelude.imported_library_paths {
+            sizes.increment(
+                part_id::LOAD_DYLIB,
+                ((size_of::<DylibCommand>() + imported_lib.len())
+                    .next_multiple_of(MACHO_COMMAND_ALIGNMENT)) as u64,
+            );
+        }
+
         sizes.increment(
             part_id::DYLD_CHAINED_FIXUPS,
             size_of::<DyldChainedFixupsCommand>() as u64,
@@ -1334,6 +1337,7 @@ impl platform::Platform for MachO {
                 symbol_id,
                 symbol_name.bytes(),
                 u8::try_from(stub.file_id.file() + 1).with_context(|| "too many stub libraries")?,
+                stub.defined_symbols.install_name,
             );
         }
         Ok(())
