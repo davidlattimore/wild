@@ -159,86 +159,23 @@ struct PubnamesSet<'data> {
 }
 
 /// Parse `.debug_gnu_pubnames` / `.debug_gnu_pubtypes` section data.
-///
-/// Each set has a header pointing to a CU in `.debug_info`, followed by
-/// (die_offset, attrs_byte, NUL-terminated name) entries terminated by a zero die_offset.
-fn parse_pubnames_sets<'data>(
-    data: &'data [u8],
-    section_name: &str,
-) -> Result<Vec<PubnamesSet<'data>>> {
+fn parse_pubnames_sets<'data>(data: &'data [u8]) -> Result<Vec<PubnamesSet<'data>>> {
     let mut sets = Vec::new();
-    let mut pos = 0;
-    while pos + 4 <= data.len() {
-        let init_len = u32_from_slice(&data[pos..]);
-
-        let (header_size, set_end, debug_info_offset) = if init_len == 0xFFFF_FFFF {
-            // DWARF64: 4 + 8(len) + 2(ver) + 8(offset) + 8(size) = 30
-            crate::ensure!(
-                pos + 30 <= data.len(),
-                "Truncated DWARF64 header in {section_name} at offset {pos}"
-            );
-            let len = u64_from_slice(&data[pos + 4..]);
-            let dio = u64_from_slice(&data[pos + 14..]);
-            (30, pos + 12 + len as usize, dio)
-        } else {
-            // DWARF32: 4(len) + 2(ver) + 4(offset) + 4(size) = 14
-            crate::ensure!(
-                pos + 14 <= data.len(),
-                "Truncated DWARF32 header in {section_name} at offset {pos}"
-            );
-            let dio = u64::from(u32_from_slice(&data[pos + 6..]));
-            (14, pos + 4 + init_len as usize, dio)
-        };
-
-        let set_end = set_end.min(data.len());
-        let mut ep = pos + header_size;
+    for set in gimli::DebugGnuPubNames::new(data, gimli::LittleEndian).sets() {
+        let set = set.context("Failed to parse .debug_gnu_pubnames set")?;
         let mut entries = Vec::new();
-        let is_64 = init_len == 0xFFFF_FFFF;
-
-        while ep < set_end {
-            let die_offset = if is_64 {
-                crate::ensure!(
-                    ep + 8 <= set_end,
-                    "Truncated die offset in {section_name} at offset {ep}"
-                );
-                let v = u64_from_slice(&data[ep..]);
-                ep += 8;
-                v
-            } else {
-                crate::ensure!(
-                    ep + 4 <= set_end,
-                    "Truncated die offset in {section_name} at offset {ep}"
-                );
-                let v = u64::from(u32_from_slice(&data[ep..]));
-                ep += 4;
-                v
-            };
-            if die_offset == 0 {
-                break;
+        for item in set.items() {
+            let item = item.context("Failed to parse .debug_gnu_pubnames entry")?;
+            let mut attrs = item.kind().0 << 4;
+            if item.is_static() {
+                attrs |= 0x80;
             }
-            crate::ensure!(
-                ep < set_end,
-                "Missing attrs byte in {section_name} at offset {ep}"
-            );
-            let attrs = data[ep];
-            ep += 1;
-            let name_start = ep;
-            while ep < set_end && data[ep] != 0 {
-                ep += 1;
-            }
-            crate::ensure!(
-                ep < set_end,
-                "Unterminated name in {section_name} at offset {name_start}"
-            );
-            entries.push((&data[name_start..ep], attrs));
-            ep += 1;
+            entries.push((item.name().slice(), attrs));
         }
-
         sets.push(PubnamesSet {
-            debug_info_offset,
+            debug_info_offset: set.unit_header_offset().0 as u64,
             entries,
         });
-        pos = set_end;
     }
     Ok(sets)
 }
@@ -470,7 +407,7 @@ fn scan_one_object(
         let Some(data) = section_by_name(object, section_name)? else {
             continue;
         };
-        for set in parse_pubnames_sets(&data, section_name)? {
+        for set in parse_pubnames_sets(&data)? {
             let Some(&local_cu_idx) = offset_to_idx.get(&set.debug_info_offset) else {
                 continue;
             };
