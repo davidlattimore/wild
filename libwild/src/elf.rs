@@ -136,12 +136,6 @@ use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-/// Our starting address in memory when linking non-relocatable executables. We can start memory
-/// addresses wherever we like, even from 0. We pick 400k because it's the same as what ld does and
-/// because picking a distinctive non-zero values makes it more obvious what's happening if we mix
-/// up file and memory offsets.
-pub const NON_PIE_START_MEM_ADDRESS: u64 = 0x400_000;
-
 pub(crate) const GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
 
 /// The ppc64 TOC base symbol. Defined to point at the start of the GOT.
@@ -2064,14 +2058,6 @@ impl platform::Platform for Elf {
         }
 
         SectionRuleOutcome::Custom
-    }
-
-    fn start_memory_address(output_kind: OutputKind) -> u64 {
-        if output_kind.is_relocatable() {
-            0
-        } else {
-            crate::elf::NON_PIE_START_MEM_ADDRESS
-        }
     }
 
     fn requires_symtab_shndx(num_sections: usize) -> bool {

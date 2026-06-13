@@ -1500,10 +1500,6 @@ impl platform::Platform for MachO {
         builder.build()
     }
 
-    fn start_memory_address(_output_kind: OutputKind) -> u64 {
-        MACHO_START_MEM_ADDRESS
-    }
-
     fn align_load_segment_start(
         segment_def: ProgramSegmentDef,
         segment_alignment: Alignment,

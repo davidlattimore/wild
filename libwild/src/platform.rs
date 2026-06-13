@@ -75,6 +75,10 @@ pub(crate) trait Arch: Send + Sync + 'static {
     type Relaxation: Relaxation;
     type Platform: Platform;
 
+    /// Default load address for non-PIE output.
+    /// Override this for architectures that need a different default.
+    const DEFAULT_LOAD_ADDRESS: u64 = 0x400_000;
+
     /// Returns the identifier to be written into the output file that identifies the file as
     /// belonging to this architecture. e.g. for ELF, this is the header magic for the architecture.
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier;
@@ -192,6 +196,15 @@ pub(crate) trait Arch: Send + Sync + 'static {
         // Should only be called if thunk_config returns Some, in which case this must be
         // overridden.
         unimplemented!();
+    }
+
+    /// Return the starting load address for non-PIE output.
+    fn start_memory_address(output_kind: OutputKind) -> u64 {
+        if output_kind.is_relocatable() {
+            0
+        } else {
+            Self::DEFAULT_LOAD_ADDRESS
+        }
     }
 }
 
@@ -747,9 +760,6 @@ pub(crate) trait Platform:
     ) -> SectionRuleOutcome {
         SectionRuleOutcome::Custom
     }
-
-    /// Return a starting address in memory.
-    fn start_memory_address(output_kind: OutputKind) -> u64;
 
     fn requires_symtab_shndx(_num_sections: usize) -> bool {
         false

@@ -56,7 +56,9 @@ impl crate::platform::Arch for MachOAArch64 {
     type Relaxation = Relaxation;
 
     type Platform = MachO;
-
+    fn start_memory_address(_output_kind: crate::output_kind::OutputKind) -> u64 {
+        crate::macho::MACHO_START_MEM_ADDRESS
+    }
     fn arch_identifier() -> <Self::Platform as crate::platform::Platform>::ArchIdentifier {
         todo!()
     }

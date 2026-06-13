@@ -49,6 +49,7 @@ macro_rules! rel_info_from_type {
 impl crate::platform::Arch for ElfRiscV64 {
     type Relaxation = Relaxation;
     type Platform = Elf;
+    const DEFAULT_LOAD_ADDRESS: u64 = 0x10000;
 
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_RISCV

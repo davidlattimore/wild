@@ -2367,11 +2367,6 @@ impl platform::Platform for Wasm {
     fn default_symtab_entry() -> Self::SymtabEntry {
         WasmSymbol::default()
     }
-
-    fn start_memory_address(_output_kind: crate::output_kind::OutputKind) -> u64 {
-        // Wasm uses linear memory; the linker just lays out at offset 0.
-        0
-    }
 }
 
 fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
