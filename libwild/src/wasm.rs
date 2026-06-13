@@ -1942,6 +1942,7 @@ impl platform::Platform for Wasm {
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
+    type ResolvedObjectExt<'data> = ();
 
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,

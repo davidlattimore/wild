@@ -254,6 +254,7 @@ pub(crate) trait Platform:
     type Args: Args;
     type ResolutionExt: Default + std::fmt::Debug + Copy + Send + Sync + 'static;
     type SymtabShndxEntry: std::fmt::Debug + Default + Send + Sync + 'static;
+    type ResolvedObjectExt<'data>: Default + std::fmt::Debug + Send + Sync;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
@@ -757,6 +758,7 @@ pub(crate) trait Platform:
     fn lookup_for_partial_link(
         _section_name: &[u8],
         _section: &Self::SectionHeader,
+        _args: &Self::Args,
     ) -> SectionRuleOutcome {
         SectionRuleOutcome::Custom
     }
@@ -783,6 +785,22 @@ pub(crate) trait Platform:
         _groups: &[crate::layout::GroupState<Self>],
     ) -> crate::error::Result<(u64, Option<Self::GdbIndexScanResult>)> {
         Ok((0, None))
+    }
+
+    fn handle_debug_index_section<'data>(
+        _obj: &mut crate::resolution::ResolvedObject<'data, Self>,
+        _section_index: object::SectionIndex,
+        _input_section: &'data Self::SectionHeader,
+        _member: &bumpalo_herd::Member<'data>,
+        _loaded_metrics: &LoadedMetrics,
+    ) -> Result {
+        Ok(())
+    }
+
+    fn new_object_layout_state_ext<'data>(
+        _input: Self::ResolvedObjectExt<'data>,
+    ) -> Self::ObjectLayoutStateExt<'data> {
+        Default::default()
     }
 }
 

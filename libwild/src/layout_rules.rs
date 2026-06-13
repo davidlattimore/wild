@@ -102,6 +102,7 @@ pub(crate) enum SectionRuleOutcome {
     NoteGnuProperty,
     NoteGnuStack,
     Debug,
+    DebugIndex,
     RiscVAttribute,
     SortedSection(SectionOutputInfo),
 }

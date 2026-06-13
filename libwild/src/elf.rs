@@ -16,6 +16,7 @@ use crate::error::Result;
 use crate::expression_eval;
 use crate::file_kind::FileKind;
 use crate::file_writer::copy_section_data;
+use crate::gdb_index::InputDebugIndexSection;
 use crate::grouping::Group;
 use crate::grouping::SequencedLinkerScript;
 use crate::input_data::InputBytes;
@@ -332,6 +333,7 @@ impl platform::Platform for Elf {
     type Args = ElfArgs;
     type ResolutionExt = ResolutionExt;
     type SymtabShndxEntry = SymtabShndxEntry;
+    type ResolvedObjectExt<'data> = ResolvedObjectExt<'data>;
 
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
@@ -1720,11 +1722,11 @@ impl platform::Platform for Elf {
         if args.gdb_index {
             rules.push(SectionRule::exact(
                 secnames::DEBUG_GNU_PUBNAMES,
-                SectionRuleOutcome::Discard,
+                SectionRuleOutcome::DebugIndex,
             ));
             rules.push(SectionRule::exact(
                 secnames::DEBUG_GNU_PUBTYPES,
-                SectionRuleOutcome::Discard,
+                SectionRuleOutcome::DebugIndex,
             ));
         }
 
@@ -2045,6 +2047,7 @@ impl platform::Platform for Elf {
     fn lookup_for_partial_link(
         section_name: &[u8],
         section: &Self::SectionHeader,
+        args: &Self::Args,
     ) -> SectionRuleOutcome {
         if section.should_exclude() {
             return SectionRuleOutcome::Discard;
@@ -2068,6 +2071,9 @@ impl platform::Platform for Elf {
                 return SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
                     output_section_id::NOTE_ABI_TAG,
                 ));
+            }
+            secnames::DEBUG_GNU_PUBNAMES | secnames::DEBUG_GNU_PUBTYPES if args.gdb_index => {
+                return SectionRuleOutcome::DebugIndex;
             }
             _ => {}
         }
@@ -2125,6 +2131,37 @@ impl platform::Platform for Elf {
 
     fn get_sizeof_headers(header_info: &layout::HeaderInfo) -> u64 {
         u64::from(FILE_HEADER_SIZE) + program_headers_size(header_info)
+    }
+
+    fn handle_debug_index_section<'data>(
+        obj: &mut crate::resolution::ResolvedObject<'data, Self>,
+        section_index: object::SectionIndex,
+        input_section: &'data Self::SectionHeader,
+        member: &bumpalo_herd::Member<'data>,
+        loaded_metrics: &LoadedMetrics,
+    ) -> Result {
+        let data = obj
+            .common
+            .object
+            .section_data(input_section, member, loaded_metrics)?;
+
+        obj.format_specific
+            .debug_index_sections
+            .push(InputDebugIndexSection {
+                contents: data,
+                section_index,
+            });
+
+        Ok(())
+    }
+
+    fn new_object_layout_state_ext<'data>(
+        input: Self::ResolvedObjectExt<'data>,
+    ) -> Self::ObjectLayoutStateExt<'data> {
+        ObjectLayoutStateExt {
+            debug_index_sections: input.debug_index_sections,
+            ..Default::default()
+        }
     }
 }
 
@@ -3418,6 +3455,8 @@ pub(crate) struct ObjectLayoutStateExt<'data> {
 
     /// Indexed by `FrameIndex`.
     exception_frames: ExceptionFrames<'data>,
+
+    pub(crate) debug_index_sections: Vec<InputDebugIndexSection<'data>>,
 }
 
 #[derive(Debug)]
@@ -5232,6 +5271,11 @@ impl Resolution<Elf> {
         }
         Ok(self.raw_value.wrapping_add(addend as u64))
     }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ResolvedObjectExt<'data> {
+    debug_index_sections: Vec<InputDebugIndexSection<'data>>,
 }
 
 const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[

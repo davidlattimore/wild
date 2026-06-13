@@ -768,6 +768,8 @@ pub(crate) struct ResolvedObject<'data, P: Platform> {
     /// Total size in bytes of all executable input sections in this object. Used to determine
     /// early-on if we can be sure that thunks won't be needed.
     pub(crate) executable_bytes: u64,
+
+    pub(crate) format_specific: P::ResolvedObjectExt<'data>,
 }
 
 #[derive(Debug)]
@@ -1218,6 +1220,7 @@ impl<'data, P: Platform> ResolvedObject<'data, P> {
             custom_sections: Default::default(),
             init_fini_sections: Default::default(),
             executable_bytes: 0,
+            format_specific: Default::default(),
         }
     }
 }
@@ -1313,7 +1316,7 @@ fn resolve_section<'data, P: Platform>(
     };
 
     let rule_outcome = if args.should_output_partial_object() {
-        P::lookup_for_partial_link(section_name, input_section)
+        P::lookup_for_partial_link(section_name, input_section, args)
     } else {
         rules.lookup(section_name, file_name, input_section)
     };
@@ -1375,6 +1378,16 @@ fn resolve_section<'data, P: Platform>(
 
             part_id = part_id::CUSTOM_PLACEHOLDER;
             unloaded_section = UnloadedSection::new();
+        }
+        SectionRuleOutcome::DebugIndex => {
+            P::handle_debug_index_section(
+                obj,
+                input_section_index,
+                input_section,
+                allocator,
+                loaded_metrics,
+            )?;
+            return Ok((SectionSlot::Discard, part_id::UNMAPPED));
         }
         SectionRuleOutcome::Custom => {
             part_id = part_id::CUSTOM_PLACEHOLDER;

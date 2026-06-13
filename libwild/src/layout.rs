@@ -3848,7 +3848,7 @@ fn new_object_layout_state<P: Platform>(
         object: input_state.common.object,
         sections: input_state.sections,
         relocations: input_state.relocations,
-        format_specific: Default::default(),
+        format_specific: P::new_object_layout_state_ext(input_state.format_specific),
         section_relax_deltas: RelaxDeltaMap::new(),
         thunk_block_id: ThunkBlockId::default(),
         owns_thunk_block: false,

@@ -12,6 +12,7 @@ use crate::layout::FileLayout;
 use crate::layout::FileLayoutState;
 use crate::layout::GroupState;
 use crate::layout::Layout;
+use crate::layout::ObjectLayoutState;
 use crate::output_section_id::SectionName;
 use crate::platform::ObjectFile as _;
 use crate::platform::SectionHeader as _;
@@ -21,7 +22,6 @@ use crate::verbose_timing_phase;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
 use linker_utils::bit_misc::BitExtraction;
-use linker_utils::elf::secnames;
 use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME_STR;
 use linker_utils::utils::u32_from_slice;
@@ -82,6 +82,12 @@ const SHORTCUT_TABLE_SIZE: usize = size_of::<GdbIndexShortcutTable>();
 struct GdbIndexHashSlot {
     name_offset: u32,
     cu_vector_offset: u32,
+}
+
+#[derive(Debug)]
+pub(crate) struct InputDebugIndexSection<'data> {
+    pub(crate) contents: &'data [u8],
+    pub(crate) section_index: object::SectionIndex,
 }
 
 const HASH_SLOT_SIZE: usize = size_of::<GdbIndexHashSlot>();
@@ -160,17 +166,14 @@ struct PubnamesSet<'data> {
 }
 
 /// Parse `.debug_gnu_pubnames` / `.debug_gnu_pubtypes` section data.
-fn parse_pubnames_sets<'data>(
-    data: &'data [u8],
-    section_name: &str,
-) -> Result<Vec<PubnamesSet<'data>>> {
+fn parse_pubnames_sets<'data>(data: &'data [u8]) -> Result<Vec<PubnamesSet<'data>>> {
     let mut sets = Vec::new();
     // Both gimli::DebugGnuPubNames and gimli::DebugGnuPubTypes have an equal data representation!
     for set in gimli::DebugGnuPubNames::new(data, gimli::LittleEndian).sets() {
-        let set = set.context(format!("Failed to parse {section_name} set"))?;
+        let set = set.context("Failed to parse set")?;
         let mut entries = Vec::new();
         for item in set.items() {
-            let item = item.context(format!("Failed to parse {section_name} entry"))?;
+            let item = item.context("Failed to parse entry")?;
             entries.push((item.name().slice(), item.flags()));
         }
         sets.push(PubnamesSet {
@@ -229,7 +232,7 @@ pub(crate) fn compute_gdb_index_size(
             let FileLayoutState::Object(obj) = f else {
                 return None;
             };
-            Some((obj.object, obj.sections.as_slice()))
+            Some((obj, obj.sections.as_slice()))
         })
         .collect();
     let scan = scan_objects_for_gdb_index(&objects)?;
@@ -370,11 +373,11 @@ struct PerObjectGdbScan {
 }
 
 /// Scan a single input object, returning per-object GDB index data with 0-based CU indices.
-fn scan_one_object(
-    object: &crate::elf::File<'_>,
+fn scan_one_object<'data>(
+    object: &ObjectLayoutState<'data, Elf>,
     sections: &[SectionSlot],
 ) -> Result<Option<PerObjectGdbScan>> {
-    let boundaries = match section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)? {
+    let boundaries = match section_by_name(object.object, DEBUG_INFO_SECTION_NAME_STR)? {
         Some(data) => parse_cu_boundaries(&data)?,
         None => return Ok(None),
     };
@@ -390,7 +393,7 @@ fn scan_one_object(
         if section.size == 0 {
             continue;
         }
-        let header = object.section(object::SectionIndex(si))?;
+        let header = object.object.section(object::SectionIndex(si))?;
         if header.is_alloc() && header.is_executable() {
             num_addr_entries += 1;
         }
@@ -404,14 +407,15 @@ fn scan_one_object(
 
     // Collect raw pubname entries with local CU indices and raw attrs.
     let mut symbol_entries = Vec::new();
-    for section_name in [
-        secnames::DEBUG_GNU_PUBNAMES_STR,
-        secnames::DEBUG_GNU_PUBTYPES_STR,
-    ] {
-        let Some(data) = section_by_name(object, section_name)? else {
-            continue;
-        };
-        for set in parse_pubnames_sets(&data, section_name)? {
+    for input_section in &object.format_specific.debug_index_sections {
+        for set in parse_pubnames_sets(input_section.contents).with_context(|| {
+            format!(
+                "Failed to parse {}",
+                object
+                    .object
+                    .section_display_name(input_section.section_index)
+            )
+        })? {
             let Some(&local_cu_idx) = offset_to_idx.get(&set.debug_info_offset) else {
                 continue;
             };
@@ -473,8 +477,8 @@ fn merge_gdb_index_scans(per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIndexS
 }
 
 /// Scan all input objects in parallel to build the GDB index symbol table.
-fn scan_objects_for_gdb_index(
-    objects: &[(&crate::elf::File<'_>, &[SectionSlot])],
+fn scan_objects_for_gdb_index<'data>(
+    objects: &[(&ObjectLayoutState<'data, Elf>, &[SectionSlot])],
 ) -> Result<GdbIndexScanResult> {
     timing_phase!("Scan objects for GDB index");
 
