@@ -13,10 +13,14 @@
 //#ExpectGdbIndexSymbol:compute
 //#ExpectGdbIndexSymbol:_start
 //#ExpectGdbIndexSymbol:foo
+//#NoSection:.debug_gnu_pubnames
+//#NoSection:.debug_gnu_pubtypes
 
 //#Config:disabled:default
 //#LinkArgs:--gdb-index --no-gdb-index
 //#NoSection:.gdb_index
+//#ExpectSection:.debug_gnu_pubnames
+//#ExpectSection:.debug_gnu_pubtypes
 
 //#Config:with-strip-debug:default
 //#LinkArgs:--gdb-index --strip-debug

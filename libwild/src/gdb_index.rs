@@ -21,6 +21,7 @@ use crate::verbose_timing_phase;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
 use linker_utils::bit_misc::BitExtraction;
+use linker_utils::elf::secnames;
 use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME_STR;
 use linker_utils::utils::u32_from_slice;
@@ -466,7 +467,10 @@ fn scan_one_object(
 
     // Collect raw pubname entries with local CU indices and raw attrs.
     let mut symbol_entries = Vec::new();
-    for section_name in [".debug_gnu_pubnames", ".debug_gnu_pubtypes"] {
+    for section_name in [
+        secnames::DEBUG_GNU_PUBNAMES_STR,
+        secnames::DEBUG_GNU_PUBTYPES_STR,
+    ] {
         let Some(data) = section_by_name(object, section_name)? else {
             continue;
         };

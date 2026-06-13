@@ -1720,12 +1720,27 @@ impl platform::Platform for Elf {
                 output_section_id::SFRAME,
             ))
         };
+
         let mut rules = Vec::with_capacity(DEFAULT_SECTION_RULES.len() + 1);
+
+        if args.gdb_index {
+            rules.push(SectionRule::exact(
+                secnames::DEBUG_GNU_PUBNAMES,
+                SectionRuleOutcome::Discard,
+            ));
+            rules.push(SectionRule::exact(
+                secnames::DEBUG_GNU_PUBTYPES,
+                SectionRuleOutcome::Discard,
+            ));
+        }
+
         rules.extend(DEFAULT_SECTION_RULES.iter().cloned());
+
         rules.push(SectionRule::exact(
             secnames::SFRAME_SECTION_NAME,
             sframe_outcome,
         ));
+
         rules
     }
 

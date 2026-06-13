@@ -330,6 +330,10 @@ pub mod secnames {
     pub const DEBUG_INFO_SECTION_NAME: &[u8] = DEBUG_INFO_SECTION_NAME_STR.as_bytes();
     pub const GDB_INDEX_SECTION_NAME_STR: &str = ".gdb_index";
     pub const GDB_INDEX_SECTION_NAME: &[u8] = GDB_INDEX_SECTION_NAME_STR.as_bytes();
+    pub const DEBUG_GNU_PUBNAMES_STR: &str = ".debug_gnu_pubnames";
+    pub const DEBUG_GNU_PUBNAMES: &[u8] = DEBUG_GNU_PUBNAMES_STR.as_bytes();
+    pub const DEBUG_GNU_PUBTYPES_STR: &str = ".debug_gnu_pubtypes";
+    pub const DEBUG_GNU_PUBTYPES: &[u8] = DEBUG_GNU_PUBTYPES_STR.as_bytes();
 
     pub const GNU_LTO_SYMTAB_PREFIX: &str = ".gnu.lto_.symtab";
 }
