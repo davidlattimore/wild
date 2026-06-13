@@ -220,9 +220,9 @@ fn gdb_index_size_from_scan(scan: &GdbIndexScanResult) -> u64 {
 
 /// Pre-scan all input objects to compute the `.gdb_index` section size and return the scan result
 /// for later use during the write phase.
-pub(crate) fn compute_gdb_index_size(
-    groups: &[GroupState<'_, Elf>],
-) -> Result<(u64, Option<GdbIndexScanResult>)> {
+pub(crate) fn compute_gdb_index_size<'data>(
+    groups: &[GroupState<'data, Elf>],
+) -> Result<(u64, Option<GdbIndexScanResult<'data>>)> {
     timing_phase!("Compute GDB index size");
 
     let objects: Vec<_> = groups
@@ -353,10 +353,10 @@ struct SymData {
     hash: u32,
 }
 
-pub(crate) struct GdbIndexScanResult {
+pub(crate) struct GdbIndexScanResult<'data> {
     total_cus: usize,
     total_addr_entries: usize,
-    sorted_symbols: Vec<(Vec<u8>, SymData)>,
+    sorted_symbols: Vec<(&'data [u8], SymData)>,
     ht_slots: usize,
     /// CU count for each object that has debug info, in input order. Used by
     /// `build_address_entries` to assign global CU indices.
@@ -364,19 +364,19 @@ pub(crate) struct GdbIndexScanResult {
 }
 
 /// Result of scanning a single input object for GDB index data.
-struct PerObjectGdbScan {
+struct PerObjectGdbScan<'data> {
     num_cus: usize,
     num_addr_entries: usize,
     /// `(name, local_cu_index, attrs)`. CU index is 0-based within this object.
     /// Names are owned because section data may have been decompressed.
-    symbol_entries: Vec<(Vec<u8>, u32, u8)>,
+    symbol_entries: Vec<(&'data [u8], u32, u8)>,
 }
 
 /// Scan a single input object, returning per-object GDB index data with 0-based CU indices.
 fn scan_one_object<'data>(
     object: &ObjectLayoutState<'data, Elf>,
     sections: &[SectionSlot],
-) -> Result<Option<PerObjectGdbScan>> {
+) -> Result<Option<PerObjectGdbScan<'data>>> {
     let boundaries = match section_by_name(object.object, DEBUG_INFO_SECTION_NAME_STR)? {
         Some(data) => parse_cu_boundaries(&data)?,
         None => return Ok(None),
@@ -420,7 +420,7 @@ fn scan_one_object<'data>(
                 continue;
             };
             for (name, attrs) in set.entries {
-                symbol_entries.push((name.to_vec(), local_cu_idx, attrs));
+                symbol_entries.push((name, local_cu_idx, attrs));
             }
         }
     }
@@ -438,7 +438,7 @@ fn merge_gdb_index_scans(per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIndexS
 
     let mut total_cus = 0usize;
     let mut total_addr_entries = 0usize;
-    let mut sym_map: HashMap<Vec<u8>, SymData> = HashMap::new();
+    let mut sym_map: HashMap<&[u8], SymData> = HashMap::new();
     let mut per_object_cu_counts = Vec::new();
 
     for scan in per_object {
@@ -461,9 +461,9 @@ fn merge_gdb_index_scans(per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIndexS
         }
     }
 
-    let sorted: Vec<(Vec<u8>, SymData)> = sym_map
+    let sorted: Vec<(&[u8], SymData)> = sym_map
         .into_iter()
-        .sorted_unstable_by(|(a, _), (b, _)| a.cmp(b))
+        .sorted_unstable_by_key(|(a, _)| *a)
         .collect();
     let ht_slots = compute_hash_table_slots(sorted.len());
 
@@ -479,7 +479,7 @@ fn merge_gdb_index_scans(per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIndexS
 /// Scan all input objects in parallel to build the GDB index symbol table.
 fn scan_objects_for_gdb_index<'data>(
     objects: &[(&ObjectLayoutState<'data, Elf>, &[SectionSlot])],
-) -> Result<GdbIndexScanResult> {
+) -> Result<GdbIndexScanResult<'data>> {
     timing_phase!("Scan objects for GDB index");
 
     let per_object: Result<Vec<_>> = objects
@@ -611,7 +611,7 @@ fn cu_index_for_offset(boundaries: &[CuBoundary], offset: u64) -> Option<u32> {
 fn write_constant_pool(
     buf: &mut [u8],
     cp_start: usize,
-    sorted: &[(Vec<u8>, SymData)],
+    sorted: &[(&[u8], SymData)],
 ) -> (Vec<u32>, Vec<u32>) {
     let mut cv_offsets = Vec::with_capacity(sorted.len());
     let mut off = cp_start;
@@ -640,7 +640,7 @@ fn write_hash_table(
     buf: &mut [u8],
     ht_slots: usize,
     ht_start: usize,
-    sorted: &[(Vec<u8>, SymData)],
+    sorted: &[(&[u8], SymData)],
     name_offsets: &[u32],
     cv_offsets: &[u32],
 ) -> Result {

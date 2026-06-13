@@ -705,7 +705,7 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) thunk_block_addresses: Vec<BTreeMap<SymbolId, u64>>,
 
     pub(crate) compressed_debug_sections: OutputSectionMap<Option<CompressedSection>>,
-    pub(crate) gdb_index_data: Option<P::GdbIndexScanResult>,
+    pub(crate) gdb_index_data: Option<P::GdbIndexScanResult<'data>>,
 }
 
 #[derive(Debug, Default)]
@@ -1972,7 +1972,10 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
     per_symbol_flags: &mut PerSymbolFlags,
     must_keep_sections: OutputSectionMap<bool>,
     resources: &FinaliseSizesResources<'data, '_, P>,
-) -> Result<(OutputSectionPartMap<u64>, Option<P::GdbIndexScanResult>)> {
+) -> Result<(
+    OutputSectionPartMap<u64>,
+    Option<P::GdbIndexScanResult<'data>>,
+)> {
     timing_phase!("Compute total section sizes");
 
     let mut total_sizes: OutputSectionPartMap<u64> = output_sections.new_part_map();

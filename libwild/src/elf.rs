@@ -2108,11 +2108,11 @@ impl platform::Platform for Elf {
         total_sizes.merge(&extra_sizes);
     }
 
-    type GdbIndexScanResult = crate::gdb_index::GdbIndexScanResult;
+    type GdbIndexScanResult<'data> = crate::gdb_index::GdbIndexScanResult<'data>;
 
-    fn compute_gdb_index_size(
-        groups: &[crate::layout::GroupState<Self>],
-    ) -> crate::error::Result<(u64, Option<Self::GdbIndexScanResult>)> {
+    fn compute_gdb_index_size<'data>(
+        groups: &[crate::layout::GroupState<'data, Self>],
+    ) -> crate::error::Result<(u64, Option<Self::GdbIndexScanResult<'data>>)> {
         crate::gdb_index::compute_gdb_index_size(groups)
     }
 
