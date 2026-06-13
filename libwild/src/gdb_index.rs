@@ -159,18 +159,18 @@ struct PubnamesSet<'data> {
 }
 
 /// Parse `.debug_gnu_pubnames` / `.debug_gnu_pubtypes` section data.
-fn parse_pubnames_sets<'data>(data: &'data [u8]) -> Result<Vec<PubnamesSet<'data>>> {
+fn parse_pubnames_sets<'data>(
+    data: &'data [u8],
+    section_name: &str,
+) -> Result<Vec<PubnamesSet<'data>>> {
     let mut sets = Vec::new();
+    // Both gimli::DebugGnuPubNames and gimli::DebugGnuPubTypes have an equal data representation!
     for set in gimli::DebugGnuPubNames::new(data, gimli::LittleEndian).sets() {
-        let set = set.context("Failed to parse .debug_gnu_pubnames set")?;
+        let set = set.context(format!("Failed to parse {section_name} set"))?;
         let mut entries = Vec::new();
         for item in set.items() {
-            let item = item.context("Failed to parse .debug_gnu_pubnames entry")?;
-            let mut attrs = item.kind().0 << 4;
-            if item.is_static() {
-                attrs |= 0x80;
-            }
-            entries.push((item.name().slice(), attrs));
+            let item = item.context(format!("Failed to parse {section_name} entry"))?;
+            entries.push((item.name().slice(), item.flags()));
         }
         sets.push(PubnamesSet {
             debug_info_offset: set.unit_header_offset().0 as u64,
@@ -407,7 +407,7 @@ fn scan_one_object(
         let Some(data) = section_by_name(object, section_name)? else {
             continue;
         };
-        for set in parse_pubnames_sets(&data)? {
+        for set in parse_pubnames_sets(&data, section_name)? {
             let Some(&local_cu_idx) = offset_to_idx.get(&set.debug_info_offset) else {
                 continue;
             };
