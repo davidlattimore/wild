@@ -32,7 +32,6 @@ use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
-use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
@@ -48,9 +47,7 @@ use object::macho::N_EXT;
 use object::macho::N_PEXT;
 use object::macho::N_SECT;
 use object::macho::N_WEAK_DEF;
-use object::macho::SEG_DATA;
 use object::macho::SEG_LINKEDIT;
-use object::macho::SEG_TEXT;
 use object::macho::Section64;
 use object::read::macho::MachHeader;
 use object::read::macho::Nlist;
@@ -718,7 +715,7 @@ impl platform::SegmentType for SegmentType {}
 #[derive(Debug, Copy, Clone, Default, PartialEq)]
 pub(crate) struct ProgramSegmentDef {
     pub(crate) segment_type: SegmentType,
-    pub(crate) part_id: Option<PartId>,
+    pub(crate) count_as_segment: bool,
 }
 
 impl std::fmt::Display for ProgramSegmentDef {
@@ -1632,30 +1629,30 @@ pub(crate) const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
     ProgramSegmentDef {
         segment_type: SegmentType::Text,
         // Not a real segment from the Macho-O definition.
-        part_id: Some(part_id::TEXT_SEGMENT),
+        count_as_segment: true,
     },
     ProgramSegmentDef {
         // Not a real segment from the Macho-O definition.
         segment_type: SegmentType::LoadCommands,
         // included in SegmentType::Text
-        part_id: None,
+        count_as_segment: false,
     },
     ProgramSegmentDef {
         segment_type: SegmentType::TextSections,
         // included in SegmentType::Text
-        part_id: None,
+        count_as_segment: false,
     },
     ProgramSegmentDef {
         segment_type: SegmentType::DataSections,
-        part_id: Some(part_id::DATA_SEGMENT),
+        count_as_segment: true,
     },
     ProgramSegmentDef {
         segment_type: SegmentType::DataConstSections,
-        part_id: Some(part_id::DATA_CONST_SEGMENT),
+        count_as_segment: true,
     },
     ProgramSegmentDef {
         segment_type: SegmentType::LinkeditSections,
-        part_id: Some(part_id::LINK_EDIT_SEGMENT),
+        count_as_segment: true,
     },
 ];
 
@@ -1673,7 +1670,7 @@ fn count_sections_for_segment_type(
 ) -> usize {
     let segment_def = ProgramSegmentDef {
         segment_type,
-        part_id: None,
+        count_as_segment: false,
     };
     output_sections
         .ids_with_info()

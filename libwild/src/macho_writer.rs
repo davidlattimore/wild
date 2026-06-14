@@ -869,8 +869,7 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     let active_segments = PROGRAM_SEGMENT_DEFS
         .iter()
         .filter(|segment| {
-            segment.part_id.is_some()
-                && get_segment_sections(layout, segment.segment_type).is_some()
+            segment.count_as_segment && get_segment_sections(layout, segment.segment_type).is_some()
         })
         .collect_vec();
     // The __PAGEZERO segment needs to be added manually.

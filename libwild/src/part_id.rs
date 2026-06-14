@@ -54,29 +54,26 @@ pub(crate) const SYMTAB_SHNDX_GLOBAL: PartId = PartId(31);
 pub(crate) const GDB_INDEX: PartId = PartId(32);
 
 // Mach-O specific sections
-pub(crate) const TEXT_SEGMENT: PartId = PartId(33);
-pub(crate) const DATA_SEGMENT: PartId = PartId(34);
-pub(crate) const DATA_CONST_SEGMENT: PartId = PartId(35);
-pub(crate) const LINK_EDIT_SEGMENT: PartId = PartId(36);
-pub(crate) const LOAD_COMMANDS: PartId = PartId(37);
-pub(crate) const CODE_SIGNATURE: PartId = PartId(38);
-pub(crate) const CHAINED_FIXUP_TABLE: PartId = PartId(39);
+pub(crate) const LINK_EDIT_SEGMENT: PartId = PartId(33);
+pub(crate) const LOAD_COMMANDS: PartId = PartId(34);
+pub(crate) const CODE_SIGNATURE: PartId = PartId(35);
+pub(crate) const CHAINED_FIXUP_TABLE: PartId = PartId(36);
 
 // Wasm specific sections. Each one corresponds to a single standard Wasm section.
-pub(crate) const WASM_TYPE: PartId = PartId(40);
-pub(crate) const WASM_IMPORT: PartId = PartId(41);
-pub(crate) const WASM_FUNCTION: PartId = PartId(42);
-pub(crate) const WASM_TABLE: PartId = PartId(43);
-pub(crate) const WASM_MEMORY: PartId = PartId(44);
-pub(crate) const WASM_GLOBAL: PartId = PartId(45);
-pub(crate) const WASM_EXPORT: PartId = PartId(46);
-pub(crate) const WASM_START: PartId = PartId(47);
-pub(crate) const WASM_ELEMENT: PartId = PartId(48);
-pub(crate) const WASM_DATA_COUNT: PartId = PartId(49);
-pub(crate) const WASM_CODE: PartId = PartId(50);
-pub(crate) const WASM_DATA: PartId = PartId(51);
+pub(crate) const WASM_TYPE: PartId = PartId(37);
+pub(crate) const WASM_IMPORT: PartId = PartId(38);
+pub(crate) const WASM_FUNCTION: PartId = PartId(39);
+pub(crate) const WASM_TABLE: PartId = PartId(40);
+pub(crate) const WASM_MEMORY: PartId = PartId(41);
+pub(crate) const WASM_GLOBAL: PartId = PartId(42);
+pub(crate) const WASM_EXPORT: PartId = PartId(43);
+pub(crate) const WASM_START: PartId = PartId(44);
+pub(crate) const WASM_ELEMENT: PartId = PartId(45);
+pub(crate) const WASM_DATA_COUNT: PartId = PartId(46);
+pub(crate) const WASM_CODE: PartId = PartId(47);
+pub(crate) const WASM_DATA: PartId = PartId(48);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 52;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 49;
 
 #[cfg(test)]
 pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_SINGLE_PART_SECTIONS as usize

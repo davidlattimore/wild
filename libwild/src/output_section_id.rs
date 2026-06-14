@@ -104,10 +104,6 @@ pub(crate) const SYMTAB_SHNDX_GLOBAL: OutputSectionId =
 pub(crate) const GDB_INDEX: OutputSectionId = part_id::GDB_INDEX.output_section_id();
 
 // Mach-O specific sections
-pub(crate) const TEXT_SEGMENT: OutputSectionId = part_id::TEXT_SEGMENT.output_section_id();
-pub(crate) const DATA_SEGMENT: OutputSectionId = part_id::DATA_SEGMENT.output_section_id();
-pub(crate) const DATA_CONST_SEGMENT: OutputSectionId =
-    part_id::DATA_CONST_SEGMENT.output_section_id();
 pub(crate) const LINK_EDIT_SEGMENT: OutputSectionId =
     part_id::LINK_EDIT_SEGMENT.output_section_id();
 pub(crate) const LOAD_COMMANDS: OutputSectionId = part_id::LOAD_COMMANDS.output_section_id();

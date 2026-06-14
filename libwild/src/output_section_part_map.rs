@@ -255,9 +255,6 @@ fn test_merge_parts() {
 
     const SKIP_SECTIONS: &[OutputSectionId] = &[
         crate::part_id::UNMAPPED.output_section_id(),
-        output_section_id::TEXT_SEGMENT,
-        output_section_id::DATA_SEGMENT,
-        output_section_id::DATA_CONST_SEGMENT,
         output_section_id::CSTRING,
         output_section_id::LINK_EDIT_SEGMENT,
         output_section_id::LOAD_COMMANDS,
