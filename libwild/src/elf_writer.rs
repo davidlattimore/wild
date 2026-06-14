@@ -2714,40 +2714,41 @@ fn write_got_plt_syms(
 
     let current_res_flags = resolution.flags;
 
-    let mut write_sym = |suffix: &[u8],
-                         section_id: OutputSectionId,
-                         get_value: fn(&Resolution<Elf>) -> Result<u64>|
-     -> Result {
-        let mut symbol_name = layout.symbol_db.symbol_name(symbol_id)?.to_string();
-        symbol_name.push_str(std::str::from_utf8(suffix).unwrap_or("unknown"));
+    let mut write_sym =
+        |suffix: &[u8],
+         section_id: OutputSectionId,
+         get_value: fn(&Resolution<Elf>) -> Result<u64>|
+         -> Result {
+            let mut symbol_name = layout.symbol_db.symbol_name(symbol_id)?.to_string();
+            symbol_name.push_str(std::str::from_utf8(suffix).unwrap_or("unknown"));
 
-        let shndx = layout
+            let shndx = layout
             .output_sections
             .output_index_of_section(section_id)
-            .context(format!(
+            .with_context(||format!(
                 "Tried to write dynamic symbol in {section_id} section that's not being output"
             ))?;
 
-        let value = get_value(resolution)?;
+            let value = get_value(resolution)?;
 
-        symbol_writer
-            .define_symbol(
-                true,
-                SymbolSection::Index(shndx),
-                value,
-                0,
-                symbol_name.as_bytes(),
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to copy {} symbol for {}",
-                    std::str::from_utf8(suffix).unwrap_or("unknown"),
-                    layout.symbol_debug(symbol_id)
+            symbol_writer
+                .define_symbol(
+                    true,
+                    SymbolSection::Index(shndx),
+                    value,
+                    0,
+                    symbol_name.as_bytes(),
                 )
-            })?;
+                .with_context(|| {
+                    format!(
+                        "Failed to copy {} symbol for {}",
+                        std::str::from_utf8(suffix).unwrap_or("unknown"),
+                        layout.symbol_debug(symbol_id)
+                    )
+                })?;
 
-        Ok(())
-    };
+            Ok(())
+        };
 
     write_sym(b"$got", output_section_id::GOT, Resolution::got_address)?;
     if current_res_flags.needs_plt() {

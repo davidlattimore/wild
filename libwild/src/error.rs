@@ -141,7 +141,7 @@ impl Error {
 
 pub trait Context<T> {
     fn with_context(self, callback: impl FnOnce() -> String) -> Result<T>;
-    fn context(self, message: impl Into<String>) -> Result<T>;
+    fn context(self, message: &'static str) -> Result<T>;
 }
 
 impl<T, E: Into<Error>> Context<T> for Result<T, E> {
@@ -156,7 +156,7 @@ impl<T, E: Into<Error>> Context<T> for Result<T, E> {
         }
     }
 
-    fn context(self, message: impl Into<String>) -> Result<T> {
+    fn context(self, message: &'static str) -> Result<T> {
         match self {
             Ok(v) => Ok(v),
             Err(error) => {
@@ -176,7 +176,7 @@ impl<T> Context<T> for Option<T> {
         }
     }
 
-    fn context(self, message: impl Into<String>) -> Result<T> {
+    fn context(self, message: &'static str) -> Result<T> {
         match self {
             Some(v) => Ok(v),
             None => Err(Error::with_message(message)),

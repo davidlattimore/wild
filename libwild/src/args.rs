@@ -727,20 +727,21 @@ impl<T: platform::Args> ArgumentParser<T> {
                     match &handler.handler {
                         OptionHandlerFn::NoParam(f) => f(args, modifier_stack)?,
                         OptionHandlerFn::WithParam(f) => {
-                            let next_arg =
-                                input.next().context(format!("Missing argument to {arg}"))?;
+                            let next_arg = input
+                                .next()
+                                .with_context(|| format!("Missing argument to {arg}"))?;
                             f(args, modifier_stack, next_arg.as_ref())?;
                         }
                         OptionHandlerFn::WithThreeParams(f) => {
                             let first_arg = input
                                 .next()
-                                .context(format!("Missing first argument to {arg}"))?;
+                                .with_context(|| format!("Missing first argument to {arg}"))?;
                             let second_arg = input
                                 .next()
-                                .context(format!("Missing second argument to {arg}"))?;
+                                .with_context(|| format!("Missing second argument to {arg}"))?;
                             let third_arg = input
                                 .next()
-                                .context(format!("Missing third argument to {arg}"))?;
+                                .with_context(|| format!("Missing third argument to {arg}"))?;
                             f(
                                 args,
                                 modifier_stack,
@@ -764,20 +765,21 @@ impl<T: platform::Args> ArgumentParser<T> {
                 match &handler.handler {
                     OptionHandlerFn::NoParam(f) => f(args, modifier_stack)?,
                     OptionHandlerFn::WithParam(f) => {
-                        let next_arg =
-                            input.next().context(format!("Missing argument to {arg}"))?;
+                        let next_arg = input
+                            .next()
+                            .with_context(|| format!("Missing argument to {arg}"))?;
                         f(args, modifier_stack, next_arg.as_ref())?;
                     }
                     OptionHandlerFn::WithThreeParams(f) => {
                         let first_arg = input
                             .next()
-                            .context(format!("Missing first argument to {arg}"))?;
+                            .with_context(|| format!("Missing first argument to {arg}"))?;
                         let second_arg = input
                             .next()
-                            .context(format!("Missing second argument to {arg}"))?;
+                            .with_context(|| format!("Missing second argument to {arg}"))?;
                         let third_arg = input
                             .next()
-                            .context(format!("Missing third argument to {arg}"))?;
+                            .with_context(|| format!("Missing third argument to {arg}"))?;
                         f(
                             args,
                             modifier_stack,
@@ -801,7 +803,7 @@ impl<T: platform::Args> ArgumentParser<T> {
                 let value = if rest.is_empty() {
                     let next_arg = input
                         .next()
-                        .context(format!("Missing argument to -{prefix}"))?;
+                        .with_context(|| format!("Missing argument to -{prefix}"))?;
                     next_arg.as_ref().to_owned()
                 } else {
                     rest.to_owned()
