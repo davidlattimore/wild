@@ -4,9 +4,7 @@
 #include <iostream>
 
 struct Foo {
-  static int foo() {
-    return 42;
-  }
+  static int foo() { return 42; }
 };
 
 int main() {
