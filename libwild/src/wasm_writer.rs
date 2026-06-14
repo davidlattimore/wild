@@ -1,4 +1,5 @@
 use crate::bail;
+use crate::ensure;
 use crate::error::Result;
 use crate::file_writer::SizedOutput;
 use crate::file_writer::split_output_into_sections;
@@ -12,8 +13,8 @@ use crate::wasm::WasmLayout;
 use crate::wasm::WasmRelocation;
 use crate::wasm::apply_relocation;
 use crate::wasm::section_id;
-use crate::wasm::uleb128_size;
 use crate::wasm::write_uleb128;
+use linker_utils::utils::uleb128_size;
 use wasm_encoder::ExportSection;
 use wasm_encoder::FunctionSection;
 use wasm_encoder::GlobalSection;
@@ -84,22 +85,20 @@ fn copy_metadata_sections(
 fn copy_encoded_section(encoded: Option<&Vec<u8>>, out: &mut [u8]) -> Result<()> {
     match encoded {
         Some(encoded) => {
-            if out.len() != encoded.len() {
-                bail!(
-                    "Wasm metadata section size mismatch: allocated {}, encoded {}",
-                    out.len(),
-                    encoded.len()
-                );
-            }
+            ensure!(
+                out.len() == encoded.len(),
+                "Wasm metadata section size allocated {}, encoded {}",
+                out.len(),
+                encoded.len()
+            );
             out.copy_from_slice(encoded);
         }
         None => {
-            if !out.is_empty() {
-                bail!(
-                    "Wasm metadata section unexpectedly allocated {} bytes",
-                    out.len()
-                );
-            }
+            ensure!(
+                out.is_empty(),
+                "Wasm metadata section unexpectedly allocated {} bytes",
+                out.len()
+            );
         }
     }
     Ok(())
@@ -109,12 +108,11 @@ fn copy_encoded_section(encoded: Option<&Vec<u8>>, out: &mut [u8]) -> Result<()>
 // This function writes the LEB128 size prefix for each body.
 fn write_code_section(bodies: &[WasmFunctionBody<'_>], out: &mut [u8]) -> Result<()> {
     if bodies.is_empty() {
-        if !out.is_empty() {
-            bail!(
-                "Wasm code section: buffer is {} bytes but no bodies to write",
-                out.len()
-            );
-        }
+        ensure!(
+            out.is_empty(),
+            "Wasm code section buffer is {} bytes but no bodies to write",
+            out.len()
+        );
         return Ok(());
     }
 
@@ -124,17 +122,17 @@ fn write_code_section(bodies: &[WasmFunctionBody<'_>], out: &mut [u8]) -> Result
     out[pos] = section_id::CODE;
     pos += 1;
 
-    let count = bodies.len() as u32;
+    let count = bodies.len() as u64;
     // Compute payload size: count LEB + sum(body_size_leb + body_bytes) for each body.
     let count_leb_size = uleb128_size(count);
     let bodies_with_prefix_total: usize = bodies
         .iter()
         .map(|b| {
-            let body_len = b.bytes.len() as u32;
+            let body_len = b.bytes.len() as u64;
             uleb128_size(body_len) + b.bytes.len()
         })
         .sum();
-    let payload_size = (count_leb_size + bodies_with_prefix_total) as u32;
+    let payload_size = (count_leb_size + bodies_with_prefix_total) as u64;
 
     pos += write_uleb128(&mut out[pos..], payload_size);
 
@@ -143,7 +141,7 @@ fn write_code_section(bodies: &[WasmFunctionBody<'_>], out: &mut [u8]) -> Result
 
     // Function bodies: size prefix + body bytes.
     for body in bodies {
-        let body_len = body.bytes.len() as u32;
+        let body_len = body.bytes.len() as u64;
         pos += write_uleb128(&mut out[pos..], body_len);
         let body_start = pos;
         let len = body.bytes.len();
@@ -155,18 +153,21 @@ fn write_code_section(bodies: &[WasmFunctionBody<'_>], out: &mut [u8]) -> Result
                 index: 0,
                 addend: 0,
             };
-            apply_relocation(&mut out[body_start..body_start + len], &reloc, resolved.value)?;
+            apply_relocation(
+                &mut out[body_start..body_start + len],
+                &reloc,
+                resolved.value,
+            )?;
         }
         pos += len;
     }
 
-    if pos != out.len() {
-        bail!(
-            "Wasm code section: wrote {} bytes but buffer is {} bytes",
-            pos,
-            out.len()
-        );
-    }
+    ensure!(
+        pos == out.len(),
+        "Wasm code section wrote {} bytes but buffer is {} bytes",
+        pos,
+        out.len()
+    );
 
     Ok(())
 }

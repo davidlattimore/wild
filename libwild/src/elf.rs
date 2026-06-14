@@ -123,7 +123,6 @@ use rayon::Scope;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::borrow::Cow;
-use std::io::Cursor;
 use std::io::Read as _;
 use std::mem::offset_of;
 use std::num::NonZeroU32;
@@ -3673,10 +3672,7 @@ pub(crate) fn gnu_property_notes_section_size(gnu_property_notes: &[GnuProperty]
 }
 
 fn riscv_attributes_section_size(riscv_attributes: &[RiscVAttribute]) -> u64 {
-    let size_of_uleb_encoded = |value| {
-        let mut cursor = Cursor::new([0u8; 10]);
-        leb128::write::unsigned(&mut cursor, value).unwrap()
-    };
+    let size_of_uleb_encoded = linker_utils::utils::uleb128_size;
 
     (if riscv_attributes.is_empty() {
         0
