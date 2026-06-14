@@ -104,22 +104,15 @@ pub(crate) const SYMTAB_SHNDX_GLOBAL: OutputSectionId =
 pub(crate) const GDB_INDEX: OutputSectionId = part_id::GDB_INDEX.output_section_id();
 
 // Mach-O specific sections
-pub(crate) const PAGEZERO_SEGMENT: OutputSectionId = part_id::PAGEZERO_SEGMENT.output_section_id();
 pub(crate) const TEXT_SEGMENT: OutputSectionId = part_id::TEXT_SEGMENT.output_section_id();
 pub(crate) const DATA_SEGMENT: OutputSectionId = part_id::DATA_SEGMENT.output_section_id();
 pub(crate) const DATA_CONST_SEGMENT: OutputSectionId =
     part_id::DATA_CONST_SEGMENT.output_section_id();
 pub(crate) const LINK_EDIT_SEGMENT: OutputSectionId =
     part_id::LINK_EDIT_SEGMENT.output_section_id();
-pub(crate) const ENTRY_POINT: OutputSectionId = part_id::ENTRY_POINT.output_section_id();
-pub(crate) const DYLD_CHAINED_FIXUPS: OutputSectionId =
-    part_id::DYLD_CHAINED_FIXUPS.output_section_id();
-pub(crate) const LOAD_DYLIB: OutputSectionId = part_id::LOAD_DYLIB.output_section_id();
+pub(crate) const LOAD_COMMANDS: OutputSectionId = part_id::LOAD_COMMANDS.output_section_id();
 pub(crate) const CHAINED_FIXUP_TABLE: OutputSectionId =
     part_id::CHAINED_FIXUP_TABLE.output_section_id();
-pub(crate) const SYMTAB_COMMAND: OutputSectionId = part_id::SYMTAB_COMMAND.output_section_id();
-pub(crate) const CODE_SIGNATURE_COMMAND: OutputSectionId =
-    part_id::CODE_SIGNATURE_COMMAND.output_section_id();
 pub(crate) const CODE_SIGNATURE: OutputSectionId = part_id::CODE_SIGNATURE.output_section_id();
 
 // Wasm specific sections.

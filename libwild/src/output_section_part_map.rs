@@ -255,20 +255,14 @@ fn test_merge_parts() {
 
     const SKIP_SECTIONS: &[OutputSectionId] = &[
         crate::part_id::UNMAPPED.output_section_id(),
-        output_section_id::PAGEZERO_SEGMENT,
         output_section_id::TEXT_SEGMENT,
         output_section_id::DATA_SEGMENT,
         output_section_id::DATA_CONST_SEGMENT,
         output_section_id::CSTRING,
-        output_section_id::ENTRY_POINT,
         output_section_id::LINK_EDIT_SEGMENT,
-        output_section_id::ENTRY_POINT,
-        output_section_id::DYLD_CHAINED_FIXUPS,
-        output_section_id::LOAD_DYLIB,
+        output_section_id::LOAD_COMMANDS,
         output_section_id::CHAINED_FIXUP_TABLE,
-        output_section_id::SYMTAB_COMMAND,
         output_section_id::CODE_SIGNATURE,
-        output_section_id::CODE_SIGNATURE_COMMAND,
         // Wasm specific sections.
         output_section_id::WASM_TYPE,
         output_section_id::WASM_IMPORT,

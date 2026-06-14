@@ -50,7 +50,6 @@ use object::macho::N_SECT;
 use object::macho::N_WEAK_DEF;
 use object::macho::SEG_DATA;
 use object::macho::SEG_LINKEDIT;
-use object::macho::SEG_PAGEZERO;
 use object::macho::SEG_TEXT;
 use object::macho::Section64;
 use object::read::macho::MachHeader;
@@ -74,7 +73,6 @@ pub(crate) const MACHO_COMMAND_ALIGNMENT: usize = 8;
 
 /// A path to the default dynamic linker.
 pub(crate) const DYLINKER_PATH: &[u8] = b"/usr/lib/dyld";
-pub(crate) const LIBSYSTEM_PATH: &[u8] = b"/usr/lib/libSystem.B.dylib";
 
 // TODO: Getting the number of active segments in epilogue depends on determine_header_size
 // which is called later for the prologue. We potentially over-allocate a couple of bytes.
@@ -133,10 +131,20 @@ pub(crate) fn code_signature_padded_identifier_size(args: &MachOArgs) -> u64 {
     (code_signature_identifier(args).len() as u64 + 1).next_multiple_of(CS_SECTION_ALIGNMENT)
 }
 
+pub(crate) fn load_dylib_command_size(path: &[u8]) -> usize {
+    (size_of::<DylibCommand>() + path.len() + 1).next_multiple_of(MACHO_COMMAND_ALIGNMENT)
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct LayoutExt<'data> {
     /// Imported STUB library symbols, sorted by GOT.
     pub(crate) imported_symbols: Vec<ImportedSymbolWithResolution<'data>>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct PreludeLayoutExt {
+    pub(crate) load_dylib_command_sizes: Vec<usize>,
+    pub(crate) load_command_count: usize,
 }
 
 #[derive(derive_more::Debug, Clone, Copy)]
@@ -764,17 +772,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     ) -> bool {
         let mapped_segment = match section_id {
             output_section_id::FILE_HEADER => SegmentType::Text,
-            output_section_id::PAGEZERO_SEGMENT
-            | output_section_id::TEXT_SEGMENT
-            | output_section_id::DATA_SEGMENT
-            | output_section_id::DATA_CONST_SEGMENT
-            | output_section_id::LINK_EDIT_SEGMENT
-            | output_section_id::ENTRY_POINT
-            | output_section_id::INTERP
-            | output_section_id::LOAD_DYLIB
-            | output_section_id::DYLD_CHAINED_FIXUPS
-            | output_section_id::SYMTAB_COMMAND
-            | output_section_id::CODE_SIGNATURE_COMMAND => SegmentType::LoadCommands,
+            output_section_id::LOAD_COMMANDS => SegmentType::LoadCommands,
             output_section_id::TEXT | output_section_id::CSTRING | output_section_id::PLT_GOT => {
                 SegmentType::TextSections
             }
@@ -906,8 +904,8 @@ impl platform::Platform for MachO {
     type DynamicLayoutStateExt<'data> = ();
     type DynamicLayoutExt<'data> = ();
     type LayoutResourcesExt<'data> = ();
-    type PreludeLayoutStateExt = ();
-    type PreludeLayoutExt = ();
+    type PreludeLayoutStateExt = PreludeLayoutExt;
+    type PreludeLayoutExt = PreludeLayoutExt;
     type ObjectLayoutStateExt<'data> = ();
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VersionNames<'data> = ();
@@ -1252,66 +1250,57 @@ impl platform::Platform for MachO {
         output_sections: &crate::output_section_id::OutputSections<Self>,
     ) {
         sizes.increment(part_id::FILE_HEADER, size_of::<FileHeader>() as u64);
-        sizes.increment(
-            part_id::PAGEZERO_SEGMENT,
-            size_of::<SegmentCommand>() as u64,
-        );
-        sizes.increment(
-            part_id::TEXT_SEGMENT,
-            (size_of::<SegmentCommand>()
+
+        let mut allocate_load_cmd = |command_size| {
+            sizes.increment(part_id::LOAD_COMMANDS, command_size as u64);
+            prelude.format_specific.load_command_count += 1;
+        };
+
+        allocate_load_cmd(size_of::<SegmentCommand>());
+        allocate_load_cmd(
+            size_of::<SegmentCommand>()
                 + size_of::<SectionEntry>()
-                    * count_sections_for_segment_type(output_sections, SegmentType::TextSections))
-                as u64,
+                    * count_sections_for_segment_type(output_sections, SegmentType::TextSections),
         );
         if has_active_segment(header_info, SegmentType::DataSections) {
-            sizes.increment(
-                part_id::DATA_SEGMENT,
-                (size_of::<SegmentCommand>()
+            allocate_load_cmd(
+                size_of::<SegmentCommand>()
                     + size_of::<SectionEntry>()
                         * count_sections_for_segment_type(
                             output_sections,
                             SegmentType::DataSections,
-                        )) as u64,
+                        ),
             );
         }
         if has_active_segment(header_info, SegmentType::DataConstSections) {
-            sizes.increment(
-                part_id::DATA_CONST_SEGMENT,
-                (size_of::<SegmentCommand>()
+            allocate_load_cmd(
+                size_of::<SegmentCommand>()
                     + size_of::<SectionEntry>()
                         * count_sections_for_segment_type(
                             output_sections,
                             SegmentType::DataConstSections,
-                        )) as u64,
+                        ),
             );
         }
-        sizes.increment(
-            part_id::LINK_EDIT_SEGMENT,
-            size_of::<SegmentCommand>() as u64,
+        allocate_load_cmd(size_of::<SegmentCommand>());
+        allocate_load_cmd(size_of::<EntryPointCommand>());
+        allocate_load_cmd(
+            (size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
+                .next_multiple_of(MACHO_COMMAND_ALIGNMENT),
         );
-        sizes.increment(part_id::ENTRY_POINT, size_of::<EntryPointCommand>() as u64);
-        sizes.increment(
-            part_id::INTERP,
-            ((size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
-                .next_multiple_of(MACHO_COMMAND_ALIGNMENT)) as u64,
-        );
-        for imported_lib in &prelude.imported_library_paths {
-            sizes.increment(
-                part_id::LOAD_DYLIB,
-                ((size_of::<DylibCommand>() + imported_lib.len())
-                    .next_multiple_of(MACHO_COMMAND_ALIGNMENT)) as u64,
-            );
+        prelude.format_specific.load_dylib_command_sizes = prelude
+            .imported_library_paths
+            .iter()
+            .map(|imported_lib| load_dylib_command_size(imported_lib.as_bytes()))
+            .collect();
+        let load_dylib_command_sizes = prelude.format_specific.load_dylib_command_sizes.clone();
+        for command_size in load_dylib_command_sizes {
+            allocate_load_cmd(command_size);
         }
 
-        sizes.increment(
-            part_id::DYLD_CHAINED_FIXUPS,
-            size_of::<DyldChainedFixupsCommand>() as u64,
-        );
-        sizes.increment(part_id::SYMTAB_COMMAND, size_of::<SymtabCommand>() as u64);
-        sizes.increment(
-            part_id::CODE_SIGNATURE_COMMAND,
-            size_of::<CodeSignatureCommand>() as u64,
-        );
+        allocate_load_cmd(size_of::<DyldChainedFixupsCommand>());
+        allocate_load_cmd(size_of::<SymtabCommand>());
+        allocate_load_cmd(size_of::<CodeSignatureCommand>());
     }
 
     fn finalise_sizes_for_symbol<'data>(
@@ -1413,11 +1402,11 @@ impl platform::Platform for MachO {
     }
 
     fn finalise_prelude_layout<'data>(
-        _prelude: &crate::layout::PreludeLayoutState<Self>,
+        prelude: &crate::layout::PreludeLayoutState<Self>,
         _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
     ) -> crate::error::Result<Self::PreludeLayoutExt> {
-        Ok(())
+        Ok(prelude.format_specific.clone())
     }
 
     fn create_resolution(
@@ -1478,17 +1467,7 @@ impl platform::Platform for MachO {
 
         // File header and all load commands.
         builder.add_section(output_section_id::FILE_HEADER);
-        builder.add_section(output_section_id::PAGEZERO_SEGMENT);
-        builder.add_section(output_section_id::TEXT_SEGMENT);
-        builder.add_section(output_section_id::DATA_SEGMENT);
-        builder.add_section(output_section_id::DATA_CONST_SEGMENT);
-        builder.add_section(output_section_id::LINK_EDIT_SEGMENT);
-        builder.add_section(output_section_id::ENTRY_POINT);
-        builder.add_section(output_section_id::INTERP); // DYLINKER
-        builder.add_section(output_section_id::LOAD_DYLIB);
-        builder.add_section(output_section_id::DYLD_CHAINED_FIXUPS);
-        builder.add_section(output_section_id::SYMTAB_COMMAND);
-        builder.add_section(output_section_id::CODE_SIGNATURE_COMMAND);
+        builder.add_section(output_section_id::LOAD_COMMANDS);
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::CSTRING);
@@ -1559,49 +1538,12 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         kind: SectionKind::Primary(SectionName(b"FILE_HEADER")),
         ..DEFAULT_DEFS
     };
-    // Load commands
-    defs[output_section_id::PAGEZERO_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SEG_PAGEZERO.as_bytes())),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::TEXT_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SEG_TEXT.as_bytes())),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::DATA_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SEG_DATA.as_bytes())),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::DATA_CONST_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SEG_DATA_CONST.as_bytes())),
+    defs[output_section_id::LOAD_COMMANDS.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"LOAD_COMMANDS")),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::LINK_EDIT_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_LINKEDIT.as_bytes())),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::ENTRY_POINT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"LC_MAIN")),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::INTERP.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"LC_LOAD_DYLINKER")),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::LOAD_DYLIB.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"LC_LOAD_DYLIB")),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::DYLD_CHAINED_FIXUPS.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"LC_DYLD_CHAINED_FIXUPS")),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::SYMTAB_COMMAND.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"LC_SYMTAB")),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::CODE_SIGNATURE_COMMAND.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"LC_CODE_SIGNATURE")),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {

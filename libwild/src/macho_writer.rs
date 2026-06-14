@@ -11,7 +11,6 @@ use crate::file_writer::split_output_by_group;
 use crate::file_writer::split_output_into_sections;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
-use crate::layout::HeaderInfo;
 use crate::layout::Layout;
 use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
@@ -33,7 +32,6 @@ use crate::macho::DylinkerCommand;
 use crate::macho::EntryPointCommand;
 use crate::macho::FileHeader;
 use crate::macho::GOT_ENTRY_SIZE;
-use crate::macho::LIBSYSTEM_PATH;
 use crate::macho::MACHO_COMMAND_ALIGNMENT;
 use crate::macho::MACHO_START_MEM_ADDRESS;
 use crate::macho::MAX_SEGMENT_COUNT;
@@ -49,6 +47,7 @@ use crate::macho::SymtabCommand;
 use crate::macho::code_signature_identifier;
 use crate::macho::code_signature_padded_identifier_size;
 use crate::macho::get_segment_sections;
+use crate::macho::load_dylib_command_size;
 use crate::macho_object::CS_ADHOC;
 use crate::macho_object::CS_EXECSEG_MAIN_BINARY;
 use crate::macho_object::CS_HASHTYPE_SHA256;
@@ -188,48 +187,74 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
     layout: &MachOLayout<'data>,
 ) -> Result {
     verbose_timing_phase!("Write prelude");
-    debug_assert!(prelude.imported_library_paths.len() <= 1);
+    debug_assert_eq!(
+        prelude.imported_library_paths.len(),
+        prelude.format_specific.load_dylib_command_sizes.len()
+    );
 
     let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
         .map_err(|_| error!("Invalid file header allocation"))?
         .0;
-    populate_file_header::<A>(layout, &prelude.header_info, header)?;
+    populate_file_header::<A>(layout, prelude, header)?;
 
-    write_segment_commands::<A>(layout, buffers)?;
+    let mut load_command_buffer = &mut **buffers.get_mut(part_id::LOAD_COMMANDS);
+    write_segment_commands::<A>(layout, &mut load_command_buffer)?;
 
-    let entry_point_command: &mut EntryPointCommand =
-        from_bytes_mut(buffers.get_mut(part_id::ENTRY_POINT))
-            .map_err(|_| error!("Invalid ENTRY_POINT command allocation"))?
-            .0;
+    let entry_point_command: &mut EntryPointCommand = from_bytes_mut(take_load_command_buffer(
+        &mut load_command_buffer,
+        size_of::<EntryPointCommand>(),
+    )?)
+    .map_err(|_| error!("Invalid ENTRY_POINT command allocation"))?
+    .0;
     write_entry_point_command::<A>(layout, entry_point_command)?;
 
     let (dylinker_command, dylinker_path_buffer): (&mut DylinkerCommand, &mut [u8]) =
-        from_bytes_mut(buffers.get_mut(part_id::INTERP))
-            .map_err(|_| error!("Invalid INTERP command allocation"))?;
+        from_bytes_mut(take_load_command_buffer(
+            &mut load_command_buffer,
+            (size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
+                .next_multiple_of(MACHO_COMMAND_ALIGNMENT),
+        )?)
+        .map_err(|_| error!("Invalid INTERP command allocation"))?;
     write_dylinker_command::<A>(dylinker_command, dylinker_path_buffer);
 
-    if !prelude.imported_library_paths.is_empty() {
+    for (path, &command_size) in prelude
+        .imported_library_paths
+        .iter()
+        .zip(&prelude.format_specific.load_dylib_command_sizes)
+    {
+        let command_buffer = take_load_command_buffer(&mut load_command_buffer, command_size)?;
         let (dylib_command, dylib_path_buffer): (&mut DylibCommand, &mut [u8]) =
-            from_bytes_mut(buffers.get_mut(part_id::LOAD_DYLIB))
+            from_bytes_mut(command_buffer)
                 .map_err(|_| error!("Invalid LOAD_DYLIB command allocation"))?;
-        write_dylib_command::<A>(dylib_command, dylib_path_buffer);
+        write_dylib_command::<A>(dylib_command, dylib_path_buffer, path.as_bytes());
     }
 
     let chained_fixups_command: &mut DyldChainedFixupsCommand =
-        from_bytes_mut(buffers.get_mut(part_id::DYLD_CHAINED_FIXUPS))
-            .map_err(|_| error!("Invalid DYLD_CHAINED_FIXUPS command allocation"))?
-            .0;
+        from_bytes_mut(take_load_command_buffer(
+            &mut load_command_buffer,
+            size_of::<DyldChainedFixupsCommand>(),
+        )?)
+        .map_err(|_| error!("Invalid DYLD_CHAINED_FIXUPS command allocation"))?
+        .0;
     write_dyld_chained_fixups_command::<A>(layout, chained_fixups_command);
 
-    let (symtab_command, _) = from_bytes_mut(buffers.get_mut(part_id::SYMTAB_COMMAND))
-        .map_err(|_| error!("Invalid SYMTAB_COMMAND allocation"))?;
+    let (symtab_command, _) = from_bytes_mut(take_load_command_buffer(
+        &mut load_command_buffer,
+        size_of::<SymtabCommand>(),
+    )?)
+    .map_err(|_| error!("Invalid SYMTAB_COMMAND allocation"))?;
     write_symtab_command::<A>(layout, symtab_command);
 
-    let code_signature_command: &mut CodeSignatureCommand =
-        from_bytes_mut(buffers.get_mut(part_id::CODE_SIGNATURE_COMMAND))
-            .map_err(|_| error!("Invalid CODE_SIGNATURE_COMMAND allocation"))?
-            .0;
+    let code_signature_command: &mut CodeSignatureCommand = from_bytes_mut(
+        take_load_command_buffer(&mut load_command_buffer, size_of::<CodeSignatureCommand>())?,
+    )
+    .map_err(|_| error!("Invalid CODE_SIGNATURE_COMMAND allocation"))?
+    .0;
     write_code_signature_command::<A>(layout, code_signature_command);
+    ensure!(
+        load_command_buffer.is_empty(),
+        "Trailing bytes in LOAD_COMMANDS allocation"
+    );
 
     // Fill up one extra character as n_strx == 0 is treated as unnamed.
     buffers.get_mut(part_id::STRTAB).fill(0);
@@ -310,7 +335,7 @@ fn write_plt_entries<A: Arch<Platform = MachO>>(
 
 fn populate_file_header<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
-    _header_info: &HeaderInfo,
+    prelude: &PreludeLayout<MachO>,
     header: &mut FileHeader,
 ) -> Result {
     let load_commands_info = get_segment_sections(layout, SegmentType::LoadCommands)
@@ -320,15 +345,9 @@ fn populate_file_header<A: Arch<Platform = MachO>>(
     header.cputype.set(LE, CPU_TYPE_ARM64);
     header.cpusubtype.set(LE, CPU_SUBTYPE_ARM64_ALL.into());
     header.filetype.set(LE, MH_EXECUTE);
-    // TODO: a cleaner way how to filter out sections being part of the final output?
-    header.ncmds.set(
-        LE,
-        load_commands_info
-            .segment_sections
-            .iter()
-            .filter(|s| s.0.mem_size > 0)
-            .count() as u32,
-    );
+    header
+        .ncmds
+        .set(LE, prelude.format_specific.load_command_count as u32);
     header
         .sizeofcmds
         .set(LE, load_commands_info.segment_size.file_size as u32);
@@ -355,12 +374,29 @@ fn split_segment_command_buffer(
     Ok((command, sections))
 }
 
+fn take_load_command_buffer<'a>(
+    load_commands: &mut &'a mut [u8],
+    size: usize,
+) -> Result<&'a mut [u8]> {
+    ensure!(
+        load_commands.len() >= size,
+        "LOAD_COMMANDS allocation is smaller than expected"
+    );
+    let buffer = std::mem::take(load_commands);
+    let (command, rest) = buffer.split_at_mut(size);
+    *load_commands = rest;
+    Ok(command)
+}
+
 fn write_segment_commands<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
-    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    load_commands: &mut &mut [u8],
 ) -> Result {
-    let pagezero_segment =
-        split_segment_command_buffer(buffers.get_mut(part_id::PAGEZERO_SEGMENT), 0)?.0;
+    let pagezero_segment = split_segment_command_buffer(
+        take_load_command_buffer(load_commands, size_of::<SegmentCommand>())?,
+        0,
+    )?
+    .0;
     write_segment(
         SEG_PAGEZERO,
         macho::VmProt(0),
@@ -380,7 +416,10 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         .ok_or_else(|| error!("Text segment is mandatory"))?
         .segment_size;
     let (text_segment, text_sections) = split_segment_command_buffer(
-        buffers.get_mut(part_id::TEXT_SEGMENT),
+        take_load_command_buffer(
+            load_commands,
+            size_of::<SegmentCommand>() + size_of::<SectionEntry>() * text_segment_sections.len(),
+        )?,
         text_segment_sections.len(),
     )?;
     write_segment(
@@ -399,7 +438,11 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         let data_segment_sections = data_segment_info.segment_sections;
         let data_segment_size = data_segment_info.segment_size;
         let (data_segment, data_sections) = split_segment_command_buffer(
-            buffers.get_mut(part_id::DATA_SEGMENT),
+            take_load_command_buffer(
+                load_commands,
+                size_of::<SegmentCommand>()
+                    + size_of::<SectionEntry>() * data_segment_sections.len(),
+            )?,
             data_segment_sections.len(),
         )?;
         write_segment(
@@ -421,7 +464,11 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         let data_const_segment_sections = data_const_segment_info.segment_sections;
         let data_const_segment_size = data_const_segment_info.segment_size;
         let (data_const_segment, data_const_sections) = split_segment_command_buffer(
-            buffers.get_mut(part_id::DATA_CONST_SEGMENT),
+            take_load_command_buffer(
+                load_commands,
+                size_of::<SegmentCommand>()
+                    + size_of::<SectionEntry>() * data_const_segment_sections.len(),
+            )?,
             data_const_segment_sections.len(),
         )?;
         write_segment(
@@ -444,8 +491,11 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
     let linkedit_segment_size = get_segment_sections(layout, SegmentType::LinkeditSections)
         .ok_or_else(|| error!("LinkeditSections segment is mandatory"))?
         .segment_size;
-    let linkedit_segment =
-        split_segment_command_buffer(buffers.get_mut(part_id::LINK_EDIT_SEGMENT), 0)?.0;
+    let linkedit_segment = split_segment_command_buffer(
+        take_load_command_buffer(load_commands, size_of::<SegmentCommand>())?,
+        0,
+    )?
+    .0;
     write_segment(
         SEG_LINKEDIT,
         macho::VM_PROT_READ,
@@ -457,7 +507,6 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         // The sections in the __LINKEDIT are "hidden".
         0,
     );
-
     Ok(())
 }
 
@@ -731,13 +780,12 @@ fn write_dylinker_command<A: Arch<Platform = MachO>>(
 fn write_dylib_command<A: Arch<Platform = MachO>>(
     command: &mut DylibCommand,
     path_buffer: &mut [u8],
+    path: &[u8],
 ) {
     command.cmd.set(LE, LC_LOAD_DYLIB);
-    command.cmdsize.set(
-        LE,
-        ((size_of::<DylibCommand>() + LIBSYSTEM_PATH.len())
-            .next_multiple_of(MACHO_COMMAND_ALIGNMENT)) as u32,
-    );
+    command
+        .cmdsize
+        .set(LE, load_dylib_command_size(path) as u32);
     command
         .dylib
         .name
@@ -755,8 +803,8 @@ fn write_dylib_command<A: Arch<Platform = MachO>>(
         .compatibility_version
         .set(LE, macho::Version(1 << 16));
 
-    path_buffer[0..LIBSYSTEM_PATH.len()].copy_from_slice(LIBSYSTEM_PATH);
-    path_buffer[LIBSYSTEM_PATH.len()..].zero();
+    path_buffer[0..path.len()].copy_from_slice(path);
+    path_buffer[path.len()..].zero();
 }
 
 fn write_dyld_chained_fixups_command<A: Arch<Platform = MachO>>(
