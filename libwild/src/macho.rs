@@ -1313,12 +1313,6 @@ impl platform::Platform for MachO {
             else {
                 bail!("stub library expected");
             };
-            // TODO: support more stub libraries once we can emit arbitrary number of LC_LOAD_DYLIB
-            // commands!
-            ensure!(
-                stub.file_id.file() == 0,
-                "Only single stub library supported"
-            );
             common.add_imported_symbol(
                 symbol_id,
                 symbol_name.bytes(),

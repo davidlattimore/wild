@@ -179,6 +179,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let mut finalise_sizes_resources = FinaliseSizesResources {
         dynamic_symbol_definitions: &dynamic_symbol_definitions,
         imported_symbols: &[],
+        imported_libraries: &[],
         symbol_db: &symbol_db,
         merged_strings: &merged_strings,
         format_specific: &properties_and_attributes,
@@ -192,7 +193,9 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     )?;
 
     let imported_symbols = collect_imported_symbols(&group_states);
+    let imported_libraries = collect_imported_libraries(&group_states);
     finalise_sizes_resources.imported_symbols = &imported_symbols;
+    finalise_sizes_resources.imported_libraries = &imported_libraries;
 
     // Dropping `symbol_info_printer` will cause it to print. So we'll either print now, or, if we
     // got an error or panic, then we'll have printed at that point.
@@ -449,6 +452,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 struct FinaliseSizesResources<'data, 'scope, P: Platform> {
     dynamic_symbol_definitions: &'scope [DynamicSymbolDefinition<'data, P>],
     imported_symbols: &'scope [ImportedSymbol<'data>],
+    imported_libraries: &'scope [ImportedLibrary<'data>],
     symbol_db: &'scope SymbolDb<'data, P>,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     format_specific: &'scope P::LayoutExt<'data>,
@@ -616,6 +620,16 @@ fn collect_imported_symbols<'data, P: Platform>(
     group_states
         .iter()
         .flat_map(|group| group.common.imported_symbols.iter().copied())
+        .collect()
+}
+
+fn collect_imported_libraries<'data, P: Platform>(
+    group_states: &[GroupState<'data, P>],
+) -> Vec<ImportedLibrary<'data>> {
+    group_states
+        .iter()
+        .flat_map(|group| group.common.imported_libraries.iter().copied())
+        .sorted_by_key(|library| library.index)
         .collect()
 }
 
@@ -1191,7 +1205,7 @@ pub(crate) struct CommonGroupState<'data, P: Platform> {
 
     /// A list of imported STUB library symbols (Mach-O specific).
     imported_symbols: Vec<ImportedSymbol<'data>>,
-    imported_library_paths: HashSet<(u8, &'data str)>,
+    imported_libraries: HashSet<ImportedLibrary<'data>>,
 
     pub(crate) format_specific: P::CommonGroupStateExt,
 }
@@ -1203,7 +1217,7 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
             section_attributes: output_sections.new_section_map(),
             dynamic_symbol_definitions: Default::default(),
             imported_symbols: Default::default(),
-            imported_library_paths: Default::default(),
+            imported_libraries: Default::default(),
             format_specific: Default::default(),
         }
     }
@@ -1266,8 +1280,10 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
             name,
             library_index,
         });
-        self.imported_library_paths
-            .insert((library_index, library_path));
+        self.imported_libraries.insert(ImportedLibrary {
+            index: library_index,
+            path: library_path,
+        });
     }
 
     /// Allocate resources and update attributes based on a section having been loaded.
@@ -1359,6 +1375,13 @@ pub(crate) struct ImportedSymbol<'data> {
     pub(crate) name: &'data [u8],
     // One-based index of the stub library that defines the symbol.
     pub(crate) library_index: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ImportedLibrary<'data> {
+    // One-based index of the stub library.
+    pub(crate) index: u8,
+    pub(crate) path: &'data str,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3126,10 +3149,10 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         per_symbol_flags: &mut PerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
-        self.imported_library_paths = common
-            .imported_library_paths
+        self.imported_library_paths = resources
+            .imported_libraries
             .iter()
-            .map(|(_, lib_name)| lib_name.to_string())
+            .map(|library| library.path.to_string())
             .collect();
 
         // Total section  sizes have already been computed. So any allocations we do need to update
