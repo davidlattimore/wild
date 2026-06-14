@@ -9,6 +9,8 @@ use crate::wasm::WASM_VERSION;
 use crate::wasm::Wasm;
 use crate::wasm::WasmFunctionBody;
 use crate::wasm::WasmLayout;
+use crate::wasm::WasmRelocation;
+use crate::wasm::apply_relocation;
 use crate::wasm::section_id;
 use crate::wasm::uleb128_size;
 use crate::wasm::write_uleb128;
@@ -143,8 +145,18 @@ fn write_code_section(bodies: &[WasmFunctionBody<'_>], out: &mut [u8]) -> Result
     for body in bodies {
         let body_len = body.bytes.len() as u32;
         pos += write_uleb128(&mut out[pos..], body_len);
+        let body_start = pos;
         let len = body.bytes.len();
-        out[pos..pos + len].copy_from_slice(&body.bytes);
+        out[pos..pos + len].copy_from_slice(body.bytes);
+        for resolved in &body.relocations {
+            let reloc = WasmRelocation {
+                ty: resolved.ty,
+                offset: resolved.offset,
+                index: 0,
+                addend: 0,
+            };
+            apply_relocation(&mut out[body_start..body_start + len], &reloc, resolved.value)?;
+        }
         pos += len;
     }
 
