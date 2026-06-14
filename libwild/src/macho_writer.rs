@@ -206,13 +206,11 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
         from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
     write_entry_point_command::<A>(layout, entry_point_command)?;
 
+    let command_size = (size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
+        .next_multiple_of(MACHO_COMMAND_ALIGNMENT);
+    let command_buffer = load_command_buffer.split_off_mut(..command_size).unwrap();
     let (dylinker_command, dylinker_path_buffer): (&mut DylinkerCommand, &mut [u8]) =
-        from_bytes_mut(take_load_command_buffer(
-            &mut load_command_buffer,
-            (size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
-                .next_multiple_of(MACHO_COMMAND_ALIGNMENT),
-        )?)
-        .map_err(|_| error!("Invalid INTERP command allocation"))?;
+        from_bytes_mut(command_buffer).map_err(|_| error!("Invalid INTERP command allocation"))?;
     write_dylinker_command::<A>(dylinker_command, dylinker_path_buffer);
 
     for (path, &command_size) in prelude
@@ -220,34 +218,22 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
         .iter()
         .zip(&prelude.format_specific.load_dylib_command_sizes)
     {
-        let command_buffer = take_load_command_buffer(&mut load_command_buffer, command_size)?;
+        let command_buffer = load_command_buffer.split_off_mut(..command_size).unwrap();
         let (dylib_command, dylib_path_buffer): (&mut DylibCommand, &mut [u8]) =
-            from_bytes_mut(command_buffer)
-                .map_err(|_| error!("Invalid LOAD_DYLIB command allocation"))?;
+            from_bytes_mut(command_buffer).map_err(load_cmd_err)?;
         write_dylib_command::<A>(dylib_command, dylib_path_buffer, path.as_bytes());
     }
 
-    let chained_fixups_command: &mut DyldChainedFixupsCommand =
-        from_bytes_mut(take_load_command_buffer(
-            &mut load_command_buffer,
-            size_of::<DyldChainedFixupsCommand>(),
-        )?)
-        .map_err(|_| error!("Invalid DYLD_CHAINED_FIXUPS command allocation"))?
-        .0;
+    let (chained_fixups_command, load_command_buffer): (&mut DyldChainedFixupsCommand, _) =
+        from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
     write_dyld_chained_fixups_command::<A>(layout, chained_fixups_command);
 
-    let (symtab_command, _) = from_bytes_mut(take_load_command_buffer(
-        &mut load_command_buffer,
-        size_of::<SymtabCommand>(),
-    )?)
-    .map_err(|_| error!("Invalid SYMTAB_COMMAND allocation"))?;
+    let (symtab_command, load_command_buffer): (&mut SymtabCommand, _) =
+        from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
     write_symtab_command::<A>(layout, symtab_command);
 
-    let code_signature_command: &mut CodeSignatureCommand = from_bytes_mut(
-        take_load_command_buffer(&mut load_command_buffer, size_of::<CodeSignatureCommand>())?,
-    )
-    .map_err(|_| error!("Invalid CODE_SIGNATURE_COMMAND allocation"))?
-    .0;
+    let (code_signature_command, load_command_buffer): (&mut CodeSignatureCommand, _) =
+        from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
     write_code_signature_command::<A>(layout, code_signature_command);
     ensure!(
         load_command_buffer.is_empty(),
@@ -372,28 +358,17 @@ fn split_segment_command_buffer(
     Ok((command, sections))
 }
 
-fn take_load_command_buffer<'a>(
-    load_commands: &mut &'a mut [u8],
-    size: usize,
-) -> Result<&'a mut [u8]> {
-    ensure!(
-        load_commands.len() >= size,
-        "LOAD_COMMANDS allocation is smaller than expected"
-    );
-    let buffer = std::mem::take(load_commands);
-    let (command, rest) = buffer.split_at_mut(size);
-    *load_commands = rest;
-    Ok(command)
-}
-
 fn write_segment_commands<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
     load_commands: &mut &mut [u8],
 ) -> Result {
-    let pagezero_segment: &mut macho::SegmentCommand64<Endianness> = split_segment_command_buffer(
-        take_load_command_buffer(load_commands, size_of::<SegmentCommand>())?,
-        0,
-    )?
+    let load_cmd_err = |()| error!("Invalid LOAD_COMMANDS allocation");
+    let pagezero_segment: &mut SegmentCommand = from_bytes_mut(
+        load_commands
+            .split_off_mut(..size_of::<SegmentCommand>())
+            .unwrap(),
+    )
+    .map_err(load_cmd_err)?
     .0;
     write_segment(
         SEG_PAGEZERO,
@@ -413,11 +388,12 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
     let text_segment_size = get_segment_sections(layout, SegmentType::Text)
         .ok_or_else(|| error!("Text segment is mandatory"))?
         .segment_size;
+    let command_size =
+        size_of::<SegmentCommand>() + size_of::<SectionEntry>() * text_segment_sections.len();
     let (text_segment, text_sections) = split_segment_command_buffer(
-        take_load_command_buffer(
-            load_commands,
-            size_of::<SegmentCommand>() + size_of::<SectionEntry>() * text_segment_sections.len(),
-        )?,
+        load_commands
+            .split_off_mut(..command_size)
+            .ok_or_else(|| load_cmd_err(()))?,
         text_segment_sections.len(),
     )?;
     write_segment(
@@ -435,12 +411,12 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
     if let Some(data_segment_info) = get_segment_sections(layout, SegmentType::DataSections) {
         let data_segment_sections = data_segment_info.segment_sections;
         let data_segment_size = data_segment_info.segment_size;
+        let command_size =
+            size_of::<SegmentCommand>() + size_of::<SectionEntry>() * data_segment_sections.len();
         let (data_segment, data_sections) = split_segment_command_buffer(
-            take_load_command_buffer(
-                load_commands,
-                size_of::<SegmentCommand>()
-                    + size_of::<SectionEntry>() * data_segment_sections.len(),
-            )?,
+            load_commands
+                .split_off_mut(..command_size)
+                .ok_or_else(|| load_cmd_err(()))?,
             data_segment_sections.len(),
         )?;
         write_segment(
@@ -461,12 +437,12 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
     {
         let data_const_segment_sections = data_const_segment_info.segment_sections;
         let data_const_segment_size = data_const_segment_info.segment_size;
+        let command_size = size_of::<SegmentCommand>()
+            + size_of::<SectionEntry>() * data_const_segment_sections.len();
         let (data_const_segment, data_const_sections) = split_segment_command_buffer(
-            take_load_command_buffer(
-                load_commands,
-                size_of::<SegmentCommand>()
-                    + size_of::<SectionEntry>() * data_const_segment_sections.len(),
-            )?,
+            load_commands
+                .split_off_mut(..command_size)
+                .ok_or_else(|| load_cmd_err(()))?,
             data_const_segment_sections.len(),
         )?;
         write_segment(
@@ -489,10 +465,12 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
     let linkedit_segment_size = get_segment_sections(layout, SegmentType::LinkeditSections)
         .ok_or_else(|| error!("LinkeditSections segment is mandatory"))?
         .segment_size;
-    let linkedit_segment = split_segment_command_buffer(
-        take_load_command_buffer(load_commands, size_of::<SegmentCommand>())?,
-        0,
-    )?
+    let linkedit_segment: &mut SegmentCommand = from_bytes_mut(
+        load_commands
+            .split_off_mut(..size_of::<SegmentCommand>())
+            .ok_or_else(|| load_cmd_err(()))?,
+    )
+    .map_err(load_cmd_err)?
     .0;
     write_segment(
         SEG_LINKEDIT,
