@@ -586,7 +586,16 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
 
         for name in wrap {
             let name_bytes = allocator.alloc_slice_copy(name.as_bytes());
-            let orig_id = self.get_unversioned(&UnversionedSymbolName::prehashed(name_bytes));
+            let real_name = allocator.alloc_slice_copy(format!("__real_{name}").as_bytes());
+
+            // When this function is called a second time (after LTO), the name table already has
+            // "foo" mapped to __wrap_foo's symbol ID from the first call. To get the ORIGINAL foo
+            // symbol ID, we first check if __real_foo already has a mapping (set by the first
+            // call), and fall back to looking up "foo" only on the first call.
+            let orig_id = self
+                .get_unversioned(&UnversionedSymbolName::prehashed(real_name))
+                .or_else(|| self.get_unversioned(&UnversionedSymbolName::prehashed(name_bytes)));
+
             let wrap_name = format!("__wrap_{name}");
             if let Some(wrap_id) =
                 self.get_unversioned(&UnversionedSymbolName::prehashed(wrap_name.as_bytes()))
@@ -595,7 +604,6 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             }
 
             if let Some(orig_id) = orig_id {
-                let real_name = allocator.alloc_slice_copy(format!("__real_{name}").as_bytes());
                 self.override_name(UnversionedSymbolName::prehashed(real_name), orig_id);
             }
         }

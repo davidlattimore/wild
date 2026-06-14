@@ -25,6 +25,7 @@ use crate::input_data::FileLoader;
 use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSections;
+use crate::platform::Args as _;
 use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::resolution::ResolutionResources;
@@ -211,6 +212,11 @@ impl<'data> LinkerPlugin<'data> {
 
         timing_phase!("Linker plugin codegen");
 
+        // Mark wrapped symbol names and their __wrap_/__real_ variants as referenced by non-IR
+        // code. This ensures the plugin keeps them in the LTO output rather than
+        // internalising/removing them.
+        mark_wrap_symbols_as_non_ir_ref(symbol_db, per_symbol_flags);
+
         let plugin_outputs = self.store.loaded()?.with_callbacks(|callbacks| {
             if let Some(cb) = callbacks.all_symbols_read {
                 let ctx = AllSymbolsReadContext {
@@ -237,6 +243,10 @@ impl<'data> LinkerPlugin<'data> {
             layout_rules_builder,
             plugin_loaded,
         )?;
+
+        // Re-apply --wrap overrides so that wrapped names now map to definitions from the LTO
+        // output rather than the LTO input objects.
+        symbol_db.apply_wrapped_symbol_overrides();
 
         resolver.resolve_symbols_and_select_archive_entries(symbol_db, per_symbol_flags)?;
 
@@ -922,6 +932,20 @@ fn get_symbol_resolution<'data>(
     if !sym.version.is_null() {
         raw_name.version_name = Some(unsafe { CStr::from_ptr(sym.version) }.to_bytes());
     }
+
+    // If the symbol was wrapped via --wrap, the name table has been modified to map the original
+    // name to __wrap_<name>. We must not report the wrapped resolution to the plugin, since the
+    // plugin needs to know the pre-wrap state.
+    let wrap_names = symbol_db.args.symbol_names_to_wrap();
+    let is_wrapped = wrap_names.iter().any(|w| w.as_bytes() == raw_name.name);
+    if is_wrapped {
+        return if sym.is_undefined() {
+            PluginSymbolResolution::ResolvedExec
+        } else {
+            PluginSymbolResolution::PreemptedReg
+        };
+    }
+
     let symbol_id = symbol_db
         .get(&PreHashedSymbolName::from_raw(&raw_name), true)
         .map(|id| symbol_db.definition(id));
@@ -1417,4 +1441,25 @@ pub(crate) fn resolve_lto_symbols<'data, 'scope>(
                 Ok(())
             },
         )
+}
+
+/// Marks symbols related to --wrap as having non-IR references. This ensures that the linker
+/// plugin preserves these symbols in its output rather than internalising them.
+fn mark_wrap_symbols_as_non_ir_ref<'data, P: Platform>(
+    symbol_db: &SymbolDb<'data, P>,
+    per_symbol_flags: &mut PerSymbolFlags,
+) {
+    for name in symbol_db.args.symbol_names_to_wrap() {
+        for lookup_name in [
+            name.clone(),
+            format!("__wrap_{name}"),
+            format!("__real_{name}"),
+        ] {
+            if let Some(symbol_id) =
+                symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(lookup_name.as_bytes()))
+            {
+                per_symbol_flags.set_flag(symbol_id, ValueFlags::HAS_NON_IR_REF);
+            }
+        }
+    }
 }

@@ -183,7 +183,6 @@ tests = [
   "lto-llvm2.sh",           # -m llvm is not yet supported
   "duplicate-error-lto.sh", # Wild deduplicates inputs
   "lto-comdat.sh",          # We don't support COMDAT
-  "wrap-lto.sh",            # We don't yet support --wrap with LTO
   "lto-archive4.sh",
   "lto-mixed-gcc-fat.sh",
 ]

@@ -303,8 +303,6 @@ impl Linker {
             loaded,
         )?;
 
-        // TODO: Doing this here means that we can't wrap symbols produced by the linker plugin.
-        // Moving it earlier or later however requires some rethought as to how this works.
         symbol_db.apply_wrapped_symbol_overrides();
 
         let mut resolver = resolution::Resolver::default();
