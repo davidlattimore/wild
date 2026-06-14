@@ -65,6 +65,7 @@ To run tests (and have them pass) there are a number of pre-requisites to have i
   with `rustup target add --toolchain nightly x86_64-unknown-linux-musl`)
 * cranelift backend (add with `rustup component add rustc-codegen-cranelift-preview --toolchain nightly`)
 * `clang-format` formatter
+* `taplo` TOML formatter (add with `cargo install taplo-cli --locked`)
 
 then use `cargo test` as usual.
 
