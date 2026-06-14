@@ -79,6 +79,7 @@ use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
+use linker_utils::utils::slice_from_all_bytes_mut;
 use object::BigEndian;
 use object::Endianness;
 use object::SymbolIndex;
@@ -197,15 +198,12 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
         .0;
     populate_file_header::<A>(layout, prelude, header)?;
 
-    let mut load_command_buffer = &mut **buffers.get_mut(part_id::LOAD_COMMANDS);
+    let load_cmd_err = |()| error!("Invalid LOAD_COMMANDS allocation");
+    let mut load_command_buffer = slice_from_all_bytes_mut(buffers.get_mut(part_id::LOAD_COMMANDS));
     write_segment_commands::<A>(layout, &mut load_command_buffer)?;
 
-    let entry_point_command: &mut EntryPointCommand = from_bytes_mut(take_load_command_buffer(
-        &mut load_command_buffer,
-        size_of::<EntryPointCommand>(),
-    )?)
-    .map_err(|_| error!("Invalid ENTRY_POINT command allocation"))?
-    .0;
+    let (entry_point_command, mut load_command_buffer) =
+        from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
     write_entry_point_command::<A>(layout, entry_point_command)?;
 
     let (dylinker_command, dylinker_path_buffer): (&mut DylinkerCommand, &mut [u8]) =
@@ -392,7 +390,7 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
     load_commands: &mut &mut [u8],
 ) -> Result {
-    let pagezero_segment = split_segment_command_buffer(
+    let pagezero_segment: &mut macho::SegmentCommand64<Endianness> = split_segment_command_buffer(
         take_load_command_buffer(load_commands, size_of::<SegmentCommand>())?,
         0,
     )?
