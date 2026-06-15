@@ -376,6 +376,8 @@ fn scan_one_object<'data>(
     object: &ObjectLayoutState<'data, Elf>,
     sections: &[SectionSlot],
 ) -> Result<Option<PerObjectGdbScan<'data>>> {
+    verbose_timing_phase!("Parse GDB index inputs");
+
     let boundaries = match section_by_name(object.object, DEBUG_INFO_SECTION_NAME_STR)? {
         Some(data) => parse_cu_boundaries(&data)?,
         None => return Ok(None),
@@ -460,20 +462,18 @@ fn merge_gdb_index_scans(per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIndexS
         }
     }
 
-    let mut sorted: Vec<(&[u8], SymData)> = sym_map
-        .into_iter()
-        .sorted_unstable_by_key(|(a, _)| *a)
-        .collect();
+    let mut sorted = sort_symbols(sym_map);
 
-    for (_, sd) in &mut sorted {
-        sd.cv_entries.sort_unstable();
-        debug_assert!(
-            sd.cv_entries.array_windows().all(|[a, b]| a != b),
-            "Duplicate CV entries detected"
-        );
-    }
+    sort_cv_entries(&mut sorted);
 
     let ht_slots = compute_hash_table_slots(sorted.len());
+
+    tracing::trace!(
+        ht_slots,
+        total_cus,
+        symbol_count = sorted.len(),
+        total_cv_entries = sorted.iter().map(|e| e.1.cv_entries.len()).sum::<usize>()
+    );
 
     GdbIndexScanResult {
         total_cus,
@@ -481,6 +481,27 @@ fn merge_gdb_index_scans(per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIndexS
         sorted_symbols: sorted,
         ht_slots,
         per_object_cu_counts,
+    }
+}
+
+fn sort_symbols(sym_map: HashMap<&[u8], SymData>) -> Vec<(&[u8], SymData)> {
+    timing_phase!("Sort symbols");
+
+    sym_map
+        .into_iter()
+        .sorted_unstable_by_key(|(a, _)| *a)
+        .collect()
+}
+
+fn sort_cv_entries(sorted: &mut Vec<(&[u8], SymData)>) {
+    timing_phase!("Sort CV entries");
+
+    for (_, sd) in sorted {
+        sd.cv_entries.sort_unstable();
+        debug_assert!(
+            sd.cv_entries.array_windows().all(|[a, b]| a != b),
+            "Duplicate CV entries detected"
+        );
     }
 }
 
