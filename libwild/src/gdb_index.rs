@@ -8,6 +8,8 @@
 use crate::elf::Elf;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::hash::PassThroughHashMap;
+use crate::hash::PreHashed;
 use crate::layout::FileLayout;
 use crate::layout::FileLayoutState;
 use crate::layout::GroupState;
@@ -28,6 +30,7 @@ use linker_utils::utils::u32_from_slice;
 use linker_utils::utils::u64_from_slice;
 use object::read::elf::SectionHeader as _;
 use rayon::iter::IntoParallelRefIterator as _;
+use rayon::iter::ParallelBridge as _;
 use rayon::iter::ParallelIterator as _;
 use rayon::slice::ParallelSliceMut as _;
 use std::borrow::Cow;
@@ -365,7 +368,8 @@ pub(crate) struct GdbIndexScanResult<'data> {
 
 /// Result of scanning a single input object for GDB index data.
 struct PerObjectGdbScan<'data> {
-    num_cus: usize,
+    num_cus: u32,
+    cu_base: u32,
     num_addr_entries: usize,
     /// `(name, local_cu_index, attrs)`. CU index is 0-based within this object.
     /// Names are owned because section data may have been decompressed.
@@ -428,42 +432,56 @@ fn scan_one_object<'data>(
     }
 
     Ok(Some(PerObjectGdbScan {
-        num_cus: boundaries.len(),
+        num_cus: boundaries.len() as u32,
         num_addr_entries,
         symbol_entries,
+        // Populated during merge.
+        cu_base: 0,
     }))
 }
 
+struct MergeState<'data> {
+    buckets: Vec<Vec<NamedCuEntry<'data>>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NamedCuEntry<'data> {
+    name: PreHashed<&'data [u8]>,
+    entry: u32,
+}
+
 /// Merge per-object scan results into a single `GdbIndexScanResult`, assigning global CU indices.
-fn merge_gdb_index_scans(per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIndexScanResult {
+fn merge_gdb_index_scans(mut per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIndexScanResult {
     timing_phase!("Merge GDB index scans");
 
-    let mut total_cus = 0usize;
-    let mut total_addr_entries = 0usize;
-    let mut sym_map: HashMap<&[u8], SymData> = HashMap::new();
-    let mut per_object_cu_counts = Vec::new();
+    let mut total_cus = 0_usize;
+    let mut total_addr_entries = 0_usize;
 
-    for scan in per_object {
-        let Some(scan) = scan else {
-            per_object_cu_counts.push(0);
-            continue;
-        };
-        let base = total_cus as u32;
-        total_cus += scan.num_cus;
-        total_addr_entries += scan.num_addr_entries;
-        per_object_cu_counts.push(scan.num_cus as u32);
+    let per_object_cu_counts = {
+        verbose_timing_phase!("Pre-merge processing");
 
-        for (name, local_cu_idx, attrs) in scan.symbol_entries {
-            let entry = encode_cu_vector_entry(base + local_cu_idx, attrs);
-            let sd = sym_map.entry(name).or_insert_with_key(|name| SymData {
-                cv_entries: Vec::with_capacity(4),
-                hash: gdb_hash(name),
-            });
-            sd.cv_entries.push(entry);
-        }
-    }
+        per_object
+            .iter_mut()
+            .map(|scan| {
+                scan.as_mut().map_or(0, |scan| {
+                    scan.cu_base = total_cus as u32;
+                    total_cus += scan.num_cus as usize;
+                    total_addr_entries += scan.num_addr_entries;
+                    scan.num_cus
+                })
+            })
+            .collect_vec()
+    };
 
-    let mut sorted = sort_symbols(sym_map);
+    let all_scans = per_object.into_iter().flatten().collect_vec();
+
+    let num_buckets = rayon::current_num_threads();
+
+    let states = bucket_names(&all_scans, num_buckets);
+
+    let buckets = build_name_maps(num_buckets, &states);
+
+    let mut sorted = sort_symbols(buckets);
 
     sort_cv_entries(&mut sorted);
 
@@ -485,10 +503,76 @@ fn merge_gdb_index_scans(per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIndexS
     }
 }
 
-fn sort_symbols(sym_map: HashMap<&[u8], SymData>) -> Vec<(&[u8], SymData)> {
+fn bucket_names<'data>(
+    all_scans: &[PerObjectGdbScan<'data>],
+    num_buckets: usize,
+) -> Vec<MergeState<'data>> {
+    timing_phase!("Bucket names");
+
+    all_scans
+        .chunks((all_scans.len() / rayon::current_num_threads() / 4).max(1))
+        .par_bridge()
+        .map(|scans| {
+            verbose_timing_phase!("Bucket names chunk");
+
+            let mut state = MergeState {
+                buckets: vec![Vec::new(); num_buckets],
+            };
+
+            for scan in scans {
+                for (name, local_cu_idx, attrs) in &scan.symbol_entries {
+                    let hash = crate::hash::hash_bytes(name);
+                    let entry = encode_cu_vector_entry(scan.cu_base + local_cu_idx, *attrs);
+                    state.buckets[hash as usize % num_buckets].push(NamedCuEntry {
+                        name: PreHashed::new(name, hash),
+                        entry,
+                    });
+                }
+            }
+
+            state
+        })
+        .collect()
+}
+
+fn build_name_maps<'data>(
+    num_buckets: usize,
+    states: &[MergeState<'data>],
+) -> Vec<HashMap<PreHashed<&'data [u8]>, SymData, crate::hash::PassThroughHasher>> {
+    timing_phase!("Build name maps");
+
+    (0..num_buckets)
+        .par_bridge()
+        .map(|bucket_num| {
+            verbose_timing_phase!("Build name map from bucket");
+
+            let mut map = PassThroughHashMap::default();
+
+            for state in states {
+                for v in &state.buckets[bucket_num] {
+                    let sd = map.entry(v.name).or_insert_with(|| SymData {
+                        cv_entries: Vec::with_capacity(4),
+                        hash: gdb_hash(*v.name),
+                    });
+                    sd.cv_entries.push(v.entry);
+                }
+            }
+
+            map
+        })
+        .collect()
+}
+
+fn sort_symbols(buckets: Vec<PassThroughHashMap<&[u8], SymData>>) -> Vec<(&[u8], SymData)> {
     timing_phase!("Sort symbols");
 
-    let mut sorted: Vec<(&[u8], SymData)> = sym_map.into_iter().collect_vec();
+    let mut sorted: Vec<(&[u8], SymData)> = buckets
+        .into_iter()
+        .flat_map(|map| map.into_iter().map(|(k, v)| (*k, v)))
+        .collect_vec();
+
+    verbose_timing_phase!("Parallel sort");
+
     sorted.par_sort_unstable_by_key(|(a, _)| *a);
     sorted
 }
