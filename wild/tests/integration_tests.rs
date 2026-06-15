@@ -330,6 +330,8 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
 
     let host_arch = get_host_architecture();
 
+    collect_wasm_tests(tests, filter)?;
+
     for platform in [PlatformKind::Elf, PlatformKind::MachO] {
         // Right now, the Mach-O provided Clang and the ld linker do not support the ELF format.
         if platform == PlatformKind::Elf && cfg!(target_os = "macos") {
@@ -417,6 +419,210 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
         }
     }
 
+    Ok(())
+}
+
+fn collect_wasm_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
+    if !cfg!(feature = "wasm") {
+        return Ok(());
+    }
+
+    let platform_name = "wasm";
+    if filter.excludes(platform_name) {
+        return Ok(());
+    }
+
+    let root = src_path(platform_name);
+    if !root.exists() {
+        return Ok(());
+    }
+
+    let dir = std::fs::read_dir(&root)
+        .with_context(|| format!("Failed to read directory {}", root.display()))?;
+
+    for entry in dir {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let test_name = path
+            .file_name()
+            .context("Missing filename")?
+            .to_str()
+            .context("Non-UTF-8 path")?
+            .to_owned();
+
+        let full_name = format!("{platform_name}/wasm32/{test_name}/default");
+        if filter.excludes(&full_name) {
+            continue;
+        }
+
+        let wat_file = path.join(format!("{test_name}.wat"));
+        if !wat_file.exists() {
+            continue;
+        }
+
+        tests.push(libtest_mimic::Trial::test(full_name, move || {
+            run_wasm_test(&wat_file).map_err(|e| libtest_mimic::Failed::from(e.to_string()))
+        }));
+    }
+
+    Ok(())
+}
+
+fn run_wasm_test(wat_file: &Path) -> Result {
+    let test_name = wat_file
+        .parent()
+        .and_then(|p| p.file_name())
+        .context("Bad test path")?
+        .to_str()
+        .context("Non-UTF-8 path")?;
+
+    let build_dir = build_dir().join("wasm").join("wasm32").join(test_name);
+    std::fs::create_dir_all(&build_dir)?;
+
+    // Parse directives from .wat file (;;# prefix)
+    let source = std::fs::read_to_string(wat_file)?;
+    let mut extra_objects = Vec::new();
+    let mut expect_error = false;
+    let mut skip_run = false;
+    for line in source.lines() {
+        if let Some(rest) = line.trim().strip_prefix(";;#") {
+            if let Some(obj_name) = rest.strip_prefix("Object:") {
+                extra_objects.push(obj_name.trim().to_owned());
+            } else if rest.starts_with("ExpectError") {
+                expect_error = true;
+            } else if rest.starts_with("SkipRun") {
+                skip_run = true;
+            }
+        }
+    }
+
+    let obj_file = build_dir.join(format!("{test_name}.o"));
+    let status = Command::new("wat2wasm")
+        .arg(wat_file)
+        .arg("--relocatable")
+        .arg("-o")
+        .arg(&obj_file)
+        .status()
+        .context("Failed to run wat2wasm")?;
+    ensure!(
+        status.success(),
+        "wat2wasm failed for {}",
+        wat_file.display()
+    );
+
+    // Compile any extra .wat objects
+    let mut all_objects = vec![obj_file];
+    for extra in &extra_objects {
+        let extra_wat = wat_file.parent().unwrap().join(extra);
+        let extra_obj = build_dir.join(extra.replace(".wat", ".o"));
+        let status = Command::new("wat2wasm")
+            .arg(&extra_wat)
+            .arg("--relocatable")
+            .arg("-o")
+            .arg(&extra_obj)
+            .status()
+            .with_context(|| format!("Failed to run wat2wasm for {}", extra_wat.display()))?;
+        ensure!(
+            status.success(),
+            "wat2wasm failed for {}",
+            extra_wat.display()
+        );
+        all_objects.push(extra_obj);
+    }
+
+    let wasm_ld_output = build_dir.join(format!("{test_name}.wasm-ld.wasm"));
+    let wasm_wild_output = build_dir.join(format!("{test_name}.wild.wasm"));
+    let mut wasm_ld_cmd = Command::new("wasm-ld");
+    for obj in &all_objects {
+        wasm_ld_cmd.arg(obj);
+    }
+    wasm_ld_cmd
+        .arg("-o")
+        .arg(&wasm_ld_output)
+        .arg("--no-entry")
+        .arg("--export-all")
+        .arg("--no-check-features");
+
+    let wasm_ld_result = wasm_ld_cmd.output().context("Failed to run wasm-ld")?;
+
+    if !expect_error {
+        ensure!(
+            wasm_ld_result.status.success(),
+            "wasm-ld linking failed:\n{}",
+            String::from_utf8_lossy(&wasm_ld_result.stderr)
+        );
+        validate_wasm(&wasm_ld_output, "wasm-ld")?;
+        if !skip_run {
+            run_wasm_with_wasmtime(&wasm_ld_output, "wasm-ld")?;
+        }
+    }
+
+    // Link with wild and verify the result.
+    let mut link_cmd = Command::new(wild_path());
+    link_cmd.arg("-flavor").arg("wasm");
+    for obj in &all_objects {
+        link_cmd.arg(obj);
+    }
+    link_cmd.arg("-o").arg(&wasm_wild_output);
+
+    let link_result = link_cmd.output().context("Failed to run wild")?;
+
+    if expect_error {
+        ensure!(
+            !link_result.status.success(),
+            "Expected link error but wild succeeded"
+        );
+        return Ok(());
+    }
+
+    ensure!(
+        link_result.status.success(),
+        "wild linking failed:\n{}",
+        String::from_utf8_lossy(&link_result.stderr)
+    );
+
+    validate_wasm(&wasm_wild_output, "wild")?;
+    if !skip_run {
+        run_wasm_with_wasmtime(&wasm_wild_output, "wild")?;
+    }
+
+    Ok(())
+}
+
+fn validate_wasm(wasm_file: &Path, linker_name: &str) -> Result {
+    let output = Command::new("wasm-tools")
+        .arg("validate")
+        .arg(wasm_file)
+        .output()
+        .context("Failed to run wasm-tools validate")?;
+    ensure!(
+        output.status.success(),
+        "wasm-tools validate failed for {} output ({}):\n{}",
+        linker_name,
+        wasm_file.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn run_wasm_with_wasmtime(wasm_file: &Path, linker_name: &str) -> Result {
+    let output = Command::new("wasmtime")
+        .arg("run")
+        .arg(wasm_file)
+        .output()
+        .context("Failed to run wasmtime")?;
+    ensure!(
+        output.status.success(),
+        "wasmtime execution of {} output failed (exit={:?}):\nstdout: {}\nstderr: {}",
+        linker_name,
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     Ok(())
 }
 
