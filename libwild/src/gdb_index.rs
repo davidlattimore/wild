@@ -27,8 +27,9 @@ use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME_STR;
 use linker_utils::utils::u32_from_slice;
 use linker_utils::utils::u64_from_slice;
 use object::read::elf::SectionHeader as _;
-use rayon::iter::IntoParallelRefIterator;
-use rayon::iter::ParallelIterator;
+use rayon::iter::IntoParallelRefIterator as _;
+use rayon::iter::ParallelIterator as _;
+use rayon::slice::ParallelSliceMut as _;
 use std::borrow::Cow;
 use std::mem::size_of;
 use zerocopy::FromBytes;
@@ -487,10 +488,9 @@ fn merge_gdb_index_scans(per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIndexS
 fn sort_symbols(sym_map: HashMap<&[u8], SymData>) -> Vec<(&[u8], SymData)> {
     timing_phase!("Sort symbols");
 
-    sym_map
-        .into_iter()
-        .sorted_unstable_by_key(|(a, _)| *a)
-        .collect()
+    let mut sorted: Vec<(&[u8], SymData)> = sym_map.into_iter().collect_vec();
+    sorted.par_sort_unstable_by_key(|(a, _)| *a);
+    sorted
 }
 
 fn sort_cv_entries(sorted: &mut Vec<(&[u8], SymData)>) {
