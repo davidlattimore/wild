@@ -85,6 +85,7 @@ use foldhash::HashSet;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
 use itertools::Itertools as _;
+use leb128::write::unsigned_len;
 use linker_utils::elf::PageMask;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RelocationKind;
@@ -3712,40 +3713,38 @@ pub(crate) fn gnu_property_notes_section_size(gnu_property_notes: &[GnuProperty]
 }
 
 fn riscv_attributes_section_size(riscv_attributes: &[RiscVAttribute]) -> u64 {
-    let size_of_uleb_encoded = linker_utils::utils::uleb128_size;
-
     (if riscv_attributes.is_empty() {
         0
     } else {
         1 // 'A'
             + 4 // sizeof(u32)
-            + size_of_uleb_encoded(TAG_RISCV_WHOLE_FILE)
+            + unsigned_len(TAG_RISCV_WHOLE_FILE)
             + 4 // sizeof(u32)
             + RISCV_ATTRIBUTE_VENDOR_NAME.len() + 1
             + riscv_attributes.iter().map(|attr| {
                 match attr {
                     RiscVAttribute::StackAlign(align) => {
-                                        size_of_uleb_encoded(TAG_RISCV_STACK_ALIGN) +
-                                        size_of_uleb_encoded(*align)
+                                        unsigned_len(TAG_RISCV_STACK_ALIGN) +
+                                        unsigned_len(*align)
                                     }
                     RiscVAttribute::Arch(arch) => {
-                                        size_of_uleb_encoded(TAG_RISCV_ARCH)
+                                        unsigned_len(TAG_RISCV_ARCH)
                                         +arch.to_attribute_string().len() + 1
                                     }
                     RiscVAttribute::UnalignedAccess(_) => {
-                                        size_of_uleb_encoded(TAG_RISCV_UNALIGNED_ACCESS) + 1
+                                        unsigned_len(TAG_RISCV_UNALIGNED_ACCESS) + 1
                                     }
                     RiscVAttribute::PrivilegedSpecMajor(version) => {
-                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC) +
-                                        size_of_uleb_encoded(*version)
+                                        unsigned_len(TAG_RISCV_PRIV_SPEC) +
+                                        unsigned_len(*version)
                     },
                     RiscVAttribute::PrivilegedSpecMinor(version) => {
-                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC_MINOR) +
-                                        size_of_uleb_encoded(*version)
+                                        unsigned_len(TAG_RISCV_PRIV_SPEC_MINOR) +
+                                        unsigned_len(*version)
                     }
                     RiscVAttribute::PrivilegedSpecRevision(version) => {
-                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC_REVISION) +
-                                        size_of_uleb_encoded(*version)
+                                        unsigned_len(TAG_RISCV_PRIV_SPEC_REVISION) +
+                                        unsigned_len(*version)
                     }
                                     }
             }).sum::<usize>()

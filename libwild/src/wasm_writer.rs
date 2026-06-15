@@ -14,7 +14,7 @@ use crate::wasm::WasmRelocation;
 use crate::wasm::apply_relocation;
 use crate::wasm::section_id;
 use crate::wasm::write_uleb128;
-use linker_utils::utils::uleb128_size;
+use leb128::write::unsigned_len;
 use wasm_encoder::ExportSection;
 use wasm_encoder::FunctionSection;
 use wasm_encoder::GlobalSection;
@@ -124,12 +124,12 @@ fn write_code_section(bodies: &[WasmFunctionBody<'_>], out: &mut [u8]) -> Result
 
     let count = bodies.len() as u64;
     // Compute payload size: count LEB + sum(body_size_leb + body_bytes) for each body.
-    let count_leb_size = uleb128_size(count);
+    let count_leb_size = unsigned_len(count);
     let bodies_with_prefix_total: usize = bodies
         .iter()
         .map(|b| {
             let body_len = b.bytes.len() as u64;
-            uleb128_size(body_len) + b.bytes.len()
+            unsigned_len(body_len) + b.bytes.len()
         })
         .sum();
     let payload_size = (count_leb_size + bodies_with_prefix_total) as u64;

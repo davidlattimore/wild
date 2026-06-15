@@ -63,11 +63,3 @@ pub fn read_uleb128(content: &mut &[u8]) -> Result<u64> {
     leb128::read::unsigned(content)
         .map_err(|e| anyhow::anyhow!("Failed to read ULEB128 value: {e}"))
 }
-
-/// Number of bytes needed to encode `value` as an unsigned LEB128.
-// TODO: Replace with `leb128::write::unsigned_len` once https://github.com/gimli-rs/leb128/pull/32
-// is merged and released.
-#[must_use]
-pub fn uleb128_size(value: u64) -> usize {
-    leb128::write::unsigned(&mut std::io::sink(), value).unwrap()
-}
