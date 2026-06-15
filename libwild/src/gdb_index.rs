@@ -30,7 +30,6 @@ use object::read::elf::SectionHeader as _;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use std::borrow::Cow;
-use std::collections::BTreeSet;
 use std::mem::size_of;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -349,7 +348,7 @@ fn build_cu_list(output_buf: &[u8], layout: &Layout<'_, Elf>) -> Result<Vec<GdbI
 }
 
 struct SymData {
-    cv_entries: BTreeSet<u32>,
+    cv_entries: Vec<u32>,
     hash: u32,
 }
 
@@ -454,17 +453,26 @@ fn merge_gdb_index_scans(per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIndexS
         for (name, local_cu_idx, attrs) in scan.symbol_entries {
             let entry = encode_cu_vector_entry(base + local_cu_idx, attrs);
             let sd = sym_map.entry(name).or_insert_with_key(|name| SymData {
-                cv_entries: BTreeSet::new(),
+                cv_entries: Vec::with_capacity(4),
                 hash: gdb_hash(name),
             });
-            sd.cv_entries.insert(entry);
+            sd.cv_entries.push(entry);
         }
     }
 
-    let sorted: Vec<(&[u8], SymData)> = sym_map
+    let mut sorted: Vec<(&[u8], SymData)> = sym_map
         .into_iter()
         .sorted_unstable_by_key(|(a, _)| *a)
         .collect();
+
+    for (_, sd) in &mut sorted {
+        sd.cv_entries.sort_unstable();
+        debug_assert!(
+            sd.cv_entries.array_windows().all(|[a, b]| a != b),
+            "Duplicate CV entries detected"
+        );
+    }
+
     let ht_slots = compute_hash_table_slots(sorted.len());
 
     GdbIndexScanResult {
