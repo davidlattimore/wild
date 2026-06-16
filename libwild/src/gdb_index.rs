@@ -15,7 +15,6 @@ use crate::layout::FileLayoutState;
 use crate::layout::GroupState;
 use crate::layout::Layout;
 use crate::layout::ObjectLayoutState;
-use crate::output_section_id::SectionName;
 use crate::platform::ObjectFile as _;
 use crate::platform::SectionHeader as _;
 use crate::resolution::SectionSlot;
@@ -24,7 +23,6 @@ use crate::verbose_timing_phase;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
 use linker_utils::bit_misc::BitExtraction;
-use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME_STR;
 use linker_utils::utils::u32_from_slice;
 use linker_utils::utils::u64_from_slice;
@@ -126,6 +124,7 @@ fn compute_hash_table_slots(num_symbols: usize) -> usize {
     (num_symbols * 4 / 3 + 1).next_power_of_two()
 }
 
+#[derive(Debug, Clone, Copy)]
 struct CuBoundary {
     offset: u64,
     length: u64,
@@ -200,7 +199,7 @@ fn section_by_name<'data>(
 
 /// Compute the size from a scan result.
 fn gdb_index_size_from_scan(scan: &GdbIndexScanResult) -> u64 {
-    if scan.total_cus == 0 {
+    if scan.all_cus.is_empty() {
         return 0;
     }
 
@@ -213,7 +212,7 @@ fn gdb_index_size_from_scan(scan: &GdbIndexScanResult) -> u64 {
     }
 
     (HEADER_SIZE
-        + scan.total_cus * CU_ENTRY_SIZE
+        + scan.all_cus.len() * CU_ENTRY_SIZE
         + scan.total_addr_entries * ADDRESS_ENTRY_SIZE
         + scan.ht_slots * HASH_SLOT_SIZE
         + SHORTCUT_TABLE_SIZE
@@ -254,7 +253,6 @@ pub(crate) fn compute_gdb_index_size<'data>(
 /// and uses the pre-computed scan result for symbol data.
 pub(crate) fn write_gdb_index(
     buf: &mut [u8],
-    output_buf: &[u8],
     layout: &Layout<'_, Elf>,
     scan: &GdbIndexScanResult,
 ) -> Result {
@@ -262,7 +260,7 @@ pub(crate) fn write_gdb_index(
         return Ok(());
     }
 
-    let cu_entries = build_cu_list(output_buf, layout)?;
+    let cu_entries = &scan.all_cus;
     let sorted_names = &scan.sorted_symbols;
     let ht_slots = scan.ht_slots;
     if !cu_entries.is_empty() && sorted_names.is_empty() {
@@ -294,7 +292,11 @@ pub(crate) fn write_gdb_index(
     buf[..HEADER_SIZE].copy_from_slice(hdr.as_bytes());
 
     let mut off = cu_list_off as usize;
-    for cu in &cu_entries {
+    for cu in cu_entries {
+        let cu = GdbIndexCuEntry {
+            cu_offset: cu.offset,
+            cu_length: cu.length,
+        };
         buf[off..off + CU_ENTRY_SIZE].copy_from_slice(cu.as_bytes());
         off += CU_ENTRY_SIZE;
     }
@@ -326,38 +328,13 @@ pub(crate) fn write_gdb_index(
     Ok(())
 }
 
-/// Build the CU list from the already-written output `.debug_info`.
-fn build_cu_list(output_buf: &[u8], layout: &Layout<'_, Elf>) -> Result<Vec<GdbIndexCuEntry>> {
-    let Some(id) = layout
-        .output_sections
-        .section_id_by_name(SectionName(DEBUG_INFO_SECTION_NAME))
-    else {
-        return Ok(Vec::new());
-    };
-    let sl = layout.section_layouts.get(id);
-    let start = sl.file_offset;
-    let end = start + sl.file_size;
-    crate::ensure!(
-        end <= output_buf.len(),
-        ".debug_info layout extends beyond output buffer ({end} > {})",
-        output_buf.len()
-    );
-    Ok(parse_cu_boundaries(&output_buf[start..end])?
-        .into_iter()
-        .map(|cu| GdbIndexCuEntry {
-            cu_offset: cu.offset,
-            cu_length: cu.length,
-        })
-        .collect())
-}
-
 struct SymData {
     cv_entries: Vec<u32>,
     hash: u32,
 }
 
 pub(crate) struct GdbIndexScanResult<'data> {
-    total_cus: usize,
+    all_cus: Vec<CuBoundary>,
     total_addr_entries: usize,
     sorted_symbols: Vec<(&'data [u8], SymData)>,
     ht_slots: usize,
@@ -368,7 +345,7 @@ pub(crate) struct GdbIndexScanResult<'data> {
 
 /// Result of scanning a single input object for GDB index data.
 struct PerObjectGdbScan<'data> {
-    num_cus: u32,
+    cu_boundaries: Vec<CuBoundary>,
     cu_base: u32,
     num_addr_entries: usize,
     /// `(name, local_cu_index, attrs)`. CU index is 0-based within this object.
@@ -383,11 +360,11 @@ fn scan_one_object<'data>(
 ) -> Result<Option<PerObjectGdbScan<'data>>> {
     verbose_timing_phase!("Parse GDB index inputs");
 
-    let boundaries = match section_by_name(object.object, DEBUG_INFO_SECTION_NAME_STR)? {
+    let cu_boundaries = match section_by_name(object.object, DEBUG_INFO_SECTION_NAME_STR)? {
         Some(data) => parse_cu_boundaries(&data)?,
         None => return Ok(None),
     };
-    if boundaries.is_empty() {
+    if cu_boundaries.is_empty() {
         return Ok(None);
     }
 
@@ -406,8 +383,8 @@ fn scan_one_object<'data>(
     }
 
     // Build offset-to-local-index map for this object's CUs.
-    let mut offset_to_idx: HashMap<u64, u32> = HashMap::with_capacity(boundaries.len());
-    for (i, cu) in boundaries.iter().enumerate() {
+    let mut offset_to_idx: HashMap<u64, u32> = HashMap::with_capacity(cu_boundaries.len());
+    for (i, cu) in cu_boundaries.iter().enumerate() {
         offset_to_idx.insert(cu.offset, i as u32);
     }
 
@@ -432,7 +409,7 @@ fn scan_one_object<'data>(
     }
 
     Ok(Some(PerObjectGdbScan {
-        num_cus: boundaries.len() as u32,
+        cu_boundaries,
         num_addr_entries,
         symbol_entries,
         // Populated during merge.
@@ -454,20 +431,26 @@ struct NamedCuEntry<'data> {
 fn merge_gdb_index_scans(mut per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIndexScanResult {
     timing_phase!("Merge GDB index scans");
 
-    let mut total_cus = 0_usize;
+    let mut all_cus = Vec::new();
     let mut total_addr_entries = 0_usize;
 
     let per_object_cu_counts = {
         verbose_timing_phase!("Pre-merge processing");
 
+        let mut base_offset = 0;
+
         per_object
             .iter_mut()
             .map(|scan| {
                 scan.as_mut().map_or(0, |scan| {
-                    scan.cu_base = total_cus as u32;
-                    total_cus += scan.num_cus as usize;
+                    scan.cu_base = all_cus.len() as u32;
+                    all_cus.extend(scan.cu_boundaries.iter().copied().map(|mut cu| {
+                        cu.offset += base_offset;
+                        cu
+                    }));
+                    base_offset += scan.cu_boundaries.iter().map(|cu| cu.length).sum::<u64>();
                     total_addr_entries += scan.num_addr_entries;
-                    scan.num_cus
+                    scan.cu_boundaries.len() as u32
                 })
             })
             .collect_vec()
@@ -489,13 +472,13 @@ fn merge_gdb_index_scans(mut per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIn
 
     tracing::trace!(
         ht_slots,
-        total_cus,
+        cu_count = all_cus.len(),
         symbol_count = sorted.len(),
         total_cv_entries = sorted.iter().map(|e| e.1.cv_entries.len()).sum::<usize>()
     );
 
     GdbIndexScanResult {
-        total_cus,
+        all_cus,
         total_addr_entries,
         sorted_symbols: sorted,
         ht_slots,

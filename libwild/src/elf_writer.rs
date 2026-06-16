@@ -333,9 +333,9 @@ fn write_gdb_index_section(output: &mut [u8], layout: &ElfLayout) -> Result {
     let start = sl.file_offset;
     // Split the output buffer so that the part before our section is readable (for .debug_info)
     // and our section is writable.
-    let (before, rest) = output.split_at_mut(start);
+    let (_, rest) = output.split_at_mut(start);
     let gdb_buf = &mut rest[..sl.file_size];
-    crate::gdb_index::write_gdb_index(gdb_buf, before, layout, scan)
+    crate::gdb_index::write_gdb_index(gdb_buf, layout, scan)
 }
 
 fn write_sframe_section(sframe_buffer: &mut [u8], layout: &ElfLayout) -> Result {
