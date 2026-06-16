@@ -15,7 +15,7 @@ use crate::wasm_writer::OutputExport;
 use crate::wasm_writer::OutputGlobal;
 use crate::wasm_writer::OutputImport;
 use crate::wasm_writer::OutputImportEntity;
-use leb128::write::unsigned_len;
+use leb128::write::unsigned_len as uleb128_size;
 use linker_utils::utils::u32_from_slice;
 use rayon::prelude::*;
 use std::ops::Range;
@@ -1563,16 +1563,16 @@ fn compute_code_section_size(bodies: &[WasmFunctionBody<'_>]) -> u64 {
         return 0;
     }
     let count = bodies.len() as u32;
-    let count_leb_size = unsigned_len(u64::from(count)) as u64;
+    let count_leb_size = uleb128_size(u64::from(count)) as u64;
     let bodies_with_prefix_total: u64 = bodies
         .iter()
         .map(|b| {
             let body_len = b.bytes.len() as u64;
-            unsigned_len(body_len) as u64 + body_len
+            uleb128_size(body_len) as u64 + body_len
         })
         .sum();
     let payload_size = count_leb_size + bodies_with_prefix_total;
-    let payload_size_leb_size = unsigned_len(payload_size) as u64;
+    let payload_size_leb_size = uleb128_size(payload_size) as u64;
 
     // section id (1 byte) + payload size LEB + payload
     1 + payload_size_leb_size + payload_size
