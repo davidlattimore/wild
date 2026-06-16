@@ -27,10 +27,9 @@ use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME_STR;
 use linker_utils::utils::u32_from_slice;
 use linker_utils::utils::u64_from_slice;
 use object::read::elf::SectionHeader as _;
+use rayon::iter::IntoParallelIterator as _;
 use rayon::iter::IntoParallelRefIterator as _;
-use rayon::iter::ParallelBridge as _;
 use rayon::iter::ParallelIterator as _;
-use rayon::slice::ParallelSliceMut as _;
 use std::borrow::Cow;
 use std::mem::size_of;
 use zerocopy::FromBytes;
@@ -205,10 +204,10 @@ fn gdb_index_size_from_scan(scan: &GdbIndexScanResult) -> u64 {
 
     let mut cv_bytes = 0usize;
     let mut str_bytes = 0usize;
-    for (name, sd) in &scan.sorted_symbols {
+    for sd in &scan.symbols {
         // 4 bytes for the entry count, then 4 bytes per entry.
         cv_bytes += 4 + sd.cv_entries.len() * 4;
-        str_bytes += name.len() + 1;
+        str_bytes += sd.name.len() + 1;
     }
 
     (HEADER_SIZE
@@ -261,9 +260,8 @@ pub(crate) fn write_gdb_index(
     }
 
     let cu_entries = &scan.all_cus;
-    let sorted_names = &scan.sorted_symbols;
     let ht_slots = scan.ht_slots;
-    if !cu_entries.is_empty() && sorted_names.is_empty() {
+    if !cu_entries.is_empty() && scan.symbols.is_empty() {
         layout.symbol_db.warning(
             "Objects lack .debug_gnu_pubnames/.debug_gnu_pubtypes sections, so the symbol table in .gdb_index will be empty. \
              Compile with -ggnu-pubnames to populate it.",
@@ -278,7 +276,7 @@ pub(crate) fn write_gdb_index(
     let short_off = sym_off + (ht_slots * HASH_SLOT_SIZE) as u32;
     let cp_off = short_off + SHORTCUT_TABLE_SIZE as u32;
 
-    let (cv_offsets, name_offsets) = write_constant_pool(buf, cp_off as usize, sorted_names);
+    let (cv_offsets, name_offsets) = write_constant_pool(buf, cp_off as usize, &scan.symbols);
 
     let hdr = GdbIndexHeader {
         version: GDB_INDEX_VERSION,
@@ -311,7 +309,7 @@ pub(crate) fn write_gdb_index(
         buf,
         ht_slots,
         sym_off as usize,
-        sorted_names,
+        &scan.symbols,
         &name_offsets,
         &cv_offsets,
     )?;
@@ -328,7 +326,8 @@ pub(crate) fn write_gdb_index(
     Ok(())
 }
 
-struct SymData {
+struct SymData<'data> {
+    name: &'data [u8],
     cv_entries: Vec<u32>,
     hash: u32,
 }
@@ -336,7 +335,7 @@ struct SymData {
 pub(crate) struct GdbIndexScanResult<'data> {
     all_cus: Vec<CuBoundary>,
     total_addr_entries: usize,
-    sorted_symbols: Vec<(&'data [u8], SymData)>,
+    symbols: Vec<SymData<'data>>,
     ht_slots: usize,
     /// CU count for each object that has debug info, in input order. Used by
     /// `build_address_entries` to assign global CU indices.
@@ -458,29 +457,29 @@ fn merge_gdb_index_scans(mut per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIn
 
     let all_scans = per_object.into_iter().flatten().collect_vec();
 
-    let num_buckets = rayon::current_num_threads();
+    let num_buckets = 32;
 
     let states = bucket_names(&all_scans, num_buckets);
 
     let buckets = build_name_maps(num_buckets, &states);
 
-    let mut sorted = sort_symbols(buckets);
+    let mut symbols = sort_symbols(buckets);
 
-    sort_cv_entries(&mut sorted);
+    sort_cv_entries(&mut symbols);
 
-    let ht_slots = compute_hash_table_slots(sorted.len());
+    let ht_slots = compute_hash_table_slots(symbols.len());
 
     tracing::trace!(
         ht_slots,
         cu_count = all_cus.len(),
-        symbol_count = sorted.len(),
-        total_cv_entries = sorted.iter().map(|e| e.1.cv_entries.len()).sum::<usize>()
+        symbol_count = symbols.len(),
+        total_cv_entries = symbols.iter().map(|e| e.cv_entries.len()).sum::<usize>()
     );
 
     GdbIndexScanResult {
         all_cus,
         total_addr_entries,
-        sorted_symbols: sorted,
+        symbols,
         ht_slots,
         per_object_cu_counts,
     }
@@ -492,9 +491,13 @@ fn bucket_names<'data>(
 ) -> Vec<MergeState<'data>> {
     timing_phase!("Bucket names");
 
-    all_scans
+    // Note, we don't use par_bridge here, since we want the returned order to be deterministic.
+    let chunks = all_scans
         .chunks((all_scans.len() / rayon::current_num_threads() / 4).max(1))
-        .par_bridge()
+        .collect_vec();
+
+    chunks
+        .into_par_iter()
         .map(|scans| {
             verbose_timing_phase!("Bucket names chunk");
 
@@ -521,49 +524,49 @@ fn bucket_names<'data>(
 fn build_name_maps<'data>(
     num_buckets: usize,
     states: &[MergeState<'data>],
-) -> Vec<HashMap<PreHashed<&'data [u8]>, SymData, crate::hash::PassThroughHasher>> {
+) -> Vec<Vec<SymData<'data>>> {
     timing_phase!("Build name maps");
 
     (0..num_buckets)
-        .par_bridge()
+        .into_par_iter()
         .map(|bucket_num| {
             verbose_timing_phase!("Build name map from bucket");
 
             let mut map = PassThroughHashMap::default();
+            let mut symbols = Vec::new();
 
             for state in states {
                 for v in &state.buckets[bucket_num] {
-                    let sd = map.entry(v.name).or_insert_with(|| SymData {
-                        cv_entries: Vec::with_capacity(4),
-                        hash: gdb_hash(*v.name),
+                    let i = *map.entry(v.name).or_insert_with(|| {
+                        let index = symbols.len();
+                        symbols.push(SymData {
+                            name: *v.name,
+                            cv_entries: Vec::with_capacity(4),
+                            hash: gdb_hash(*v.name),
+                        });
+                        index
                     });
+
+                    let sd = &mut symbols[i];
                     sd.cv_entries.push(v.entry);
                 }
             }
 
-            map
+            symbols
         })
         .collect()
 }
 
-fn sort_symbols(buckets: Vec<PassThroughHashMap<&[u8], SymData>>) -> Vec<(&[u8], SymData)> {
-    timing_phase!("Sort symbols");
+fn sort_symbols(buckets: Vec<Vec<SymData>>) -> Vec<SymData> {
+    timing_phase!("Flatten symbols");
 
-    let mut sorted: Vec<(&[u8], SymData)> = buckets
-        .into_iter()
-        .flat_map(|map| map.into_iter().map(|(k, v)| (*k, v)))
-        .collect_vec();
-
-    verbose_timing_phase!("Parallel sort");
-
-    sorted.par_sort_unstable_by_key(|(a, _)| *a);
-    sorted
+    buckets.into_iter().flatten().collect()
 }
 
-fn sort_cv_entries(sorted: &mut Vec<(&[u8], SymData)>) {
+fn sort_cv_entries(sorted: &mut Vec<SymData>) {
     timing_phase!("Sort CV entries");
 
-    for (_, sd) in sorted {
+    for sd in sorted {
         sd.cv_entries.sort_unstable();
         debug_assert!(
             sd.cv_entries.array_windows().all(|[a, b]| a != b),
@@ -707,24 +710,24 @@ fn cu_index_for_offset(boundaries: &[CuBoundary], offset: u64) -> Option<u32> {
 fn write_constant_pool(
     buf: &mut [u8],
     cp_start: usize,
-    sorted: &[(&[u8], SymData)],
+    symbols: &[SymData],
 ) -> (Vec<u32>, Vec<u32>) {
-    let mut cv_offsets = Vec::with_capacity(sorted.len());
+    let mut cv_offsets = Vec::with_capacity(symbols.len());
     let mut off = cp_start;
-    for (_, sd) in sorted {
+    for sym in symbols {
         cv_offsets.push((off - cp_start) as u32);
-        buf[off..off + 4].copy_from_slice(&(sd.cv_entries.len() as u32).to_le_bytes());
+        buf[off..off + 4].copy_from_slice(&(sym.cv_entries.len() as u32).to_le_bytes());
         off += 4;
-        for &e in &sd.cv_entries {
+        for &e in &sym.cv_entries {
             buf[off..off + 4].copy_from_slice(&e.to_le_bytes());
             off += 4;
         }
     }
-    let mut name_offsets = Vec::with_capacity(sorted.len());
-    for (name, _) in sorted {
+    let mut name_offsets = Vec::with_capacity(symbols.len());
+    for sym in symbols {
         name_offsets.push((off - cp_start) as u32);
-        buf[off..off + name.len()].copy_from_slice(name);
-        off += name.len();
+        buf[off..off + sym.name.len()].copy_from_slice(sym.name);
+        off += sym.name.len();
         buf[off] = 0;
         off += 1;
     }
@@ -736,7 +739,7 @@ fn write_hash_table(
     buf: &mut [u8],
     ht_slots: usize,
     ht_start: usize,
-    sorted: &[(&[u8], SymData)],
+    symbols: &[SymData],
     name_offsets: &[u32],
     cv_offsets: &[u32],
 ) -> Result {
@@ -748,7 +751,7 @@ fn write_hash_table(
         return Ok(());
     }
     let mask = (ht_slots - 1) as u32;
-    for (i, (_, sd)) in sorted.iter().enumerate() {
+    for (i, sd) in symbols.iter().enumerate() {
         let h = sd.hash;
         let step = (h.wrapping_mul(17) & mask) | 1;
         let mut slot = h & mask;
