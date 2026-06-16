@@ -75,8 +75,10 @@ struct GdbIndexShortcutTable {
 
 const HEADER_SIZE: usize = size_of::<GdbIndexHeader>();
 const CU_ENTRY_SIZE: usize = size_of::<GdbIndexCuEntry>();
+const CV_ENTRY_SIZE: usize = size_of::<u32>();
 const ADDRESS_ENTRY_SIZE: usize = size_of::<GdbIndexAddressEntry>();
 const SHORTCUT_TABLE_SIZE: usize = size_of::<GdbIndexShortcutTable>();
+
 #[derive(Debug, Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
 #[repr(C, packed)]
 struct GdbIndexHashSlot {
@@ -205,11 +207,8 @@ fn gdb_index_size_from_scan(scan: &GdbIndexScanResult) -> u64 {
     let mut cv_bytes = 0usize;
     let mut str_bytes = 0usize;
     for bucket in &scan.buckets {
-        for sd in &bucket.symbols {
-            // 4 bytes for the entry count, then 4 bytes per entry.
-            cv_bytes += 4 + sd.cv_entries.len() * 4;
-            str_bytes += sd.name.len() + 1;
-        }
+        cv_bytes += bucket.cv_byte_count;
+        str_bytes += bucket.name_bytes_count;
     }
 
     (HEADER_SIZE
@@ -278,7 +277,7 @@ pub(crate) fn write_gdb_index(
     let short_off = sym_off + (ht_slots * HASH_SLOT_SIZE) as u32;
     let cp_off = short_off + SHORTCUT_TABLE_SIZE as u32;
 
-    let (cv_offsets, name_offsets) = write_constant_pool(buf, cp_off as usize, scan);
+    write_constant_pool(buf, cp_off as usize, scan);
 
     let hdr = GdbIndexHeader {
         version: GDB_INDEX_VERSION,
@@ -307,14 +306,7 @@ pub(crate) fn write_gdb_index(
         off += ADDRESS_ENTRY_SIZE;
     }
 
-    write_hash_table(
-        buf,
-        ht_slots,
-        sym_off as usize,
-        &scan.buckets,
-        &name_offsets,
-        &cv_offsets,
-    )?;
+    write_hash_table(buf, ht_slots, sym_off as usize, scan)?;
 
     // The shortcut table lets GDB quickly determine the language of `main` without scanning the
     // full index. Filling it requires looking up the DWARF language attribute of the main CU, which
@@ -336,13 +328,15 @@ struct SymData<'data> {
 
 struct SymbolBucket<'data> {
     symbols: Vec<SymData<'data>>,
+    cv_byte_count: usize,
+    name_bytes_count: usize,
 }
 
 pub(crate) struct GdbIndexScanResult<'data> {
     all_cus: Vec<CuBoundary>,
     total_addr_entries: usize,
     buckets: Vec<SymbolBucket<'data>>,
-    symbol_count: usize,
+    total_cv_bytes: usize,
     ht_slots: usize,
     /// CU count for each object that has debug info, in input order. Used by
     /// `build_address_entries` to assign global CU indices.
@@ -472,6 +466,7 @@ fn merge_gdb_index_scans(mut per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIn
 
     let symbol_count = buckets.iter().map(|b| b.symbols.len()).sum();
     let ht_slots = compute_hash_table_slots(symbol_count);
+    let total_cv_bytes = buckets.iter().map(|b| b.cv_byte_count).sum();
 
     tracing::trace!(
         ht_slots,
@@ -487,7 +482,7 @@ fn merge_gdb_index_scans(mut per_object: Vec<Option<PerObjectGdbScan>>) -> GdbIn
         all_cus,
         total_addr_entries,
         buckets,
-        symbol_count,
+        total_cv_bytes,
         ht_slots,
         per_object_cu_counts,
     }
@@ -542,6 +537,8 @@ fn build_buckets<'data>(
 
             let mut map = PassThroughHashMap::default();
             let mut symbols = Vec::new();
+            let mut cv_byte_count = 0;
+            let mut name_bytes_count = 0;
 
             for state in states {
                 for v in &state.buckets[bucket_num] {
@@ -552,11 +549,14 @@ fn build_buckets<'data>(
                             cv_entries: Vec::with_capacity(4),
                             hash: gdb_hash(*v.name),
                         });
+                        cv_byte_count += CV_ENTRY_SIZE;
+                        name_bytes_count += v.name.len() + 1;
                         index
                     });
 
                     let sd = &mut symbols[i];
                     sd.cv_entries.push(v.entry);
+                    cv_byte_count += CV_ENTRY_SIZE;
                 }
             }
 
@@ -568,7 +568,11 @@ fn build_buckets<'data>(
                 );
             }
 
-            SymbolBucket { symbols }
+            SymbolBucket {
+                symbols,
+                cv_byte_count,
+                name_bytes_count,
+            }
         })
         .collect()
 }
@@ -705,19 +709,13 @@ fn cu_index_for_offset(boundaries: &[CuBoundary], offset: u64) -> Option<u32> {
 }
 
 /// Write the constant pool (CU vectors followed by name strings) into `buf` starting at `cp_start`.
-fn write_constant_pool(
-    buf: &mut [u8],
-    cp_start: usize,
-    scan: &GdbIndexScanResult,
-) -> (Vec<u32>, Vec<u32>) {
+fn write_constant_pool(buf: &mut [u8], cp_start: usize, scan: &GdbIndexScanResult) {
     verbose_timing_phase!("Write constant pool");
 
-    let mut cv_offsets = Vec::with_capacity(scan.symbol_count);
     let mut off = cp_start;
 
     for bucket in &scan.buckets {
         for sym in &bucket.symbols {
-            cv_offsets.push((off - cp_start) as u32);
             buf[off..off + 4].copy_from_slice(&(sym.cv_entries.len() as u32).to_le_bytes());
             off += 4;
             for &e in &sym.cv_entries {
@@ -727,19 +725,14 @@ fn write_constant_pool(
         }
     }
 
-    let mut name_offsets = Vec::with_capacity(scan.symbol_count);
-
     for bucket in &scan.buckets {
         for sym in &bucket.symbols {
-            name_offsets.push((off - cp_start) as u32);
             buf[off..off + sym.name.len()].copy_from_slice(sym.name);
             off += sym.name.len();
             buf[off] = 0;
             off += 1;
         }
     }
-
-    (cv_offsets, name_offsets)
 }
 
 /// Insert symbols into the open-addressing hash table region of `buf`.
@@ -747,9 +740,7 @@ fn write_hash_table(
     buf: &mut [u8],
     ht_slots: usize,
     ht_start: usize,
-    buckets: &[SymbolBucket],
-    name_offsets: &[u32],
-    cv_offsets: &[u32],
+    scan: &GdbIndexScanResult,
 ) -> Result {
     verbose_timing_phase!("Write GDB hash table");
     let ht_end = ht_start + ht_slots * HASH_SLOT_SIZE;
@@ -760,9 +751,10 @@ fn write_hash_table(
     }
 
     let mask = (ht_slots - 1) as u32;
-    let mut i = 0;
+    let mut cv_offset = 0;
+    let mut name_offset = scan.total_cv_bytes as u32;
 
-    for bucket in buckets {
+    for bucket in &scan.buckets {
         for sd in &bucket.symbols {
             let h = sd.hash;
             let step = (h.wrapping_mul(17) & mask) | 1;
@@ -774,17 +766,17 @@ fn write_hash_table(
                     .context("Failed to read .gdb_index hash table slot")?;
                 if existing.name_offset == 0 && existing.cu_vector_offset == 0 {
                     let new_slot = GdbIndexHashSlot {
-                        name_offset: name_offsets[i],
-                        cu_vector_offset: cv_offsets[i],
+                        name_offset,
+                        cu_vector_offset: cv_offset,
                     };
                     buf[so..so + HASH_SLOT_SIZE].copy_from_slice(new_slot.as_bytes());
+                    cv_offset += (CV_ENTRY_SIZE * (1 + sd.cv_entries.len())) as u32;
+                    name_offset += sd.name.len() as u32 + 1;
                     break;
                 }
                 slot = (slot + step) & mask;
                 crate::ensure!(slot != initial_slot, "gdb_index hash table is full");
             }
-
-            i += 1;
         }
     }
 
