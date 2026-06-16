@@ -27,6 +27,7 @@ use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME_STR;
 use linker_utils::utils::u32_from_slice;
 use linker_utils::utils::u64_from_slice;
 use object::read::elf::SectionHeader as _;
+use rayon::iter::IndexedParallelIterator as _;
 use rayon::iter::IntoParallelIterator as _;
 use rayon::iter::IntoParallelRefIterator as _;
 use rayon::iter::ParallelIterator as _;
@@ -277,7 +278,7 @@ pub(crate) fn write_gdb_index(
     let short_off = sym_off + (ht_slots * HASH_SLOT_SIZE) as u32;
     let cp_off = short_off + SHORTCUT_TABLE_SIZE as u32;
 
-    write_constant_pool(buf, cp_off as usize, scan);
+    write_constant_pool(&mut buf[cp_off as usize..], scan);
 
     let hdr = GdbIndexHeader {
         version: GDB_INDEX_VERSION,
@@ -709,30 +710,47 @@ fn cu_index_for_offset(boundaries: &[CuBoundary], offset: u64) -> Option<u32> {
 }
 
 /// Write the constant pool (CU vectors followed by name strings) into `buf` starting at `cp_start`.
-fn write_constant_pool(buf: &mut [u8], cp_start: usize, scan: &GdbIndexScanResult) {
+fn write_constant_pool(buf: &mut [u8], scan: &GdbIndexScanResult) {
     verbose_timing_phase!("Write constant pool");
 
-    let mut off = cp_start;
+    let (mut cv_buf, mut names_buf) = buf.split_at_mut(scan.total_cv_bytes);
 
-    for bucket in &scan.buckets {
-        for sym in &bucket.symbols {
-            buf[off..off + 4].copy_from_slice(&(sym.cv_entries.len() as u32).to_le_bytes());
-            off += 4;
-            for &e in &sym.cv_entries {
-                buf[off..off + 4].copy_from_slice(&e.to_le_bytes());
-                off += 4;
+    let cv_buffers = scan
+        .buckets
+        .iter()
+        .map(|b| cv_buf.split_off_mut(..b.cv_byte_count).unwrap())
+        .collect_vec();
+
+    let name_buffers = scan
+        .buckets
+        .iter()
+        .map(|b| names_buf.split_off_mut(..b.name_bytes_count).unwrap())
+        .collect_vec();
+
+    scan.buckets
+        .par_iter()
+        .zip_eq(cv_buffers)
+        .zip_eq(name_buffers)
+        .for_each(|((bucket, cv_buf), name_buffer)| {
+            verbose_timing_phase!("Write bucket");
+
+            let mut cv_off = 0;
+            let mut name_off = 0;
+            for sym in &bucket.symbols {
+                cv_buf[cv_off..cv_off + 4]
+                    .copy_from_slice(&(sym.cv_entries.len() as u32).to_le_bytes());
+                cv_off += 4;
+                for &e in &sym.cv_entries {
+                    cv_buf[cv_off..cv_off + 4].copy_from_slice(&e.to_le_bytes());
+                    cv_off += 4;
+                }
+
+                name_buffer[name_off..name_off + sym.name.len()].copy_from_slice(sym.name);
+                name_off += sym.name.len();
+                name_buffer[name_off] = 0;
+                name_off += 1;
             }
-        }
-    }
-
-    for bucket in &scan.buckets {
-        for sym in &bucket.symbols {
-            buf[off..off + sym.name.len()].copy_from_slice(sym.name);
-            off += sym.name.len();
-            buf[off] = 0;
-            off += 1;
-        }
-    }
+        });
 }
 
 /// Insert symbols into the open-addressing hash table region of `buf`.
