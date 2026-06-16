@@ -186,9 +186,6 @@ pub(crate) fn write<'data, A: Arch<Platform = Elf>>(
         crate::validation::validate_bytes(layout, &sized_output.out)?;
     }
 
-    // Write .gdb_index before splitting, since it needs to read .debug_info from the output.
-    write_gdb_index_section(&mut sized_output.out, layout)?;
-
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
 
     if layout.args().should_write_eh_frame_hdr {
@@ -315,27 +312,6 @@ fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
     section_buffers.for_each_mut(|_, out| {
         out.fill(0);
     });
-}
-
-fn write_gdb_index_section(output: &mut [u8], layout: &ElfLayout) -> Result {
-    use crate::platform::Args as _;
-    if !layout.args().should_write_gdb_index() {
-        return Ok(());
-    }
-    let Some(scan) = &layout.gdb_index_data else {
-        return Ok(());
-    };
-    let sl = layout.section_layouts.get(output_section_id::GDB_INDEX);
-    if sl.file_size == 0 {
-        return Ok(());
-    }
-    timing_phase!("Write .gdb_index");
-    let start = sl.file_offset;
-    // Split the output buffer so that the part before our section is readable (for .debug_info)
-    // and our section is writable.
-    let (_, rest) = output.split_at_mut(start);
-    let gdb_buf = &mut rest[..sl.file_size];
-    crate::gdb_index::write_gdb_index(gdb_buf, layout, scan)
 }
 
 fn write_sframe_section(sframe_buffer: &mut [u8], layout: &ElfLayout) -> Result {
@@ -3602,6 +3578,27 @@ fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
 }
 
 fn write_prelude<'data, A: Arch<Platform = Elf>>(
+    prelude: &PreludeLayout<Elf>,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    table_writer: &mut TableWriter,
+    layout: &ElfLayout<'data>,
+) -> Result {
+    let gdb_buf = buffers.take(part_id::GDB_INDEX);
+    let (a, b) = rayon::join(
+        || {
+            if let Some(scan) = &layout.gdb_index_data {
+                timing_phase!("Write GDB index");
+                crate::gdb_index::write_gdb_index(gdb_buf, layout, scan)
+            } else {
+                Ok(())
+            }
+        },
+        || write_prelude_except_gdb_index::<A>(prelude, buffers, table_writer, layout),
+    );
+    a.and(b)
+}
+
+fn write_prelude_except_gdb_index<'data, A: Arch<Platform = Elf>>(
     prelude: &PreludeLayout<Elf>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
