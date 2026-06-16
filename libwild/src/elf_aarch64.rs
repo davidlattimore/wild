@@ -72,6 +72,13 @@ impl crate::platform::Arch for ElfAArch64 {
         })
     }
 
+    fn is_illegal_in_shared_object(r_type: u32) -> bool {
+        matches!(
+            r_type,
+            object::elf::R_AARCH64_ABS32 | object::elf::R_AARCH64_ABS16
+        )
+    }
+
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
         relocation.aarch64_r_type()
     }

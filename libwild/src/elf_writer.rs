@@ -2899,6 +2899,16 @@ fn apply_relocation<
                 .write_to_buffer(value, &mut out[offset_in_section as usize..])?;
             return Ok(RelocationModifier::Normal);
         }
+        RelocationKind::Absolute
+            if layout.symbol_db.output_kind.is_shared_object()
+                && matches!(r_type, object::elf::R_X86_64_32 | object::elf::R_X86_64_32S) =>
+        {
+            bail!(
+                "relocation type {} cannot be used when making a shared object; \
+                 recompile with -fPIC",
+                A::rel_type_to_string(r_type)
+            );
+        }
         _ => {}
     }
     let (resolution, symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;

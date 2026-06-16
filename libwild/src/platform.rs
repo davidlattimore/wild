@@ -124,6 +124,13 @@ pub(crate) trait Arch: Send + Sync + 'static {
         false
     }
 
+    /// Returns true if the given relocation type cannot be used when making a shared object.
+    /// On 64-bit architectures, sub-pointer-size absolute relocations cannot be represented
+    /// as dynamic relocations and must be rejected. Default is false (allow).
+    fn is_illegal_in_shared_object(_r_type: u32) -> bool {
+        false
+    }
+
     /// Uses debug info, if available, to get information about where in the source code a
     /// particular offset in a particular section came from.
     fn get_source_info<'data>(

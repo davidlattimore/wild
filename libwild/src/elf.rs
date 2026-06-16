@@ -5018,6 +5018,13 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
                     .store(true, atomic::Ordering::Relaxed);
             }
         } else if flags_to_add.needs_direct() && flags.is_interposable() {
+            if symbol_db.output_kind.is_shared_object() && A::is_illegal_in_shared_object(r_type) {
+                bail!(
+                    "relocation {} cannot be used when making a shared object; \
+                    recompile with -fPIC",
+                    A::rel_type_to_string(r_type),
+                );
+            }
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             } else if flags.is_function() {

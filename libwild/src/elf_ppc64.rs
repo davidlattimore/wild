@@ -30,6 +30,10 @@ impl crate::platform::Arch for ElfPpc64 {
         })
     }
 
+    fn is_illegal_in_shared_object(r_type: u32) -> bool {
+        matches!(r_type, object::elf::R_PPC64_ADDR32)
+    }
+
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
         relocation.ppc64_r_type()
     }

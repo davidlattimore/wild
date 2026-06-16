@@ -65,6 +65,10 @@ impl crate::platform::Arch for ElfRiscV64 {
         })
     }
 
+    fn is_illegal_in_shared_object(r_type: u32) -> bool {
+        matches!(r_type, object::elf::R_RISCV_32)
+    }
+
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
         relocation.riscv64_r_type()
     }

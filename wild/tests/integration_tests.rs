@@ -120,6 +120,8 @@
 //!
 //! ExpectWarningWild:{message regex} As for ExpectWarning, but only checks Wild's warning output.
 //!
+//! ExpectErrorWild:{error regex} As for ExpectError, but only checks Wild's error output.
+//!
 //! Malfunction:{malfunction-id} Run with the specified malfunction enabled. Linking should still
 //! succeed, but linker-diff should report a diff. That diff will be snapshot tested.
 //!
@@ -1751,6 +1753,13 @@ fn process_directive(
         "Cross" => config.cross_enabled = parse_bool(arg, "Cross")?,
         "ExpectError" => {
             config.expect_stderr.push(ErrorMatcher::new(arg)?);
+            config.should_error = true;
+            // If there are errors, then there's nothing to run and nothing to diff.
+            config.should_run = false;
+            config.should_diff = false;
+        }
+        "ExpectErrorWild" => {
+            config.expect_stderr.push(ErrorMatcher::wild_only(arg)?);
             config.should_error = true;
             // If there are errors, then there's nothing to run and nothing to diff.
             config.should_run = false;
