@@ -170,7 +170,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         num_symbols: 0,
     });
 
-    let mut properties_and_attributes = P::create_layout_properties::<A>(
+    let mut finalise_sizes_ext = P::create_finalise_sizes_ext::<A>(
         symbol_db.args,
         objects_iter(&group_states).map(|obj| obj.object),
         objects_iter(&group_states).map(|obj| &obj.format_specific),
@@ -182,7 +182,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         imported_libraries: &[],
         symbol_db: &symbol_db,
         merged_strings: &merged_strings,
-        format_specific: &properties_and_attributes,
+        format_specific: &finalise_sizes_ext,
     };
 
     finalise_all_sizes(
@@ -362,7 +362,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         dynamic_symbol_definitions: &dynamic_symbol_definitions,
         segment_layouts: &segment_layouts,
         program_segments: &program_segments,
-        format_specific: &properties_and_attributes,
+        format_specific: &finalise_sizes_ext,
         thunk_blocks: &thunk_blocks,
         thunk_block_addresses: &thunk_block_addresses_out,
     };
@@ -412,7 +412,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
     let num_sections = output_sections.num_sections();
     P::set_imported_symbols(
-        &mut properties_and_attributes,
+        &mut finalise_sizes_ext,
         &symbol_resolutions,
         imported_symbols,
     )?;
@@ -436,7 +436,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         relocation_statistics,
         per_symbol_flags,
         dynamic_symbol_definitions,
-        properties_and_attributes,
+        properties_and_attributes: P::create_layout_ext(finalise_sizes_ext)?,
         thunk_block_addresses,
         compressed_debug_sections: OutputSectionMap::with_size(num_sections),
         gdb_index_data,
@@ -455,7 +455,7 @@ struct FinaliseSizesResources<'data, 'scope, P: Platform> {
     imported_libraries: &'scope [ImportedLibrary<'data>],
     symbol_db: &'scope SymbolDb<'data, P>,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
-    format_specific: &'scope P::LayoutExt<'data>,
+    format_specific: &'scope P::FinaliseSizesExt<'data>,
 }
 
 /// Update resolutions for symbol redirects.
@@ -1479,7 +1479,7 @@ pub(crate) struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
     dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data, P>>,
     segment_layouts: &'scope SegmentLayouts,
     program_segments: &'scope ProgramSegments<P::ProgramSegmentDef>,
-    format_specific: &'scope P::LayoutExt<'data>,
+    format_specific: &'scope P::FinaliseSizesExt<'data>,
 
     pub(crate) thunk_blocks: &'scope [crate::thunks::ThunkBlock],
 

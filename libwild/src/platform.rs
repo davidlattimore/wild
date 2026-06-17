@@ -255,6 +255,7 @@ pub(crate) trait Platform:
     type ResolutionExt: Default + std::fmt::Debug + Copy + Send + Sync + 'static;
     type SymtabShndxEntry: std::fmt::Debug + Default + Send + Sync + 'static;
     type ResolvedObjectExt<'data>: Default + std::fmt::Debug + Send + Sync;
+    type FinaliseSizesExt<'data>: Send + Sync;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
@@ -495,17 +496,21 @@ pub(crate) trait Platform:
     fn built_in_section_infos<'data>()
     -> Vec<crate::output_section_id::SectionOutputInfo<'data, Self>>;
 
-    fn create_layout_properties<'data, 'states, 'files, A: Arch<Platform = Self>>(
+    fn create_finalise_sizes_ext<'data, 'states, 'files, A: Arch<Platform = Self>>(
         args: &Self::Args,
         objects: impl Iterator<Item = &'files Self::File<'data>>,
         states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
-    ) -> Result<Self::LayoutExt<'data>>
+    ) -> Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,
         'data: 'states;
 
+    fn create_layout_ext<'data>(
+        finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
+    ) -> Result<Self::LayoutExt<'data>>;
+
     fn set_imported_symbols<'data>(
-        _properties: &mut Self::LayoutExt<'data>,
+        _format_specific: &mut Self::FinaliseSizesExt<'data>,
         _resolutions: &SymbolResolutions<Self>,
         _imported_symbols: Vec<ImportedSymbol<'data>>,
     ) -> Result {
@@ -553,7 +558,7 @@ pub(crate) trait Platform:
         state: &mut Self::EpilogueLayoutExt,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data, Self>],
-        properties: &Self::LayoutExt<'data>,
+        properties: &Self::FinaliseSizesExt<'data>,
         symbol_db: &SymbolDb<'data, Self>,
     );
 
@@ -584,7 +589,7 @@ pub(crate) trait Platform:
         epilogue_state: &mut Self::EpilogueLayoutExt,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         symbol_db: &SymbolDb<'data, Self>,
-        common_state: &Self::LayoutExt<'data>,
+        common_state: &Self::FinaliseSizesExt<'data>,
         dynsym_start_index: u32,
         dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
     ) -> Result;

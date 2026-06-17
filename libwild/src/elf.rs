@@ -310,6 +310,7 @@ impl platform::Platform for Elf {
     type DynamicEntry = DynamicEntry;
     type DynamicSymbolDefinitionExt = DynamicSymbolDefinitionExt;
     type RelocationInfo = u32;
+    type FinaliseSizesExt<'data> = LayoutExt;
     type LayoutExt<'data> = LayoutExt;
     type SymbolVersionIndex = Versym;
     type NonAddressableCounts = NonAddressableCounts;
@@ -972,7 +973,7 @@ impl platform::Platform for Elf {
             .collect()
     }
 
-    fn create_layout_properties<'data, 'states, 'files, A: Arch<Platform = Self>>(
+    fn create_finalise_sizes_ext<'data, 'states, 'files, A: Arch<Platform = Self>>(
         args: &ElfArgs,
         objects: impl Iterator<Item = &'files Self::File<'data>>,
         states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
@@ -982,6 +983,12 @@ impl platform::Platform for Elf {
         'data: 'states,
     {
         LayoutExt::new::<A>(objects, states, args)
+    }
+
+    fn create_layout_ext<'data>(
+        finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
+    ) -> Result<Self::LayoutExt<'data>> {
+        Ok(finalise_sizes_ext)
     }
 
     fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Elf>>(

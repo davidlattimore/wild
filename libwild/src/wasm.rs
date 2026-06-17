@@ -2103,6 +2103,7 @@ impl platform::Platform for Wasm {
     type ResolutionExt = ();
     type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
+    type FinaliseSizesExt<'data> = WasmLayout<'data>;
     type LayoutExt<'data> = WasmLayout<'data>;
     type GdbIndexScanResult<'data> = ();
     type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
@@ -2298,16 +2299,22 @@ impl platform::Platform for Wasm {
             .collect()
     }
 
-    fn create_layout_properties<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
+    fn create_finalise_sizes_ext<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
         _args: &Self::Args,
         objects: impl Iterator<Item = &'files Self::File<'data>>,
         _states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
-    ) -> crate::error::Result<Self::LayoutExt<'data>>
+    ) -> crate::error::Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,
         'data: 'states,
     {
         build_output_module_layout(objects)
+    }
+
+    fn create_layout_ext<'data>(
+        finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
+    ) -> Result<Self::LayoutExt<'data>> {
+        Ok(finalise_sizes_ext)
     }
 
     fn load_exception_frame_data<'data, 'scope, A: platform::Arch<Platform = Self>>(

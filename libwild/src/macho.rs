@@ -893,6 +893,7 @@ impl platform::Platform for MachO {
     type ResolutionExt = ResolutionExt;
     type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
+    type FinaliseSizesExt<'data> = LayoutExt<'data>;
     type LayoutExt<'data> = LayoutExt<'data>;
     type GdbIndexScanResult<'data> = ();
     type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
@@ -1086,16 +1087,22 @@ impl platform::Platform for MachO {
             .collect()
     }
 
-    fn create_layout_properties<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
+    fn create_finalise_sizes_ext<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
         _args: &Self::Args,
         _objects: impl Iterator<Item = &'files Self::File<'data>>,
         _states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
-    ) -> crate::error::Result<Self::LayoutExt<'data>>
+    ) -> crate::error::Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,
         'data: 'states,
     {
         Ok(LayoutExt::default())
+    }
+
+    fn create_layout_ext<'data>(
+        finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
+    ) -> Result<Self::LayoutExt<'data>> {
+        Ok(finalise_sizes_ext)
     }
 
     fn set_imported_symbols<'data>(
