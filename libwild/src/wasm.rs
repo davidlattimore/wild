@@ -8,10 +8,10 @@ use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout;
-use crate::layout::ImportedSymbol;
 use crate::layout_rules::SectionKind;
 use crate::output_section_id::SectionName;
 use crate::platform;
+use crate::symbol_db::SymbolDb;
 use crate::wasm_writer::OutputExport;
 use crate::wasm_writer::OutputGlobal;
 use crate::wasm_writer::OutputImport;
@@ -2339,6 +2339,7 @@ impl platform::Platform for Wasm {
     type EpilogueLayoutExt = ();
     type GroupLayoutExt = ();
     type CommonGroupStateExt = ();
+    type StubLibraryLayoutStateExt = ();
     type ArchIdentifier = ();
     type Args = WasmArgs;
     type ResolutionExt = ();
@@ -2572,6 +2573,7 @@ impl platform::Platform for Wasm {
 
     fn create_layout_ext<'data>(
         finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
+        _resolutions: &layout::SymbolResolutions<Self>,
     ) -> Result<Self::LayoutExt<'data>> {
         Ok(finalise_sizes_ext)
     }
@@ -2599,10 +2601,11 @@ impl platform::Platform for Wasm {
         Ok(())
     }
 
-    fn new_epilogue_layout(
+    fn new_epilogue_layout<'data>(
         args: &Self::Args,
         output_kind: crate::output_kind::OutputKind,
-        dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'_, Self>],
+        dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'data, Self>],
+        group_states: &[layout::GroupState<'data, Self>],
     ) -> Self::EpilogueLayoutExt {
     }
 
@@ -2640,17 +2643,6 @@ impl platform::Platform for Wasm {
     ) {
     }
 
-    fn apply_late_size_adjustments_epilogue(
-        state: &mut Self::EpilogueLayoutExt,
-        current_sizes: &crate::output_section_part_map::OutputSectionPartMap<u64>,
-        extra_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
-        imported_symbols: &[ImportedSymbol],
-        args: &Self::Args,
-    ) -> crate::error::Result {
-        Ok(())
-    }
-
     fn finalise_layout_epilogue<'data>(
         _epilogue_state: &mut Self::EpilogueLayoutExt,
         memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
@@ -2678,11 +2670,12 @@ impl platform::Platform for Wasm {
         true
     }
 
-    fn allocate_header_sizes(
-        _prelude: &mut crate::layout::PreludeLayoutState<Self>,
+    fn allocate_header_sizes<'data>(
+        _prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _header_info: &crate::layout::HeaderInfo,
         _output_sections: &crate::output_section_id::OutputSections<Self>,
+        _resources: &layout::FinaliseSizesResources<'data, '_, Self>,
     ) {
         sizes.increment(crate::part_id::FILE_HEADER, (WASM_MAGIC.len() + 4) as u64);
     }

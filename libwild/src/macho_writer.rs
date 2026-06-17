@@ -9,6 +9,7 @@ use crate::file_writer::SizedOutput;
 use crate::file_writer::split_buffers_by_alignment;
 use crate::file_writer::split_output_by_group;
 use crate::file_writer::split_output_into_sections;
+use crate::grouping::SequencedInput;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
 use crate::layout::Layout;
@@ -189,7 +190,7 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
 ) -> Result {
     verbose_timing_phase!("Write prelude");
     debug_assert_eq!(
-        prelude.imported_library_paths.len(),
+        prelude.format_specific.imported_library_file_ids.len(),
         prelude.format_specific.load_dylib_command_sizes.len()
     );
 
@@ -213,14 +214,20 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
         from_bytes_mut(command_buffer).map_err(|_| error!("Invalid INTERP command allocation"))?;
     write_dylinker_command::<A>(dylinker_command, dylinker_path_buffer);
 
-    for (path, &command_size) in prelude
-        .imported_library_paths
+    for (&file_id, &command_size) in prelude
+        .format_specific
+        .imported_library_file_ids
         .iter()
         .zip(&prelude.format_specific.load_dylib_command_sizes)
     {
         let command_buffer = load_command_buffer.split_off_mut(..command_size).unwrap();
         let (dylib_command, dylib_path_buffer) =
             from_bytes_mut(command_buffer).map_err(load_cmd_err)?;
+        let SequencedInput::StubLibrary(stub) = layout.symbol_db.file(file_id) else {
+            bail!("Internal error: All imported libraries must be StubLibraries");
+        };
+        let path = stub.defined_symbols.install_name;
+
         write_dylib_command::<A>(dylib_command, dylib_path_buffer, path.as_bytes());
     }
 
@@ -929,11 +936,15 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     let mut symbol_offsets = Vec::with_capacity(sorted_symbols.len());
     let mut str_offset = 0;
     for imported_symbol in sorted_symbols {
-        let symbol = &imported_symbol.symbol;
-        string_pool[str_offset..str_offset + symbol.name.len()].copy_from_slice(symbol.name);
-        string_pool[str_offset + symbol.name.len()] = b'\0';
+        let symbol_name = layout
+            .symbol_db
+            .symbol_name(imported_symbol.symbol_id)
+            .unwrap()
+            .bytes();
+        string_pool[str_offset..str_offset + symbol_name.len()].copy_from_slice(symbol_name);
+        string_pool[str_offset + symbol_name.len()] = b'\0';
         symbol_offsets.push(str_offset);
-        str_offset += symbol.name.len() + 1;
+        str_offset += symbol_name.len() + 1;
     }
 
     // Emit `dyld_chained_import` that is built by 3 pieces:
@@ -941,9 +952,20 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     // weak_import: 1
     // name_offset: 23
     for (i, imported_symbol) in sorted_symbols.iter().enumerate() {
+        // TODO: Does it matter that some stub libraries aren't used, so the file indexes may have
+        // gaps?
+        let lib_ordinal = u8::try_from(
+            layout
+                .symbol_db
+                .file_id_for_symbol(imported_symbol.symbol_id)
+                .file()
+                + 1,
+        )
+        .context("too many stub libraries")?;
+
         imports[i].set(
             Endianness::Little,
-            u32::from(imported_symbol.symbol.library_index) | ((symbol_offsets[i] as u32) << 9),
+            u32::from(lib_ordinal) | ((symbol_offsets[i] as u32) << 9),
         );
     }
 

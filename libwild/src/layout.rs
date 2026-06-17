@@ -76,7 +76,6 @@ use crate::verbose_timing_phase;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
-use hashbrown::HashSet;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
 use linker_utils::relaxation::RelaxDeltaMap;
@@ -165,19 +164,18 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
             symbol_db.args,
             symbol_db.output_kind,
             &mut dynamic_symbol_definitions,
+            &group_states,
         ))],
         queue: LocalWorkQueue::new(epilogue_file_id.group()),
         common: CommonGroupState::new(&output_sections),
         num_symbols: 0,
     });
 
-    let mut finalise_sizes_ext =
+    let finalise_sizes_ext =
         P::create_finalise_sizes_ext::<A>(symbol_db.args, &group_states, &symbol_db)?;
 
-    let mut finalise_sizes_resources = FinaliseSizesResources {
+    let finalise_sizes_resources = FinaliseSizesResources {
         dynamic_symbol_definitions: &dynamic_symbol_definitions,
-        imported_symbols: &[],
-        imported_libraries: &[],
         symbol_db: &symbol_db,
         merged_strings: &merged_strings,
         format_specific: &finalise_sizes_ext,
@@ -189,11 +187,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &atomic_per_symbol_flags,
         &finalise_sizes_resources,
     )?;
-
-    let imported_symbols = collect_imported_symbols(&group_states);
-    let imported_libraries = collect_imported_libraries(&group_states);
-    finalise_sizes_resources.imported_symbols = &imported_symbols;
-    finalise_sizes_resources.imported_libraries = &imported_libraries;
 
     // Dropping `symbol_info_printer` will cause it to print. So we'll either print now, or, if we
     // got an error or panic, then we'll have printed at that point.
@@ -433,13 +426,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
     let num_sections = output_sections.num_sections();
 
-    P::set_imported_symbols(
-        &mut finalise_sizes_ext,
-        &symbol_resolutions,
-        imported_symbols,
-    )?;
-
-    let format_specific = P::create_layout_ext(finalise_sizes_ext)?;
+    let format_specific = P::create_layout_ext(finalise_sizes_ext, &symbol_resolutions)?;
 
     let mut layout = Layout {
         symbol_db,
@@ -473,13 +460,11 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     Ok(layout)
 }
 
-struct FinaliseSizesResources<'data, 'scope, P: Platform> {
+pub(crate) struct FinaliseSizesResources<'data, 'scope, P: Platform> {
     dynamic_symbol_definitions: &'scope [DynamicSymbolDefinition<'data, P>],
-    imported_symbols: &'scope [ImportedSymbol<'data>],
-    imported_libraries: &'scope [ImportedLibrary<'data>],
-    symbol_db: &'scope SymbolDb<'data, P>,
+    pub(crate) symbol_db: &'scope SymbolDb<'data, P>,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
-    format_specific: &'scope P::FinaliseSizesExt<'data>,
+    pub(crate) format_specific: &'scope P::FinaliseSizesExt<'data>,
 }
 
 /// Update resolutions for symbol redirects.
@@ -637,25 +622,6 @@ fn merge_dynamic_symbol_definitions<'data, P: Platform>(
     )?;
 
     Ok(dynamic_symbol_definitions)
-}
-
-fn collect_imported_symbols<'data, P: Platform>(
-    group_states: &[GroupState<'data, P>],
-) -> Vec<ImportedSymbol<'data>> {
-    group_states
-        .iter()
-        .flat_map(|group| group.common.imported_symbols.iter().copied())
-        .collect()
-}
-
-fn collect_imported_libraries<'data, P: Platform>(
-    group_states: &[GroupState<'data, P>],
-) -> Vec<ImportedLibrary<'data>> {
-    group_states
-        .iter()
-        .flat_map(|group| group.common.imported_libraries.iter().copied())
-        .sorted_by_key(|library| library.index)
-        .collect()
 }
 
 fn append_prelude_defsym_dynamic_symbols<'data, P: Platform>(
@@ -834,7 +800,7 @@ pub(crate) enum FileLayoutState<'data, P: Platform> {
     Prelude(PreludeLayoutState<'data, P>),
     Object(ObjectLayoutState<'data, P>),
     Dynamic(DynamicLayoutState<'data, P>),
-    StubLibrary(StubLibraryLayoutState<'data>),
+    StubLibrary(StubLibraryLayoutState<'data, P>),
     NotLoaded(NotLoaded),
     SyntheticSymbols(SyntheticSymbolsLayoutState<'data, P>),
     Epilogue(EpilogueLayoutState<P>),
@@ -850,7 +816,6 @@ pub(crate) struct PreludeLayoutState<'data, P: Platform> {
     identity: String,
     header_info: Option<HeaderInfo>,
     dynamic_linker: Option<CString>,
-    pub(crate) imported_library_paths: Vec<String>,
     pub(crate) format_specific: P::PreludeLayoutStateExt,
 }
 
@@ -865,10 +830,11 @@ pub(crate) struct EpilogueLayoutState<P: Platform> {
 }
 
 #[derive(Debug)]
-pub(crate) struct StubLibraryLayoutState<'data> {
+pub(crate) struct StubLibraryLayoutState<'data, P: Platform> {
     input: InputRef<'data>,
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
+    pub(crate) format_specific: P::StubLibraryLayoutStateExt,
 }
 
 #[derive(Debug)]
@@ -922,7 +888,6 @@ pub(crate) struct PreludeLayout<'data, P: Platform> {
     pub(crate) header_info: HeaderInfo,
     pub(crate) internal_symbols: InternalSymbols<'data, P>,
     pub(crate) dynamic_linker: Option<CString>,
-    pub(crate) imported_library_paths: Vec<String>,
     pub(crate) format_specific: P::PreludeLayoutExt,
 }
 
@@ -1153,7 +1118,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for LinkerScriptLayoutSt
     }
 }
 
-impl HandlerData for StubLibraryLayoutState<'_> {
+impl<P: Platform> HandlerData for StubLibraryLayoutState<'_, P> {
     fn file_id(&self) -> FileId {
         self.file_id
     }
@@ -1163,7 +1128,7 @@ impl HandlerData for StubLibraryLayoutState<'_> {
     }
 }
 
-impl<'data, P: Platform> SymbolRequestHandler<'data, P> for StubLibraryLayoutState<'data> {
+impl<'data, P: Platform> SymbolRequestHandler<'data, P> for StubLibraryLayoutState<'data, P> {
     fn load_symbol<'scope, A: Arch<Platform = P>>(
         &mut self,
         _common: &mut CommonGroupState<'data, P>,
@@ -1228,10 +1193,6 @@ pub(crate) struct CommonGroupState<'data, P: Platform> {
     /// symbol. That's OK though because the epilogue will sort all dynamic symbols.
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data, P>>,
 
-    /// A list of imported STUB library symbols (Mach-O specific).
-    imported_symbols: Vec<ImportedSymbol<'data>>,
-    imported_libraries: HashSet<ImportedLibrary<'data>>,
-
     pub(crate) format_specific: P::CommonGroupStateExt,
 }
 
@@ -1241,8 +1202,6 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
             mem_sizes: output_sections.new_part_map(),
             section_attributes: output_sections.new_section_map(),
             dynamic_symbol_definitions: Default::default(),
-            imported_symbols: Default::default(),
-            imported_libraries: Default::default(),
             format_specific: Default::default(),
         }
     }
@@ -1291,24 +1250,6 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
 
     pub(crate) fn allocate(&mut self, part_id: PartId, size: u64) {
         self.mem_sizes.increment(part_id, size);
-    }
-
-    pub(crate) fn add_imported_symbol(
-        &mut self,
-        symbol_id: SymbolId,
-        name: &'data [u8],
-        library_index: u8,
-        library_path: &'data str,
-    ) {
-        self.imported_symbols.push(ImportedSymbol {
-            symbol_id,
-            name,
-            library_index,
-        });
-        self.imported_libraries.insert(ImportedLibrary {
-            index: library_index,
-            path: library_path,
-        });
     }
 
     /// Allocate resources and update attributes based on a section having been loaded.
@@ -1391,22 +1332,6 @@ pub(crate) struct DynamicSymbolDefinition<'data, P: Platform> {
     #[debug("{:?}", String::from_utf8_lossy(name))]
     pub(crate) name: &'data [u8],
     pub(crate) format_specific: P::DynamicSymbolDefinitionExt,
-}
-
-#[derive(derive_more::Debug, Clone, Copy)]
-pub(crate) struct ImportedSymbol<'data> {
-    pub(crate) symbol_id: SymbolId,
-    #[debug("{:?}", String::from_utf8_lossy(name))]
-    pub(crate) name: &'data [u8],
-    // One-based index of the stub library that defines the symbol.
-    pub(crate) library_index: u8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct ImportedLibrary<'data> {
-    // One-based index of the stub library.
-    pub(crate) index: u8,
-    pub(crate) path: &'data str,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2757,7 +2682,9 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                 )?;
             }
             FileLayoutState::LinkerScript(_) => {}
-            FileLayoutState::StubLibrary(_) => {}
+            FileLayoutState::StubLibrary(state) => {
+                P::load_stub_library_symbol(state, symbol_id)?;
+            }
             FileLayoutState::NotLoaded(_) => {}
             FileLayoutState::SyntheticSymbols(state) => {
                 SymbolRequestHandler::load_symbol::<A>(
@@ -2863,7 +2790,7 @@ impl<P: Platform> std::fmt::Display for LinkerScriptLayoutState<'_, P> {
     }
 }
 
-impl std::fmt::Display for StubLibraryLayoutState<'_> {
+impl<P: Platform> std::fmt::Display for StubLibraryLayoutState<'_, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
     }
@@ -3052,7 +2979,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             identity: format!("Linker: {}\0", args.common().linker_identity()),
             header_info: None,
             dynamic_linker: None,
-            imported_library_paths: Vec::new(),
             format_specific: Default::default(),
         }
     }
@@ -3185,12 +3111,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         per_symbol_flags: &mut PerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
-        self.imported_library_paths = resources
-            .imported_libraries
-            .iter()
-            .map(|library| library.path.to_string())
-            .collect();
-
         // Total section  sizes have already been computed. So any allocations we do need to update
         // both `total_sizes` and the size records in `common`. We track the extra sizes in
         // `extra_sizes` which we can then later add to both.
@@ -3440,7 +3360,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         };
 
         // Allocate space for headers based on segment and section counts.
-        P::allocate_header_sizes(self, extra_sizes, &header_info, output_sections);
+        P::allocate_header_sizes(self, extra_sizes, &header_info, output_sections, resources);
 
         self.header_info = Some(header_info);
     }
@@ -3485,7 +3405,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             header_info: self
                 .header_info
                 .expect("we should have computed header info by now"),
-            imported_library_paths: self.imported_library_paths,
             format_specific,
         })
     }
@@ -3824,10 +3743,16 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
     fn new(
         args: &P::Args,
         output_kind: OutputKind,
-        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<P>],
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'data, P>],
+        group_states: &[GroupState<'data, P>],
     ) -> Self {
         EpilogueLayoutState {
-            format_specific: P::new_epilogue_layout(args, output_kind, dynamic_symbol_definitions),
+            format_specific: P::new_epilogue_layout(
+                args,
+                output_kind,
+                dynamic_symbol_definitions,
+                group_states,
+            ),
         }
     }
 
@@ -3843,7 +3768,6 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
             total_sizes,
             &mut extra_sizes,
             resources.dynamic_symbol_definitions,
-            resources.imported_symbols,
             resources.symbol_db.args,
         )?;
 
@@ -4603,16 +4527,17 @@ impl<P: Platform> ResolutionWriter<'_, '_, P> {
     }
 }
 
-impl<'data> StubLibraryLayoutState<'data> {
+impl<'data, P: Platform> StubLibraryLayoutState<'data, P> {
     fn new(stub: &resolution::ResolvedStubLibrary<'data>) -> Self {
         Self {
             input: stub.input,
             file_id: stub.file_id,
             symbol_id_range: stub.symbol_id_range,
+            format_specific: Default::default(),
         }
     }
 
-    fn finalise_layout<P: Platform>(
+    fn finalise_layout(
         &self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter<P>,

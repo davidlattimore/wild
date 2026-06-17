@@ -25,7 +25,6 @@ use crate::layout;
 use crate::layout::CommonGroupState;
 use crate::layout::DynamicSymbolDefinition;
 use crate::layout::HandlerData as _;
-use crate::layout::ImportedSymbol;
 use crate::layout::ObjectLayout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
@@ -321,6 +320,7 @@ impl platform::Platform for Elf {
     type EpilogueLayoutExt = EpilogueLayoutExt;
     type GroupLayoutExt = GroupLayoutExt;
     type CommonGroupStateExt = CommonGroupStateExt;
+    type StubLibraryLayoutStateExt = ();
     type PreludeLayoutStateExt = PreludeLayoutStateExt;
     type PreludeLayoutExt = PreludeLayoutExt;
     type ArchIdentifier = object::elf::Machine;
@@ -991,6 +991,7 @@ impl platform::Platform for Elf {
 
     fn create_layout_ext<'data>(
         finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
+        _resolutions: &layout::SymbolResolutions<Self>,
     ) -> Result<Self::LayoutExt<'data>> {
         Ok(finalise_sizes_ext)
     }
@@ -1085,10 +1086,11 @@ impl platform::Platform for Elf {
         Ok(())
     }
 
-    fn new_epilogue_layout(
+    fn new_epilogue_layout<'data>(
         args: &ElfArgs,
         output_kind: OutputKind,
-        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_, Self>],
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'data, Self>],
+        _group_states: &[layout::GroupState<'data, Self>],
     ) -> EpilogueLayoutExt {
         let gnu_hash_layout = create_gnu_hash_layout(args, output_kind, dynamic_symbol_definitions);
 
@@ -1304,7 +1306,6 @@ impl platform::Platform for Elf {
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
-        _imported_symbols: &[ImportedSymbol],
         args: &ElfArgs,
     ) -> Result {
         if args.hash_style.includes_sysv() {
@@ -1781,11 +1782,12 @@ impl platform::Platform for Elf {
         Ok(())
     }
 
-    fn allocate_header_sizes(
-        prelude: &mut layout::PreludeLayoutState<Self>,
+    fn allocate_header_sizes<'data>(
+        prelude: &mut layout::PreludeLayoutState<'data, Self>,
         sizes: &mut OutputSectionPartMap<u64>,
         header_info: &layout::HeaderInfo,
         output_sections: &OutputSections<Self>,
+        _resources: &layout::FinaliseSizesResources<'data, '_, Self>,
     ) {
         sizes.increment(part_id::FILE_HEADER, u64::from(elf::FILE_HEADER_SIZE));
         sizes.increment(part_id::PROGRAM_HEADERS, program_headers_size(header_info));
