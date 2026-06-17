@@ -407,11 +407,14 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
 
     let num_sections = output_sections.num_sections();
+
     P::set_imported_symbols(
         &mut finalise_sizes_ext,
         &symbol_resolutions,
         imported_symbols,
     )?;
+
+    let format_specific = P::create_layout_ext(finalise_sizes_ext)?;
 
     let mut layout = Layout {
         symbol_db,
@@ -432,7 +435,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         relocation_statistics,
         per_symbol_flags,
         dynamic_symbol_definitions,
-        properties_and_attributes: P::create_layout_ext(finalise_sizes_ext)?,
+        format_specific,
         thunk_block_addresses,
         compressed_debug_sections: OutputSectionMap::with_size(num_sections),
         gdb_index_data,
@@ -710,7 +713,7 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) has_variant_pcs: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data, P>>,
-    pub(crate) properties_and_attributes: P::LayoutExt<'data>,
+    pub(crate) format_specific: P::LayoutExt<'data>,
     /// Thunk address maps indexed by ThunkBlockId. Each entry maps SymbolId to the memory address
     /// of the thunk for that symbol within the block.
     pub(crate) thunk_block_addresses: Vec<BTreeMap<SymbolId, u64>>,

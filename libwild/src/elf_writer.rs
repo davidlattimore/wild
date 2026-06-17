@@ -462,9 +462,7 @@ fn populate_file_header<A: Arch<Platform = Elf>>(
         e,
         u64::from(elf::FILE_HEADER_SIZE) + crate::elf::program_headers_size(header_info),
     );
-    header
-        .e_flags
-        .set(e, layout.properties_and_attributes.eflags);
+    header.e_flags.set(e, layout.format_specific.eflags);
     header.e_ehsize.set(e, elf::FILE_HEADER_SIZE);
     header.e_phentsize.set(
         e,
@@ -4005,19 +4003,10 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
 
     write_dynamic_symbol_definitions(table_writer, layout)?;
 
-    if !layout
-        .properties_and_attributes
-        .gnu_property_notes
-        .is_empty()
-    {
+    if !layout.format_specific.gnu_property_notes.is_empty() {
         write_gnu_property_notes(layout, buffers)?;
     }
-    if layout
-        .properties_and_attributes
-        .riscv_attributes
-        .section_size
-        != 0
-    {
+    if layout.format_specific.riscv_attributes.section_size != 0 {
         write_riscv_attributes(layout, buffers)?;
     }
 
@@ -4077,15 +4066,14 @@ fn write_gnu_property_notes(
     note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
     note_header.n_descsz.set(
         e,
-        (layout.properties_and_attributes.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE)
-            as u32,
+        (layout.format_specific.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u32,
     );
     note_header.n_type.set(e, NT_GNU_PROPERTY_TYPE_0);
 
     let name_out = rest.split_off_mut(..GNU_NOTE_NAME.len()).unwrap();
     name_out.copy_from_slice(GNU_NOTE_NAME);
 
-    for note in &layout.properties_and_attributes.gnu_property_notes {
+    for note in &layout.format_specific.gnu_property_notes {
         let entry_bytes = rest.split_off_mut(..size_of::<NoteProperty>()).unwrap();
         let property = NoteProperty::mut_from_bytes(entry_bytes).unwrap();
         property.pr_type = note.ptype.0;
@@ -4104,10 +4092,7 @@ fn write_riscv_attributes(
     let mut writer = Cursor::new(&mut **buffers.get_mut(part_id::RISCV_ATTRIBUTES));
     writer.write_all(b"A")?;
 
-    let riscv_attributes_length = layout
-        .properties_and_attributes
-        .riscv_attributes
-        .section_size as u32;
+    let riscv_attributes_length = layout.format_specific.riscv_attributes.section_size as u32;
 
     writer.write_all((riscv_attributes_length - 1).to_le_bytes().as_slice())?;
     writer.write_all(RISCV_ATTRIBUTE_VENDOR_NAME.as_bytes())?;
@@ -4118,7 +4103,7 @@ fn write_riscv_attributes(
             .to_le_bytes()
             .as_slice(),
     )?;
-    for tag in &layout.properties_and_attributes.riscv_attributes.attributes {
+    for tag in &layout.format_specific.riscv_attributes.attributes {
         match tag {
             &RiscVAttribute::StackAlign(align) => {
                 leb128::write::unsigned(&mut writer, TAG_RISCV_STACK_ALIGN)?;

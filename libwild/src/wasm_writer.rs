@@ -37,13 +37,13 @@ pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
     preamble[..4].copy_from_slice(&WASM_MAGIC);
     preamble[4..8].copy_from_slice(&WASM_VERSION.to_le_bytes());
 
-    copy_metadata_sections(&layout.properties_and_attributes, &mut section_buffers)?;
+    copy_metadata_sections(&layout.format_specific, &mut section_buffers)?;
     write_code_section(
-        &layout.properties_and_attributes.function_bodies,
+        &layout.format_specific.function_bodies,
         section_buffers.get_mut(crate::output_section_id::WASM_CODE),
     )?;
 
-    if let Some(unsupported) = layout.properties_and_attributes.unsupported_output.first() {
+    if let Some(unsupported) = layout.format_specific.unsupported_output.first() {
         bail!("Wasm {unsupported} emission is not implemented yet");
     }
 

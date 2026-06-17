@@ -260,7 +260,7 @@ fn write_epilogue<A: Arch<Platform = MachO>>(
 fn write_got_entries(layout: &MachOLayout<'_>, got: &mut [u8]) -> Result {
     let got_layout = layout.section_layouts.get(output_section_id::GOT);
 
-    let sorted_symbols = &layout.properties_and_attributes.imported_symbols;
+    let sorted_symbols = &layout.format_specific.imported_symbols;
     for (i, imported_symbol) in sorted_symbols.iter().enumerate() {
         let offset = imported_symbol
             .got_address
@@ -295,7 +295,7 @@ fn write_plt_entries<A: Arch<Platform = MachO>>(
 ) -> Result {
     let plt_layout = layout.section_layouts.get(output_section_id::PLT_GOT);
 
-    for imported_symbol in &layout.properties_and_attributes.imported_symbols {
+    for imported_symbol in &layout.format_specific.imported_symbols {
         let Some(stub_address) = imported_symbol.plt_address else {
             continue;
         };
@@ -840,7 +840,7 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
     chained_fixup_table: &mut [u8],
 ) -> Result {
-    let symbols = &layout.properties_and_attributes.imported_symbols;
+    let symbols = &layout.format_specific.imported_symbols;
 
     let active_segments = PROGRAM_SEGMENT_DEFS
         .iter()
@@ -925,7 +925,7 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     // TODO: support more pages
     assert!(symbols.len() < MACHO_PAGE_ALIGNMENT.value() as usize / size_of::<u32>());
 
-    let sorted_symbols = &layout.properties_and_attributes.imported_symbols;
+    let sorted_symbols = &layout.format_specific.imported_symbols;
     let mut symbol_offsets = Vec::with_capacity(sorted_symbols.len());
     let mut str_offset = 0;
     for imported_symbol in sorted_symbols {
