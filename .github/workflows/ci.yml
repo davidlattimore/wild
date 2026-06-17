@@ -142,6 +142,27 @@ jobs:
       # spawning processes, which isn't supported on wasi.
       - run: cargo test --profile ci -p libwild --target wasm32-wasip1
 
+  wasm-test:
+    name: Test Wasm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y wabt lld
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-tools
+      - name: Setup Wasmtime
+        uses: bytecodealliance/actions/wasmtime/setup@v1
+        with:
+          version: '43.0.0'
+      - run: cargo test --features wasm -- wasm
+
   macho-build:
     name: Test Mach-O (AArch64)
     runs-on: macos-latest
