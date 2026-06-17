@@ -13,7 +13,7 @@ SECTIONS
         /* Test 2: SORT with KEEP */
         KEEP(*(SORT(.text.kept.*)))
 
-        /* Test 3: SORT without KEEP */
+        /* Test 3: SORT SORT without KEEP */
         *(SORT(.text.drop.*))
     }
 
