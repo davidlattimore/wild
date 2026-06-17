@@ -171,7 +171,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         num_symbols: 0,
     });
 
-    let mut finalise_sizes_ext = P::create_finalise_sizes_ext::<A>(symbol_db.args, &group_states)?;
+    let mut finalise_sizes_ext =
+        P::create_finalise_sizes_ext::<A>(symbol_db.args, &group_states, &symbol_db)?;
 
     let mut finalise_sizes_resources = FinaliseSizesResources {
         dynamic_symbol_definitions: &dynamic_symbol_definitions,

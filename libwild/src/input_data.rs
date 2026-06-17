@@ -84,7 +84,7 @@ pub(crate) struct ScriptData<'data> {
 }
 
 /// Identifies an input file. IDs start from 0 which is reserved for our prelude file.
-#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[debug("file-{_0}")]
 pub(crate) struct FileId(u32);
 

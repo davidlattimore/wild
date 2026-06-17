@@ -499,6 +499,7 @@ pub(crate) trait Platform:
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: Arch<Platform = Self>>(
         args: &Self::Args,
         groups: &'files [layout::GroupState<'data, Self>],
+        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,
@@ -755,6 +756,10 @@ pub(crate) trait Platform:
         false
     }
 
+    /// Whether the symbol table's first entry (index 0) is a reserved null / sentinel entry that
+    /// should be excluded from name resolution. `true` for ELF (`STN_UNDEF`).
+    const HAS_NULL_SYMBOL_ENTRY: bool = false;
+
     /// Used when the linker needs to create a symtab entry from scratch rather than copying one
     /// from an input file.
     fn default_symtab_entry() -> Self::SymtabEntry;
@@ -799,6 +804,13 @@ pub(crate) trait Platform:
         _loaded_metrics: &LoadedMetrics,
     ) -> Result {
         Ok(())
+    }
+
+    fn new_resolved_object_ext<'data>(
+        _symbol_id_range: crate::symbol_db::SymbolIdRange,
+        _file_id: crate::input_data::FileId,
+    ) -> Self::ResolvedObjectExt<'data> {
+        Default::default()
     }
 
     fn new_object_layout_state_ext<'data>(

@@ -910,6 +910,8 @@ impl platform::Platform for MachO {
     type VerneedTable<'data> = VerneedTable<'data>;
     type ResolvedObjectExt<'data> = ();
 
+    const HAS_NULL_SYMBOL_ENTRY: bool = true;
+
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
         args: &'data Self::Args,
@@ -1091,6 +1093,7 @@ impl platform::Platform for MachO {
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
         _args: &Self::Args,
         _groups: &'files [layout::GroupState<'data, Self>],
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> crate::error::Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,

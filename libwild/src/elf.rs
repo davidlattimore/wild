@@ -297,6 +297,8 @@ pub(crate) fn symtab_name_for_strtab(raw_name: &[u8]) -> &[u8] {
 }
 
 impl platform::Platform for Elf {
+    const HAS_NULL_SYMBOL_ENTRY: bool = true;
+
     type File<'data> = File<'data>;
     type FileFlags = object::elf::FileFlags;
     type SymtabEntry = SymtabEntry;
@@ -978,6 +980,7 @@ impl platform::Platform for Elf {
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: Arch<Platform = Self>>(
         args: &ElfArgs,
         groups: &'files [layout::GroupState<'data, Self>],
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> Result<LayoutExt>
     where
         'data: 'files,

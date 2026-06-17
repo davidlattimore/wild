@@ -16,6 +16,7 @@ use crate::wasm_writer::OutputExport;
 use crate::wasm_writer::OutputGlobal;
 use crate::wasm_writer::OutputImport;
 use crate::wasm_writer::OutputImportEntity;
+use hashbrown::HashMap;
 use leb128::write::unsigned_len as uleb128_size;
 use linker_utils::utils::u32_from_slice;
 use rayon::prelude::*;
@@ -1651,9 +1652,8 @@ impl WasmObjectIndexMap {
 
 #[derive(Debug, Default)]
 pub(crate) struct WasmObjectLayout<'data> {
-    pub(crate) type_index_base: u32,
-    pub(crate) function_index_base: u32,
-    pub(crate) global_index_base: u32,
+    pub(crate) symbol_id_range: crate::symbol_db::SymbolIdRange,
+    pub(crate) file_id: crate::input_data::FileId,
     _phantom: std::marker::PhantomData<&'data ()>,
 }
 
@@ -1670,6 +1670,8 @@ struct WasmObjectLayoutInput<'data> {
     unsupported_output: Vec<&'static str>,
     code_relocations: Vec<WasmRelocation>,
     symbols: Vec<WasmSymbol>,
+    symbol_id_range: crate::symbol_db::SymbolIdRange,
+    file_id: crate::input_data::FileId,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1696,7 +1698,11 @@ struct WasmObjectOutputLayout<'data> {
 }
 
 impl<'data> WasmObjectLayoutInput<'data> {
-    fn from_file(file: &File<'data>) -> Result<Self> {
+    fn from_file(
+        file: &File<'data>,
+        symbol_id_range: crate::symbol_db::SymbolIdRange,
+        file_id: crate::input_data::FileId,
+    ) -> Result<Self> {
         let mut types = Vec::new();
         if let Some(type_section) = file.type_section_reader()? {
             for group in type_section {
@@ -1818,13 +1824,26 @@ impl<'data> WasmObjectLayoutInput<'data> {
             unsupported_output,
             code_relocations,
             symbols: file.symbols.clone(),
+            symbol_id_range,
+            file_id,
         })
     }
 
     fn into_output_layout(
         self,
         index_bases: WasmObjectIndexBases,
+        resolutions: &ObjectImportResolutions,
+        all_index_bases: &[WasmObjectIndexBases],
     ) -> Result<WasmObjectOutputLayout<'data>> {
+        ensure!(
+            resolutions.function_resolutions.len() == self.function_imports.len(),
+            "Wasm function import resolution count mismatch"
+        );
+        ensure!(
+            resolutions.global_resolutions.len() == self.global_imports.len(),
+            "Wasm global import resolution count mismatch"
+        );
+
         let mut index_map = WasmObjectIndexMap {
             type_index_base: index_bases.type_index_base,
             function_indices: Vec::with_capacity(
@@ -1836,36 +1855,86 @@ impl<'data> WasmObjectLayoutInput<'data> {
 
         let mut imports =
             Vec::with_capacity(self.function_imports.len() + self.global_imports.len());
+        let mut unresolved_func_count = 0u32;
         for (i, import) in self.function_imports.iter().enumerate() {
-            let output_type_index = index_bases
-                .type_index_base
-                .checked_add(import.type_index)
-                .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
-            let output_function_index = index_bases
-                .function_import_base
-                .checked_add(u32::try_from(i).context("too many Wasm function imports")?)
-                .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
-            index_map.function_indices.push(output_function_index);
-            imports.push(OutputImport {
-                module: import.module,
-                name: import.name,
-                entity: OutputImportEntity::Function {
-                    type_index: output_type_index,
-                },
-            });
+            match resolutions.function_resolutions[i] {
+                ImportResolution::Unresolved => {
+                    let output_type_index = index_bases
+                        .type_index_base
+                        .checked_add(import.type_index)
+                        .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+                    let output_function_index = index_bases
+                        .function_import_base
+                        .checked_add(unresolved_func_count)
+                        .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+                    unresolved_func_count += 1;
+                    index_map.function_indices.push(output_function_index);
+                    imports.push(OutputImport {
+                        module: import.module,
+                        name: import.name,
+                        entity: OutputImportEntity::Function {
+                            type_index: output_type_index,
+                        },
+                    });
+                }
+                ImportResolution::ResolvedFunction {
+                    object_index,
+                    local_defined_index,
+                } => {
+                    ensure!(
+                        object_index < all_index_bases.len(),
+                        "Wasm function import resolution references object index {object_index} \
+                         out of range"
+                    );
+                    let target_bases = &all_index_bases[object_index];
+                    let output_function_index = target_bases
+                        .defined_function_base
+                        .checked_add(local_defined_index)
+                        .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+                    index_map.function_indices.push(output_function_index);
+                }
+                ImportResolution::ResolvedGlobal { .. } => {
+                    bail!("function import resolved as global");
+                }
+            }
         }
 
+        let mut unresolved_global_count = 0u32;
         for (i, import) in self.global_imports.iter().enumerate() {
-            let output_global_index = index_bases
-                .global_import_base
-                .checked_add(u32::try_from(i).context("too many Wasm global imports")?)
-                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-            index_map.global_indices.push(output_global_index);
-            imports.push(OutputImport {
-                module: import.module,
-                name: import.name,
-                entity: OutputImportEntity::Global(import.ty),
-            });
+            match resolutions.global_resolutions[i] {
+                ImportResolution::Unresolved => {
+                    let output_global_index = index_bases
+                        .global_import_base
+                        .checked_add(unresolved_global_count)
+                        .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+                    unresolved_global_count += 1;
+                    index_map.global_indices.push(output_global_index);
+                    imports.push(OutputImport {
+                        module: import.module,
+                        name: import.name,
+                        entity: OutputImportEntity::Global(import.ty),
+                    });
+                }
+                ImportResolution::ResolvedGlobal {
+                    object_index,
+                    local_defined_index,
+                } => {
+                    ensure!(
+                        object_index < all_index_bases.len(),
+                        "Wasm global import resolution references object index {object_index} out \
+                         of range"
+                    );
+                    let target_bases = &all_index_bases[object_index];
+                    let output_global_index = target_bases
+                        .defined_global_base
+                        .checked_add(local_defined_index)
+                        .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+                    index_map.global_indices.push(output_global_index);
+                }
+                ImportResolution::ResolvedFunction { .. } => {
+                    bail!("global import resolved as function");
+                }
+            }
         }
 
         let mut function_type_indices = Vec::with_capacity(self.module_functions.len());
@@ -1936,24 +2005,198 @@ impl<'data> WasmObjectLayoutInput<'data> {
     }
 }
 
+/// Describes how a single import was resolved during cross-object linking.
+#[derive(Debug, Clone, Copy)]
+enum ImportResolution {
+    /// The import was not resolved; keep it in the output import section.
+    Unresolved,
+    /// The import was resolved to a defined function in `object_index` at local defined-function
+    /// position `local_defined_index`.
+    ResolvedFunction {
+        object_index: usize,
+        local_defined_index: u32,
+    },
+    /// The import was resolved to a defined global in `object_index` at local defined-global
+    /// position `local_defined_index`.
+    ResolvedGlobal {
+        object_index: usize,
+        local_defined_index: u32,
+    },
+}
+
+#[derive(Debug, Default)]
+struct ObjectImportResolutions {
+    function_resolutions: Vec<ImportResolution>,
+    global_resolutions: Vec<ImportResolution>,
+    unresolved_function_count: u32,
+    unresolved_global_count: u32,
+}
+
+fn local_defined_function_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> u32 {
+    sym.index - input.function_imports.len() as u32
+}
+
+fn local_defined_global_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> u32 {
+    sym.index - input.global_imports.len() as u32
+}
+
+/// Resolve cross-object imports. For each object's undefined function/global symbol, checks whether
+/// `SymbolDb::definition()` points to a defined symbol. Resolutions are keyed by import ordinal
+/// (`sym.index`), not symbol-table order.
+fn resolve_cross_object_imports<'data>(
+    inputs: &[WasmObjectLayoutInput<'data>],
+    symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
+) -> Result<Vec<ObjectImportResolutions>> {
+    let file_id_to_index: HashMap<crate::input_data::FileId, usize> = inputs
+        .iter()
+        .enumerate()
+        .map(|(i, input)| (input.file_id, i))
+        .collect();
+
+    inputs
+        .par_iter()
+        .map(|input| {
+            let (function_resolutions, unresolved_function_count) = resolve_import_symbols(
+                input.function_imports.len(),
+                WasmSymbolKind::Func,
+                input,
+                inputs,
+                symbol_db,
+                &file_id_to_index,
+            )?;
+            let (global_resolutions, unresolved_global_count) = resolve_import_symbols(
+                input.global_imports.len(),
+                WasmSymbolKind::Global,
+                input,
+                inputs,
+                symbol_db,
+                &file_id_to_index,
+            )?;
+            Ok(ObjectImportResolutions {
+                function_resolutions,
+                global_resolutions,
+                unresolved_function_count,
+                unresolved_global_count,
+            })
+        })
+        .collect()
+}
+
+fn resolve_import_symbols<'data>(
+    import_count: usize,
+    kind: WasmSymbolKind,
+    input: &WasmObjectLayoutInput<'data>,
+    all_inputs: &[WasmObjectLayoutInput<'data>],
+    symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
+    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
+) -> Result<(Vec<ImportResolution>, u32)> {
+    ensure!(u32::try_from(import_count).is_ok(), "too many Wasm imports");
+    let mut resolutions = vec![ImportResolution::Unresolved; import_count];
+    let mut unresolved_count = u32::try_from(import_count).expect("checked above");
+
+    for (sym_offset, sym) in input.symbols.iter().enumerate() {
+        if !sym.is_undefined() || sym.kind != kind {
+            continue;
+        }
+        let import_idx = sym.index as usize;
+        if import_idx >= import_count {
+            continue;
+        }
+        let resolution = resolve_one_import(
+            sym_offset,
+            kind,
+            input,
+            all_inputs,
+            symbol_db,
+            file_id_to_index,
+        )?;
+        if matches!(resolutions[import_idx], ImportResolution::Unresolved)
+            && !matches!(resolution, ImportResolution::Unresolved)
+        {
+            unresolved_count -= 1;
+            resolutions[import_idx] = resolution;
+        }
+    }
+
+    Ok((resolutions, unresolved_count))
+}
+
+/// Try to resolve a single undefined import symbol.
+fn resolve_one_import<'data>(
+    sym_offset: usize,
+    expected_kind: WasmSymbolKind,
+    input: &WasmObjectLayoutInput<'data>,
+    all_inputs: &[WasmObjectLayoutInput<'data>],
+    symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
+    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
+) -> Result<ImportResolution> {
+    let symbol_id = input.symbol_id_range.offset_to_id(sym_offset);
+    let def_id = symbol_db.definition(symbol_id);
+    if def_id == symbol_id {
+        return Ok(ImportResolution::Unresolved);
+    }
+    let def_file_id = symbol_db.file_id_for_symbol(def_id);
+    let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) else {
+        return Ok(ImportResolution::Unresolved);
+    };
+    let def_input = &all_inputs[def_obj_idx];
+    let def_sym = &def_input.symbols[def_input.symbol_id_range.id_to_offset(def_id)];
+    if def_sym.is_undefined() || def_sym.kind != expected_kind {
+        return Ok(ImportResolution::Unresolved);
+    }
+    match expected_kind {
+        WasmSymbolKind::Func => {
+            ensure!(
+                def_sym.index >= def_input.function_imports.len() as u32,
+                "defined Wasm function symbol index {} is within import range",
+                def_sym.index
+            );
+            Ok(ImportResolution::ResolvedFunction {
+                object_index: def_obj_idx,
+                local_defined_index: local_defined_function_index(def_input, def_sym),
+            })
+        }
+        WasmSymbolKind::Global => {
+            ensure!(
+                def_sym.index >= def_input.global_imports.len() as u32,
+                "defined Wasm global symbol index {} is within import range",
+                def_sym.index
+            );
+            Ok(ImportResolution::ResolvedGlobal {
+                object_index: def_obj_idx,
+                local_defined_index: local_defined_global_index(def_input, def_sym),
+            })
+        }
+        _ => Ok(ImportResolution::Unresolved),
+    }
+}
+
 fn build_output_module_layout<'data, 'files>(
     groups: &'files [layout::GroupState<'data, Wasm>],
+    symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
 ) -> Result<WasmLayout<'data>>
 where
     'data: 'files,
 {
-    let objects = layout::objects_iter(groups)
-        .map(|o| o.object)
-        .collect::<Vec<_>>();
-    let layout_inputs = objects
+    let objects_and_states: Vec<_> = layout::objects_iter(groups)
+        .map(|state| (&state.object, &state.format_specific))
+        .collect();
+    let layout_inputs = objects_and_states
         .par_iter()
-        .map(|object| WasmObjectLayoutInput::from_file(object))
+        .map(|(object, state)| {
+            WasmObjectLayoutInput::from_file(object, state.symbol_id_range, state.file_id)
+        })
         .collect::<Result<Vec<_>>>()?;
-    let index_bases = allocate_wasm_object_index_bases(&layout_inputs)?;
+
+    let import_resolutions = resolve_cross_object_imports(&layout_inputs, symbol_db)?;
+    let index_bases = allocate_wasm_object_index_bases(&layout_inputs, &import_resolutions)?;
     let object_layouts = layout_inputs
         .into_par_iter()
-        .zip(index_bases.into_par_iter())
-        .map(|(input, index_bases)| input.into_output_layout(index_bases))
+        .zip(import_resolutions.par_iter())
+        .enumerate()
+        .map(|(obj_idx, (input, resolutions))| {
+            input.into_output_layout(index_bases[obj_idx], resolutions, &index_bases)
+        })
         .collect::<Result<Vec<_>>>()?;
 
     let mut layout = WasmLayout::default();
@@ -1978,6 +2221,7 @@ where
 
 fn allocate_wasm_object_index_bases(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
+    import_resolutions: &[ObjectImportResolutions],
 ) -> Result<Vec<WasmObjectIndexBases>> {
     let mut index_bases = Vec::with_capacity(layout_inputs.len());
     let mut next_type_index = 0u32;
@@ -1985,7 +2229,7 @@ fn allocate_wasm_object_index_bases(
     let mut next_global_import_index = 0u32;
     let mut next_memory_index = 0u32;
 
-    for input in layout_inputs {
+    for (input, resolutions) in layout_inputs.iter().zip(import_resolutions) {
         index_bases.push(WasmObjectIndexBases {
             type_index_base: next_type_index,
             function_import_base: next_function_import_index,
@@ -1998,16 +2242,10 @@ fn allocate_wasm_object_index_bases(
             .checked_add(u32::try_from(input.types.len()).context("too many Wasm types")?)
             .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
         next_function_import_index = next_function_import_index
-            .checked_add(
-                u32::try_from(input.function_imports.len())
-                    .context("too many Wasm function imports")?,
-            )
+            .checked_add(resolutions.unresolved_function_count)
             .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
         next_global_import_index = next_global_import_index
-            .checked_add(
-                u32::try_from(input.global_imports.len())
-                    .context("too many Wasm global imports")?,
-            )
+            .checked_add(resolutions.unresolved_global_count)
             .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
         next_memory_index = next_memory_index
             .checked_add(u32::try_from(input.memories.len()).context("too many Wasm memories")?)
@@ -2121,7 +2359,7 @@ impl platform::Platform for Wasm {
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
-    type ResolvedObjectExt<'data> = ();
+    type ResolvedObjectExt<'data> = WasmObjectLayout<'data>;
 
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
@@ -2303,15 +2541,33 @@ impl platform::Platform for Wasm {
             .collect()
     }
 
+    fn new_resolved_object_ext<'data>(
+        symbol_id_range: crate::symbol_db::SymbolIdRange,
+        file_id: crate::input_data::FileId,
+    ) -> Self::ResolvedObjectExt<'data> {
+        WasmObjectLayout {
+            symbol_id_range,
+            file_id,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    fn new_object_layout_state_ext<'data>(
+        input: Self::ResolvedObjectExt<'data>,
+    ) -> Self::ObjectLayoutStateExt<'data> {
+        input
+    }
+
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
         _args: &Self::Args,
         groups: &'files [layout::GroupState<'data, Self>],
+        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> crate::error::Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,
         'data: 'states,
     {
-        build_output_module_layout(groups)
+        build_output_module_layout(groups, symbol_db)
     }
 
     fn create_layout_ext<'data>(
@@ -2619,6 +2875,11 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         });
     }
 
+    // Backfill names for unnamed undefined function/global symbols from the import section.
+    // The Wasm linking convention allows symbol entries to omit the name when the symbol is
+    // undefined; the canonical name lives in the import entry instead.
+    backfill_unnamed_import_symbols(input, &standard_section_index, &sections, &mut symbols)?;
+
     Ok(File {
         data: input,
         version,
@@ -2630,6 +2891,74 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         linking_version,
         target_features_raw,
     })
+}
+
+/// For unnamed undefined Func/Global symbols, derive the name from the corresponding import
+/// section entry. In Wasm relocatable objects, undefined symbols in the linking section may
+/// omit their name; the canonical name is carried by the import entry instead.
+fn backfill_unnamed_import_symbols(
+    data: &[u8],
+    standard_section_index: &[Option<u32>; STANDARD_SECTION_LOOKUP_LEN],
+    sections: &[SectionHeader],
+    symbols: &mut [WasmSymbol],
+) -> Result {
+    // Collect import names only if there are unnamed undefined symbols that need backfilling.
+    let needs_backfill = symbols.iter().any(|s| {
+        s.is_undefined()
+            && !s.has_name()
+            && matches!(s.kind, WasmSymbolKind::Func | WasmSymbolKind::Global)
+    });
+    if !needs_backfill {
+        return Ok(());
+    }
+
+    let data_start = data.as_ptr() as usize;
+
+    // Parse the import section to build name lookup tables indexed by function/global import
+    // ordinal.
+    let Some(import_payload) = standard_section_index
+        .get(section_id::IMPORT as usize)
+        .and_then(|idx| idx.as_ref())
+        .and_then(|&idx| sections.get(idx as usize))
+        .and_then(|header| data.get(header.payload_range_usize()))
+    else {
+        return Ok(());
+    };
+    let import_reader = ImportSectionReader::new(BinaryReader::new(import_payload, 0))?;
+
+    let mut func_import_names: Vec<(u32, u32)> = Vec::new();
+    let mut global_import_names: Vec<(u32, u32)> = Vec::new();
+    for import in import_reader.into_imports() {
+        let import = import?;
+        let name_ptr = import.name.as_ptr() as usize - data_start;
+        let name_entry = (name_ptr as u32, import.name.len() as u32);
+        match import.ty {
+            TypeRef::Func(_) | TypeRef::FuncExact(_) => func_import_names.push(name_entry),
+            TypeRef::Global(_) => global_import_names.push(name_entry),
+            _ => {}
+        }
+    }
+
+    for sym in symbols.iter_mut() {
+        if !sym.is_undefined() || sym.has_name() {
+            continue;
+        }
+        let (start, len) = match sym.kind {
+            WasmSymbolKind::Func => func_import_names
+                .get(sym.index as usize)
+                .copied()
+                .unwrap_or((0, 0)),
+            WasmSymbolKind::Global => global_import_names
+                .get(sym.index as usize)
+                .copied()
+                .unwrap_or((0, 0)),
+            _ => continue,
+        };
+        sym.name_start = start;
+        sym.name_len = len;
+    }
+
+    Ok(())
 }
 
 fn parse_linking_subsections<'data>(

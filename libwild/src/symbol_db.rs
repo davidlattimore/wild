@@ -154,7 +154,7 @@ struct PendingVersionedSymbol<'data> {
 
 /// An ID for a symbol. All symbols from all input files are allocated a unique symbol ID. The
 /// symbol ID 0 is reserved for the undefined symbol.
-#[derive(Clone, Copy, derive_more::Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, derive_more::Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[debug("sym-{_0}")]
 pub(crate) struct SymbolId(u32);
 
@@ -166,7 +166,7 @@ struct AtomicSymbolId(AtomicU32);
 /// - A `SymbolId` is a globally unique identifier for a symbol.
 /// - An `object::SymbolIndex` is an index into the ELF symbol table of the input file.
 /// - A `usize` offset is an index into our own data structures for the file.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SymbolIdRange {
     start_symbol_id: SymbolId,
     num_symbols: usize,
