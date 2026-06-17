@@ -170,11 +170,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         num_symbols: 0,
     });
 
-    let mut finalise_sizes_ext = P::create_finalise_sizes_ext::<A>(
-        symbol_db.args,
-        objects_iter(&group_states).map(|obj| obj.object),
-        objects_iter(&group_states).map(|obj| &obj.format_specific),
-    )?;
+    let mut finalise_sizes_ext = P::create_finalise_sizes_ext::<A>(symbol_db.args, &group_states)?;
 
     let mut finalise_sizes_resources = FinaliseSizesResources {
         dynamic_symbol_definitions: &dynamic_symbol_definitions,
@@ -670,7 +666,7 @@ fn append_prelude_defsym_dynamic_symbols<'data, P: Platform>(
     Ok(())
 }
 
-fn objects_iter<'groups, 'data, P: Platform>(
+pub(crate) fn objects_iter<'groups, 'data, P: Platform>(
     group_states: &'groups [GroupState<'data, P>],
 ) -> impl Iterator<Item = &'groups ObjectLayoutState<'data, P>> + Clone {
     group_states.iter().flat_map(|group| {

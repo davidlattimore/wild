@@ -1089,8 +1089,7 @@ impl platform::Platform for MachO {
 
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
         _args: &Self::Args,
-        _objects: impl Iterator<Item = &'files Self::File<'data>>,
-        _states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
+        _groups: &'files [layout::GroupState<'data, Self>],
     ) -> crate::error::Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,

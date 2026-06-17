@@ -31,6 +31,7 @@ use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
 use crate::layout::Resolution;
 use crate::layout::SymbolCopyInfo;
+use crate::layout::objects_iter;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
 use crate::layout_rules::SectionRuleOutcome;
@@ -975,14 +976,13 @@ impl platform::Platform for Elf {
 
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: Arch<Platform = Self>>(
         args: &ElfArgs,
-        objects: impl Iterator<Item = &'files Self::File<'data>>,
-        states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
+        groups: &'files [layout::GroupState<'data, Self>],
     ) -> Result<LayoutExt>
     where
         'data: 'files,
         'data: 'states,
     {
-        LayoutExt::new::<A>(objects, states, args)
+        LayoutExt::new::<A>(groups, args)
     }
 
     fn create_layout_ext<'data>(
@@ -3475,13 +3475,13 @@ pub(crate) struct LayoutExt {
 
 impl LayoutExt {
     pub(crate) fn new<'files, 'states, 'data: 'files + 'states, A: Arch<Platform = Elf>>(
-        objects: impl Iterator<Item = &'files File<'data>>,
-        states: impl Iterator<Item = &'states ObjectLayoutStateExt<'data>> + Clone,
+        groups: &'files [layout::GroupState<'data, Elf>],
         args: &ElfArgs,
     ) -> Result<Self> {
+        let states = objects_iter(groups).map(|o| &o.format_specific);
         let gnu_property_notes = merge_gnu_property_notes::<A>(states.clone(), args.z_isa)?;
         let riscv_attributes = merge_riscv_attributes::<A>(states)?;
-        let eflags = merge_eflags::<A>(objects)?;
+        let eflags = merge_eflags::<A>(objects_iter(groups).map(|o| o.object))?;
 
         Ok(Self {
             gnu_property_notes,

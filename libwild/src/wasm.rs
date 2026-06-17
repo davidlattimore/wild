@@ -7,6 +7,7 @@ use crate::bail;
 use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::layout;
 use crate::layout::ImportedSymbol;
 use crate::layout_rules::SectionKind;
 use crate::output_section_id::SectionName;
@@ -1936,12 +1937,14 @@ impl<'data> WasmObjectLayoutInput<'data> {
 }
 
 fn build_output_module_layout<'data, 'files>(
-    objects: impl Iterator<Item = &'files File<'data>>,
+    groups: &'files [layout::GroupState<'data, Wasm>],
 ) -> Result<WasmLayout<'data>>
 where
     'data: 'files,
 {
-    let objects = objects.collect::<Vec<_>>();
+    let objects = layout::objects_iter(groups)
+        .map(|o| o.object)
+        .collect::<Vec<_>>();
     let layout_inputs = objects
         .par_iter()
         .map(|object| WasmObjectLayoutInput::from_file(object))
@@ -2301,14 +2304,13 @@ impl platform::Platform for Wasm {
 
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
         _args: &Self::Args,
-        objects: impl Iterator<Item = &'files Self::File<'data>>,
-        _states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
+        groups: &'files [layout::GroupState<'data, Self>],
     ) -> crate::error::Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,
         'data: 'states,
     {
-        build_output_module_layout(objects)
+        build_output_module_layout(groups)
     }
 
     fn create_layout_ext<'data>(

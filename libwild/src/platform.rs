@@ -498,8 +498,7 @@ pub(crate) trait Platform:
 
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: Arch<Platform = Self>>(
         args: &Self::Args,
-        objects: impl Iterator<Item = &'files Self::File<'data>>,
-        states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
+        groups: &'files [layout::GroupState<'data, Self>],
     ) -> Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,
