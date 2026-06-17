@@ -1,6 +1,7 @@
 //#TestUpdateInPlace:true
 //#LinkerDriver:clang
 //#ExpectWarningWild:Fat object file is not supported yet
+//#DiffIgnore:section.__unwind_info
 
 #include <stdio.h>
 #include <string.h>

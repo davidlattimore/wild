@@ -665,7 +665,8 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
                 }))
             }
             FileKind::MachOStubLibrary => {
-                let defined_library = parse_defined_library(str::from_utf8(input_file.data())?)?;
+                let defined_library = parse_defined_library(str::from_utf8(input_file.data())?)
+                    .with_context(|| format!("Failed to process `{}`", absolute_path.display()))?;
                 tracing::debug!(file = ?input_file.filename, symbols = defined_library.symbols.len(),
                     weak_symbols = defined_library.weak_symbols.len(), "loaded TBD library");
                 Ok(LoadedFileState::StubLibrary(input_file, defined_library))
