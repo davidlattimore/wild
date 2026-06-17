@@ -350,25 +350,12 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
             continue;
         }
 
-        let root = src_path(platform_name);
-        let dir = std::fs::read_dir(&root)
-            .with_context(|| format!("Failed to read directory {}", root.display()))?;
-
         let is_nextest = std::env::var("NEXTEST").is_ok();
 
-        for entry in dir {
-            let entry = entry?;
-            let path = entry.path();
+        for_each_test_dir(platform_name, filter, |base_name, path| {
             if path.ends_with("common") {
-                continue;
+                return Ok(());
             }
-
-            let base_name = path
-                .file_name()
-                .context("Missing filename")?
-                .to_str()
-                .context("Non-UTF-8 path")?
-                .to_owned();
 
             for &arch in platform.supported_architectures() {
                 let name_prefix = format!("{platform_name}/{arch}/{base_name}");
@@ -376,12 +363,12 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
                     continue;
                 }
 
-                let primary_source_file = identify_primary_source(&path, &base_name)?;
+                let primary_source_file = identify_primary_source(&path, base_name)?;
 
                 let configs = parse_configs(
                     &primary_source_file,
                     &Config::new(
-                        base_name.clone(),
+                        base_name.to_owned(),
                         platform,
                         arch,
                         path.clone(),
@@ -416,22 +403,20 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
                     }));
                 }
             }
-        }
+            Ok(())
+        })?;
     }
 
     Ok(())
 }
 
-fn collect_wasm_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
-    if !cfg!(feature = "wasm") {
-        return Ok(());
-    }
-
-    let platform_name = "wasm";
-    if filter.excludes(platform_name) {
-        return Ok(());
-    }
-
+/// Iterates over subdirectories under `tests/sources/{platform_name}/`, calling `cb` with the
+/// directory name and path for each entry.
+fn for_each_test_dir(
+    platform_name: &str,
+    filter: &Filter,
+    mut cb: impl FnMut(&str, PathBuf) -> Result,
+) -> Result {
     let root = src_path(platform_name);
     if !root.exists() {
         return Ok(());
@@ -447,29 +432,45 @@ fn collect_wasm_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
             continue;
         }
 
-        let test_name = path
+        let name = path
             .file_name()
             .context("Missing filename")?
             .to_str()
             .context("Non-UTF-8 path")?
             .to_owned();
 
-        let full_name = format!("{platform_name}/wasm32/{test_name}/default");
-        if filter.excludes(&full_name) {
+        if filter.excludes(&format!("{platform_name}/{name}")) {
             continue;
         }
 
-        let wat_file = path.join(format!("{test_name}.wat"));
-        if !wat_file.exists() {
-            continue;
-        }
-
-        tests.push(libtest_mimic::Trial::test(full_name, move || {
-            run_wasm_test(&wat_file).map_err(|e| libtest_mimic::Failed::from(e.to_string()))
-        }));
+        cb(&name, path)?;
     }
 
     Ok(())
+}
+
+fn collect_wasm_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
+    if !cfg!(feature = "wasm") {
+        return Ok(());
+    }
+
+    let platform_name = "wasm";
+    if filter.excludes(platform_name) {
+        return Ok(());
+    }
+
+    for_each_test_dir(platform_name, filter, |test_name, path| {
+        let wat_file = path.join(format!("{test_name}.wat"));
+        if !wat_file.exists() {
+            return Ok(());
+        }
+
+        let full_name = format!("{platform_name}/wasm32/{test_name}/default");
+        tests.push(libtest_mimic::Trial::test(full_name, move || {
+            run_wasm_test(&wat_file).map_err(|e| libtest_mimic::Failed::from(e.to_string()))
+        }));
+        Ok(())
+    })
 }
 
 fn run_wasm_test(wat_file: &Path) -> Result {
@@ -487,15 +488,15 @@ fn run_wasm_test(wat_file: &Path) -> Result {
     let source = std::fs::read_to_string(wat_file)?;
     let mut extra_objects = Vec::new();
     let mut expect_error = false;
-    let mut skip_run = false;
+    let mut should_run = true;
     for line in source.lines() {
         if let Some(rest) = line.trim().strip_prefix(";;#") {
             if let Some(obj_name) = rest.strip_prefix("Object:") {
                 extra_objects.push(obj_name.trim().to_owned());
             } else if rest.starts_with("ExpectError") {
                 expect_error = true;
-            } else if rest.starts_with("SkipRun") {
-                skip_run = true;
+            } else if let Some(val) = rest.strip_prefix("RunEnabled:") {
+                should_run = val.trim().parse().context("Invalid bool for RunEnabled")?;
             }
         }
     }
@@ -556,7 +557,7 @@ fn run_wasm_test(wat_file: &Path) -> Result {
             String::from_utf8_lossy(&wasm_ld_result.stderr)
         );
         validate_wasm(&wasm_ld_output, "wasm-ld")?;
-        if !skip_run {
+        if should_run {
             run_wasm_with_wasmtime(&wasm_ld_output, "wasm-ld")?;
         }
     }
@@ -586,7 +587,7 @@ fn run_wasm_test(wat_file: &Path) -> Result {
     );
 
     validate_wasm(&wasm_wild_output, "wild")?;
-    if !skip_run {
+    if should_run {
         run_wasm_with_wasmtime(&wasm_wild_output, "wild")?;
     }
 

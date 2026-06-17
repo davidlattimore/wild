@@ -1,5 +1,5 @@
 ;;#Object:multi-object2.wat
-;;#SkipRun
+;;#RunEnabled:false
 (module
   (type $void_to_void (func))
   (import "env" "helper" (func $helper (type $void_to_void)))
