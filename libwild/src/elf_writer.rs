@@ -1467,28 +1467,11 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().common().trace_span_for_file(object.file_id);
 
-    let Some(crate::layout::FileLayout::Epilogue(epilogue)) =
-        layout.group_layouts.last().and_then(|g| g.files.last())
-    else {
-        unreachable!("Epilogue is broken and must be the last file in the final layout group");
-    };
-
     for (i, sec) in object.sections.iter().enumerate() {
         let section_index = object::SectionIndex(i);
 
         match sec {
             SectionSlot::Loaded(sec) => {
-                let is_harvested = epilogue
-                    .script_sorted_sections
-                    .binary_search_by_key(&(object.file_id, section_index.0), |h| {
-                        (h.file_id, h.section_index.0)
-                    })
-                    .is_ok();
-
-                if is_harvested {
-                    continue;
-                }
-
                 write_object_section::<A>(
                     object,
                     layout,
@@ -2134,6 +2117,7 @@ fn write_symbols<'data>(
                 if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
                     match &object.sections[section_index.0] {
                         SectionSlot::Loaded(_)
+                        | SectionSlot::Sorted(_)
                         | SectionSlot::LoadedDebugInfo(_)
                         | SectionSlot::MergeStrings(_) => object
                             .section_part_id(section_index, &layout.symbol_db.section_part_ids)
@@ -4058,7 +4042,7 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
             continue;
         };
 
-        if let SectionSlot::Loaded(sec) = &object.sections[harvested.section_index.0] {
+        if let SectionSlot::Sorted(sec) = &object.sections[harvested.section_index.0] {
             write_object_section::<A>(
                 object,
                 layout,

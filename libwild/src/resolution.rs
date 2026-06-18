@@ -698,6 +698,10 @@ pub(crate) enum SectionSlot {
     /// We've already loaded the section.
     Loaded(crate::layout::Section),
 
+    /// As for `Loaded`, but responsibility for allocating and writing the section is held by the
+    /// epilogue due to being part of a sorted section.
+    Sorted(crate::layout::Section),
+
     /// The section contains frame data, e.g. .eh_frame or equivalent.
     FrameData(object::SectionIndex),
 
@@ -725,6 +729,8 @@ pub(crate) struct UnloadedSection {
     /// Whether the section has a name that makes it eligible for generation of __start_ / __stop_
     /// symbols. In particular, the name of the section doesn't start with a ".".
     pub(crate) start_stop_eligible: bool,
+
+    pub(crate) needs_sorting: bool,
 }
 
 impl UnloadedSection {
@@ -732,6 +738,7 @@ impl UnloadedSection {
         Self {
             last_frame_index: None,
             start_stop_eligible: false,
+            needs_sorting: false,
         }
     }
 }
@@ -1340,6 +1347,7 @@ fn resolve_section<'data, P: Platform>(
             must_load |= output_info.must_keep;
 
             unloaded_section = UnloadedSection::new();
+            unloaded_section.needs_sorting = output_info.sorted;
         }
         SectionRuleOutcome::SortedSection(output_info) => {
             part_id = if output_info.section_id.is_regular() {
@@ -1360,22 +1368,6 @@ fn resolve_section<'data, P: Platform>(
 
             unloaded_section = UnloadedSection::new();
         }
-        SectionRuleOutcome::ScriptSortedSection(output_info) => {
-            part_id = if output_info.section_id.is_regular() {
-                output_info.section_id.part_id_with_alignment(alignment)
-            } else {
-                output_info.section_id.base_part_id()
-            };
-
-            obj.script_sorted_sections.push(ScriptSortedSectionDetail {
-                index: input_section_index,
-            });
-
-            must_load |= output_info.must_keep;
-
-            unloaded_section = UnloadedSection::new();
-        }
-
         SectionRuleOutcome::Discard => return Ok((SectionSlot::Discard, part_id::UNMAPPED)),
         SectionRuleOutcome::NoteGnuStack => {
             P::validate_stack_section(input_section, obj, args)?;

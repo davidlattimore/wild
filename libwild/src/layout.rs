@@ -1280,18 +1280,6 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
         self.mem_sizes.increment(part_id, size);
     }
 
-    /// Allocate resources and update attributes based on a section having been loaded.
-    fn section_loaded(
-        &mut self,
-        part_id: PartId,
-        header: &P::SectionHeader,
-        section: Section,
-        output_sections: &OutputSections<P>,
-    ) {
-        self.allocate(part_id, section.capacity(part_id, output_sections));
-        self.store_section_attributes(part_id, header);
-    }
-
     fn store_section_attributes(&mut self, part_id: PartId, header: &P::SectionHeader) {
         let existing_attributes = self.section_attributes.get_mut(part_id.output_section_id());
 
@@ -4056,6 +4044,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                 );
             }
             SectionSlot::Loaded(_)
+            | SectionSlot::Sorted(_)
             | SectionSlot::FrameData(..)
             | SectionSlot::LoadedDebugInfo(..)
             | SectionSlot::NoteGnuProperty(..)
@@ -4109,7 +4098,20 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
 
         tracing::debug!(loaded_section = %self.object.section_display_name(section_index), file = %self.input);
 
-        common.section_loaded(part_id, header, section, resources.output_sections);
+        self.sections[section_index.0] = if unloaded.needs_sorting {
+            self.script_sorted_sections.push(ScriptSortedSectionDetail {
+                index: section_index,
+            });
+            SectionSlot::Sorted(section)
+        } else {
+            common.allocate(
+                part_id,
+                section.capacity(part_id, resources.output_sections),
+            );
+            SectionSlot::Loaded(section)
+        };
+
+        common.store_section_attributes(part_id, header);
 
         if let Some(config) = A::thunk_config()
             && resources.thunk_layout_builder.is_some()
@@ -4125,8 +4127,6 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         } else if P::is_zero_sized_section_content(section_id) {
             resources.keep_section(section_id);
         }
-
-        self.sections[section_index.0] = SectionSlot::Loaded(section);
 
         Ok(())
     }
@@ -4150,7 +4150,11 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         // live sections.
 
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
-        common.section_loaded(part_id, header, section, resources.output_sections);
+        common.allocate(
+            part_id,
+            section.capacity(part_id, resources.output_sections),
+        );
+        common.store_section_attributes(part_id, header);
         self.sections[section_index.0] = SectionSlot::LoadedDebugInfo(section);
 
         Ok(())
@@ -4221,7 +4225,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         {
             let resolution = match slot {
                 SectionSlot::Loaded(sec) => {
-                    let mut address = *memory_offsets.get(part_id);
+                    let address = *memory_offsets.get(part_id);
 
                     // TODO: We probably need to be able to handle sections that are ifuncs and
                     // sections that need a TLS GOT struct.
@@ -4235,14 +4239,18 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                         sframe_ranges.push(offset..offset + len);
                     }
 
-                    if let Ok(idx) = resources
+                    SectionResolution { address }
+                }
+
+                SectionSlot::Sorted(_) => {
+                    let idx = resources
                         .harvested_sections_registry
                         .binary_search_by_key(&(self.file_id, sec_idx), |s| {
                             (s.file_id, s.section_index.0)
                         })
-                    {
-                        address = resources.harvested_sections_registry[idx].mem_offset;
-                    }
+                        .context("Internal error: Missing address for sorted section")?;
+
+                    let address = resources.harvested_sections_registry[idx].mem_offset;
 
                     SectionResolution { address }
                 }
@@ -5864,7 +5872,7 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
         for file in &mut group.files {
             if let FileLayoutState::Object(obj) = file {
                 for sorted_section in &obj.script_sorted_sections {
-                    if let SectionSlot::Loaded(sec) = &obj.sections[sorted_section.index.0] {
+                    if let SectionSlot::Sorted(sec) = &obj.sections[sorted_section.index.0] {
                         let part_id = obj.section_part_id(sorted_section.index, section_part_ids);
                         let capacity = sec.capacity(part_id, output_sections);
                         sections_out.push((

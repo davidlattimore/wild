@@ -105,13 +105,13 @@ pub(crate) enum SectionRuleOutcome {
     DebugIndex,
     RiscVAttribute,
     SortedSection(SectionOutputInfo),
-    ScriptSortedSection(SectionOutputInfo),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SectionOutputInfo {
     pub(crate) section_id: OutputSectionId,
     pub(crate) must_keep: bool,
+    pub(crate) sorted: bool,
 }
 
 impl SectionOutputInfo {
@@ -119,6 +119,7 @@ impl SectionOutputInfo {
         Self {
             section_id,
             must_keep: false,
+            sorted: false,
         }
     }
 
@@ -126,6 +127,7 @@ impl SectionOutputInfo {
         Self {
             section_id,
             must_keep: true,
+            sorted: false,
         }
     }
 }
@@ -262,17 +264,13 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             let output_info = SectionOutputInfo {
                                                 section_id,
                                                 must_keep: matcher.must_keep,
+                                                sorted: pattern.sorted,
                                             };
 
-                                            // If the script requested sorting, tag it for the
-                                            // global Harvester instead of standard placement.
-                                            let outcome = if pattern.sorted {
-                                                SectionRuleOutcome::ScriptSortedSection(output_info)
-                                            } else {
+                                            let outcome =
                                                 crate::layout_rules::SectionRuleOutcome::Section(
                                                     output_info,
-                                                )
-                                            };
+                                                );
 
                                             self.add_section_rule(SectionRule::new(
                                                 pattern.name,
@@ -649,7 +647,8 @@ fn test_section_mapping() {
         lookup_name(".comment"),
         SectionRuleOutcome::Section(SectionOutputInfo {
             section_id: output_section_id::COMMENT,
-            must_keep: true
+            must_keep: true,
+            sorted: false,
         })
     );
 }
