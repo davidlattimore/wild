@@ -354,7 +354,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             0,
         ),
         object::elf::R_LARCH_CALL36 => (
-            RelocationKind::Relative,
+            RelocationKind::PltRelative,
             RelocationSize::bit_mask_loongarch64(2, 38, LoongArch64Instruction::Call36),
             None,
             // with check 38-bit signed overflow and a multiple of 4

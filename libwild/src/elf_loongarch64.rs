@@ -128,6 +128,15 @@ impl crate::platform::Arch for ElfLoongArch64 {
         let offset = offset_in_section as usize;
 
         match relocation_kind {
+            object::elf::R_LARCH_CALL36 if !interposable => {
+                relocation.kind = RelocationKind::Relative;
+                return Some(Relaxation {
+                    kind: RelaxationKind::NoOp,
+                    rel_info: relocation,
+                    mandatory: true,
+                });
+            }
+
             object::elf::R_LARCH_B26 if !interposable => {
                 relocation.kind = RelocationKind::Relative;
                 return Some(Relaxation {
