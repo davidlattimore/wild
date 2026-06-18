@@ -7,7 +7,6 @@ SECTIONS
     .text : {
         *(.text)
         
-        /* Our custom sorted sections */
         *(SORT(.text.sort.*))
         KEEP(*(SORT(.text.kept.*)))
         *(SORT(.text.drop.*))
@@ -22,7 +21,6 @@ SECTIONS
 
     .eh_frame : { *(.eh_frame) }
     .note.gnu.property : { *(.note.gnu.property) }
-    .got : { *(.got) *(.got.plt) }
 
     PROVIDE(__global_pointer$ = .);
 }
