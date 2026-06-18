@@ -3,6 +3,7 @@ use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
 use crate::platform::Platform;
+use itertools::AllEqualValueError;
 use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::PAGE_MASK_4KB;
@@ -91,8 +92,8 @@ impl crate::platform::Arch for ElfLoongArch64 {
         match eflags.all_equal_value() {
             Ok(flags) => Ok(flags),
             // no items, return blank flags
-            Err(None) => Ok(object::elf::FileFlags(0)),
-            Err(Some((a, b))) => Err(error!("non-unique e_flags: {a}, {b}")),
+            Err(AllEqualValueError(None)) => Ok(object::elf::FileFlags(0)),
+            Err(AllEqualValueError(Some([a, b]))) => Err(error!("non-unique e_flags: {a}, {b}")),
         }
     }
 
