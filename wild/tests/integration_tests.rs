@@ -352,7 +352,7 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
 
         let is_nextest = std::env::var("NEXTEST").is_ok();
 
-        for_each_test_dir(platform_name, filter, |base_name, path| {
+        for_each_test_dir(platform_name, |base_name, path| {
             if path.ends_with("common") {
                 return Ok(());
             }
@@ -412,11 +412,7 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
 
 /// Iterates over subdirectories under `tests/sources/{platform_name}/`, calling `cb` with the
 /// directory name and path for each entry.
-fn for_each_test_dir(
-    platform_name: &str,
-    filter: &Filter,
-    mut cb: impl FnMut(&str, PathBuf) -> Result,
-) -> Result {
+fn for_each_test_dir(platform_name: &str, mut cb: impl FnMut(&str, PathBuf) -> Result) -> Result {
     let root = src_path(platform_name);
     if !root.exists() {
         return Ok(());
@@ -439,10 +435,6 @@ fn for_each_test_dir(
             .context("Non-UTF-8 path")?
             .to_owned();
 
-        if filter.excludes(&format!("{platform_name}/{name}")) {
-            continue;
-        }
-
         cb(&name, path)?;
     }
 
@@ -459,13 +451,16 @@ fn collect_wasm_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
         return Ok(());
     }
 
-    for_each_test_dir(platform_name, filter, |test_name, path| {
+    for_each_test_dir(platform_name, |test_name, path| {
         let wat_file = path.join(format!("{test_name}.wat"));
         if !wat_file.exists() {
             return Ok(());
         }
 
         let full_name = format!("{platform_name}/wasm32/{test_name}/default");
+        if filter.excludes(&full_name) {
+            return Ok(());
+        }
         tests.push(libtest_mimic::Trial::test(full_name, move || {
             run_wasm_test(&wat_file).map_err(|e| libtest_mimic::Failed::from(e.to_string()))
         }));
