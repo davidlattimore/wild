@@ -1112,7 +1112,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .execute(|args, _modifier_stack, value| {
             match value {
                 "none" => args.debug_compression_kind = None,
-                "zlib" => args.debug_compression_kind = Some(CompressionKind::Zlib),
+                "zlib" | "zlib-gabi" => args.debug_compression_kind = Some(CompressionKind::Zlib),
                 "zstd" => args.debug_compression_kind = Some(CompressionKind::Zstd),
                 value => bail!("--compress-debug-sections={value}"),
             }
