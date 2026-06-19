@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Tap
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: wild-linker/homebrew-wild
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

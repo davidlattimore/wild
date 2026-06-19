@@ -24,7 +24,7 @@ jobs:
       image: "ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-b58cc74a969f3f81c8a01b5d626fa850e3d39c38"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive

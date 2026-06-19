@@ -47,7 +47,7 @@ jobs:
       - run: echo "WILD_TEST_CONFIG=test-config-ci.toml" >> $GITHUB_ENV
       - run: echo "WILD_TEST_CROSS=all" >> $GITHUB_ENV
         if: ${{ contains(matrix.container, '-cross') }}
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: wild-linker/action@latest
@@ -64,7 +64,7 @@ jobs:
     container:
       image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-b58cc74a969f3f81c8a01b5d626fa850e3d39c38
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -82,7 +82,7 @@ jobs:
     container:
       image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-b58cc74a969f3f81c8a01b5d626fa850e3d39c38
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -100,7 +100,7 @@ jobs:
     container:
       image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-b58cc74a969f3f81c8a01b5d626fa850e3d39c38
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -127,7 +127,7 @@ jobs:
         uses: bytecodealliance/actions/wasmtime/setup@v1
         with:
           version: '43.0.0'
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - run: apt-get install --update -y build-essential gcc gcc-multilib clang curl
@@ -147,7 +147,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -168,7 +168,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -184,7 +184,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -198,7 +198,7 @@ jobs:
     container:
       image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:sha-b58cc74a969f3f81c8a01b5d626fa850e3d39c38
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -214,7 +214,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # This is where we check that we're not using features from a more recent rust version. When
@@ -232,7 +232,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
@@ -245,7 +245,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-go@v6
@@ -261,7 +261,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Spell Check Repo
@@ -276,7 +276,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -307,7 +307,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
