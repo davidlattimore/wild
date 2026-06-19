@@ -1,5 +1,6 @@
 use crate::bail;
 use crate::ensure;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_writer::SizedOutput;
 use crate::file_writer::split_output_into_sections;
@@ -10,16 +11,20 @@ use crate::wasm::WASM_VERSION;
 use crate::wasm::Wasm;
 use crate::wasm::WasmFunctionBody;
 use crate::wasm::WasmLayout;
+use crate::wasm::WasmObjectDataLayout;
 use crate::wasm::WasmRelocation;
 use crate::wasm::apply_relocation;
 use crate::wasm::section_id;
 use crate::wasm::write_uleb128;
 use leb128::write::unsigned_len as uleb128_size;
+use wasm_encoder::ConstExpr;
+use wasm_encoder::DataSection;
 use wasm_encoder::ExportSection;
 use wasm_encoder::FunctionSection;
 use wasm_encoder::GlobalSection;
 use wasm_encoder::ImportSection;
 use wasm_encoder::MemorySection;
+use wasm_encoder::Section;
 use wasm_encoder::TypeSection;
 
 pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
@@ -37,15 +42,19 @@ pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
     preamble[..4].copy_from_slice(&WASM_MAGIC);
     preamble[4..8].copy_from_slice(&WASM_VERSION.to_le_bytes());
 
+    if let Some(unsupported) = layout.format_specific.unsupported_output.first() {
+        bail!("Wasm {unsupported} emission is not implemented yet");
+    }
+
     copy_metadata_sections(&layout.format_specific, &mut section_buffers)?;
     write_code_section(
         &layout.format_specific.function_bodies,
         section_buffers.get_mut(crate::output_section_id::WASM_CODE),
     )?;
-
-    if let Some(unsupported) = layout.format_specific.unsupported_output.first() {
-        bail!("Wasm {unsupported} emission is not implemented yet");
-    }
+    write_data_section(
+        &layout.format_specific.object_data_layouts,
+        section_buffers.get_mut(crate::output_section_id::WASM_DATA),
+    )?;
 
     Ok(())
 }
@@ -172,6 +181,35 @@ fn write_code_section(bodies: &[WasmFunctionBody<'_>], out: &mut [u8]) -> Result
     Ok(())
 }
 
+fn write_data_section(
+    object_data_layouts: &[WasmObjectDataLayout<'_>],
+    out: &mut [u8],
+) -> Result<()> {
+    let has_segments = object_data_layouts
+        .iter()
+        .any(|object| !object.segments.is_empty());
+    if !has_segments {
+        ensure!(
+            out.is_empty(),
+            "Wasm data section buffer is {} bytes but no segments to write",
+            out.len()
+        );
+        return Ok(());
+    }
+
+    let section = build_data_section(object_data_layouts)?;
+    let mut encoded = Vec::new();
+    section.append_to(&mut encoded);
+    ensure!(
+        out.len() == encoded.len(),
+        "Wasm data section wrote {} bytes but buffer is {} bytes",
+        encoded.len(),
+        out.len()
+    );
+    out.copy_from_slice(&encoded);
+    Ok(())
+}
+
 /// Build a `type` section from a list of function types in output order. Callers must have
 /// already done dedup across input modules.
 pub(crate) fn build_type_section(types: &[wasmparser::FuncType]) -> Result<TypeSection> {
@@ -229,6 +267,30 @@ pub(crate) fn build_global_section(globals: &[OutputGlobal<'_>]) -> Result<Globa
     for global in globals {
         let init_expr = wasm_encoder::ConstExpr::raw(global.init_expr_body.iter().copied());
         section.global(convert_global_type(global.ty)?, &init_expr);
+    }
+    Ok(section)
+}
+
+pub(crate) fn build_data_section(
+    object_data_layouts: &[WasmObjectDataLayout<'_>],
+) -> Result<DataSection> {
+    let mut section = DataSection::new();
+    for object_layout in object_data_layouts {
+        for segment in &object_layout.segments {
+            let offset = ConstExpr::i32_const(
+                i32::try_from(segment.output_memory_offset).with_context(|| {
+                    format!(
+                        "Wasm data segment memory offset {}",
+                        segment.output_memory_offset
+                    )
+                })?,
+            );
+            section.active(
+                segment.output_memory_index,
+                &offset,
+                segment.data.iter().copied(),
+            );
+        }
     }
     Ok(section)
 }
