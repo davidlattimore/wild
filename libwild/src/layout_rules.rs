@@ -513,8 +513,7 @@ impl<'data> SectionRules<'data> {
             rules: HashTable::with_capacity(rules.len() * RULE_TABLE_CAPACITY_MULTIPLIER),
         };
         for rule in rules {
-            let hash = section_name_prefix_hash(rule.name_matcher.prefix_bytes())
-                .expect("Prefixes of length less than 4 not yet supported");
+            let hash = section_name_prefix_hash(rule.name_matcher.prefix_bytes()).unwrap_or(0);
 
             map.rules.insert_unique(hash, rule.clone(), |existing| {
                 section_name_prefix_hash(existing.name_matcher.prefix_bytes()).unwrap_or(0)
@@ -551,11 +550,16 @@ impl<'data> SectionRules<'data> {
     }
 }
 
-/// Returns a hash of the first four bytes of the supplied name or `None` if the name is shorter
-/// than 4 bytes.
-#[inline(always)]
+/// Returns a hash of the first four bytes of the supplied name, zero-padding if shorter than 4
+/// bytes. Returns `None` if the name is empty.
 fn section_name_prefix_hash(name: &[u8]) -> Option<u64> {
-    Some(hash_bytes(name.get(..4)?))
+    if name.is_empty() {
+        return None;
+    }
+    let mut buf = [0u8; 4];
+    let len = name.len().min(4);
+    buf[..len].copy_from_slice(&name[..len]);
+    Some(hash_bytes(&buf))
 }
 
 /// Determines, where if anywhere, we should place an input section with no name.
