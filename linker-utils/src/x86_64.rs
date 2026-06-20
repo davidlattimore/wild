@@ -306,6 +306,14 @@ const RELOC_1_BYTE_SIGNED: RelocSizeAndRange = (
     RelocationSize::ByteSize(1),
     AllowedRange::from_byte_size(1, Sign::Signed),
 );
+const RELOC_2_BYTE_MIXED: RelocSizeAndRange = (
+    RelocationSize::ByteSize(2),
+    AllowedRange::new(i16::MIN as i64, u16::MAX as i64 + 1),
+);
+const RELOC_1_BYTE_MIXED: RelocSizeAndRange = (
+    RelocationSize::ByteSize(1),
+    AllowedRange::new(i8::MIN as i64, u8::MAX as i64 + 1),
+);
 const RELOC_NONE: RelocSizeAndRange = (RelocationSize::ByteSize(0), AllowedRange::no_check());
 
 /// Returns the supplied x86-64 relocation as RelocationKindType. Returns `None` if the r_type isn't
@@ -332,9 +340,9 @@ pub const fn relocation_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
 
         object::elf::R_X86_64_32 => (RelocationKind::Absolute, RELOC_4_BYTE_UNSIGNED),
         object::elf::R_X86_64_32S => (RelocationKind::Absolute, RELOC_4_BYTE_SIGNED),
-        object::elf::R_X86_64_16 => (RelocationKind::Absolute, RELOC_2_BYTE_SIGNED),
+        object::elf::R_X86_64_16 => (RelocationKind::Absolute, RELOC_2_BYTE_MIXED),
         object::elf::R_X86_64_PC16 => (RelocationKind::Relative, RELOC_2_BYTE_SIGNED),
-        object::elf::R_X86_64_8 => (RelocationKind::Absolute, RELOC_1_BYTE_SIGNED),
+        object::elf::R_X86_64_8 => (RelocationKind::Absolute, RELOC_1_BYTE_MIXED),
         object::elf::R_X86_64_PC8 => (RelocationKind::Relative, RELOC_1_BYTE_SIGNED),
         object::elf::R_X86_64_TLSGD => (RelocationKind::TlsGd, RELOC_4_BYTE_SIGNED),
         object::elf::R_X86_64_TLSLD => (RelocationKind::TlsLd, RELOC_4_BYTE_SIGNED),
