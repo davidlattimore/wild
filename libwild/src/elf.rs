@@ -4430,6 +4430,10 @@ const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
         segment_flags: pf::READABLE.with(pf::WRITABLE),
     },
     ProgramSegmentDef {
+        segment_type: pt::LOAD,
+        segment_flags: pf::READABLE.with(pf::WRITABLE).with(pf::EXECUTABLE),
+    },
+    ProgramSegmentDef {
         segment_type: pt::TLS,
         segment_flags: pf::READABLE,
     },

@@ -468,7 +468,7 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_writable(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_executable(&self) -> bool {

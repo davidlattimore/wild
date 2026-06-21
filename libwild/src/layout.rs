@@ -4102,6 +4102,16 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
     ) -> Result {
         let part_id = self.section_part_id(section_index, &resources.symbol_db.section_part_ids);
         let header = self.object.section(section_index)?;
+
+        // Warn about RWX sections like GNU ld does, as they pose a security risk.
+        if header.is_alloc() && header.is_writable() && header.is_executable() {
+            resources.symbol_db.warning(format!(
+                "{}: section `{}` has RWX (read+write+execute) permissions",
+                self.input,
+                self.object.section_display_name(section_index),
+            ));
+        }
+
         let section = Section::create(header, self, part_id)?;
 
         <A::Platform as Platform>::load_object_section_relocations::<A>(
