@@ -344,6 +344,11 @@ pub(crate) trait Platform:
         Ok(())
     }
 
+    /// Returns whether the supplied file kind is permitted in archives.
+    fn is_allowed_in_archive(_kind: crate::file_kind::FileKind) -> bool {
+        false
+    }
+
     /// Returns attributes of the supplied section. This is type+flags and doesn't include other
     /// information like name, size etc.
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes;

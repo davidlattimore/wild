@@ -742,7 +742,7 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
             })));
         }
 
-        if input_ref.is_archive_entry() && kind != FileKind::ElfObject {
+        if input_ref.is_archive_entry() && !P::is_allowed_in_archive(kind) {
             bail!("Unexpected archive member of kind {kind:?}: {input_ref}");
         }
 

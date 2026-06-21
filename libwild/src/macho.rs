@@ -1526,6 +1526,10 @@ impl platform::Platform for MachO {
         // per file block (4 KiB) covered by the signature.
         Ok(record.file_offset.div_ceil(CS_BLOCK_SIZE) * CS_HASH_SIZE as usize)
     }
+
+    fn is_allowed_in_archive(kind: crate::file_kind::FileKind) -> bool {
+        kind == crate::file_kind::FileKind::MachOObject
+    }
 }
 
 const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {

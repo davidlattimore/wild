@@ -2174,6 +2174,10 @@ impl platform::Platform for Elf {
             ..Default::default()
         }
     }
+
+    fn is_allowed_in_archive(kind: crate::file_kind::FileKind) -> bool {
+        kind == FileKind::ElfObject
+    }
 }
 
 /// Marks the symbol version associated with the dynamic symbol `GLIBC_ABI_DT_RELR` as needed.
