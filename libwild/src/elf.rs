@@ -900,6 +900,10 @@ impl platform::Platform for Elf {
             .set_hidden(hidden);
 
         symbols
+            .section_start(output_section_id::BSS, "__bss_start")
+            .set_hidden(hidden);
+
+        symbols
             .section_end(output_section_id::BSS, "end")
             .set_hidden(hidden);
         symbols
