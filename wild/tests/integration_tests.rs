@@ -212,7 +212,13 @@
 //! FatArchive:{source-filename}[:extra-compilation-args] Builds the specified filename as a fat
 //! archive and adds it to the link.
 //!
+//! FatArchive64:{source-filename}[:extra-compilation-args] Builds the specified filename as a
+//! fat-64 archive and adds it to the link.
+//!
 //! FatObject:{source-filename}[:extra-compilation-args] Builds the specified filename as a fat
+//! object and adds it to the link.
+//!
+//! FatObject64:{source-filename}[:extra-compilation-args] Builds the specified filename as a fat-64
 //! object and adds it to the link.
 //!
 //! Shared:{source-filename}[:extra-compilation-args] Builds the specified filename as a shared
@@ -1604,7 +1610,9 @@ enum InputType {
     ThinArchive,
     BsdArchive,
     FatArchive,
+    FatArchive64,
     FatObject,
+    FatObject64,
     #[strum(serialize = "Shared")]
     SharedObject,
     LinkerScript,
@@ -2004,7 +2012,9 @@ fn process_directive(
         | "ThinArchive"
         | "BsdArchive"
         | "FatArchive"
+        | "FatArchive64"
         | "FatObject"
+        | "FatObject64"
         | "Shared"
         | "LinkerScript"
         | "AugmentLinkerScript") => {
@@ -2617,18 +2627,30 @@ fn build_linker_input(
         .with_extension("a");
 
     let mut linker_input = match dep.input_type {
-        InputType::Archive | InputType::ThinArchive | InputType::FatArchive => {
+        InputType::Archive
+        | InputType::ThinArchive
+        | InputType::FatArchive
+        | InputType::FatArchive64 => {
             let thin = matches!(dep.input_type, InputType::ThinArchive);
             if !is_newer(&archive_path, objects.iter().map(|o| &o.path)) {
                 make_archive(&archive_path, &objects, thin, &config)?;
             }
-            if dep.input_type == InputType::FatArchive {
+            if let Some(fat_kind) = dep.input_type.fat_kind() {
                 let fat_archive_path = config
                     .build_dir()
                     .join(archive_basename)
                     .with_extension("fat.a");
 
-                make_macho_fat_file(&fat_archive_path, &archive_path)?;
+                match fat_kind {
+                    FatKind::Bit32 => make_macho_fat_file::<object::read::macho::FatArch32>(
+                        &fat_archive_path,
+                        &archive_path,
+                    )?,
+                    FatKind::Bit64 => make_macho_fat_file::<object::read::macho::FatArch64>(
+                        &fat_archive_path,
+                        &archive_path,
+                    )?,
+                }
 
                 LinkerInput::new(fat_archive_path)
             } else {
@@ -2641,7 +2663,7 @@ fn build_linker_input(
             }
             LinkerInput::new(archive_path)
         }
-        InputType::Object | InputType::FatObject => {
+        InputType::Object | InputType::FatObject | InputType::FatObject64 => {
             if objects.len() > 1 {
                 bail!(
                     "Multiple source files on a single line is only supported with Shared/Archive"
@@ -2649,13 +2671,20 @@ fn build_linker_input(
             }
 
             let mut path = first_obj_path.clone();
-            if dep.input_type == InputType::FatObject {
+            if let Some(fat_kind) = dep.input_type.fat_kind() {
                 let fat_path = config
                     .build_dir()
                     .join(archive_basename)
                     .with_extension("fat.o");
 
-                make_macho_fat_file(&fat_path, &path)?;
+                match fat_kind {
+                    FatKind::Bit32 => {
+                        make_macho_fat_file::<object::read::macho::FatArch32>(&fat_path, &path)?
+                    }
+                    FatKind::Bit64 => {
+                        make_macho_fat_file::<object::read::macho::FatArch64>(&fat_path, &path)?
+                    }
+                }
 
                 path = fat_path;
             }
@@ -2689,32 +2718,32 @@ fn build_linker_input(
 
 /// Reads `contents_path` and puts it into a MachO fat object (`output_path`) containing just that
 /// one file.
-fn make_macho_fat_file(output_path: &Path, contents_path: &Path) -> Result {
+fn make_macho_fat_file<A: FatArch>(output_path: &Path, contents_path: &Path) -> Result {
     let input = std::fs::read(contents_path)
         .with_context(|| format!("Failed to read {}", contents_path.display()))?;
 
     let mut output = Vec::new();
 
     let alignment = 8;
-    let header_end =
-        (size_of::<object::macho::FatHeader>() + size_of::<object::macho::FatArch32>()) as u32;
+    let header_end = size_of::<object::macho::FatHeader>() + size_of::<A>();
     let offset = header_end.next_multiple_of(alignment);
 
     output.extend_from_slice(object::bytes_of(&object::macho::FatHeader {
-        magic: object::macho::FAT_MAGIC.into(),
+        magic: A::MAGIC.into(),
         nfat_arch: 1.into(),
     }));
 
-    output.extend_from_slice(object::bytes_of(&object::macho::FatArch32 {
-        cputype: object::macho::CPU_TYPE_ARM64.into(),
-        cpusubtype: object::macho::CpuSubtype(0).into(),
-        offset: offset.into(),
-        size: (input.len() as u32).into(),
-        align: alignment.ilog2().into(),
-    }));
+    A::write_entry(
+        &mut output,
+        object::macho::CPU_TYPE_ARM64,
+        object::macho::CpuSubtype(0),
+        offset,
+        input.len(),
+        alignment,
+    )?;
 
     let padding_size = offset - header_end;
-    output.extend(std::iter::repeat_n(0, padding_size as usize));
+    output.extend(std::iter::repeat_n(0, padding_size));
 
     output.extend_from_slice(&input);
 
@@ -4996,7 +5025,9 @@ impl Display for InputType {
             InputType::LinkerScript => write!(f, "linker script"),
             InputType::AugmentLinkerScript => write!(f, "augment linker script"),
             InputType::FatArchive => write!(f, "fat archive"),
+            InputType::FatArchive64 => write!(f, "fat archive 64"),
             InputType::FatObject => write!(f, "fat object"),
+            InputType::FatObject64 => write!(f, "fat object 64"),
         }
     }
 }
@@ -5925,5 +5956,73 @@ impl InputType {
             self,
             InputType::LinkerScript | InputType::AugmentLinkerScript
         )
+    }
+
+    fn fat_kind(self) -> Option<FatKind> {
+        match self {
+            InputType::FatArchive | InputType::FatObject => Some(FatKind::Bit32),
+            InputType::FatArchive64 | InputType::FatObject64 => Some(FatKind::Bit64),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FatKind {
+    Bit32,
+    Bit64,
+}
+
+trait FatArch: object::read::macho::FatArch {
+    fn write_entry(
+        output: &mut Vec<u8>,
+        cpu_type: object::macho::CpuType,
+        cpu_subtype: object::macho::CpuSubtype,
+        offset: usize,
+        len: usize,
+        alignment: usize,
+    ) -> Result;
+}
+
+impl FatArch for object::read::macho::FatArch32 {
+    fn write_entry(
+        output: &mut Vec<u8>,
+        cpu_type: object::macho::CpuType,
+        cpu_subtype: object::macho::CpuSubtype,
+        offset: usize,
+        len: usize,
+        alignment: usize,
+    ) -> Result {
+        output.extend_from_slice(object::bytes_of(&object::macho::FatArch32 {
+            cputype: cpu_type.into(),
+            cpusubtype: cpu_subtype.into(),
+            offset: u32::try_from(offset)?.into(),
+            size: u32::try_from(len)?.into(),
+            align: alignment.ilog2().into(),
+        }));
+
+        Ok(())
+    }
+}
+
+impl FatArch for object::read::macho::FatArch64 {
+    fn write_entry(
+        output: &mut Vec<u8>,
+        cpu_type: object::macho::CpuType,
+        cpu_subtype: object::macho::CpuSubtype,
+        offset: usize,
+        len: usize,
+        alignment: usize,
+    ) -> Result {
+        output.extend_from_slice(object::bytes_of(&object::macho::FatArch64 {
+            cputype: cpu_type.into(),
+            cpusubtype: cpu_subtype.into(),
+            offset: u64::try_from(offset)?.into(),
+            size: u64::try_from(len)?.into(),
+            align: alignment.ilog2().into(),
+            reserved: 0.into(),
+        }));
+
+        Ok(())
     }
 }

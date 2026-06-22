@@ -29,7 +29,6 @@ use hashbrown::HashMap;
 use itertools::Itertools as _;
 #[cfg(not(target_family = "wasm"))]
 use memmap2::Mmap;
-use object::read::macho::FatArch as _;
 use rayon::Scope;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
@@ -605,7 +604,7 @@ fn process_fat_macho_object<'data, P: Platform>(
     let data = select_fat_entry_for_cpu_type(input_ref.data(), object::macho::CPU_TYPE_ARM64)
         .with_context(|| format!("Failed to parse FAT object {input_ref}"))?;
 
-    let kind = FileKind::identify_bytes(data)?;
+    let kind = FileKind::identify_bytes(data).context("Unrecognised entry in FAT file")?;
 
     let input_ref = InputRef {
         file: input_ref.file,
@@ -672,7 +671,8 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         };
 
         let data = input_ref.file.data.as_ref().unwrap();
-        let kind = FileKind::identify_bytes(&data.bytes)?;
+        let kind = FileKind::identify_bytes(&data.bytes)
+            .with_context(|| format!("Failed to identify {input_ref}"))?;
 
         match kind {
             FileKind::Archive => process_archive(&input_ref, &Arc::new(file), self),
@@ -803,7 +803,18 @@ fn select_fat_entry_for_cpu_type(
     data: &[u8],
     target_cpu_type: object::macho::CpuType,
 ) -> Result<&[u8]> {
-    let parsed = object::read::macho::MachOFatFile32::parse(data)?;
+    if data.starts_with(&object::macho::FAT_MAGIC_64.to_be_bytes()) {
+        select_fat_entry_for_cpu_type_arch::<object::read::macho::FatArch64>(data, target_cpu_type)
+    } else {
+        select_fat_entry_for_cpu_type_arch::<object::read::macho::FatArch32>(data, target_cpu_type)
+    }
+}
+
+fn select_fat_entry_for_cpu_type_arch<A: object::read::macho::FatArch>(
+    data: &[u8],
+    target_cpu_type: object::macho::CpuType,
+) -> Result<&[u8]> {
+    let parsed = object::read::macho::MachOFatFile::<A>::parse(data)?;
 
     let fat = parsed
         .arches()
@@ -820,8 +831,8 @@ fn select_fat_entry_for_cpu_type(
             )
         })?;
 
-    let offset = fat.offset() as usize;
-    let size = fat.size() as usize;
+    let offset = fat.offset().into() as usize;
+    let size = fat.size().into() as usize;
     Ok(&data[offset..offset + size])
 }
 
