@@ -5,6 +5,9 @@
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64
 
+//#Config:no_gc_sections:default
+//#LinkArgs:--no-gc-sections
+
 //#Config:check_start
 //#LinkerScript:linker-script-executable.ld
 //#LinkerScript:linker-script-check-start.ld

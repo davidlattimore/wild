@@ -1728,7 +1728,9 @@ impl platform::Platform for Elf {
             ))
         };
 
-        let mut rules = Vec::with_capacity(DEFAULT_SECTION_RULES.len() + 1);
+        let mut rules = Vec::with_capacity(
+            DEFAULT_SECTION_PLACEMENT_RULES.len() + LINKER_MANAGED_SECTION_RULES.len() + 1,
+        );
 
         if args.gdb_index {
             rules.push(SectionRule::exact(
@@ -1741,7 +1743,8 @@ impl platform::Platform for Elf {
             ));
         }
 
-        rules.extend(DEFAULT_SECTION_RULES.iter().cloned());
+        rules.extend(DEFAULT_SECTION_PLACEMENT_RULES.iter().cloned());
+        rules.extend(LINKER_MANAGED_SECTION_RULES.iter().cloned());
 
         rules.push(SectionRule::exact(
             secnames::SFRAME_SECTION_NAME,
@@ -1760,10 +1763,9 @@ impl platform::Platform for Elf {
             secnames::COMMENT_SECTION_NAME,
             output_section_id::COMMENT,
         ));
-        rule_builder.add_section_rule(SectionRule::exact(
-            secnames::RISCV_ATTRIBUTES_SECTION_NAME,
-            SectionRuleOutcome::RiscVAttribute,
-        ));
+        for rule in LINKER_MANAGED_SECTION_RULES {
+            rule_builder.add_section_rule(rule.clone());
+        }
     }
 
     fn init_section_priority(name: &[u8]) -> Option<u16> {
@@ -5292,7 +5294,8 @@ pub(crate) struct ResolvedObjectExt<'data> {
     debug_index_sections: Vec<InputDebugIndexSection<'data>>,
 }
 
-const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
+/// Rules that map input sections to built-in output sections when no linker script is in use.
+const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact_section_keep(secnames::INIT_SECTION_NAME, output_section_id::INIT),
     SectionRule::exact_section_keep(secnames::FINI_SECTION_NAME, output_section_id::FINI),
     SectionRule::exact_section_keep(
@@ -5332,6 +5335,11 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
         secnames::GCC_EXCEPT_TABLE_SECTION_NAME,
         output_section_id::GCC_EXCEPT_TABLE,
     ),
+];
+
+/// Rules for input sections that the linker processes itself instead of copying them into an output
+/// section.
+const LINKER_MANAGED_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::prefix(secnames::RELA_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::prefix(secnames::CREL_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(
