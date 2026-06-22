@@ -202,9 +202,9 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
                 args.platform_version = Some(PlatformVersion {
                     platform: platform.to_owned(),
                     minimum_version: SemanticVersion::try_from(minimum_version)
-                        .with_context(|| "cannot parse minimum_version".to_string())?,
+                        .context("cannot parse minimum_version")?,
                     sdk_version: SemanticVersion::try_from(sdk_version)
-                        .with_context(|| "cannot parse sdk_version".to_string())?,
+                        .context("cannot parse sdk_version")?,
                 });
                 Ok(())
             },
