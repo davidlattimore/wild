@@ -1,4 +1,5 @@
 ;;#RunEnabled:false
+;;#LinkArgs:--no-gc-sections
 ;;#ExpectSection:Data
 
 (module

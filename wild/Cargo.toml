@@ -40,6 +40,7 @@ linker-layout.path = "../linker-layout"
 libloading.workspace = true
 libtest-mimic = { workspace = true }
 object.workspace = true
+wasmparser.workspace = true
 os_info.workspace = true
 regex.workspace = true
 serde.workspace = true

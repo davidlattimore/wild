@@ -138,6 +138,16 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
             Ok(())
         });
 
+    parser
+        .declare_with_param()
+        .long("no-gc-sections")
+        .help("Disable removal of unused sections")
+        .execute(|_args, _modifier_stack, _value| {
+            // TODO
+
+            Ok(())
+        });
+
     super::declare_common_args(&mut parser);
 
     parser
