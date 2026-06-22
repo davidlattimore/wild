@@ -2887,6 +2887,15 @@ fn apply_relocation<
     }
     let (resolution, symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
     let flags = layout.flags_for_symbol(local_symbol_id);
+    if layout.symbol_db.output_kind.is_position_independent()
+        && (flags.is_interposable() || flags.is_dynamic())
+        && A::is_illegal_in_shared_object(r_type)
+    {
+        bail!(
+            "relocation {} cannot be used against symbol; recompile with -fPIC",
+            A::rel_type_to_string(r_type)
+        );
+    }
     let mut next_modifier = RelocationModifier::Normal;
     let rel_info;
     let output_kind = layout.symbol_db.output_kind;
