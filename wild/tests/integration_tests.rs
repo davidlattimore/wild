@@ -4763,10 +4763,12 @@ impl Assertions {
 
             if !found {
                 bail!(
-                    "Expected program header `{}' with flags {:?} and sections {:?} not found.",
+                    "Expected program header `{}' with flags {:?}, sections {:?}, mem-size {:?} and filesize {:?} not found.",
                     expected.ptype,
                     expected.assertions.flags,
                     expected.assertions.sections,
+                    expected.assertions.mem_size,
+                    expected.assertions.file_size,
                 );
             }
         }
