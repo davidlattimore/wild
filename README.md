@@ -1,5 +1,7 @@
 # Wild linker
 
+![Wild logo - drawing of rusty chain links with vines](/images/wild.png)
+
 Wild is a linker with the goal of being very fast for iterative development.
 
 The plan is to eventually make it incremental, however that isn't yet implemented. It is however

@@ -787,11 +787,6 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         resolution == symbol_id
     }
 
-    pub(crate) fn is_stub_library_symbol(&self, symbol_id: SymbolId) -> bool {
-        let file_id = self.file_id_for_symbol(symbol_id);
-        matches!(self.groups[file_id.group()], Group::StubLibraries(_))
-    }
-
     pub(crate) fn definition(&self, symbol_id: SymbolId) -> SymbolId {
         // We need to do two steps when finding the definition for a symbol, since the definition
         // may have changed since we did the original name lookup. It would be possible to avoid

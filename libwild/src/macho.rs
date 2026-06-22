@@ -9,11 +9,13 @@ use crate::error;
 use crate::error::Result;
 use crate::file_writer::copy_section_data;
 use crate::grouping::SequencedInput;
+use crate::input_data::FileId;
 use crate::layout;
-use crate::layout::ImportedSymbol;
+use crate::layout::HandlerData as _;
 use crate::layout::Layout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::Resolution;
+use crate::layout::StubLibraryLayoutState;
 use crate::layout::SymbolCopyInfo;
 use crate::layout::SymbolResolutions;
 use crate::layout_rules::SectionKind;
@@ -35,8 +37,10 @@ use crate::part_id;
 use crate::platform;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
+use crate::symbol_db::SymbolId;
 use crate::symbol_db::Visibility;
 use crate::value_flags::ValueFlags;
+use crate::verbose_timing_phase;
 use anyhow::Context;
 use itertools::Itertools;
 use object::Endianness;
@@ -49,6 +53,7 @@ use object::macho::N_SECT;
 use object::macho::N_WEAK_DEF;
 use object::macho::SEG_LINKEDIT;
 use object::macho::Section64;
+pub use object::macho::SectionFlags;
 use object::read::macho::MachHeader;
 use object::read::macho::Nlist;
 use object::read::macho::Section;
@@ -135,20 +140,27 @@ pub(crate) fn load_dylib_command_size(path: &[u8]) -> usize {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct LayoutExt<'data> {
+pub(crate) struct LayoutExt {
     /// Imported STUB library symbols, sorted by GOT.
-    pub(crate) imported_symbols: Vec<ImportedSymbolWithResolution<'data>>,
+    pub(crate) imported_symbols: Vec<ImportedSymbolWithResolution>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct FinaliseSizesExt {
+    imported_libraries: Vec<FileId>,
+    imported_symbols: Vec<SymbolId>,
 }
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct PreludeLayoutExt {
+    pub(crate) imported_library_file_ids: Vec<FileId>,
     pub(crate) load_dylib_command_sizes: Vec<usize>,
     pub(crate) load_command_count: usize,
 }
 
 #[derive(derive_more::Debug, Clone, Copy)]
-pub(crate) struct ImportedSymbolWithResolution<'data> {
-    pub(crate) symbol: ImportedSymbol<'data>,
+pub(crate) struct ImportedSymbolWithResolution {
+    pub(crate) symbol_id: SymbolId,
     pub(crate) got_address: NonZeroU64,
     pub(crate) plt_address: Option<NonZeroU64>,
 }
@@ -538,8 +550,6 @@ impl platform::SectionType for SectionType {
     }
 }
 
-pub use object::macho::SectionFlags;
-
 impl platform::SectionFlags for SectionFlags {
     fn is_alloc(self) -> bool {
         true
@@ -887,16 +897,17 @@ impl platform::Platform for MachO {
     type RelocationInfo = object::macho::RelocationInfo;
     type NonAddressableIndexes = NonAddressableIndexes;
     type NonAddressableCounts = ();
-    type EpilogueLayoutExt = ();
+    type EpilogueLayoutExt = EpilogueLayoutExt;
     type GroupLayoutExt = ();
     type CommonGroupStateExt = ();
+    type StubLibraryLayoutStateExt = StubLibraryLayoutStateExt;
     type ArchIdentifier = ();
     type Args = MachOArgs;
     type ResolutionExt = ResolutionExt;
     type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
-    type FinaliseSizesExt<'data> = LayoutExt<'data>;
-    type LayoutExt<'data> = LayoutExt<'data>;
+    type FinaliseSizesExt<'data> = FinaliseSizesExt;
+    type LayoutExt<'data> = LayoutExt;
     type GdbIndexScanResult<'data> = ();
     type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
     type DynamicTagValues<'data> = DynamicTagValues<'data>;
@@ -1094,52 +1105,70 @@ impl platform::Platform for MachO {
 
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
         _args: &Self::Args,
-        _groups: &'files [layout::GroupState<'data, Self>],
+        groups: &'files [layout::GroupState<'data, Self>],
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> crate::error::Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,
         'data: 'states,
     {
-        Ok(LayoutExt::default())
+        let mut imported_libraries = Vec::new();
+        let mut imported_symbols = Vec::new();
+
+        for group in groups {
+            for file in &group.files {
+                match file {
+                    layout::FileLayoutState::StubLibrary(state) => {
+                        if state.format_specific.loaded {
+                            imported_libraries.push(state.file_id());
+                        }
+                        imported_symbols
+                            .extend_from_slice(state.format_specific.imported_symbols.as_slice());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(FinaliseSizesExt {
+            imported_libraries,
+            imported_symbols,
+        })
     }
 
     fn create_layout_ext<'data>(
         finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
-    ) -> Result<Self::LayoutExt<'data>> {
-        Ok(finalise_sizes_ext)
-    }
-
-    fn set_imported_symbols<'data>(
-        properties: &mut Self::LayoutExt<'data>,
         resolutions: &SymbolResolutions<Self>,
-        imported_symbols: Vec<ImportedSymbol<'data>>,
-    ) -> Result {
-        let imported_symbols = imported_symbols
+    ) -> Result<Self::LayoutExt<'data>> {
+        let mut layout_ext = LayoutExt::default();
+
+        let imported_symbols = finalise_sizes_ext
+            .imported_symbols
             .iter()
-            .map(|symbol| {
+            .map(|&symbol_id| {
                 let resolution = resolutions
-                    .get(symbol.symbol_id)
+                    .get(symbol_id)
                     .with_context(|| "missing resolution for a stub library symbol".to_string())?;
+
                 let got_address = resolution
                     .format_specific
                     .got_address
                     .ok_or_else(|| error!("missing GOT entry for a stub library symbol"))?;
 
                 Ok(ImportedSymbolWithResolution {
-                    symbol: *symbol,
+                    symbol_id,
                     got_address,
                     plt_address: resolution.format_specific.plt_address,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
 
-        properties.imported_symbols = imported_symbols
+        layout_ext.imported_symbols = imported_symbols
             .into_iter()
             .sorted_by_key(|symbol| symbol.got_address)
             .collect();
 
-        Ok(())
+        Ok(layout_ext)
     }
 
     fn load_exception_frame_data<'data, 'scope, A: platform::Arch<Platform = Self>>(
@@ -1164,11 +1193,28 @@ impl platform::Platform for MachO {
         Ok(())
     }
 
-    fn new_epilogue_layout(
+    fn new_epilogue_layout<'data>(
         _args: &Self::Args,
         _output_kind: crate::output_kind::OutputKind,
-        _dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'_, Self>],
+        _dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'data, Self>],
+        group_states: &[layout::GroupState<'data, Self>],
     ) -> Self::EpilogueLayoutExt {
+        verbose_timing_phase!("Gather imported symbol IDs");
+
+        let imported_symbols = group_states
+            .iter()
+            .flat_map(|group| {
+                group.files.iter().flat_map(|file| match file {
+                    layout::FileLayoutState::StubLibrary(stub_state) => {
+                        stub_state.format_specific.imported_symbols.as_slice()
+                    }
+                    _ => &[],
+                })
+            })
+            .copied()
+            .collect();
+
+        EpilogueLayoutExt { imported_symbols }
     }
 
     fn apply_non_addressable_indexes_epilogue(
@@ -1187,13 +1233,30 @@ impl platform::Platform for MachO {
     }
 
     fn finalise_sizes_epilogue<'data>(
-        _state: &mut Self::EpilogueLayoutExt,
+        state: &mut Self::EpilogueLayoutExt,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
-        _properties: &Self::LayoutExt<'data>,
-        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _format_specific: &Self::FinaliseSizesExt<'data>,
+        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
-        mem_sizes.increment(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_BASE_SIZE);
+        let mut fixup_table_size = CHAINED_FIXUP_TABLE_BASE_SIZE;
+
+        fixup_table_size += state
+            .imported_symbols
+            .iter()
+            .map(|&s| {
+                CHAINED_FIXUP_IMPORT_SIZE
+                    + symbol_db.symbol_name(s).unwrap().bytes().len() as u64
+                    + 1
+            })
+            .sum::<u64>();
+
+        // Chained fixups record start information per page. At this point the final GOT size is
+        // known, so reserve the fixup table entries needed to describe the GOT pages.
+        fixup_table_size += CHAINED_FIXUP_PAGE_START_SIZE
+            * (state.imported_symbols.len() as u64).div_ceil(MACHO_PAGE_ALIGNMENT.value());
+
+        mem_sizes.increment(part_id::CHAINED_FIXUP_TABLE, fixup_table_size);
     }
 
     fn finalise_sizes_all<'data>(
@@ -1202,37 +1265,11 @@ impl platform::Platform for MachO {
     ) {
     }
 
-    fn apply_late_size_adjustments_epilogue(
-        _state: &mut Self::EpilogueLayoutExt,
-        _current_sizes: &crate::output_section_part_map::OutputSectionPartMap<u64>,
-        extra_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
-        imported_symbols: &[ImportedSymbol],
-        _args: &Self::Args,
-    ) -> crate::error::Result {
-        extra_sizes.increment(
-            part_id::CHAINED_FIXUP_TABLE,
-            imported_symbols
-                .iter()
-                .map(|s| CHAINED_FIXUP_IMPORT_SIZE + s.name.len() as u64 + 1)
-                .sum(),
-        );
-        // Chained fixups record start information per page. At this point the final GOT size is
-        // known, so reserve the fixup table entries needed to describe the GOT pages.
-        extra_sizes.increment(
-            part_id::CHAINED_FIXUP_TABLE,
-            CHAINED_FIXUP_PAGE_START_SIZE
-                * (imported_symbols.len() as u64).div_ceil(MACHO_PAGE_ALIGNMENT.value()),
-        );
-
-        Ok(())
-    }
-
     fn finalise_layout_epilogue<'data>(
         _epilogue_state: &mut Self::EpilogueLayoutExt,
         _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        _common_state: &Self::LayoutExt<'data>,
+        _format_specific: &Self::FinaliseSizesExt<'data>,
         _dynsym_start_index: u32,
         _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
     ) -> crate::error::Result {
@@ -1253,11 +1290,12 @@ impl platform::Platform for MachO {
         true
     }
 
-    fn allocate_header_sizes(
-        prelude: &mut crate::layout::PreludeLayoutState<Self>,
+    fn allocate_header_sizes<'data>(
+        prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         header_info: &crate::layout::HeaderInfo,
         output_sections: &crate::output_section_id::OutputSections<Self>,
+        resources: &layout::FinaliseSizesResources<'data, '_, Self>,
         args: &Self::Args,
     ) {
         sizes.increment(part_id::FILE_HEADER, size_of::<FileHeader>() as u64);
@@ -1299,10 +1337,20 @@ impl platform::Platform for MachO {
             (size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
                 .next_multiple_of(MACHO_COMMAND_ALIGNMENT),
         );
+
+        prelude.format_specific.imported_library_file_ids =
+            resources.format_specific.imported_libraries.clone();
+
         prelude.format_specific.load_dylib_command_sizes = prelude
-            .imported_library_paths
+            .format_specific
+            .imported_library_file_ids
             .iter()
-            .map(|imported_lib| load_dylib_command_size(imported_lib.as_bytes()))
+            .map(|&file_id| {
+                let SequencedInput::StubLibrary(stub) = resources.symbol_db.file(file_id) else {
+                    panic!("Internal error: Expected StubLibrary");
+                };
+                load_dylib_command_size(stub.defined_symbols.install_name.as_bytes())
+            })
             .collect();
         let load_dylib_command_sizes = prelude.format_specific.load_dylib_command_sizes.clone();
         for command_size in load_dylib_command_sizes {
@@ -1318,26 +1366,22 @@ impl platform::Platform for MachO {
         }
     }
 
+    fn load_stub_library_symbol<'data>(
+        state: &mut StubLibraryLayoutState<Self>,
+        symbol_id: SymbolId,
+    ) -> Result {
+        state.format_specific.loaded = true;
+        state.format_specific.imported_symbols.push(symbol_id);
+
+        Ok(())
+    }
+
     fn finalise_sizes_for_symbol<'data>(
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        symbol_id: crate::symbol_db::SymbolId,
-        flags: crate::value_flags::ValueFlags,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _symbol_id: crate::symbol_db::SymbolId,
+        _flags: crate::value_flags::ValueFlags,
     ) -> crate::error::Result {
-        if flags.has_resolution() && symbol_db.is_stub_library_symbol(symbol_id) {
-            let symbol_name = symbol_db.symbol_name(symbol_id)?;
-            let SequencedInput::StubLibrary(stub) =
-                symbol_db.file(symbol_db.file_id_for_symbol(symbol_id))
-            else {
-                bail!("stub library expected");
-            };
-            common.add_imported_symbol(
-                symbol_id,
-                symbol_name.bytes(),
-                u8::try_from(stub.file_id.file() + 1).with_context(|| "too many stub libraries")?,
-                stub.defined_symbols.install_name,
-            );
-        }
         Ok(())
     }
 
@@ -1610,6 +1654,17 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
 
     defs
 };
+
+#[derive(Debug, Default)]
+pub(crate) struct EpilogueLayoutExt {
+    imported_symbols: Vec<SymbolId>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct StubLibraryLayoutStateExt {
+    imported_symbols: Vec<SymbolId>,
+    loaded: bool,
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ResolutionExt {

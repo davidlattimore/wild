@@ -11,7 +11,6 @@ use crate::input_data::InputRef;
 use crate::layout;
 use crate::layout::CommonGroupState;
 use crate::layout::DynamicSymbolDefinition;
-use crate::layout::ImportedSymbol;
 use crate::layout::Layout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
@@ -257,6 +256,7 @@ pub(crate) trait Platform:
     type EpilogueLayoutExt: Send + Sync + 'static;
     type GroupLayoutExt: std::fmt::Debug + Send + Sync + 'static;
     type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
+    type StubLibraryLayoutStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
     type ArchIdentifier: Send + Sync + 'static;
     type Args: Args;
     type ResolutionExt: Default + std::fmt::Debug + Copy + Send + Sync + 'static;
@@ -519,15 +519,8 @@ pub(crate) trait Platform:
 
     fn create_layout_ext<'data>(
         finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
-    ) -> Result<Self::LayoutExt<'data>>;
-
-    fn set_imported_symbols<'data>(
-        _format_specific: &mut Self::FinaliseSizesExt<'data>,
         _resolutions: &SymbolResolutions<Self>,
-        _imported_symbols: Vec<ImportedSymbol<'data>>,
-    ) -> Result {
-        Ok(())
-    }
+    ) -> Result<Self::LayoutExt<'data>>;
 
     fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Self>>(
         object: &mut ObjectLayoutState<'data, Self>,
@@ -549,10 +542,11 @@ pub(crate) trait Platform:
         scope: &Scope<'scope>,
     ) -> Result;
 
-    fn new_epilogue_layout(
+    fn new_epilogue_layout<'data>(
         args: &Self::Args,
         output_kind: OutputKind,
-        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_, Self>],
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'data, Self>],
+        group_states: &[layout::GroupState<'data, Self>],
     ) -> Self::EpilogueLayoutExt;
 
     fn apply_non_addressable_indexes_epilogue(
@@ -570,7 +564,7 @@ pub(crate) trait Platform:
         state: &mut Self::EpilogueLayoutExt,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data, Self>],
-        properties: &Self::FinaliseSizesExt<'data>,
+        format_specific: &Self::FinaliseSizesExt<'data>,
         symbol_db: &SymbolDb<'data, Self>,
     );
 
@@ -580,13 +574,14 @@ pub(crate) trait Platform:
     );
 
     fn apply_late_size_adjustments_epilogue(
-        state: &mut Self::EpilogueLayoutExt,
-        current_sizes: &OutputSectionPartMap<u64>,
-        extra_sizes: &mut OutputSectionPartMap<u64>,
-        dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
-        imported_symbols: &[ImportedSymbol],
-        args: &Self::Args,
-    ) -> Result;
+        _state: &mut Self::EpilogueLayoutExt,
+        _current_sizes: &OutputSectionPartMap<u64>,
+        _extra_sizes: &mut OutputSectionPartMap<u64>,
+        _dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
+        _args: &Self::Args,
+    ) -> Result {
+        Ok(())
+    }
 
     /// Returns any extra size needed for the part that currently ends last in
     /// the output file, once its file offset and provisional size are known.
@@ -629,11 +624,12 @@ pub(crate) trait Platform:
     }
 
     /// Allocate space for headers based on segment and section counts.
-    fn allocate_header_sizes(
-        prelude: &mut PreludeLayoutState<Self>,
+    fn allocate_header_sizes<'data>(
+        prelude: &mut PreludeLayoutState<'data, Self>,
         sizes: &mut OutputSectionPartMap<u64>,
         header_info: &layout::HeaderInfo,
         output_sections: &OutputSections<Self>,
+        resources: &layout::FinaliseSizesResources<'data, '_, Self>,
         args: &Self::Args,
     );
 
@@ -643,6 +639,13 @@ pub(crate) trait Platform:
         _section: &Self::SectionHeader,
         _object: &impl std::fmt::Display,
         _args: &Self::Args,
+    ) -> Result {
+        Ok(())
+    }
+
+    fn load_stub_library_symbol(
+        _state: &mut layout::StubLibraryLayoutState<Self>,
+        _symbol_id: SymbolId,
     ) -> Result {
         Ok(())
     }
