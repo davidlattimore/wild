@@ -1,22 +1,23 @@
 //#AbstractConfig:default
-// clang + DWARF5 so the compiler emits `.debug_str_offsets` (gcc keeps string offsets inline);
-// the bug is a relocation from `.debug_str_offsets` into a compressed `.debug_str`.
+// clang + DWARF5 emits `.debug_str_offsets`; gcc keeps the string offsets inline.
 //#Compiler:clang
 //#CompArgs:-g -gdwarf-5
 //#Object:runtime.c
 //#DiffIgnore:section.debug_*
-// `debug_info`: at this scale wild and GNU ld compress `.debug_info` to different sizes; that
-// cross-linker difference is unrelated to the merge-string bug under test.
+// wild and GNU ld compress `.debug_info` to different sizes; same underlying cause as #2119.
 //#DiffIgnore:debug_info
-// wild types `.eh_frame` as SHT_PROGBITS where GNU ld uses SHT_X86_64_UNWIND; a pre-existing
-// cosmetic difference, unrelated to this bug.
+// wild types `.eh_frame` as SHT_PROGBITS, GNU ld as SHT_X86_64_UNWIND.
 //#DiffIgnore:section.eh_frame.type
-// Link-only: this reproduces a link-time failure (#2113), and a statically linked test binary
-// can't be executed in every CI environment.
-//#RunEnabled:false
 
 //#Config:zlib:default
-//#LinkArgs:--no-gc-sections --compress-debug-sections=zlib
+//#LinkArgs:--compress-debug-sections=zlib
+
+//#Config:zstd:default
+//#RequiresLinkerFlags:--compress-debug-sections=zstd
+//#LinkArgs:--compress-debug-sections=zstd
+
+//#Config:none:default
+//#LinkArgs:--compress-debug-sections=none
 
 #include "../common/runtime.h"
 
