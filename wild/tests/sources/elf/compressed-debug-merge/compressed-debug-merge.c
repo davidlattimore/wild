@@ -4,9 +4,6 @@
 //#CompArgs:-g -gdwarf-5
 //#Object:runtime.c
 //#DiffIgnore:section.debug_*
-// wild and GNU ld compress `.debug_info` to different sizes; same underlying cause as #2119.
-//#DiffIgnore:debug_info
-// wild types `.eh_frame` as SHT_PROGBITS, GNU ld as SHT_X86_64_UNWIND.
 //#DiffIgnore:section.eh_frame.type
 
 //#Config:zlib:default
@@ -21,12 +18,6 @@
 
 #include "../common/runtime.h"
 
-// Regression test for #2113. With `--compress-debug-sections`, a merge-string debug section
-// (`.debug_str`) that actually compresses had its merged-strings map freed after compression,
-// before `.debug_str_offsets` relocations into it were resolved, causing "Failed to find
-// merge-string at offset 0". We need *enough* distinct, compressible debug strings that
-// `.debug_str` compresses (and so is freed); a narrow program doesn't trigger it. Each instance
-// contributes distinct type/member/function names to `.debug_str`.
 #define GENERATE_DEBUG_STUFF(id)                          \
   struct data_blob_##id {                                 \
     int field_a_##id;                                     \

@@ -951,6 +951,7 @@ dependencies = [
  "wasmparser 0.252.0",
  "winnow",
  "zerocopy",
+ "zlib-rs",
  "zstd",
 ]
 
@@ -2503,9 +2504,9 @@ dependencies = [
 
 [[package]]
 name = "zlib-rs"
-version = "0.6.2"
+version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c745c48e1007337ed136dc99df34128b9faa6ed542d80a1c673cf55a6d7236c8"
+checksum = "977347db8caa080403f6b6b7c1cda9479a8e869316f7e13a59b19076a40f94e3"
 
 [[package]]
 name = "zmij"

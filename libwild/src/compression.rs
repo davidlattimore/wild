@@ -20,7 +20,6 @@ use crate::platform::SectionFlags as _;
 use crate::resolution::SectionSlot;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
-use itertools::Itertools;
 use object::LittleEndian;
 use object::bytes_of;
 use object::elf::CompressionHeader64;
@@ -29,7 +28,12 @@ use object::read::elf::Crel;
 use rayon::iter::IntoParallelIterator as _;
 use rayon::iter::IntoParallelRefIterator as _;
 use rayon::iter::ParallelIterator as _;
-use std::io::Write as _;
+use zlib_rs::Deflate;
+use zlib_rs::DeflateError;
+use zlib_rs::DeflateFlush;
+use zlib_rs::Status;
+use zlib_rs::adler32::adler32;
+use zlib_rs::adler32::adler32_combine;
 
 #[derive(Debug)]
 pub(crate) struct CompressedSection {
@@ -87,20 +91,49 @@ pub(crate) fn maybe_compress_debug_sections_elf<A: Arch<Platform = Elf>>(
     Ok(())
 }
 
-trait Compressor {
-    fn compress(chunk: &[u8]) -> Result<Vec<u8>>;
+trait SectionCompressor {
+    fn compress_section(uncompressed: &[u8]) -> Result<Vec<Vec<u8>>>;
 
     fn kind() -> CompressionType;
 }
 
 struct ZlibCompressor;
 
-impl Compressor for ZlibCompressor {
-    fn compress(chunk: &[u8]) -> Result<Vec<u8>> {
-        let compression = flate2::Compression::new(ZLIB_COMPRESSION_LEVEL);
-        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), compression);
-        encoder.write_all(chunk)?;
-        Ok(encoder.finish()?)
+impl SectionCompressor for ZlibCompressor {
+    fn compress_section(uncompressed: &[u8]) -> Result<Vec<Vec<u8>>> {
+        verbose_timing_phase!("Compress zlib section");
+
+        let shard_size = shard_size(uncompressed.len());
+
+        if uncompressed.len() <= shard_size {
+            return Ok(vec![zlib_compress_whole(uncompressed)?]);
+        }
+
+        let shards: Vec<&[u8]> = uncompressed.chunks(shard_size).collect();
+
+        let shard_results: Vec<(Vec<u8>, u32)> = shards
+            .par_iter()
+            .map(|shard| -> Result<(Vec<u8>, u32)> {
+                verbose_timing_phase!("Compress zlib shard");
+                zlib_compress_shard(shard)
+            })
+            .collect::<Result<_>>()?;
+
+        let mut checksum = shard_results[0].1;
+        for ((_, shard_adler), shard) in shard_results.iter().skip(1).zip(shards.iter().skip(1)) {
+            checksum = adler32_combine(checksum, *shard_adler, shard.len() as u64);
+        }
+
+        let mut chunks = Vec::with_capacity(shard_results.len() + 2);
+        chunks.push(vec![0x78, 0x9c]);
+        for (compressed, _) in shard_results {
+            chunks.push(compressed);
+        }
+        let mut trailer = Vec::with_capacity(6);
+        trailer.extend_from_slice(&[3, 0]);
+        trailer.extend_from_slice(&checksum.to_be_bytes());
+        chunks.push(trailer);
+        Ok(chunks)
     }
 
     fn kind() -> CompressionType {
@@ -110,11 +143,18 @@ impl Compressor for ZlibCompressor {
 
 struct ZstdCompressor;
 
-impl Compressor for ZstdCompressor {
-    fn compress(chunk: &[u8]) -> Result<Vec<u8>> {
-        let mut output = Vec::new();
-        zstd::stream::copy_encode(chunk, &mut output, ZSTD_COMPRESSION_LEVEL)?;
-        Ok(output)
+impl SectionCompressor for ZstdCompressor {
+    fn compress_section(uncompressed: &[u8]) -> Result<Vec<Vec<u8>>> {
+        let shard_size = shard_size(uncompressed.len());
+        let shards: Vec<&[u8]> = uncompressed.chunks(shard_size).collect();
+
+        shards
+            .par_iter()
+            .map(|shard| -> Result<Vec<u8>> {
+                verbose_timing_phase!("Compress zstd shard");
+                zstd::encode_all(*shard, ZSTD_COMPRESSION_LEVEL).map_err(Into::into)
+            })
+            .collect()
     }
 
     fn kind() -> CompressionType {
@@ -122,7 +162,82 @@ impl Compressor for ZstdCompressor {
     }
 }
 
-fn compress_sections<A: Arch<Platform = Elf>, C: Compressor>(
+fn zlib_deflate_error(error: DeflateError) -> crate::error::Error {
+    crate::error::Error::with_message(format!("zlib compression failed: {error:?}"))
+}
+
+fn shard_size(uncompressed_len: usize) -> usize {
+    std::cmp::max(MIN_CHUNK_SIZE, uncompressed_len / MAX_CHUNKS)
+}
+
+/// Full zlib stream for a single input that doesn't need sharding.
+fn zlib_compress_whole(input: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = Deflate::new(ZLIB_COMPRESSION_LEVEL as i32, true, 15);
+    let mut output = vec![0u8; zlib_rs::compress_bound(input.len())];
+
+    match encoder
+        .compress(input, &mut output, DeflateFlush::Finish)
+        .map_err(zlib_deflate_error)?
+    {
+        Status::StreamEnd => {
+            output.truncate(encoder.total_out() as usize);
+            return Ok(output);
+        }
+        Status::Ok | Status::BufError => {}
+    }
+
+    loop {
+        let bytes_written = encoder.total_out() as usize;
+        if bytes_written + 16 > output.len() {
+            output.resize(output.len() + 64, 0);
+        }
+        match encoder
+            .compress(&[], &mut output[bytes_written..], DeflateFlush::Finish)
+            .map_err(zlib_deflate_error)?
+        {
+            Status::StreamEnd => {
+                output.truncate(encoder.total_out() as usize);
+                return Ok(output);
+            }
+            Status::Ok | Status::BufError => {}
+        }
+    }
+}
+
+/// Compresses one shard as raw deflate terminated with `SyncFlush`. Also returns Adler-32 of the
+/// uncompressed shard.
+fn zlib_compress_shard(input: &[u8]) -> Result<(Vec<u8>, u32)> {
+    // Compute while `input` is hot for the following deflate pass.
+    let checksum = adler32(1, input);
+
+    let mut encoder = Deflate::new(ZLIB_COMPRESSION_LEVEL as i32, false, 15);
+    let mut output = vec![0u8; zlib_rs::compress_bound(input.len()) + 16];
+
+    match encoder
+        .compress(input, &mut output, DeflateFlush::Block)
+        .map_err(zlib_deflate_error)?
+    {
+        Status::Ok | Status::BufError => {}
+        Status::StreamEnd => bail!("zlib block compression failed"),
+    }
+
+    loop {
+        let bytes_written = encoder.total_out() as usize;
+        encoder
+            .compress(&[], &mut output[bytes_written..], DeflateFlush::SyncFlush)
+            .map_err(zlib_deflate_error)?;
+        let new_bytes_written = encoder.total_out() as usize;
+        if new_bytes_written == bytes_written {
+            output.truncate(new_bytes_written);
+            return Ok((output, checksum));
+        }
+        if new_bytes_written + 16 > output.len() {
+            output.resize(output.len() + 32, 0);
+        }
+    }
+}
+
+fn compress_sections<A: Arch<Platform = Elf>, C: SectionCompressor>(
     layout: &mut Layout<Elf>,
     debug_sections: &[OutputSectionId],
 ) -> Result {
@@ -133,7 +248,7 @@ fn compress_sections<A: Arch<Platform = Elf>, C: Compressor>(
                 crate::output_section_id::OutputSectionId,
                 Option<CompressedSection>,
             )> {
-                timing_phase!("Process debug section");
+                verbose_timing_phase!("Process debug section");
 
                 let section_layout = layout.section_layouts.get(section_id);
                 let mut buffer = vec![0u8; section_layout.file_size];
@@ -154,22 +269,13 @@ fn compress_sections<A: Arch<Platform = Elf>, C: Compressor>(
     Ok(())
 }
 
-fn compress_section<C: Compressor>(
+fn compress_section<C: SectionCompressor>(
     uncompressed: &[u8],
     alignment: Alignment,
 ) -> Result<Option<CompressedSection>> {
     verbose_timing_phase!("Compress section");
 
-    let chunk_size = std::cmp::max(MIN_CHUNK_SIZE, uncompressed.len() / MAX_CHUNKS);
-    let chunks = uncompressed.chunks(chunk_size).collect_vec();
-
-    let mut compressed_chunks = chunks
-        .par_iter()
-        .map(|chunk| -> Result<Vec<u8>> {
-            verbose_timing_phase!("Compress chunk");
-            C::compress(chunk)
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let mut compressed_chunks = C::compress_section(uncompressed)?;
 
     let mut header: CompressionHeader64<LittleEndian> = Default::default();
     header.ch_type.set(LittleEndian, C::kind());
@@ -177,9 +283,8 @@ fn compress_section<C: Compressor>(
     header.ch_addralign.set(LittleEndian, alignment.value());
 
     let header_bytes = bytes_of(&header).to_vec();
-
-    let total_compressed_size: usize =
-        header_bytes.len() + compressed_chunks.iter().map(|v| v.len()).sum::<usize>();
+    let body_size: usize = compressed_chunks.iter().map(Vec::len).sum();
+    let total_compressed_size = header_bytes.len() + body_size;
 
     // Return None if compression made things larger.
     if total_compressed_size >= uncompressed.len() {

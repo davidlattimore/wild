@@ -5,8 +5,6 @@
 
 //#Config:zlib:default
 //#CompArgs:-g -Clink-arg=-Wl,--compress-debug-sections=zlib
-// TODO: wild should emit one zlib stream per compressed section
-//#DiffIgnore:debug_info
 
 //#Config:zstd:default
 //#RequiresLinkerFlags:--compress-debug-sections=zstd
