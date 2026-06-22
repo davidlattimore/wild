@@ -486,6 +486,7 @@ fn run_wasm_test(wat_file: &Path) -> Result {
     let mut extra_objects = Vec::new();
     let mut expect_error = false;
     let mut should_run = true;
+    let mut expected_sections = Vec::new();
     for line in source.lines() {
         if let Some(rest) = line.trim().strip_prefix(";;#") {
             if let Some(obj_name) = rest.strip_prefix("Object:") {
@@ -494,6 +495,8 @@ fn run_wasm_test(wat_file: &Path) -> Result {
                 expect_error = true;
             } else if let Some(val) = rest.strip_prefix("RunEnabled:") {
                 should_run = val.trim().parse().context("Invalid bool for RunEnabled")?;
+            } else if let Some(section) = rest.strip_prefix("ExpectSection:") {
+                expected_sections.push(section.trim().to_owned());
             }
         }
     }
@@ -584,10 +587,44 @@ fn run_wasm_test(wat_file: &Path) -> Result {
     );
 
     validate_wasm(&wasm_wild_output, "wild")?;
+    for section in &expected_sections {
+        ensure_wasm_section(&wasm_wild_output, section, "wild")?;
+    }
     if should_run {
         run_wasm_with_wasmtime(&wasm_wild_output, "wild")?;
     }
 
+    Ok(())
+}
+
+fn ensure_wasm_section(wasm_file: &Path, section_name: &str, linker_name: &str) -> Result {
+    let output = Command::new("wasm-objdump")
+        .arg("-x")
+        .arg(wasm_file)
+        .output()
+        .with_context(|| {
+            format!(
+                "Failed to run wasm-objdump on {linker_name} output ({})",
+                wasm_file.display()
+            )
+        })?;
+    ensure!(
+        output.status.success(),
+        "wasm-objdump failed for {linker_name} output ({}):\n{}",
+        wasm_file.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let found = stdout.lines().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with(section_name)
+            && trimmed.as_bytes().get(section_name.len()) == Some(&b'[')
+    });
+    ensure!(
+        found,
+        "Expected section `{section_name}` in {linker_name} output ({}), wasm-objdump -x:\n{stdout}",
+        wasm_file.display()
+    );
     Ok(())
 }
 
