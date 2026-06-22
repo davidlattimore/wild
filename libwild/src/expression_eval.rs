@@ -660,7 +660,11 @@ mod tests {
         let file = DUMMY_FILE.get_or_init(crate::input_data::InputFile::for_testing);
         let script = SequencedLinkerScript {
             parsed: ProcessedLinkerScript {
-                input: crate::input_data::InputRef { file, entry: None },
+                input: crate::input_data::InputRef {
+                    file,
+                    data: file.data(),
+                    entry: None,
+                },
                 symbol_defs: Vec::new(),
                 assertions,
                 file_bytes: b"",

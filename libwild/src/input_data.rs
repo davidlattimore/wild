@@ -26,8 +26,10 @@ use crate::verbose_timing_phase;
 use colosseum::sync::Arena;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
+use itertools::Itertools as _;
 #[cfg(not(target_family = "wasm"))]
 use memmap2::Mmap;
+use object::read::macho::FatArch as _;
 use rayon::Scope;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
@@ -138,6 +140,7 @@ impl Deref for FileBytes {
 #[derive(Clone, Copy)]
 pub(crate) struct InputRef<'data> {
     pub(crate) file: &'data InputFile,
+    pub(crate) data: &'data [u8],
     pub(crate) entry: Option<archive::EntryMeta<'data>>,
 }
 
@@ -205,8 +208,6 @@ enum LoadedFileState<'data, P: Platform> {
 enum InputRecord<'data, P: Platform> {
     Object(Result<Box<ParsedInputObject<'data, P>>>),
     LtoInput(Box<UnclaimedLtoInput<'data>>),
-    // TODO: remove once FAT objects are properly supported
-    Empty,
 }
 
 struct UnclaimedLtoInput<'data> {
@@ -452,6 +453,7 @@ impl<'data> FileLoader<'data> {
                 loaded.stub_libraries.push(LoadedStubLibrary {
                     input: InputRef {
                         file: input_file,
+                        data: input_file.data(),
                         entry: None,
                     },
                     defined_symbols: defined_stub_library,
@@ -506,35 +508,38 @@ fn process_linker_script<'data>(
 }
 
 fn process_archive<'data, P: Platform>(
-    input_file: &'data InputFile,
+    input_ref: &InputRef<'data>,
     file: &Arc<std::fs::File>,
     state: &TemporaryState<'data, P>,
 ) -> Result<LoadedFileState<'data, P>> {
     let mut outputs = Vec::new();
 
-    for entry in ArchiveIterator::from_archive_bytes(input_file.data())? {
+    for entry in ArchiveIterator::from_archive_bytes(input_ref.data())? {
         let entry = entry?;
         match entry {
             ArchiveEntry::Regular(archive_entry) => {
+                let start_offset = archive_entry.data_offset;
+                let end_offset = archive_entry.data_offset + archive_entry.entry_data.len();
                 let input_ref = InputRef {
-                    file: input_file,
+                    file: input_ref.file,
+                    data: &input_ref.data()[start_offset..end_offset],
                     entry: Some(EntryMeta {
                         identifier: archive_entry.ident,
-                        start_offset: archive_entry.data_offset,
-                        end_offset: archive_entry.data_offset + archive_entry.entry_data.len(),
+                        start_offset,
+                        end_offset,
                     }),
                 };
 
                 let kind = FileKind::identify_bytes(input_ref.data())
                     .with_context(|| format!("Failed process input `{input_ref}`"))?;
 
-                outputs.push(state.process_input(state, input_ref, file, kind)?);
+                outputs.push(state.process_input(input_ref, file, kind)?);
             }
             ArchiveEntry::Thin(_) => unreachable!(),
         }
     }
 
-    Ok(LoadedFileState::Archive(input_file, outputs))
+    Ok(LoadedFileState::Archive(input_ref.file, outputs))
 }
 
 fn process_thin_archive<'data, P: Platform>(
@@ -575,13 +580,14 @@ fn process_thin_archive<'data, P: Platform>(
 
                 let input_ref = InputRef {
                     file: input_file,
+                    data: input_file.data(),
                     entry: None,
                 };
 
                 let kind = FileKind::identify_bytes(input_ref.data())
                     .with_context(|| format!("Failed process input `{input_ref}`"))?;
 
-                parsed_files.push(state.process_input(state, input_ref, &Arc::new(file), kind)?);
+                parsed_files.push(state.process_input(input_ref, &Arc::new(file), kind)?);
                 files.push(input_file);
             }
             ArchiveEntry::Regular(_) => {}
@@ -589,6 +595,32 @@ fn process_thin_archive<'data, P: Platform>(
     }
 
     Ok(LoadedFileState::ThinArchive(files, parsed_files))
+}
+
+fn process_fat_macho_object<'data, P: Platform>(
+    input_ref: InputRef<'data>,
+    file: &Arc<std::fs::File>,
+    state: &TemporaryState<'data, P>,
+) -> Result<LoadedFileState<'data, P>> {
+    let data = select_fat_entry_for_cpu_type(input_ref.data(), object::macho::CPU_TYPE_ARM64)
+        .with_context(|| format!("Failed to parse FAT object {input_ref}"))?;
+
+    let kind = FileKind::identify_bytes(data)?;
+
+    let input_ref = InputRef {
+        file: input_ref.file,
+        data,
+        entry: None,
+    };
+
+    match kind {
+        FileKind::Archive => process_archive(&input_ref, file, state),
+        FileKind::MachOObject => {
+            let parsed = state.process_input(input_ref, file, kind)?;
+            Ok(LoadedFileState::Loaded(input_ref.file, parsed))
+        }
+        _ => bail!("Unsupported file type {kind} found in FAT object"),
+    }
 }
 
 impl<'data, P: Platform> TemporaryState<'data, P> {
@@ -635,6 +667,7 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
 
         let input_ref = InputRef {
             file: input_file,
+            data: input_file.data(),
             entry: None,
         };
 
@@ -642,7 +675,7 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         let kind = FileKind::identify_bytes(&data.bytes)?;
 
         match kind {
-            FileKind::Archive => process_archive(input_file, &Arc::new(file), self),
+            FileKind::Archive => process_archive(&input_ref, &Arc::new(file), self),
             FileKind::ThinArchive => process_thin_archive(input_file, self),
             FileKind::Text => {
                 let script = process_linker_script(input_file, self.args)?;
@@ -671,8 +704,9 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
                     weak_symbols = defined_library.weak_symbols.len(), "loaded TBD library");
                 Ok(LoadedFileState::StubLibrary(input_file, defined_library))
             }
+            FileKind::FatMachOObject => process_fat_macho_object(input_ref, &Arc::new(file), self),
             _ => {
-                let parsed = self.process_input(self, input_ref, &Arc::new(file), kind)?;
+                let parsed = self.process_input(input_ref, &Arc::new(file), kind)?;
                 Ok(LoadedFileState::Loaded(input_file, parsed))
             }
         }
@@ -719,7 +753,6 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
 
     fn process_input(
         &self,
-        state: &TemporaryState<'data, P>,
         input_ref: InputRef<'data>,
         file: &Arc<std::fs::File>,
         kind: FileKind,
@@ -746,13 +779,6 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
             bail!("Unexpected archive member of kind {kind:?}: {input_ref}");
         }
 
-        if kind == FileKind::FatMachOObject {
-            state
-                .args
-                .warning(format!("Fat object file is not supported yet: {input_ref}"));
-            return Ok(InputRecord::Empty);
-        }
-
         let input_bytes = InputBytes {
             kind,
             input: input_ref,
@@ -771,6 +797,32 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
 
         Ok(object)
     }
+}
+
+fn select_fat_entry_for_cpu_type(
+    data: &[u8],
+    target_cpu_type: object::macho::CpuType,
+) -> Result<&[u8]> {
+    let parsed = object::read::macho::MachOFatFile32::parse(data)?;
+
+    let fat = parsed
+        .arches()
+        .iter()
+        .find(|arch| arch.cputype() == target_cpu_type)
+        .with_context(|| {
+            format!(
+                "Mach-O fat object didn't contain suitable architecture. Found {}",
+                parsed
+                    .arches()
+                    .iter()
+                    .map(|a| a.cpusubtype().to_string())
+                    .join(", ")
+            )
+        })?;
+
+    let offset = fat.offset() as usize;
+    let size = fat.size() as usize;
+    Ok(&data[offset..offset + size])
 }
 
 fn read_script_data<'data>(
@@ -1020,11 +1072,7 @@ impl<'data> InputRef<'data> {
     }
 
     pub(crate) fn data(&self) -> &'data [u8] {
-        if let Some(entry) = &self.entry {
-            &self.file.data()[entry.byte_range()]
-        } else {
-            self.file.data()
-        }
+        self.data
     }
 
     fn is_archive_entry(&self) -> bool {
@@ -1065,7 +1113,6 @@ impl<'data, P: Platform> LoadedInputs<'data, P> {
                     Err(e) => self.lto_objects.push(Err(e)),
                 }
             }
-            InputRecord::Empty => {}
         }
     }
 

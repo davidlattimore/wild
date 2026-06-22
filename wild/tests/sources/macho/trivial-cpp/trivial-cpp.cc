@@ -1,5 +1,4 @@
 //#LinkerDriver:clang++
-//#ExpectWarningWild:Fat object file is not supported yet
 //#DiffIgnore:section.__unwind_info
 //#DiffIgnore:section.__gcc_except_tab
 

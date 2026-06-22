@@ -209,6 +209,12 @@
 //! BsdArchive:{source-filename}[:extra-compilation-args] Builds the specified filename as a bsd
 //! archive and adds it to the link.
 //!
+//! FatArchive:{source-filename}[:extra-compilation-args] Builds the specified filename as a fat
+//! archive and adds it to the link.
+//!
+//! FatObject:{source-filename}[:extra-compilation-args] Builds the specified filename as a fat
+//! object and adds it to the link.
+//!
 //! Shared:{source-filename}[:extra-compilation-args] Builds the specified filename as a shared
 //! object and adds it to the link.
 //!
@@ -1597,6 +1603,8 @@ enum InputType {
     Archive,
     ThinArchive,
     BsdArchive,
+    FatArchive,
+    FatObject,
     #[strum(serialize = "Shared")]
     SharedObject,
     LinkerScript,
@@ -1995,6 +2003,8 @@ fn process_directive(
         | "Archive"
         | "ThinArchive"
         | "BsdArchive"
+        | "FatArchive"
+        | "FatObject"
         | "Shared"
         | "LinkerScript"
         | "AugmentLinkerScript") => {
@@ -2607,12 +2617,23 @@ fn build_linker_input(
         .with_extension("a");
 
     let mut linker_input = match dep.input_type {
-        InputType::Archive | InputType::ThinArchive => {
+        InputType::Archive | InputType::ThinArchive | InputType::FatArchive => {
             let thin = matches!(dep.input_type, InputType::ThinArchive);
             if !is_newer(&archive_path, objects.iter().map(|o| &o.path)) {
                 make_archive(&archive_path, &objects, thin, &config)?;
             }
-            LinkerInput::new(archive_path)
+            if dep.input_type == InputType::FatArchive {
+                let fat_archive_path = config
+                    .build_dir()
+                    .join(archive_basename)
+                    .with_extension("fat.a");
+
+                make_macho_fat_file(&fat_archive_path, &archive_path)?;
+
+                LinkerInput::new(fat_archive_path)
+            } else {
+                LinkerInput::new(archive_path)
+            }
         }
         InputType::BsdArchive => {
             if !is_newer(&archive_path, objects.iter().map(|o| &o.path)) {
@@ -2620,14 +2641,26 @@ fn build_linker_input(
             }
             LinkerInput::new(archive_path)
         }
-        InputType::Object => {
+        InputType::Object | InputType::FatObject => {
             if objects.len() > 1 {
                 bail!(
                     "Multiple source files on a single line is only supported with Shared/Archive"
                 );
             }
 
-            LinkerInput::new(first_obj_path.clone())
+            let mut path = first_obj_path.clone();
+            if dep.input_type == InputType::FatObject {
+                let fat_path = config
+                    .build_dir()
+                    .join(archive_basename)
+                    .with_extension("fat.o");
+
+                make_macho_fat_file(&fat_path, &path)?;
+
+                path = fat_path;
+            }
+
+            LinkerInput::new(path)
         }
         InputType::SharedObject | InputType::Relocatable => {
             let linker = config.so_single_linker.as_ref().unwrap_or(linker);
@@ -2652,6 +2685,41 @@ fn build_linker_input(
     linker_input.template = dep.template.clone();
 
     Ok(linker_input)
+}
+
+/// Reads `contents_path` and puts it into a MachO fat object (`output_path`) containing just that
+/// one file.
+fn make_macho_fat_file(output_path: &Path, contents_path: &Path) -> Result {
+    let input = std::fs::read(contents_path)
+        .with_context(|| format!("Failed to read {}", contents_path.display()))?;
+
+    let mut output = Vec::new();
+
+    let alignment = 8;
+    let header_end =
+        (size_of::<object::macho::FatHeader>() + size_of::<object::macho::FatArch32>()) as u32;
+    let offset = header_end.next_multiple_of(alignment);
+
+    output.extend_from_slice(object::bytes_of(&object::macho::FatHeader {
+        magic: object::macho::FAT_MAGIC.into(),
+        nfat_arch: 1.into(),
+    }));
+
+    output.extend_from_slice(object::bytes_of(&object::macho::FatArch32 {
+        cputype: object::macho::CPU_TYPE_ARM64.into(),
+        cpusubtype: object::macho::CpuSubtype(0).into(),
+        offset: offset.into(),
+        size: (input.len() as u32).into(),
+        align: alignment.ilog2().into(),
+    }));
+
+    let padding_size = offset - header_end;
+    output.extend(std::iter::repeat_n(0, padding_size as usize));
+
+    output.extend_from_slice(&input);
+
+    std::fs::write(output_path, &output)
+        .with_context(|| format!("Failed to write {}", output_path.display()))
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -4927,6 +4995,8 @@ impl Display for InputType {
             InputType::SharedObject => write!(f, "shared"),
             InputType::LinkerScript => write!(f, "linker script"),
             InputType::AugmentLinkerScript => write!(f, "augment linker script"),
+            InputType::FatArchive => write!(f, "fat archive"),
+            InputType::FatObject => write!(f, "fat object"),
         }
     }
 }
