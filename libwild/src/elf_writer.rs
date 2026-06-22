@@ -51,6 +51,7 @@ use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
 use crate::layout::Resolution;
+use crate::layout::ResolutionState;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
 use crate::layout::SyntheticSymbolsLayout;
@@ -744,9 +745,9 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             self.write_ifunc_relocation::<A>(res)?;
         } else {
             *got_entry = if res.flags.is_address() && self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(got_address, res.raw_value)?
+                self.write_address_relocation::<A>(got_address, res.value())?
             } else {
-                res.raw_value
+                res.value()
             };
         }
         if let Some(plt_address) = res.format_specific.plt_address {
@@ -784,7 +785,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = 0;
             return self.write_tpoff_relocation::<A>(got_address, res.dynamic_symbol_index()?, 0);
         }
-        let address = res.raw_value;
+        let address = res.value();
         if address == 0 {
             // Resolution is undefined.
             *got_entry = 0;
@@ -878,7 +879,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             res.flags
         );
         let addend = if res.dynamic_symbol_index.is_none() {
-            res.raw_value.sub(self.tls.start) as i64
+            res.value().sub(self.tls.start) as i64
         } else {
             0
         };
@@ -974,7 +975,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn write_ifunc_relocation<A: Arch<Platform = Elf>>(&mut self, res: &Resolution<Elf>) -> Result {
         let out = self.rela_plt.split_off_first_mut().unwrap();
         let e = LittleEndian;
-        out.r_addend.set(e, res.raw_value as i64);
+        out.r_addend.set(e, res.value() as i64);
         let got_address = res
             .format_specific
             .got_address
@@ -1494,7 +1495,7 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
         let _span = tracing::trace_span!("Symbol", %symbol_id).entered();
         if let Some(res) = resolution {
             table_writer
-                .process_resolution::<A>(Some(layout), layout.args(), res)
+                .process_resolution::<A>(Some(layout), layout.args(), &res)
                 .with_context(|| {
                     format!(
                         "Failed to process `{}` with resolution {res:?}",
@@ -1585,7 +1586,7 @@ fn write_thunks<'data, A: Arch<Platform = Elf>>(
                 )
             })?;
 
-        let target_address = res.plt_address().unwrap_or(res.raw_value);
+        let target_address = res.plt_address().unwrap_or(res.value());
 
         let buf = buffers.get_mut(primary_part_id);
         let thunk_buf = buf
@@ -2640,7 +2641,7 @@ fn get_resolution<'data, R: Relocation>(
                 );
 
                 Some(Resolution {
-                    raw_value: section_address + output_offset,
+                    raw_value: ResolutionState::Resolved(section_address + output_offset),
                     dynamic_symbol_index: None,
                     flags: ValueFlags::empty(),
                     format_specific: Default::default(),
@@ -2898,7 +2899,7 @@ fn apply_relocation<
         flags,
         output_kind,
         section_info.section_flags,
-        resolution.raw_value != 0,
+        resolution.value() != 0,
         relax_deltas,
     )
     .filter(|relaxation| layout.args().relax || relaxation.is_mandatory());
@@ -3427,7 +3428,7 @@ fn apply_debug_relocation<'data, A: Arch<Platform = Elf>, R: Relocation>(
                 );
 
                 Some(Resolution {
-                    raw_value: section_address + output_offset,
+                    raw_value: ResolutionState::Resolved(section_address + output_offset),
                     dynamic_symbol_index: None,
                     flags: ValueFlags::empty(),
                     format_specific: Default::default(),
@@ -3561,7 +3562,7 @@ fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
         && table_writer.output_kind.is_relocatable()
     {
         table_writer
-            .write_ifunc_relocation_for_data::<A>(place, resolution.raw_value as i64 + addend)?;
+            .write_ifunc_relocation_for_data::<A>(place, resolution.value() as i64 + addend)?;
         Ok(0)
     } else if table_writer.output_kind.is_relocatable() && !resolution.is_absolute() {
         let address = resolution.value_with_addend(
@@ -3723,7 +3724,7 @@ fn write_plt_got_entries<'data, A: Arch<Platform = Elf>>(
                 Some(layout),
                 layout.args(),
                 &Resolution {
-                    raw_value: crate::elf::CURRENT_EXE_TLS_MOD,
+                    raw_value: ResolutionState::Resolved(crate::elf::CURRENT_EXE_TLS_MOD),
                     dynamic_symbol_index: None,
                     format_specific: crate::elf::ResolutionExt {
                         got_address: Some(got_address),
@@ -3745,7 +3746,7 @@ fn write_plt_got_entries<'data, A: Arch<Platform = Elf>>(
             Some(layout),
             layout.args(),
             &Resolution {
-                raw_value,
+                raw_value: ResolutionState::Resolved(raw_value),
                 dynamic_symbol_index: None,
                 format_specific: crate::elf::ResolutionExt {
                     got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
@@ -4569,7 +4570,7 @@ fn write_defsym_dynsym(
     let resolution = layout
         .local_symbol_resolution(symbol_id)
         .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
-    let address = resolution.raw_value;
+    let address = resolution.value();
     let name = layout.symbol_db.symbol_name(symbol_id)?;
 
     let entry = dynsym_writer
@@ -4608,7 +4609,7 @@ fn write_copy_relocation_dynamic_symbol_definition<'data>(
         .local_symbol_resolution(sym_def.symbol_id)
         .context("Copy relocation for unresolved symbol")?;
     dynamic_symbol_writer
-        .copy_symbol_shndx(sym, name, shndx, res.raw_value, ValueFlags::empty())
+        .copy_symbol_shndx(sym, name, shndx, res.value(), ValueFlags::empty())
         .with_context(|| {
             format!(
                 "Failed to copy dynamic {}",
@@ -4678,7 +4679,7 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
             entry.set_st_info(sym.st_bind(), object::elf::STT_FUNC);
             entry.st_other = sym.st_other();
         } else {
-            let mut symbol_value = resolution.raw_value;
+            let mut symbol_value = resolution.value();
             if sym.st_type() == object::elf::STT_TLS {
                 symbol_value -= layout.tls_start_address();
             }
@@ -5552,7 +5553,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
             }
 
             table_writer
-                .process_resolution::<A>(Some(layout), layout.args(), res)
+                .process_resolution::<A>(Some(layout), layout.args(), &res)
                 .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
         }
     }
@@ -5688,7 +5689,7 @@ fn write_copy_relocation_for_symbol<A: Arch<Platform = Elf>>(
         .context("Internal error: Missing resolution for copy-relocated symbol")?;
 
     table_writer.write_rela_dyn_general(
-        res.raw_value,
+        res.value(),
         res.dynamic_symbol_index()?,
         A::get_dynamic_relocation_type(DynamicRelocationKind::Copy),
         0,

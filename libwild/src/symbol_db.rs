@@ -1620,7 +1620,7 @@ fn load_linker_script_symbols<'data, P: Platform>(
     symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
     outputs: &mut SymbolLoadOutputs<'data>,
 ) {
-    for (offset, definition) in script.parsed.symbol_defs.iter().enumerate() {
+    for (offset, definition) in script.parsed.symbol_defs.values().enumerate() {
         let symbol_id = script.symbol_id_range.offset_to_id(offset);
 
         outputs.add_non_versioned(PendingSymbol::from_prehashed(
@@ -2052,7 +2052,7 @@ impl<'data, P: Platform> Prelude<'data, P> {
         symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
         outputs: &mut SymbolLoadOutputs<'data>,
     ) {
-        for definition in &self.symbol_definitions {
+        for definition in self.symbol_definitions.values() {
             let symbol_id = symbols_out.next;
             let mut flags = match &definition.placement {
                 SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => {

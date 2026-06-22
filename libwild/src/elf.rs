@@ -30,6 +30,7 @@ use crate::layout::ObjectLayout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
 use crate::layout::Resolution;
+use crate::layout::ResolutionState;
 use crate::layout::SymbolCopyInfo;
 use crate::layout::objects_iter;
 use crate::layout_rules::SectionKind;
@@ -654,8 +655,12 @@ impl platform::Platform for Elf {
                 );
             }
 
-            let resolution =
-                Self::create_resolution(flags, address, dynamic_symbol_index, memory_offsets);
+            let resolution = Self::create_resolution(
+                flags,
+                ResolutionState::Resolved(address),
+                dynamic_symbol_index,
+                memory_offsets,
+            );
 
             resolutions_out.write(Some(resolution))?;
         }
@@ -1615,7 +1620,7 @@ impl platform::Platform for Elf {
     #[inline(always)]
     fn create_resolution(
         flags: ValueFlags,
-        raw_value: u64,
+        raw_value: ResolutionState,
         dynamic_symbol_index: Option<NonZeroU32>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     ) -> Resolution<Elf> {
@@ -1633,7 +1638,7 @@ impl platform::Platform for Elf {
             let plt_address = allocate_plt(memory_offsets);
             resolution.format_specific.plt_address = Some(plt_address);
             if flags.is_dynamic() {
-                resolution.raw_value = plt_address.get();
+                resolution.raw_value = ResolutionState::Resolved(plt_address.get());
             }
             // For ifunc with address equality needs, allocate 2 GOT entries
             // - First entry: Used by PLT
@@ -1690,7 +1695,7 @@ impl platform::Platform for Elf {
             if resolution.flags.is_dynamic() || resolution.flags.is_ifunc() {
                 return Ok(());
             }
-            let expected = resolution.raw_value;
+            let expected = resolution.value();
             let address = u64::read_from_bytes(&got_data[start_offset..end_offset]).unwrap();
             if expected != address {
                 let name = String::from_utf8_lossy(name);
@@ -5265,7 +5270,7 @@ impl Resolution<Elf> {
         // For most symbols, `raw_value` won't be zero, so we can save ourselves from looking up the
         // section to see if it's a string-merge section. For string-merge symbols with names,
         // `raw_value` will have already been computed, so we can avoid computing it again.
-        if self.raw_value == 0
+        if self.value() == 0
             && let Some(r) = crate::string_merging::get_merged_string_output_address::<Elf>(
                 symbol_index,
                 addend,
@@ -5278,12 +5283,12 @@ impl Resolution<Elf> {
                 false,
             )?
         {
-            if self.raw_value != 0 {
-                bail!("Merged string resolution has value 0x{}", self.raw_value);
+            if self.value() != 0 {
+                bail!("Merged string resolution has value 0x{}", self.value());
             }
             return Ok(r);
         }
-        Ok(self.raw_value.wrapping_add(addend as u64))
+        Ok(self.value().wrapping_add(addend as u64))
     }
 }
 

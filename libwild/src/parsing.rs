@@ -35,7 +35,7 @@ pub(crate) fn process_linker_scripts<'data, P: Platform>(
 
 #[derive(Debug)]
 pub(crate) struct Prelude<'data, P: Platform> {
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
+    pub(crate) symbol_definitions: indexmap::IndexMap<&'data [u8], InternalSymDefInfo<'data, P>>,
 }
 
 #[derive(Debug)]
@@ -48,7 +48,7 @@ pub(crate) struct ParsedInputObject<'data, P: Platform> {
 #[derive(Debug)]
 pub(crate) struct ProcessedLinkerScript<'data, P: Platform> {
     pub(crate) input: InputRef<'data>,
-    pub(crate) symbol_defs: Vec<InternalSymDefInfo<'data, P>>,
+    pub(crate) symbol_defs: indexmap::IndexMap<&'data [u8], InternalSymDefInfo<'data, P>>,
     pub(crate) assertions: Vec<crate::linker_script::AssertCommand<'data>>,
     /// Raw bytes of the linker script file. Used to compute line numbers from
     /// `AssertCommand::remainder` when reporting errors.
@@ -246,7 +246,7 @@ impl<'data, P: Platform> Prelude<'data, P> {
 
 #[derive(Default)]
 pub(crate) struct InternalSymbolsBuilder<'data, P: Platform> {
-    symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
+    symbol_definitions: indexmap::IndexMap<&'data [u8], InternalSymDefInfo<'data, P>>,
 }
 
 impl<'data, P: Platform> InternalSymbolsBuilder<'data, P> {
@@ -255,7 +255,7 @@ impl<'data, P: Platform> InternalSymbolsBuilder<'data, P> {
         def: InternalSymDefInfo<'data, P>,
     ) -> &mut InternalSymDefInfo<'data, P> {
         let index = self.symbol_definitions.len();
-        self.symbol_definitions.push(def);
+        self.symbol_definitions.insert(def.name, def);
         &mut self.symbol_definitions[index]
     }
 

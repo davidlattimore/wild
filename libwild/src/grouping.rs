@@ -350,7 +350,14 @@ impl<'data, P: Platform> SequencedInputObject<'data, P> {
 impl<'data, P: Platform> SequencedLinkerScript<'data, P> {
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> UnversionedSymbolName<'data> {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        UnversionedSymbolName::new(self.parsed.symbol_defs[local_index].name)
+        UnversionedSymbolName::new(
+            self.parsed
+                .symbol_defs
+                .get_index(local_index)
+                .unwrap()
+                .1
+                .name,
+        )
     }
 }
 

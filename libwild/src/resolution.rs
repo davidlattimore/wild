@@ -280,7 +280,7 @@ fn resolve_group<'data, 'definitions, P: Platform>(
 
             ResolvedGroup {
                 files: vec![ResolvedFile::Prelude(ResolvedPrelude {
-                    symbol_definitions: prelude.symbol_definitions.clone(),
+                    symbol_definitions: prelude.symbol_definitions.values().cloned().collect(),
                 })],
             }
         }
@@ -791,7 +791,7 @@ pub(crate) struct ResolvedLinkerScript<'data, P: Platform> {
     pub(crate) input: InputRef<'data>,
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
+    pub(crate) symbol_definitions: indexmap::IndexMap<&'data [u8], InternalSymDefInfo<'data, P>>,
 }
 
 #[derive(Debug, Clone)]
@@ -892,7 +892,7 @@ fn process_object<'scope, 'data: 'scope, 'definitions, P: Platform>(
         Group::StubLibraries(_) => {}
         Group::LinkerScripts(scripts) => {
             for script in scripts {
-                for sym in &script.parsed.symbol_defs {
+                for sym in script.parsed.symbol_defs.values() {
                     if let SymbolPlacement::Redirect(redirect) = &sym.placement {
                         load_symbols_in_redirect(resources, scope, redirect);
                     }
@@ -945,7 +945,7 @@ fn load_prelude<'scope, 'data, P: Platform>(
     // Try to resolve any symbols that the user requested be undefined (e.g. via --undefined). If an
     // object defines such a symbol, request that the object be loaded. Also, point our undefined
     // symbol record to the definition.
-    for (def_info, definition_out) in prelude.symbol_definitions.iter().zip(definitions_out) {
+    for ((_, def_info), definition_out) in prelude.symbol_definitions.iter().zip(definitions_out) {
         match &def_info.placement {
             SymbolPlacement::ForceUndefined => {
                 load_symbol_named(resources, definition_out, def_info.name, scope);

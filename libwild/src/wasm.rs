@@ -2738,7 +2738,7 @@ impl platform::Platform for Wasm {
 
     fn create_resolution(
         flags: crate::value_flags::ValueFlags,
-        raw_value: u64,
+        raw_value: layout::ResolutionState,
         dynamic_symbol_index: Option<std::num::NonZeroU32>,
         _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> crate::layout::Resolution<Self> {

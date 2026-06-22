@@ -155,7 +155,7 @@ impl<'data> LayoutRulesBuilder<'data> {
         input: &InputLinkerScript<'data>,
         output_sections: &mut OutputSections<'data, P>,
     ) -> Result<ProcessedLinkerScript<'data, P>> {
-        let mut symbol_defs = Vec::new();
+        let mut symbol_defs = indexmap::IndexMap::new();
         let mut assertions = Vec::new();
         let mut memory_regions = Vec::new();
         let mut program_headers = Vec::new();
@@ -170,7 +170,8 @@ impl<'data> LayoutRulesBuilder<'data> {
                     expression: provide.value.clone(),
                     loc: loc_for_global_expr(&provide.value, current_section_id),
                 });
-                symbol_defs.push(
+                symbol_defs.insert(
+                    provide.name,
                     crate::parsing::InternalSymDefInfo::new(placement, provide.name)
                         .with_hidden(provide.hidden),
                 );
@@ -180,7 +181,10 @@ impl<'data> LayoutRulesBuilder<'data> {
                     expression: value.to_owned(),
                     loc: loc_for_global_expr(value, current_section_id),
                 });
-                symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
+                symbol_defs.insert(
+                    name,
+                    crate::parsing::InternalSymDefInfo::new(placement, name),
+                );
             } else if let linker_script::Command::Sections(sections) = cmd {
                 let mut location = None;
 
@@ -274,10 +278,10 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             expression: assignment.expr.clone(),
                                             loc: last_loc.clone(),
                                         });
-                                        symbol_defs.push(InternalSymDefInfo::new(
-                                            placement,
+                                        symbol_defs.insert(
                                             assignment.name,
-                                        ));
+                                            InternalSymDefInfo::new(placement, assignment.name),
+                                        );
                                     }
                                     ContentsCommand::Align(a) => extra_min_alignment = *a,
                                     ContentsCommand::Provide(provide) => {
@@ -286,7 +290,8 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             expression: provide.value.clone(),
                                             loc: last_loc.clone(),
                                         });
-                                        symbol_defs.push(
+                                        symbol_defs.insert(
+                                            provide.name,
                                             InternalSymDefInfo::new(placement, provide.name)
                                                 .with_hidden(provide.hidden),
                                         );
@@ -318,7 +323,8 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 expression: provide.value.clone(),
                                 loc: loc.clone(),
                             });
-                            symbol_defs.push(
+                            symbol_defs.insert(
+                                provide.name,
                                 InternalSymDefInfo::new(placement, provide.name)
                                     .with_hidden(provide.hidden),
                             );
@@ -329,7 +335,10 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 expression: assignment.expr.clone(),
                                 loc: loc.clone(),
                             });
-                            symbol_defs.push(InternalSymDefInfo::new(placement, assignment.name));
+                            symbol_defs.insert(
+                                assignment.name,
+                                InternalSymDefInfo::new(placement, assignment.name),
+                            );
                         }
                     }
                 }

@@ -16,6 +16,7 @@ use crate::layout::Layout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayoutState;
+use crate::layout::ResolutionState;
 use crate::layout::SymbolResolutions;
 use crate::layout_rules;
 use crate::layout_rules::LayoutRulesBuilder;
@@ -691,7 +692,7 @@ pub(crate) trait Platform:
 
     fn create_resolution(
         flags: ValueFlags,
-        raw_value: u64,
+        raw_value: ResolutionState,
         dynamic_symbol_index: Option<NonZeroU32>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     ) -> layout::Resolution<Self>;

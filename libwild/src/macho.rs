@@ -1413,7 +1413,7 @@ impl platform::Platform for MachO {
 
     fn create_resolution(
         flags: crate::value_flags::ValueFlags,
-        raw_value: u64,
+        raw_value: crate::layout::ResolutionState,
         dynamic_symbol_index: Option<std::num::NonZeroU32>,
         memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> crate::layout::Resolution<Self> {
@@ -1429,12 +1429,12 @@ impl platform::Platform for MachO {
 
         if flags.needs_plt() {
             let plt_address = allocate_plt(memory_offsets);
-            resolution.raw_value = plt_address.get();
+            resolution.set_value(plt_address.get());
             resolution.format_specific.plt_address = Some(plt_address);
             resolution.format_specific.got_address = Some(allocate_got(memory_offsets));
         } else if flags.needs_got() {
             let got_address = allocate_got(memory_offsets);
-            resolution.raw_value = got_address.get();
+            resolution.set_value(got_address.get());
             resolution.format_specific.got_address = Some(got_address);
         }
 

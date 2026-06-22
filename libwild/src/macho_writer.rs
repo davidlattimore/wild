@@ -16,6 +16,7 @@ use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
 use crate::layout::Resolution;
+use crate::layout::ResolutionState;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
 use crate::macho::CHAINED_FIXUP_PAGE_START_SIZE;
@@ -622,17 +623,17 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
 
     let mask = get_page_mask(rel_info.mask);
     let value = match rel_info.kind {
-        RelocationKind::Absolute => resolution.raw_value.bitand(mask.symbol_plus_addend),
-        RelocationKind::AbsoluteLowPart => resolution.raw_value.bitand(mask.symbol_plus_addend),
+        RelocationKind::Absolute => resolution.value().bitand(mask.symbol_plus_addend),
+        RelocationKind::AbsoluteLowPart => resolution.value().bitand(mask.symbol_plus_addend),
         RelocationKind::Relative => resolution
-            .raw_value
+            .value()
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::GotRelative => resolution
-            .raw_value
+            .value()
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
-        RelocationKind::Got => resolution.raw_value.bitand(mask.symbol_plus_addend),
+        RelocationKind::Got => resolution.value().bitand(mask.symbol_plus_addend),
         _ => todo!(),
     };
 
@@ -701,7 +702,7 @@ fn get_resolution<'data>(
                 let section_address =
                     object_layout.section_resolutions[section_index.0].address()?;
                 Some(Resolution {
-                    raw_value: section_address,
+                    raw_value: ResolutionState::Resolved(section_address),
                     dynamic_symbol_index: None,
                     flags: ValueFlags::empty(),
                     format_specific: Default::default(),
