@@ -333,7 +333,8 @@ fn update_allocation_sizes<P: Platform>(layout: &mut Layout<P>) {
         // here dropped `string_offsets`, leaving those lookups hitting an empty map ("Failed to
         // find merge-string"). Clearing only `buckets` frees the bulk of the memory and makes
         // `len()` zero so `write_merged_strings` skips re-emitting this (already compressed)
-        // section, while preserving the offset maps that relocation resolution needs. See #2113.
+        // section, while preserving the offset maps that relocation resolution needs. See
+        // https://github.com/wild-linker/wild/issues/2113.
         layout.merged_strings.get_mut(section_id).buckets = Vec::new();
     }
 }
