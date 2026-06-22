@@ -101,6 +101,8 @@ pub(crate) type CodeSignatureCommand = object::macho::LinkeditDataCommand<Endian
 pub(crate) type DyldChainedFixupsCommand = object::macho::LinkeditDataCommand<Endianness>;
 pub(crate) type ChainedFixupsHeader = DyldChainedFixupsHeader;
 pub(crate) type SymtabCommand = object::macho::SymtabCommand<Endianness>;
+pub(crate) type BuildVersionCommand = object::macho::BuildVersionCommand<Endianness>;
+pub(crate) type UuidCommand = object::macho::UuidCommand<Endianness>;
 
 // TODO: move the following data types to object crate
 
@@ -1256,6 +1258,7 @@ impl platform::Platform for MachO {
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         header_info: &crate::layout::HeaderInfo,
         output_sections: &crate::output_section_id::OutputSections<Self>,
+        args: &Self::Args,
     ) {
         sizes.increment(part_id::FILE_HEADER, size_of::<FileHeader>() as u64);
 
@@ -1309,6 +1312,10 @@ impl platform::Platform for MachO {
         allocate_load_cmd(size_of::<DyldChainedFixupsCommand>());
         allocate_load_cmd(size_of::<SymtabCommand>());
         allocate_load_cmd(size_of::<CodeSignatureCommand>());
+        allocate_load_cmd(size_of::<UuidCommand>());
+        if args.platform_version.is_some() {
+            allocate_load_cmd(size_of::<BuildVersionCommand>());
+        }
     }
 
     fn finalise_sizes_for_symbol<'data>(

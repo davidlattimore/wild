@@ -18,6 +18,7 @@ use crate::layout::PreludeLayout;
 use crate::layout::Resolution;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
+use crate::macho::BuildVersionCommand;
 use crate::macho::CHAINED_FIXUP_PAGE_START_SIZE;
 use crate::macho::CS_BLOB_HEADERS_SIZE;
 use crate::macho::CS_BLOCK_SIZE;
@@ -44,6 +45,7 @@ use crate::macho::SegmentCommand;
 use crate::macho::SegmentSectionsInfo;
 use crate::macho::SegmentType;
 use crate::macho::SymtabCommand;
+use crate::macho::UuidCommand;
 use crate::macho::code_signature_identifier;
 use crate::macho::code_signature_padded_identifier_size;
 use crate::macho::get_segment_sections;
@@ -89,6 +91,7 @@ use object::from_bytes_mut;
 use object::macho;
 use object::macho::CPU_SUBTYPE_ARM64_ALL;
 use object::macho::CPU_TYPE_ARM64;
+use object::macho::LC_BUILD_VERSION;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
 use object::macho::LC_LOAD_DYLIB;
@@ -96,15 +99,18 @@ use object::macho::LC_LOAD_DYLINKER;
 use object::macho::LC_MAIN;
 use object::macho::LC_SEGMENT_64;
 use object::macho::LC_SYMTAB;
+use object::macho::LC_UUID;
 use object::macho::MH_CIGAM_64;
 use object::macho::MH_EXECUTE;
 use object::macho::N_ABS;
 use object::macho::N_SECT;
+use object::macho::PLATFORM_MACOS;
 use object::macho::RelocationInfo;
 use object::macho::SEG_DATA;
 use object::macho::SEG_LINKEDIT;
 use object::macho::SEG_PAGEZERO;
 use object::macho::SEG_TEXT;
+use object::macho::SegmentFlags;
 use object::slice_from_bytes_mut;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
@@ -202,9 +208,20 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
     let mut load_command_buffer = slice_from_all_bytes_mut(buffers.get_mut(part_id::LOAD_COMMANDS));
     write_segment_commands::<A>(layout, &mut load_command_buffer)?;
 
-    let (entry_point_command, mut load_command_buffer) =
+    let (entry_point_command, load_command_buffer) =
         from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
     write_entry_point_command::<A>(layout, entry_point_command)?;
+
+    let (uuid_command, mut load_command_buffer) =
+        from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
+    write_uuid_command::<A>(uuid_command);
+
+    if layout.args().platform_version.is_some() {
+        let (build_version_command, rest) =
+            from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
+        write_build_version_command::<A>(layout, build_version_command)?;
+        load_command_buffer = rest;
+    }
 
     let command_size = (size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
         .next_multiple_of(MACHO_COMMAND_ALIGNMENT);
@@ -379,6 +396,7 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         0,
         MACHO_START_MEM_ADDRESS,
         0,
+        SegmentFlags::default(),
     );
 
     let text_segment_sections = get_segment_sections(layout, SegmentType::TextSections)
@@ -405,6 +423,7 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         text_segment_size.mem_offset,
         text_segment_size.mem_size,
         text_segment_sections.len(),
+        SegmentFlags::default(),
     );
     write_sections(SEG_TEXT, text_sections, &text_segment_sections)?;
 
@@ -428,6 +447,7 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
             data_segment_size.mem_offset,
             data_segment_size.mem_size,
             data_segment_sections.len(),
+            SegmentFlags::default(),
         );
         write_sections(SEG_DATA, data_sections, &data_segment_sections)?;
     }
@@ -454,6 +474,7 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
             data_const_segment_size.mem_offset,
             data_const_segment_size.mem_size,
             data_const_segment_sections.len(),
+            macho::SG_READ_ONLY,
         );
         write_sections(
             SEG_DATA_CONST,
@@ -482,6 +503,7 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         linkedit_segment_size.mem_size,
         // The sections in the __LINKEDIT are "hidden".
         0,
+        SegmentFlags::default(),
     );
     Ok(())
 }
@@ -495,6 +517,7 @@ fn write_segment(
     mem_offset: u64,
     mem_size: u64,
     section_count: usize,
+    flags: macho::SegmentFlags,
 ) {
     segment_cmd.cmd.set(LE, LC_SEGMENT_64);
     segment_cmd.cmdsize.set(
@@ -510,7 +533,7 @@ fn write_segment(
     segment_cmd.maxprot.set(LE, prot_flags);
     segment_cmd.initprot.set(LE, prot_flags);
     segment_cmd.nsects.set(LE, section_count as u32);
-    segment_cmd.flags.set(LE, macho::SegmentFlags(0));
+    segment_cmd.flags.set(LE, flags);
 }
 
 fn write_sections(
@@ -732,6 +755,38 @@ fn write_entry_point_command<A: Arch<Platform = MachO>>(
     command.entryoff.set(LE, segment_size.file_offset as u64);
     command.stacksize.set(LE, 0);
     Ok(())
+}
+
+fn write_build_version_command<A: Arch<Platform = MachO>>(
+    layout: &MachOLayout,
+    command: &mut BuildVersionCommand,
+) -> Result {
+    let platform_version = layout
+        .args()
+        .platform_version
+        .as_ref()
+        .ok_or("platform_version must be set")?;
+
+    command.cmd.set(LE, LC_BUILD_VERSION);
+    command
+        .cmdsize
+        .set(LE, size_of::<BuildVersionCommand>() as u32);
+    command.platform.set(LE, PLATFORM_MACOS);
+    command
+        .minos
+        .set(LE, platform_version.minimum_version.get());
+    command.sdk.set(LE, platform_version.sdk_version.get());
+    command.ntools.set(LE, 0);
+    // TODO: We could record Wild's version here, but Mach-O only defines tool IDs
+    // for Apple toolchain components, so leave the tools list empty for now.
+    Ok(())
+}
+
+fn write_uuid_command<A: Arch<Platform = MachO>>(command: &mut UuidCommand) {
+    command.cmd.set(LE, LC_UUID);
+    command.cmdsize.set(LE, size_of::<UuidCommand>() as u32);
+    // TODO: write a proper UUID
+    command.uuid.zero();
 }
 
 fn write_dylinker_command<A: Arch<Platform = MachO>>(

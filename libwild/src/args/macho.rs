@@ -5,9 +5,14 @@ use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::bail;
+use crate::ensure;
+use crate::error::Context;
 use crate::error::Result;
 use crate::platform;
 use crate::platform::Args;
+use itertools::Itertools;
+use itertools::repeat_n;
+use object::macho::Version;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,10 +28,34 @@ pub struct MachOArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SemanticVersion(Version);
+impl SemanticVersion {
+    fn try_from(value: &str) -> Result<Self> {
+        let mut parts = value.split('.').collect_vec();
+        ensure!(
+            !parts.is_empty() && parts.len() <= 3,
+            "Wrong number of components: {}",
+            value
+        );
+        parts.extend(repeat_n("0", 3 - parts.len()));
+
+        Ok(Self(Version::new(
+            parts[0].parse()?,
+            parts[1].parse()?,
+            parts[2].parse()?,
+        )))
+    }
+
+    pub(crate) fn get(&self) -> Version {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlatformVersion {
     pub(crate) platform: String,
-    pub(crate) minimum_version: String,
-    pub(crate) sdk_version: String,
+    pub(crate) minimum_version: SemanticVersion,
+    pub(crate) sdk_version: SemanticVersion,
 }
 
 const SILENTLY_IGNORED_FLAGS: &[&str] = &[
@@ -166,10 +195,16 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .help("Set deployment target and the SDK version")
         .execute(
             |args, _modifier_stack, platform, minimum_version, sdk_version| {
+                ensure!(
+                    platform == "macos",
+                    "'macos' expected for '-platform_version' argument"
+                );
                 args.platform_version = Some(PlatformVersion {
                     platform: platform.to_owned(),
-                    minimum_version: minimum_version.to_owned(),
-                    sdk_version: sdk_version.to_owned(),
+                    minimum_version: SemanticVersion::try_from(minimum_version)
+                        .with_context(|| "cannot parse minimum_version".to_string())?,
+                    sdk_version: SemanticVersion::try_from(sdk_version)
+                        .with_context(|| "cannot parse sdk_version".to_string())?,
                 });
                 Ok(())
             },
@@ -287,7 +322,9 @@ mod tests {
     use super::MachOArgs;
     use super::PlatformVersion;
     use crate::args::InputSpec;
+    use crate::args::macho::SemanticVersion;
     use crate::platform::Args as _;
+    use object::macho::Version;
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -301,7 +338,7 @@ mod tests {
         "-platform_version",
         "macos",
         "14.0",
-        "15.0",
+        "15.16.17",
         "-demangle",
         "-syslibroot",
         "/foo/bar",
@@ -321,8 +358,8 @@ mod tests {
             args.platform_version,
             Some(PlatformVersion {
                 platform: "macos".to_owned(),
-                minimum_version: "14.0".to_owned(),
-                sdk_version: "15.0".to_owned(),
+                minimum_version: SemanticVersion(Version::new(14, 0, 0)),
+                sdk_version: SemanticVersion(Version::new(15, 16, 17)),
             })
         );
         assert!(args.common.demangle);

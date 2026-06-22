@@ -2683,6 +2683,7 @@ impl platform::Platform for Wasm {
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _header_info: &crate::layout::HeaderInfo,
         _output_sections: &crate::output_section_id::OutputSections<Self>,
+        _args: &Self::Args,
     ) {
         sizes.increment(crate::part_id::FILE_HEADER, (WASM_MAGIC.len() + 4) as u64);
     }

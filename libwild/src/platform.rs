@@ -634,6 +634,7 @@ pub(crate) trait Platform:
         sizes: &mut OutputSectionPartMap<u64>,
         header_info: &layout::HeaderInfo,
         output_sections: &OutputSections<Self>,
+        args: &Self::Args,
     );
 
     /// Gives the platform an opportunity to error out if an input stack section is requesting an

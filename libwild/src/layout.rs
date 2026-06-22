@@ -3440,7 +3440,13 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         };
 
         // Allocate space for headers based on segment and section counts.
-        P::allocate_header_sizes(self, extra_sizes, &header_info, output_sections);
+        P::allocate_header_sizes(
+            self,
+            extra_sizes,
+            &header_info,
+            output_sections,
+            resources.symbol_db.args,
+        );
 
         self.header_info = Some(header_info);
     }
