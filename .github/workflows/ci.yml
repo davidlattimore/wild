@@ -167,6 +167,8 @@ jobs:
     name: Test Mach-O (AArch64)
     runs-on: macos-latest
     timeout-minutes: 10
+    env:
+      WILD_TEST_IGNORE_FORMAT: "1" # Checked by other jobs
     steps:
       - uses: actions/checkout@v7
         with:

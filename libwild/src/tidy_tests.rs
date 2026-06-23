@@ -8,7 +8,6 @@ use std::fs::read_dir;
 use std::path::Path;
 
 #[test]
-#[cfg(target_os = "linux")]
 fn check_sources_format() -> Result {
     use std::process::Command;
     use std::process::Stdio;
@@ -94,7 +93,6 @@ fn check_sources_format() -> Result {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn check_toml_format() -> Result {
     use std::process::Command;
     use std::process::Stdio;
