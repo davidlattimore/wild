@@ -12,11 +12,8 @@ SECTIONS
         *(SORT(.text.drop.*))
     }
 
-    /* * using a quick workaround to push the metadata onto a separate 64KB page.
-     * This stops lld from triggering a page protection segfault
-     * to me hardcoding seemed like the only option as wild wild's parser doesn't support dynamic alignment expressions yet
-     * In future, I would love to work on adding proper ALIGN support to the parser
-     */
+    /* plz ensure valid alignment for subsequent sections */
+
     . = 0x410000;
 
     .eh_frame : { *(.eh_frame) }

@@ -5491,21 +5491,21 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
         return Vec::new();
     }
 
-    let mut temp = Vec::new();
+    let mut sections_out = Vec::new();
     for group in group_states.iter_mut() {
         for file in &mut group.files {
             if let FileLayoutState::Object(obj) = file {
-                for section_req in &obj.script_sorted_sections {
-                    if let SectionSlot::Loaded(sec) = &obj.sections[section_req.index.0] {
-                        let part_id = obj.section_part_id(section_req.index, section_part_ids);
+                for sorted_section in &obj.script_sorted_sections {
+                    if let SectionSlot::Loaded(sec) = &obj.sections[sorted_section.index.0] {
+                        let part_id = obj.section_part_id(sorted_section.index, section_part_ids);
                         let capacity = sec.capacity(part_id, output_sections);
-                        temp.push((
+                        sections_out.push((
                             obj.object
-                                .section_name(section_req.index)
+                                .section_name(sorted_section.index)
                                 .unwrap_or_default(),
                             HarvestedSortedSection {
                                 file_id: obj.file_id,
-                                section_index: section_req.index,
+                                section_index: sorted_section.index,
                                 part_id,
                                 size: capacity,
                                 alignment: part_id.alignment(output_sections),
@@ -5518,8 +5518,8 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
         }
     }
 
-    temp.sort_by_key(|a| a.0);
-    temp.into_iter().map(|(_, harvested)| harvested).collect()
+    sections_out.sort_by_key(|a| a.0);
+    sections_out.into_iter().map(|(_, harvested)| harvested).collect()
 }
 // Assigning memory addresses to script sorted sections and returning the finalized registry.
 fn assign_addresses_to_sorted_sections<P: Platform>(

@@ -1126,7 +1126,7 @@ fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<SectionPatt
         skip_comments_and_whitespace(input)?;
 
         // Inside SORT(...), accept a single wildcard pattern up to ')'
-        let name = take_while(1.., |b| !b" \n\t)".contains(&b)).parse_next(input)?;
+        let name = take_while(1.., |b: u8| b != b')' && !b.is_ascii_whitespace()).parse_next(input)?;
         skip_comments_and_whitespace(input)?;
         // Closing ')'
         ')'.parse_next(input)?;
@@ -1134,7 +1134,7 @@ fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<SectionPatt
 
         Ok(SectionPattern { name, sorted: true })
     } else {
-        let name = take_while(1.., |b| !b" \n\t)".contains(&b)).parse_next(input)?;
+        let name = take_while(1.., |b: u8| b != b')' && !b.is_ascii_whitespace()).parse_next(input)?;
         skip_comments_and_whitespace(input)?;
         Ok(SectionPattern {
             name,

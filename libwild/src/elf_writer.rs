@@ -1463,26 +1463,22 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().common().trace_span_for_file(object.file_id);
 
-    let Some(FileLayout::Epilogue(epilogue)) =
+    let Some(crate::layout::FileLayout::Epilogue(epilogue)) =
         layout.group_layouts.last().and_then(|g| g.files.last())
     else {
         unreachable!("Epilogue is broken and must be the last file in the final layout group");
     };
-
-    let mut is_harvested = vec![false; object.sections.len()];
-    for h in &epilogue.script_sorted_sections {
-        if h.file_id == object.file_id {
-            is_harvested[h.section_index.0] = true;
-        }
-    }
 
     for (i, sec) in object.sections.iter().enumerate() {
         let section_index = object::SectionIndex(i);
 
         match sec {
             SectionSlot::Loaded(sec) => {
-                // Skip if handled by Harvester
-                if is_harvested[i] {
+                let is_harvested = epilogue.script_sorted_sections
+                    .binary_search_by_key(&(object.file_id, section_index.0), |h| (h.file_id, h.section_index.0))
+                    .is_ok();
+
+                if is_harvested {
                     continue;
                 }
 

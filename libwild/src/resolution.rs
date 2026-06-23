@@ -715,6 +715,7 @@ pub(crate) enum SectionSlot {
 
     // RISC-V attributes section (.riscv.attributes)
     RiscvVAttributes(object::SectionIndex),
+
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -768,7 +769,7 @@ pub(crate) struct ResolvedObject<'data, P: Platform> {
     custom_sections: Vec<CustomSectionDetails<'data>>,
 
     init_fini_sections: Vec<InitFiniSectionDetail>,
-    //// same as layout file
+    
     pub(crate) script_sorted_sections: Vec<ScriptSortedSectionDetail>,
 
     /// Total size in bytes of all executable input sections in this object. Used to determine
