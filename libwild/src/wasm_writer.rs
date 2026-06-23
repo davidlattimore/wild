@@ -6,16 +6,23 @@ use crate::file_writer::SizedOutput;
 use crate::file_writer::split_output_into_sections;
 use crate::layout::Layout;
 use crate::platform::Arch;
+use crate::symbol_db::SymbolDb;
 use crate::wasm::WASM_MAGIC;
 use crate::wasm::WASM_VERSION;
 use crate::wasm::Wasm;
 use crate::wasm::WasmFunctionBody;
 use crate::wasm::WasmLayout;
-use crate::wasm::WasmObjectDataLayout;
+use crate::wasm::WasmObjectIndexMap;
 use crate::wasm::WasmRelocation;
+use crate::wasm::WasmSymbol;
+use crate::wasm::WasmSymbolKind;
 use crate::wasm::apply_relocation;
+use crate::wasm::data_symbol_memory_address;
+use crate::wasm::reloc_type;
+use crate::wasm::reloc_value_with_addend;
 use crate::wasm::section_id;
 use crate::wasm::write_uleb128;
+use hashbrown::HashMap;
 use leb128::write::unsigned_len as uleb128_size;
 use wasm_encoder::ConstExpr;
 use wasm_encoder::DataSection;
@@ -49,10 +56,13 @@ pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
     copy_metadata_sections(&layout.format_specific, &mut section_buffers)?;
     write_code_section(
         &layout.format_specific.function_bodies,
+        &layout.format_specific.object_index_maps,
+        &layout.format_specific.per_object_symbols,
         section_buffers.get_mut(crate::output_section_id::WASM_CODE),
     )?;
     write_data_section(
-        &layout.format_specific.object_data_layouts,
+        &layout.format_specific,
+        &layout.symbol_db,
         section_buffers.get_mut(crate::output_section_id::WASM_DATA),
     )?;
 
@@ -114,8 +124,13 @@ fn copy_encoded_section(encoded: Option<&Vec<u8>>, out: &mut [u8]) -> Result<()>
 }
 
 // Each `WasmFunctionBody.bytes` is the raw body content (locals + operators) without a size prefix.
-// This function writes the LEB128 size prefix for each body.
-fn write_code_section(bodies: &[WasmFunctionBody<'_>], out: &mut [u8]) -> Result<()> {
+// This function writes the LEB128 size prefix for each body, then resolves and applies relocations.
+fn write_code_section(
+    bodies: &[WasmFunctionBody<'_>],
+    object_index_maps: &[WasmObjectIndexMap],
+    per_object_symbols: &[Vec<WasmSymbol>],
+    out: &mut [u8],
+) -> Result<()> {
     if bodies.is_empty() {
         ensure!(
             out.is_empty(),
@@ -148,25 +163,17 @@ fn write_code_section(bodies: &[WasmFunctionBody<'_>], out: &mut [u8]) -> Result
     // Body count as LEB128.
     pos += write_uleb128(&mut out[pos..], count);
 
-    // Function bodies: size prefix + body bytes.
     for body in bodies {
         let body_len = body.bytes.len() as u64;
         pos += write_uleb128(&mut out[pos..], body_len);
         let body_start = pos;
         let len = body.bytes.len();
         out[pos..pos + len].copy_from_slice(body.bytes);
-        for resolved in &body.relocations {
-            let reloc = WasmRelocation {
-                ty: resolved.ty,
-                offset: resolved.offset,
-                index: 0,
-                addend: 0,
-            };
-            apply_relocation(
-                &mut out[body_start..body_start + len],
-                &reloc,
-                resolved.value,
-            )?;
+        let index_map = &object_index_maps[body.object_index];
+        let symbols = &per_object_symbols[body.object_index];
+        for reloc in &body.relocations {
+            let value = index_map.resolve_reloc(reloc, symbols)?;
+            apply_relocation(&mut out[body_start..body_start + len], reloc, value)?;
         }
         pos += len;
     }
@@ -182,9 +189,11 @@ fn write_code_section(bodies: &[WasmFunctionBody<'_>], out: &mut [u8]) -> Result
 }
 
 fn write_data_section(
-    object_data_layouts: &[WasmObjectDataLayout<'_>],
+    wasm_layout: &WasmLayout<'_>,
+    symbol_db: &SymbolDb<'_, Wasm>,
     out: &mut [u8],
 ) -> Result<()> {
+    let object_data_layouts = &wasm_layout.object_data_layouts;
     let has_segments = object_data_layouts
         .iter()
         .any(|object| !object.segments.is_empty());
@@ -197,7 +206,7 @@ fn write_data_section(
         return Ok(());
     }
 
-    let section = build_data_section(object_data_layouts)?;
+    let section = build_data_section(wasm_layout, symbol_db)?;
     let mut encoded = Vec::new();
     section.append_to(&mut encoded);
     ensure!(
@@ -272,11 +281,30 @@ pub(crate) fn build_global_section(globals: &[OutputGlobal<'_>]) -> Result<Globa
 }
 
 pub(crate) fn build_data_section(
-    object_data_layouts: &[WasmObjectDataLayout<'_>],
+    wasm_layout: &WasmLayout<'_>,
+    symbol_db: &SymbolDb<'_, Wasm>,
 ) -> Result<DataSection> {
+    let object_data_layouts = &wasm_layout.object_data_layouts;
+    let file_id_to_index: HashMap<crate::input_data::FileId, usize> = object_data_layouts
+        .iter()
+        .enumerate()
+        .map(|(i, obj)| (obj.file_id, i))
+        .collect();
+
     let mut section = DataSection::new();
-    for object_layout in object_data_layouts {
+    for (obj_idx, object_layout) in object_data_layouts.iter().enumerate() {
         for segment in &object_layout.segments {
+            let mut payload = segment.data.to_vec();
+            for reloc in &segment.relocations {
+                let value = resolve_data_relocation_value(
+                    reloc,
+                    obj_idx,
+                    wasm_layout,
+                    symbol_db,
+                    &file_id_to_index,
+                )?;
+                apply_relocation(&mut payload, reloc, value)?;
+            }
             let offset = ConstExpr::i32_const(
                 i32::try_from(segment.output_memory_offset).with_context(|| {
                     format!(
@@ -288,11 +316,72 @@ pub(crate) fn build_data_section(
             section.active(
                 segment.output_memory_index,
                 &offset,
-                segment.data.iter().copied(),
+                payload.iter().copied(),
             );
         }
     }
     Ok(section)
+}
+
+/// Resolve a data relocation to its output value.
+fn resolve_data_relocation_value(
+    reloc: &WasmRelocation,
+    obj_idx: usize,
+    wasm_layout: &WasmLayout<'_>,
+    symbol_db: &SymbolDb<'_, Wasm>,
+    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
+) -> Result<u32> {
+    ensure!(
+        reloc.refers_to_symbol(),
+        "type-index relocations are not expected in data"
+    );
+    let symbols = &wasm_layout.per_object_symbols[obj_idx];
+    let sym = symbols
+        .get(reloc.index as usize)
+        .ok_or_else(|| crate::error!("relocation symbol index {} out of range", reloc.index))?;
+
+    let (def_obj_idx, def_sym) = if sym.is_undefined() {
+        let symbol_id_range = wasm_layout.object_data_layouts[obj_idx].symbol_id_range;
+        let symbol_id = symbol_id_range.offset_to_id(reloc.index as usize);
+        let def_id = symbol_db.definition(symbol_id);
+        if def_id == symbol_id {
+            bail!("undefined Wasm data relocation symbol");
+        }
+        let def_file_id = symbol_db.file_id_for_symbol(def_id);
+        let &def_obj_idx = file_id_to_index
+            .get(&def_file_id)
+            .ok_or_else(|| crate::error!("Wasm data relocation definition file not in link"))?;
+        let def_symbol_id_range = wasm_layout.object_data_layouts[def_obj_idx].symbol_id_range;
+        let def_sym_offset = def_id.to_offset(def_symbol_id_range);
+        let def_sym = wasm_layout.per_object_symbols[def_obj_idx][def_sym_offset];
+        (def_obj_idx, def_sym)
+    } else {
+        (obj_idx, *sym)
+    };
+
+    match reloc.ty {
+        reloc_type::MEMORY_ADDR_LEB
+        | reloc_type::MEMORY_ADDR_SLEB
+        | reloc_type::MEMORY_ADDR_I32 => {
+            let base = data_symbol_memory_address(
+                &wasm_layout.object_data_layouts,
+                def_obj_idx,
+                &def_sym,
+            )?;
+            reloc_value_with_addend(base, reloc.addend)
+        }
+        reloc_type::FUNCTION_INDEX_I32 => {
+            ensure!(
+                def_sym.kind == WasmSymbolKind::Func,
+                "R_WASM_FUNCTION_INDEX_I32 references non-function symbol"
+            );
+            let index_map = &wasm_layout.object_index_maps[def_obj_idx];
+            let def_symbols = &wasm_layout.per_object_symbols[def_obj_idx];
+            let base = index_map.resolve_reloc(reloc, def_symbols)?;
+            reloc_value_with_addend(base, reloc.addend)
+        }
+        other => bail!("unsupported Wasm data relocation type {other}"),
+    }
 }
 
 pub(crate) fn build_memory_section(memories: &[wasmparser::MemoryType]) -> MemorySection {
