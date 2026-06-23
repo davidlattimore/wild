@@ -321,6 +321,7 @@ impl platform::Platform for Elf {
     type GroupLayoutExt = GroupLayoutExt;
     type CommonGroupStateExt = CommonGroupStateExt;
     type StubLibraryLayoutStateExt = ();
+    type StubLibraryLayoutExt = ();
     type PreludeLayoutStateExt = PreludeLayoutStateExt;
     type PreludeLayoutExt = PreludeLayoutExt;
     type ArchIdentifier = object::elf::Machine;

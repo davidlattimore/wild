@@ -59,6 +59,7 @@ use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
 use std::borrow::Cow;
+use std::num::NonZeroU8;
 use std::num::NonZeroU64;
 
 #[derive(Debug, Copy, Clone, Default)]
@@ -901,6 +902,7 @@ impl platform::Platform for MachO {
     type GroupLayoutExt = ();
     type CommonGroupStateExt = ();
     type StubLibraryLayoutStateExt = StubLibraryLayoutStateExt;
+    type StubLibraryLayoutExt = StubLibraryLayoutExt;
     type ArchIdentifier = ();
     type Args = MachOArgs;
     type ResolutionExt = ResolutionExt;
@@ -1016,6 +1018,27 @@ impl platform::Platform for MachO {
         _resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
     ) -> crate::error::Result<Self::DynamicLayoutExt<'data>> {
         todo!()
+    }
+
+    fn finalise_layout_stub<'data>(
+        state: layout::StubLibraryLayoutState<'data, Self>,
+        resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
+    ) -> Result<Option<Self::StubLibraryLayoutExt>> {
+        let Some(index) = resources
+            .format_specific
+            .imported_libraries
+            .iter()
+            .position(|file_id| *file_id == state.file_id())
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(StubLibraryLayoutExt {
+            ordinal: NonZeroU8::new(
+                u8::try_from(index + 1).context("Too many loaded stub libraries")?,
+            )
+            .unwrap(),
+        }))
     }
 
     fn take_dynsym_index(
@@ -1664,6 +1687,11 @@ pub(crate) struct EpilogueLayoutExt {
 pub(crate) struct StubLibraryLayoutStateExt {
     imported_symbols: Vec<SymbolId>,
     loaded: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct StubLibraryLayoutExt {
+    pub(crate) ordinal: NonZeroU8,
 }
 
 #[derive(Debug, Default, Clone, Copy)]

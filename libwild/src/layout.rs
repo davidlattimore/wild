@@ -745,6 +745,7 @@ pub(crate) enum FileLayout<'data, P: Platform> {
     Dynamic(DynamicLayout<'data, P>),
     SyntheticSymbols(SyntheticSymbolsLayout<'data, P>),
     Epilogue(EpilogueLayout<P>),
+    StubLibrary(StubLibraryLayout<P>),
     NotLoaded,
     LinkerScript(LinkerScriptLayoutState<'data, P>),
 }
@@ -835,6 +836,11 @@ pub(crate) struct StubLibraryLayoutState<'data, P: Platform> {
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
     pub(crate) format_specific: P::StubLibraryLayoutStateExt,
+}
+
+#[derive(Debug)]
+pub(crate) struct StubLibraryLayout<P: Platform> {
+    pub(crate) format_specific: P::StubLibraryLayoutExt,
 }
 
 #[derive(Debug)]
@@ -1429,7 +1435,7 @@ pub(crate) struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
     dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data, P>>,
     segment_layouts: &'scope SegmentLayouts,
     program_segments: &'scope ProgramSegments<P::ProgramSegmentDef>,
-    format_specific: &'scope P::FinaliseSizesExt<'data>,
+    pub(crate) format_specific: &'scope P::FinaliseSizesExt<'data>,
 
     pub(crate) thunk_blocks: &'scope [crate::thunks::ThunkBlock],
 
@@ -2707,6 +2713,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result<FileLayout<'data, P>> {
         let resolutions_out = &mut ResolutionWriter { resolutions_out };
+
         let file_layout = match self {
             Self::Object(s) => {
                 let _span = tracing::debug_span!(
@@ -2735,8 +2742,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                 resources,
             )?),
             Self::StubLibrary(s) => {
-                s.finalise_layout(memory_offsets, resolutions_out, resources)?;
-                FileLayout::NotLoaded
+                s.finalise_layout(memory_offsets, resolutions_out, resources)?
             }
             Self::LinkerScript(s) => {
                 s.finalise_layout(memory_offsets, resolutions_out, resources)?;
@@ -2749,6 +2755,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                 FileLayout::NotLoaded
             }
         };
+
         Ok(file_layout)
     }
 }
@@ -2820,6 +2827,7 @@ impl<'data, P: Platform> std::fmt::Display for FileLayout<'data, P> {
             Self::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             Self::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
             Self::SyntheticSymbols(_) => std::fmt::Display::fmt("<synthetic>", f),
+            Self::StubLibrary(_) => std::fmt::Display::fmt("<stub-library>", f),
             Self::NotLoaded => std::fmt::Display::fmt("<not loaded>", f),
         }
     }
@@ -4555,11 +4563,11 @@ impl<'data, P: Platform> StubLibraryLayoutState<'data, P> {
     }
 
     fn finalise_layout(
-        &self,
+        self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter<P>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
-    ) -> Result {
+    ) -> Result<FileLayout<'data, P>> {
         for symbol_id in self.symbol_id_range {
             let flags: ValueFlags = resources
                 .symbol_db
@@ -4576,7 +4584,10 @@ impl<'data, P: Platform> StubLibraryLayoutState<'data, P> {
             }
         }
 
-        Ok(())
+        Ok(match P::finalise_layout_stub(self, resources)? {
+            Some(format_specific) => FileLayout::StubLibrary(StubLibraryLayout { format_specific }),
+            None => FileLayout::NotLoaded,
+        })
     }
 }
 

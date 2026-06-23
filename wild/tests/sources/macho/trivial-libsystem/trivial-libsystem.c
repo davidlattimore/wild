@@ -1,6 +1,10 @@
+//#Config:default
 //#TestUpdateInPlace:true
 //#LinkerDriver:clang
 //#DiffIgnore:section.__unwind_info
+
+//#Config:cpp:default
+//#LinkerDriver:clang++
 
 #include <stdio.h>
 #include <string.h>

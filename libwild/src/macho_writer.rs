@@ -1007,16 +1007,15 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     // weak_import: 1
     // name_offset: 23
     for (i, imported_symbol) in sorted_symbols.iter().enumerate() {
-        // TODO: Does it matter that some stub libraries aren't used, so the file indexes may have
-        // gaps?
-        let lib_ordinal = u8::try_from(
-            layout
-                .symbol_db
-                .file_id_for_symbol(imported_symbol.symbol_id)
-                .file()
-                + 1,
-        )
-        .context("too many stub libraries")?;
+        let file_id = layout
+            .symbol_db
+            .file_id_for_symbol(imported_symbol.symbol_id);
+
+        let FileLayout::StubLibrary(stub) = layout.file_layout(file_id) else {
+            bail!("Internal error: Internal symbol refers to non-stub library");
+        };
+
+        let lib_ordinal = stub.format_specific.ordinal.get();
 
         imports[i].set(
             Endianness::Little,

@@ -2340,6 +2340,7 @@ impl platform::Platform for Wasm {
     type GroupLayoutExt = ();
     type CommonGroupStateExt = ();
     type StubLibraryLayoutStateExt = ();
+    type StubLibraryLayoutExt = ();
     type ArchIdentifier = ();
     type Args = WasmArgs;
     type ResolutionExt = ();

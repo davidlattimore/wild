@@ -257,6 +257,7 @@ pub(crate) trait Platform:
     type GroupLayoutExt: std::fmt::Debug + Send + Sync + 'static;
     type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
     type StubLibraryLayoutStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
+    type StubLibraryLayoutExt: std::fmt::Debug + Send + Sync + 'static;
     type ArchIdentifier: Send + Sync + 'static;
     type Args: Args;
     type ResolutionExt: Default + std::fmt::Debug + Copy + Send + Sync + 'static;
@@ -430,6 +431,13 @@ pub(crate) trait Platform:
         resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
         resolutions_out: &mut layout::ResolutionWriter<Self>,
     ) -> Result<Self::DynamicLayoutExt<'data>>;
+
+    fn finalise_layout_stub<'data>(
+        _state: layout::StubLibraryLayoutState<'data, Self>,
+        _resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
+    ) -> Result<Option<Self::StubLibraryLayoutExt>> {
+        Ok(None)
+    }
 
     /// Returns the next dynamic symbol index, bumping `memory_offsets` to point to the subsequent
     /// one.

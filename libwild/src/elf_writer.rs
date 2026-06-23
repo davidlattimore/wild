@@ -487,7 +487,7 @@ fn write_file<'data, A: Arch<Platform = Elf>>(
         FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, table_writer, layout)?,
         FileLayout::SyntheticSymbols(s) => write_synthetic_symbols::<A>(s, table_writer, layout)?,
         FileLayout::LinkerScript(s) => write_linker_script_state::<A>(s, table_writer, layout)?,
-        FileLayout::NotLoaded => {}
+        FileLayout::NotLoaded | FileLayout::StubLibrary(_) => {}
         FileLayout::Dynamic(s) => write_dynamic_file::<A>(s, table_writer, layout)?,
     }
     Ok(())
@@ -4448,6 +4448,7 @@ fn get_symbol_attributes(
         FileLayout::Dynamic(_) | FileLayout::Epilogue(_) | FileLayout::NotLoaded => {
             Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
         }
+        FileLayout::StubLibrary(_) => unreachable!(),
     }
 }
 
