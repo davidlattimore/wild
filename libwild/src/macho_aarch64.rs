@@ -197,7 +197,7 @@ impl crate::platform::Arch for MachOAArch64 {
         section: &<Self::Platform as crate::platform::Platform>::SectionHeader,
         offset_in_section: u64,
     ) -> crate::error::Result<crate::platform::SourceInfo> {
-        todo!()
+        Ok(crate::platform::SourceInfo(None))
     }
 
     fn new_relaxation(

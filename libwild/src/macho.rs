@@ -1073,7 +1073,7 @@ impl platform::Platform for MachO {
     ) -> crate::error::Result {
         // TODO
         for rel in state.relocations(section_index)?.relocations {
-            process_relocation::<A>(state, rel, resources, queue, scope)?;
+            process_relocation::<A>(state, rel, section_index, resources, queue, scope)?;
         }
         Ok(())
     }
@@ -1833,6 +1833,7 @@ pub(crate) fn get_segment_sections<'data>(
 fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
     object: &layout::ObjectLayoutState<'data, MachO>,
     rel: &Relocation,
+    section_index: object::SectionIndex,
     resources: &'scope layout::GraphResources<'data, '_, MachO>,
     queue: &mut layout::LocalWorkQueue,
     scope: &rayon::Scope<'scope>,
@@ -1863,6 +1864,16 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
 
         let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
         let previous_flags = atomic_flags.fetch_or(flags_to_add);
+
+        layout::check_for_undefined::<A>(
+            object,
+            object.object.section(section_index)?,
+            rel_info.r_address.into(),
+            local_sym_index,
+            flags,
+            symbol_id,
+            resources,
+        )?;
 
         if !previous_flags.has_resolution() {
             queue.send_symbol_request::<A>(symbol_id, resources, scope);
