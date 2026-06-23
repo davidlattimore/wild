@@ -68,7 +68,10 @@ impl crate::platform::Arch for ElfX86_64 {
     }
 
     fn is_illegal_in_shared_object(r_type: u32) -> bool {
-        matches!(r_type, object::elf::R_X86_64_32 | object::elf::R_X86_64_32S)
+        matches!(
+            r_type,
+            object::elf::R_X86_64_32 | object::elf::R_X86_64_32S | object::elf::R_X86_64_PC32
+        )
     }
 
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {

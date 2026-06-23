@@ -2889,6 +2889,7 @@ fn apply_relocation<
     let flags = layout.flags_for_symbol(local_symbol_id);
     if layout.symbol_db.output_kind.is_position_independent()
         && (flags.is_interposable() || flags.is_dynamic())
+        && !flags.needs_copy_relocation()
         && A::is_illegal_in_shared_object(r_type)
     {
         bail!(
