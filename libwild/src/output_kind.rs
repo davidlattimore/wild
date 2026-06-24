@@ -72,7 +72,7 @@ impl OutputKind {
                 | OutputKind::StaticExecutable(RelocationModel::Relocatable)
         )
     }
-    
+
     pub(crate) fn needs_dynsym(self) -> bool {
         matches!(
             self,
