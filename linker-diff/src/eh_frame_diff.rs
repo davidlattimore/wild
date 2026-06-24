@@ -9,7 +9,8 @@ use gimli::UnwindSection;
 use hashbrown::HashMap;
 use linker_utils::elf::secnames::EH_FRAME_HDR_SECTION_NAME_STR;
 use linker_utils::elf::secnames::EH_FRAME_SECTION_NAME_STR;
-use object::LittleEndian;
+use object::Endianness;
+use object::File;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
@@ -31,9 +32,10 @@ pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]
 }
 
 fn read_eh_frame_hdr_fields(object: &crate::Binary) -> Result<FieldValues> {
+    let e = object.file.endianness();
     let mut values = FieldValues::default();
 
-    let Some(segment_hdr) = eh_frame_segment(object) else {
+    let Some(segment_hdr) = eh_frame_segment(object, e) else {
         values.insert_string_owned("GNU_EH_FRAME".to_owned(), "Missing".to_owned());
         return Ok(values);
     };
@@ -46,7 +48,7 @@ fn read_eh_frame_hdr_fields(object: &crate::Binary) -> Result<FieldValues> {
         return Ok(values);
     };
 
-    let address1 = segment_hdr.p_vaddr(LittleEndian);
+    let address1 = segment_hdr.p_vaddr(e);
     let address2 = section.address();
     if address1 != address2 {
         bail!(".eh_frame_hdr address doesn't match GNU_EN_FRAME segment");
@@ -111,7 +113,7 @@ fn verify_frames(
     header_base: u64,
 ) -> Result {
     let mut functions_without_frame_info = HashMap::new();
-    for sym in object.elf_file.symbols() {
+    for sym in object.file.symbols() {
         if sym.kind() == SymbolKind::Text {
             functions_without_frame_info.insert(sym.address(), sym);
         }
@@ -186,9 +188,12 @@ fn verify_frames(
     Ok(())
 }
 
-fn eh_frame_segment(object: &crate::Binary) -> Option<ProgramHeader64<LittleEndian>> {
-    for hdr in object.elf_file.elf_program_headers() {
-        if hdr.p_type.get(LittleEndian) == object::elf::PT_GNU_EH_FRAME {
+fn eh_frame_segment(object: &crate::Binary, e: Endianness) -> Option<ProgramHeader64<Endianness>> {
+    let File::Elf64(elf_file) = object.file else {
+        return None;
+    };
+    for hdr in elf_file.elf_program_headers() {
+        if hdr.p_type.get(e) == object::elf::PT_GNU_EH_FRAME {
             return Some(*hdr);
         }
     }

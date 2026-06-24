@@ -13,6 +13,7 @@
 extern char _etext;
 extern char __etext;
 extern char _edata;
+extern char __bss_start;
 extern char _end;
 
 int data_var = 123;
@@ -46,6 +47,10 @@ void _start(void) {
 
   if (ptr_to_int(&_end) == 0) {
     exit_syscall(16);
+  }
+
+  if (ptr_to_int(&_end) < ptr_to_int(&__bss_start)) {
+    exit_syscall(18);
   }
 
   // _end (end of .bss) should be >= _edata (end of .data). They can be equal

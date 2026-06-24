@@ -1,0 +1,11 @@
+wild: elf/x86_64/mov-indirect-to-absolute/malfunction-no-mov-indirect-to-absolute/mov-indirect-to-absolute.s.wild
+ld: elf/x86_64/mov-indirect-to-absolute/malfunction-no-mov-indirect-to-absolute/mov-indirect-to-absolute.s.ld
+rel.missing-opt.R_X86_64_GOTPCRELX.MovIndirectToAbsolute.static-non-pie
+  `elf/x86_64/mov-indirect-to-absolute/malfunction-no-mov-indirect-to-absolute/mov-indirect-to-absolute.s.o` .text _start
+ R_X86_64_GOTPCRELX 
+  ORIG .Ldata0 -4
+ R_X86_64_GOTPCRELX NoOp 
+  wild TRACE: relocation applied flags=NON_INTERPOSABLE | GOT,
+  wild TRACE: rel_kind=GotRelative,
+ R_X86_64_32 MovIndirectToAbsolute 
+

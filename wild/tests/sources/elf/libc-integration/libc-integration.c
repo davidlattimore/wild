@@ -22,6 +22,7 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 
 //#Config:clang-static:default
+//#SkipArch: ppc64le
 //#LinkerDriver:clang
 //#LinkArgs:-static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
@@ -31,6 +32,7 @@
 //#DiffIgnore:rel.extra-got-plt-got
 
 //#Config:clang-static-pie:default
+//#SkipArch: ppc64le
 //#CompArgs:-fPIE -fPIC
 //#LinkerDriver:clang
 //#LinkArgs:-static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
@@ -47,7 +49,7 @@
 //#Object:libc-integration-1.c
 //#EnableLinker:lld
 // Seems lld linked binary crashes under QEMU.
-//#SkipArch: loongarch64,riscv64
+//#SkipArch: loongarch64,riscv64,ppc64le
 //#DiffIgnore:rel.extra-got-plt-got
 
 //#Config:gcc-static-pie:default
@@ -59,9 +61,10 @@
 //#EnableLinker:lld
 // riscv64: lld-linked binary crashes with SIGSEGV under QEMU.
 // loongarch64: wild produces output that differs from both ld and lld (#1702).
-//#SkipArch: loongarch64,riscv64
+//#SkipArch: loongarch64,riscv64,ppc64le
 
 //#Config:clang-initial-exec:shared
+//#SkipArch: ppc64le
 //#CompArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
 //#LinkerDriver:clang
 //#LinkArgs:-fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
@@ -70,6 +73,7 @@
 //#DiffIgnore:section.relro_padding
 
 //#Config:clang-global-dynamic:shared
+//#SkipArch: ppc64le
 //#Compiler:clang
 //#CompArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
 //#LinkerDriver:clang
@@ -88,7 +92,7 @@
 //#LinkerDriver:gcc
 //#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L./does/not/exist
 // Fails under QEMU for some reason for both RISC-V and LoongArch64.
-//#SkipArch: loongarch64, riscv64
+//#SkipArch: loongarch64, riscv64,ppc64le
 
 //#Config:gcc-dynamic-no-pie:shared
 //#CompArgs:-g -no-pie -DDYNAMIC_DEP -DVERIFY_CTORS
@@ -101,7 +105,7 @@
 //#EnableLinker:lld
 //#LinkArgs:-dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L/does/not/exist
 // Fails under QEMU for some reason for both RISC-V and LoongArch64.
-//#SkipArch: loongarch64, riscv64
+//#SkipArch: loongarch64, riscv64,ppc64le
 
 //#Config:gcc-dynamic-pie-large:shared
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -mcmodel=large
@@ -112,6 +116,7 @@
 //#Arch: x86_64
 
 //#Config:gcc-relr:shared
+//#SkipArch: ppc64le
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC
 //#LinkerDriver:gcc
@@ -124,6 +129,7 @@
 //#Contains:.relr.dyn
 
 //#Config:gcc-pack-dyn-relocs-relr:shared
+//#SkipArch: ppc64le
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC
 //#LinkerDriver:gcc

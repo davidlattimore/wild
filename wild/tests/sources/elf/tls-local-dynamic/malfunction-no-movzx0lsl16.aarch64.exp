@@ -1,0 +1,30 @@
+wild: elf/aarch64/tls-local-dynamic/malfunction-no-movzx0lsl16/tls-local-dynamic.c.wild
+ld: elf/aarch64/tls-local-dynamic/malfunction-no-movzx0lsl16/tls-local-dynamic.c.ld
+rel.R_AARCH64_NONE.R_AARCH64_TLSLE_MOVW_TPREL_G1
+  `elf/aarch64/tls-local-dynamic/malfunction-no-movzx0lsl16/tls-local-dynamic.c.o` .text.startup main
+ R_AARCH64_TLSDESC_ADR_PAGE21 
+ R_AARCH64_TLSDESC_LD64_LO12 
+ R_AARCH64_TLSDESC_ADD_LO12 
+ R_AARCH64_TLSDESC_CALL 
+  ORIG foo
+ R_AARCH64_NONE ReplaceWithNop 
+ R_AARCH64_NONE ReplaceWithNop 
+ R_AARCH64_TLSDESC_ADD_LO12 NoOp 
+ R_AARCH64_TLSLE_MOVW_TPREL_G0_NC MovkX0 
+  wild TRACE: relaxation applied relaxation=ReplaceWithNop, flags=NON_INTERPOSABLE | DIRECT | GOT_TLS_DESCRIPTOR,
+  wild TRACE: rel_kind=None,
+  wild TRACE: value=0x0, symbol_name=foo
+  wild TRACE: relaxation applied relaxation=ReplaceWithNop, flags=NON_INTERPOSABLE | DIRECT | GOT_TLS_DESCRIPTOR,
+  wild TRACE: rel_kind=None,
+  wild TRACE: value=0x0, symbol_name=foo
+  wild TRACE: relocation applied flags=NON_INTERPOSABLE | DIRECT | GOT_TLS_DESCRIPTOR,
+  wild TRACE: rel_kind=TlsDescGot,
+  wild TRACE: relaxation applied relaxation=MovkX0, flags=NON_INTERPOSABLE | DIRECT | GOT_TLS_DESCRIPTOR,
+  wild TRACE: rel_kind=TpOff,
+  wild TRACE: value=0x10, symbol_name=foo
+ R_AARCH64_TLSLE_MOVW_TPREL_G1 MovzX0Lsl16 
+ R_AARCH64_TLSLE_MOVW_TPREL_G0_NC MovkX0 
+ R_AARCH64_NONE ReplaceWithNop 
+ R_AARCH64_NONE ReplaceWithNop 
+  ld   foo
+

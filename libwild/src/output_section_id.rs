@@ -13,10 +13,13 @@
 //! related to `part_id.rs` and insert later in `SECTION_DEFINITIONS`, probably at the end so that
 //! you don't have to renumber. Also, update `NUM_BUILT_IN_REGULAR_SECTIONS`.
 
+use crate::Result;
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
+use crate::grouping::SequencedLinkerScript;
 use crate::layout_rules::SectionKind;
 use crate::linker_script;
+use crate::linker_script::Expression;
 use crate::output_kind::OutputKind;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
@@ -32,9 +35,9 @@ use crate::program_segments::ProgramSegments;
 use crate::timing_phase;
 use core::slice;
 use hashbrown::HashMap;
+use itertools::multizip;
 use std::fmt::Debug;
 use std::fmt::Display;
-use std::iter::Copied;
 use std::ops::Range;
 
 /// Number of sections that we have built-in IDs for.
@@ -99,21 +102,14 @@ pub(crate) const SYMTAB_SHNDX_LOCAL: OutputSectionId =
     part_id::SYMTAB_SHNDX_LOCAL.output_section_id();
 pub(crate) const SYMTAB_SHNDX_GLOBAL: OutputSectionId =
     part_id::SYMTAB_SHNDX_GLOBAL.output_section_id();
+pub(crate) const GDB_INDEX: OutputSectionId = part_id::GDB_INDEX.output_section_id();
 
 // Mach-O specific sections
-pub(crate) const PAGEZERO_SEGMENT: OutputSectionId = part_id::PAGEZERO_SEGMENT.output_section_id();
-pub(crate) const TEXT_SEGMENT: OutputSectionId = part_id::TEXT_SEGMENT.output_section_id();
-pub(crate) const DATA_SEGMENT: OutputSectionId = part_id::DATA_SEGMENT.output_section_id();
 pub(crate) const LINK_EDIT_SEGMENT: OutputSectionId =
     part_id::LINK_EDIT_SEGMENT.output_section_id();
-pub(crate) const ENTRY_POINT: OutputSectionId = part_id::ENTRY_POINT.output_section_id();
-pub(crate) const DYLD_CHAINED_FIXUPS: OutputSectionId =
-    part_id::DYLD_CHAINED_FIXUPS.output_section_id();
+pub(crate) const LOAD_COMMANDS: OutputSectionId = part_id::LOAD_COMMANDS.output_section_id();
 pub(crate) const CHAINED_FIXUP_TABLE: OutputSectionId =
     part_id::CHAINED_FIXUP_TABLE.output_section_id();
-pub(crate) const SYMTAB_COMMAND: OutputSectionId = part_id::SYMTAB_COMMAND.output_section_id();
-pub(crate) const CODE_SIGNATURE_COMMAND: OutputSectionId =
-    part_id::CODE_SIGNATURE_COMMAND.output_section_id();
 pub(crate) const CODE_SIGNATURE: OutputSectionId = part_id::CODE_SIGNATURE.output_section_id();
 
 // Wasm specific sections.
@@ -154,7 +150,7 @@ pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 16;
 #[derive(Debug)]
 pub(crate) struct OutputSections<'data, P: Platform> {
     /// The base address for our output binary.
-    pub(crate) base_address: u64,
+    pub(crate) base_address: Expression<'data>,
     pub(crate) section_infos: OutputSectionMap<SectionOutputInfo<'data, P>>,
 
     // TODO: Consider moving this to Layout. We can't populate this until we know which output
@@ -166,32 +162,36 @@ pub(crate) struct OutputSections<'data, P: Platform> {
     custom_by_name: HashMap<SectionName<'data>, OutputSectionId>,
 
     init_fini_by_priority: HashMap<(OutputSectionId, u16), OutputSectionId>,
+
+    rosegment: bool,
 }
 
 /// Encodes the order of output sections and the start and end of each program segment. This struct
 /// is intended to be used by iterating over it.
 #[derive(Debug)]
-pub(crate) struct OutputOrder {
-    events: Vec<OrderEvent>,
+pub(crate) struct OutputOrder<'data> {
+    events: Vec<OrderEvent<'data>>,
 }
 
 pub(crate) struct OutputOrderDisplay<'a, 'data, P: Platform> {
-    order: &'a OutputOrder,
+    order: &'a OutputOrder<'data>,
     sections: &'a OutputSections<'data, P>,
     program_segments: &'a ProgramSegments<P::ProgramSegmentDef>,
 }
 
 pub(crate) struct OutputOrderBuilder<'scope, 'data, P: Platform> {
-    events: Vec<OrderEvent>,
+    events: Vec<OrderEvent<'data>>,
 
     program_segments: ProgramSegments<P::ProgramSegmentDef>,
 
     /// Indexes correspond to elements of `PROGRAM_SEGMENT_DEFS`.
     active_segment_kinds: Vec<Option<ProgramSegmentId>>,
+    active_segment_regions: Vec<Option<&'data [u8]>>,
 
     output_sections: &'scope OutputSections<'data, P>,
     secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
     output_kind: OutputKind,
+    has_custom_phdrs: bool,
 }
 
 impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
@@ -199,14 +199,17 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         output_kind: OutputKind,
         output_sections: &'scope OutputSections<'data, P>,
         secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
+        has_custom_phdrs: bool,
     ) -> Self {
         Self {
             events: Vec::new(),
             program_segments: ProgramSegments::empty(),
             output_sections,
             active_segment_kinds: vec![None; P::program_segment_defs().len()],
+            active_segment_regions: vec![None; P::program_segment_defs().len()],
             secondary,
             output_kind,
+            has_custom_phdrs,
         }
     }
 
@@ -233,10 +236,10 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         // in a segment. Sections without ALLOC (like custom sections before their flags
         // are propagated) will have their location handled directly in layout_section_parts
         // via section_info.location.
-        if let Some(location) = section_info.location
+        if let Some(location) = &section_info.location
             && section_info.section_attributes.is_alloc()
         {
-            self.events.push(OrderEvent::SetLocation(location));
+            self.events.push(OrderEvent::SetLocation(location.clone()));
         }
 
         for segment_id in start {
@@ -292,6 +295,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             && let Some(segment_id) = self.active_segment_kinds[def_index].take()
         {
             self.events.push(OrderEvent::SegmentEnd(segment_id));
+            self.active_segment_regions[def_index] = None;
         }
     }
 
@@ -308,6 +312,10 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         let mut stop = Vec::new();
         let mut start = Vec::new();
 
+        if self.has_custom_phdrs {
+            return (stop, start);
+        }
+
         if self.output_kind.is_partial_object() {
             return (start, stop);
         }
@@ -320,44 +328,90 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         let section_info = self.output_sections.output_info(section_id);
         if section_info.location.is_some() {
             // If we're setting the location, then first end all active segments.
-            for id in &mut self.active_segment_kinds {
+            for (id, region) in self
+                .active_segment_kinds
+                .iter_mut()
+                .zip(&mut self.active_segment_regions)
+            {
                 if let Some(id) = id.take() {
                     stop.push(id);
+                    *region = None;
                 }
             }
         }
 
-        P::program_segment_defs()
-            .iter()
-            .zip(self.active_segment_kinds.iter_mut())
-            .for_each(|(segment_def, active_id)| {
-                let should_be_active = self
-                    .output_sections
-                    .should_include_in_segment(section_id, *segment_def);
+        let section_region = section_info.region_name;
+        multizip((
+            P::program_segment_defs(),
+            self.active_segment_kinds.iter_mut(),
+            self.active_segment_regions.iter_mut(),
+        ))
+        .for_each(|(segment_def, active_id, active_region)| {
+            let should_be_active = self
+                .output_sections
+                .should_include_in_segment(section_id, *segment_def);
 
-                match (active_id.as_ref().copied(), should_be_active) {
-                    // Remain inactive
-                    (None, false) => {}
+            match (active_id.as_ref(), should_be_active) {
+                // Remain inactive
+                (None, false) => {}
 
-                    // Remain active
-                    (Some(_), true) => {}
-
-                    // Start segment
-                    (None, true) => {
-                        let segment_id = self.program_segments.add_segment(*segment_def);
-                        start.push(segment_id);
-                        *active_id = Some(segment_id);
-                    }
-
-                    // End segment
-                    (Some(segment_id), false) => {
-                        stop.push(segment_id);
-                        *active_id = None;
+                // Remain active
+                (Some(segment_id), true) => {
+                    if *active_region != section_region {
+                        stop.push(*segment_id);
+                        let new_segment_id = self.program_segments.add_segment(*segment_def);
+                        start.push(new_segment_id);
+                        *active_id = Some(new_segment_id);
+                        *active_region = section_region;
                     }
                 }
-            });
+                // Start segment
+                (None, true) => {
+                    let segment_id = self.program_segments.add_segment(*segment_def);
+                    start.push(segment_id);
+                    *active_id = Some(segment_id);
+                    *active_region = section_region;
+                }
+
+                // End segment
+                (Some(segment_id), false) => {
+                    stop.push(*segment_id);
+                    *active_id = None;
+                    *active_region = None;
+                }
+            }
+        });
 
         (stop, start)
+    }
+
+    pub(crate) fn add_segment_with_sections(
+        &mut self,
+        ptype: u32,
+        pflags: u32,
+        sections: &[OutputSectionId],
+        output_sections: &OutputSections<'data, P>,
+    ) -> ProgramSegmentId {
+        let segment_id = self
+            .program_segments
+            .add_segment(P::ProgramSegmentDef::from_linker_script(ptype, pflags));
+        self.events.push(OrderEvent::SegmentStart(segment_id));
+        for section in sections {
+            let section_info = output_sections.section_infos.get(*section);
+            if let Some(location) = &section_info.location
+                && section_info.section_attributes.is_alloc()
+            {
+                self.events.push(OrderEvent::SetLocation(location.clone()));
+            }
+            self.events.push(OrderEvent::Section(*section));
+
+            let secondaries: &Vec<OutputSectionId> = self.secondary.get(*section);
+            for sid in secondaries {
+                self.events.push(OrderEvent::Section(*sid));
+            }
+        }
+        self.events.push(OrderEvent::SegmentEnd(segment_id));
+        segment_id
     }
 
     pub(crate) fn add_sections(&mut self, sections: &[OutputSectionId]) {
@@ -366,12 +420,12 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         }
     }
 
-    pub(crate) fn build(mut self) -> (OutputOrder, ProgramSegments<P::ProgramSegmentDef>) {
+    pub(crate) fn build(mut self) -> (OutputOrder<'data>, ProgramSegments<P::ProgramSegmentDef>) {
         for segment_id in self.active_segment_kinds.into_iter().flatten() {
             self.events.push(OrderEvent::SegmentEnd(segment_id));
         }
 
-        if !self.output_kind.is_partial_object() {
+        if !self.output_kind.is_partial_object() && !self.has_custom_phdrs {
             for def in P::unconditional_segment_defs() {
                 let segment_id = self.program_segments.add_segment(*def);
                 self.events.push(OrderEvent::SegmentStart(segment_id));
@@ -452,7 +506,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         segment_def: P::ProgramSegmentDef,
     ) -> bool {
         let info = self.output_info(section_id);
-        segment_def.should_include_section(info, section_id)
+        segment_def.should_include_section(info, section_id, self.rosegment)
     }
 }
 
@@ -462,8 +516,11 @@ pub(crate) struct SectionOutputInfo<'data, P: Platform> {
     pub(crate) kind: SectionKind<'data>,
     pub(crate) section_attributes: P::SectionAttributes,
     pub(crate) min_alignment: Alignment,
-    pub(crate) location: Option<linker_script::Location>,
+    pub(crate) location: Option<linker_script::Expression<'data>>,
+    pub(crate) load_location: Option<linker_script::Expression<'data>>,
     pub(crate) secondary_order: Option<SecondaryOrder>,
+    pub(crate) phdr_name: Option<&'data [u8]>,
+    pub(crate) region_name: Option<&'data [u8]>,
 }
 
 impl OutputSectionId {
@@ -555,12 +612,12 @@ impl OutputSectionId {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum OrderEvent {
+#[derive(Debug, Clone)]
+pub(crate) enum OrderEvent<'data> {
     SegmentStart(ProgramSegmentId),
     SegmentEnd(ProgramSegmentId),
     Section(OutputSectionId),
-    SetLocation(linker_script::Location),
+    SetLocation(linker_script::Expression<'data>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -600,8 +657,9 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         for custom in custom_sections {
             let location = args
                 .start_address_for_section(custom.name)
-                .map(|address| linker_script::Location { address });
-            let section_id = self.add_named_section(custom.name, custom.alignment, location);
+                .map(linker_script::Expression::Number);
+            let section_id =
+                self.add_named_section(custom.name, custom.alignment, location, None, None, None);
 
             section_part_ids[custom.index.0] = section_id.part_id_with_alignment(custom.alignment);
         }
@@ -618,7 +676,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         ] {
             if let Some(address) = args.start_address_for_section(name) {
                 self.section_infos.get_mut(section_id).location =
-                    Some(linker_script::Location { address });
+                    Some(linker_script::Expression::Number(address));
             }
         }
     }
@@ -627,7 +685,10 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         &mut self,
         name: SectionName<'data>,
         min_alignment: Alignment,
-        location: Option<linker_script::Location>,
+        location: Option<linker_script::Expression<'data>>,
+        load_location: Option<linker_script::Expression<'data>>,
+        phdr_name: Option<&'data [u8]>,
+        region_name: Option<&'data [u8]>,
     ) -> OutputSectionId {
         *self.custom_by_name.entry(name).or_insert_with(|| {
             self.section_infos.add_new(SectionOutputInfo {
@@ -637,7 +698,10 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 section_attributes: Default::default(),
                 min_alignment,
                 location,
+                load_location,
                 secondary_order: None,
+                phdr_name,
+                region_name,
             })
         })
     }
@@ -648,18 +712,24 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         min_alignment: Alignment,
         secondary_order: Option<SecondaryOrder>,
     ) -> OutputSectionId {
-        let section_attributes = self.section_infos.get(primary_id).section_attributes;
+        let primary_info = self.section_infos.get(primary_id);
+        let section_attributes = primary_info.section_attributes;
+        let load_location = primary_info.load_location.clone();
         self.section_infos.add_new(SectionOutputInfo {
             kind: SectionKind::Secondary(primary_id),
             section_attributes,
             min_alignment,
             location: None,
+            load_location,
             secondary_order,
+            phdr_name: None,
+            region_name: primary_info.region_name,
         })
     }
 
     pub(crate) fn with_base_address(base_address: u64) -> Self {
         let section_infos = P::built_in_section_infos();
+        let base_address = Expression::Number(base_address);
 
         Self {
             section_infos: OutputSectionMap::from_values(section_infos),
@@ -667,7 +737,12 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             custom_by_name: HashMap::new(),
             output_section_indexes: Default::default(),
             init_fini_by_priority: HashMap::new(),
+            rosegment: true,
         }
+    }
+
+    pub(crate) fn set_rosegment(&mut self, rosegment: bool) {
+        self.rosegment = rosegment;
     }
 
     pub(crate) fn bump_min_alignment(&mut self, sid: OutputSectionId, a: Alignment) {
@@ -700,19 +775,46 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     pub(crate) fn output_order(
         &self,
         output_kind: OutputKind,
-    ) -> (OutputOrder, ProgramSegments<P::ProgramSegmentDef>) {
+        linker_scripts: &[&SequencedLinkerScript<'data, P>],
+    ) -> Result<(OutputOrder<'data>, ProgramSegments<P::ProgramSegmentDef>)> {
         timing_phase!("Compute output order");
+
+        let has_custom_phdrs = linker_scripts
+            .iter()
+            .any(|s| !s.parsed.program_headers.is_empty());
 
         let mut custom = CustomSectionIds::default();
 
         let mut secondary: OutputSectionMap<Vec<OutputSectionId>> = self.new_section_map();
+
+        let mut phdr_map: Option<HashMap<&[u8], Vec<OutputSectionId>>> =
+            has_custom_phdrs.then(HashMap::new);
 
         self.section_infos.for_each(|id, info| {
             if let SectionKind::Secondary(primary) = info.kind {
                 secondary.get_mut(primary).push(id);
                 return;
             }
-            if id.as_usize() < NUM_BUILT_IN_SECTIONS {
+
+            if has_custom_phdrs {
+                if let Some(phdr_name) = info.phdr_name {
+                    phdr_map
+                        .as_mut()
+                        .unwrap()
+                        .entry(phdr_name)
+                        .or_default()
+                        .push(id);
+                    return;
+                }
+
+                if id == FILE_HEADER
+                    || id == PROGRAM_HEADERS
+                    || id == SECTION_HEADERS
+                    || id == RISCV_ATTRIBUTES
+                {
+                    return;
+                }
+            } else if id.as_usize() < NUM_BUILT_IN_SECTIONS {
                 return;
             }
 
@@ -737,7 +839,23 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             }
         });
 
-        P::build_output_order_and_program_segments(&custom, output_kind, self, &secondary)
+        if has_custom_phdrs {
+            P::build_custom_output_order_and_program_segments(
+                &custom,
+                output_kind,
+                self,
+                &secondary,
+                linker_scripts,
+                &mut phdr_map.unwrap(),
+            )
+        } else {
+            Ok(P::build_output_order_and_program_segments(
+                &custom,
+                output_kind,
+                self,
+                &secondary,
+            ))
+        }
     }
 
     #[must_use]
@@ -841,6 +959,10 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         P::will_emit_section_symbol_for_partial_objects(self, section_id)
     }
 
+    pub(crate) fn set_base_address(&mut self, base_address: Expression<'data>) {
+        self.base_address = base_address;
+    }
+
     #[cfg(test)]
     pub(crate) fn for_testing() -> OutputSections<'static, crate::elf::Elf> {
         use crate::elf::Elf;
@@ -850,6 +972,9 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             output_sections.add_named_section(
                 SectionName(name.as_bytes()),
                 crate::alignment::MIN,
+                None,
+                None,
+                None,
                 None,
             )
         };
@@ -873,18 +998,18 @@ impl std::fmt::Display for OutputSectionId {
     }
 }
 
-impl<'a> IntoIterator for &'a OutputOrder {
-    type Item = OrderEvent;
+impl<'data, 'a> IntoIterator for &'a OutputOrder<'data> {
+    type Item = OrderEvent<'data>;
 
-    type IntoIter = Copied<slice::Iter<'a, OrderEvent>>;
+    type IntoIter = std::iter::Cloned<slice::Iter<'a, OrderEvent<'data>>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.events.iter().copied()
+        self.events.iter().cloned()
     }
 }
 
-impl OutputOrder {
-    pub(crate) fn display<'a, 'data, P: Platform>(
+impl<'data> OutputOrder<'data> {
+    pub(crate) fn display<'a, P: Platform>(
         &'a self,
         sections: &'a OutputSections<'data, P>,
         program_segments: &'a ProgramSegments<P::ProgramSegmentDef>,
@@ -918,9 +1043,7 @@ impl<'data, P: Platform> Display for OutputOrderDisplay<'_, 'data, P> {
                 OrderEvent::Section(output_section_id) => {
                     writeln!(f, "  {}", self.sections.display_name(*output_section_id))?;
                 }
-                OrderEvent::SetLocation(location) => {
-                    writeln!(f, "SET_LOCATION(0x{:x})", location.address)?;
-                }
+                OrderEvent::SetLocation(expr) => writeln!(f, "SET_LOCATION({expr:?})")?,
             }
         }
 

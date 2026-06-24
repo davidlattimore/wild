@@ -14,13 +14,16 @@
 //#EnableLinker:lld
 
 //#Config:verdef-0:verdef
+//#SkipArch: ppc64le
 //#TestUpdateInPlace:true
 //#LinkArgs:--shared --version-script=./symbol-versions-script.map
 
 //#Config:verdef-1:verdef
+//#SkipArch: ppc64le
 //#LinkArgs:--shared --soname=symbol-versions.so --version-script=./symbol-versions-script.map
 
 //#Config:verdef-lto:verdef
+//#SkipArch: ppc64le
 //#RequiresLinkerPlugin:true
 //#LinkerDriver:gcc
 //#CompArgs:-flto -znow
@@ -28,6 +31,7 @@
 //#DiffIgnore:eh_frame
 
 //#Config:with-escaping:verdef
+//#SkipArch: ppc64le
 //#LinkArgs:--shared --version-script=./symbol-versions-with-escaping.map
 
 #include "../common/runtime.h"

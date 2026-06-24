@@ -1,3 +1,4 @@
+//#SkipArch: ppc64le
 //#Object:runtime.c
 //#EnableLinker:lld
 //#Mode:dynamic

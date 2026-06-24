@@ -1,0 +1,6 @@
+wild: elf/x86_64/linker-diff-trivial/malfunction-elf-incorrect-type/linker-diff-trivial.c.wild
+ld: elf/x86_64/linker-diff-trivial/malfunction-elf-incorrect-type/linker-diff-trivial.c.ld
+file-header.type
+  wild 0x4
+  ld 0x2
+

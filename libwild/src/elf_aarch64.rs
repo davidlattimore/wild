@@ -6,6 +6,7 @@ use crate::ensure;
 use crate::error;
 use crate::error::Result;
 use crate::layout::Layout;
+use crate::malfunction_point_ret;
 use crate::output_section_id;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
@@ -69,6 +70,13 @@ impl crate::platform::Arch for ElfAArch64 {
                 Self::rel_type_to_string(r_type)
             )
         })
+    }
+
+    fn is_illegal_in_shared_object(r_type: u32) -> bool {
+        matches!(
+            r_type,
+            object::elf::R_AARCH64_ABS32 | object::elf::R_AARCH64_ABS16
+        )
     }
 
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
@@ -208,6 +216,7 @@ impl crate::platform::Arch for ElfAArch64 {
                     section_bytes[offset..].starts_with(TLSDESC_ADD_LO12_INSN_SEQUENCE),
                     "Unknown R_AARCH64_TLSDESC_ADD_LO12 instruction"
                 );
+                malfunction_point_ret!("no-movzx0lsl16", None);
                 return Some(Relaxation {
                     kind: RelaxationKind::MovzX0Lsl16,
                     rel_info: rel_info_from_type!(object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1),

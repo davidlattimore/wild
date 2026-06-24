@@ -28,12 +28,14 @@ use std::fmt::Display;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub mod elf;
 pub mod macho;
 pub mod wasm;
 
 use crate::error::Warning;
+use crate::file_writer::FileWriteMode;
 use crate::platform;
 use crate::platform::Args as _;
 use crate::timing_phase;
@@ -57,6 +59,9 @@ pub(crate) const WRITE_VERIFY_ALLOCATIONS_ENV: &str = "WILD_VERIFY_ALLOCATIONS";
 pub struct CommonArgs {
     pub(crate) unrecognized_options: Vec<String>,
 
+    pub(crate) output: Arc<Path>,
+    pub(crate) relocation_model: RelocationModel,
+
     /// The number of actually available threads (considering jobserver)
     pub(crate) available_threads: NonZeroUsize,
     pub num_threads: Option<NonZeroUsize>,
@@ -64,6 +69,7 @@ pub struct CommonArgs {
 
     jobserver_client: Option<Client>,
     pub(crate) inputs: Vec<Input>,
+    pub(crate) file_replacement_mode: Option<FileReplacementMode>,
     pub(crate) file_write_mode: Option<FileWriteMode>,
     pub(crate) save_dir: SaveDir,
 
@@ -71,7 +77,6 @@ pub struct CommonArgs {
     pub(crate) debug_fuel: Option<AtomicI64>,
     pub(crate) should_fork: bool,
     pub(crate) demangle: bool,
-    pub(crate) mmap_output_file: bool,
     pub(crate) validate_output: bool,
     pub(crate) verify_allocation_consistency: bool,
     pub(crate) write_layout: bool,
@@ -270,15 +275,17 @@ pub(crate) enum RelocationModel {
 impl Default for CommonArgs {
     fn default() -> Self {
         Self {
+            output: Arc::from(Path::new("a.out")),
+            relocation_model: RelocationModel::NonRelocatable,
             available_threads: NonZeroUsize::new(1).unwrap(),
             num_threads: None,
             jobserver_client: None,
             files_per_group: None,
             inputs: Vec::new(),
-            file_write_mode: None,
+            file_replacement_mode: None,
             unrecognized_options: Vec::new(),
             save_dir: SaveDir::default(),
-            mmap_output_file: true,
+            file_write_mode: None,
             prepopulate_maps: false,
             debug_fuel: None,
             should_fork: true,
@@ -457,7 +464,7 @@ pub(crate) enum Experiment {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FileWriteMode {
+pub(crate) enum FileReplacementMode {
     /// The existing output file, if any, will be unlinked (deleted) and a new file with the same
     /// name put in its place. Any hard links to the file will not be affected.
     UnlinkAndReplace,
@@ -720,20 +727,21 @@ impl<T: platform::Args> ArgumentParser<T> {
                     match &handler.handler {
                         OptionHandlerFn::NoParam(f) => f(args, modifier_stack)?,
                         OptionHandlerFn::WithParam(f) => {
-                            let next_arg =
-                                input.next().context(format!("Missing argument to {arg}"))?;
+                            let next_arg = input
+                                .next()
+                                .with_context(|| format!("Missing argument to {arg}"))?;
                             f(args, modifier_stack, next_arg.as_ref())?;
                         }
                         OptionHandlerFn::WithThreeParams(f) => {
                             let first_arg = input
                                 .next()
-                                .context(format!("Missing first argument to {arg}"))?;
+                                .with_context(|| format!("Missing first argument to {arg}"))?;
                             let second_arg = input
                                 .next()
-                                .context(format!("Missing second argument to {arg}"))?;
+                                .with_context(|| format!("Missing second argument to {arg}"))?;
                             let third_arg = input
                                 .next()
-                                .context(format!("Missing third argument to {arg}"))?;
+                                .with_context(|| format!("Missing third argument to {arg}"))?;
                             f(
                                 args,
                                 modifier_stack,
@@ -757,20 +765,21 @@ impl<T: platform::Args> ArgumentParser<T> {
                 match &handler.handler {
                     OptionHandlerFn::NoParam(f) => f(args, modifier_stack)?,
                     OptionHandlerFn::WithParam(f) => {
-                        let next_arg =
-                            input.next().context(format!("Missing argument to {arg}"))?;
+                        let next_arg = input
+                            .next()
+                            .with_context(|| format!("Missing argument to {arg}"))?;
                         f(args, modifier_stack, next_arg.as_ref())?;
                     }
                     OptionHandlerFn::WithThreeParams(f) => {
                         let first_arg = input
                             .next()
-                            .context(format!("Missing first argument to {arg}"))?;
+                            .with_context(|| format!("Missing first argument to {arg}"))?;
                         let second_arg = input
                             .next()
-                            .context(format!("Missing second argument to {arg}"))?;
+                            .with_context(|| format!("Missing second argument to {arg}"))?;
                         let third_arg = input
                             .next()
-                            .context(format!("Missing third argument to {arg}"))?;
+                            .with_context(|| format!("Missing third argument to {arg}"))?;
                         f(
                             args,
                             modifier_stack,
@@ -794,7 +803,7 @@ impl<T: platform::Args> ArgumentParser<T> {
                 let value = if rest.is_empty() {
                     let next_arg = input
                         .next()
-                        .context(format!("Missing argument to -{prefix}"))?;
+                        .with_context(|| format!("Missing argument to -{prefix}"))?;
                     next_arg.as_ref().to_owned()
                 } else {
                     rest.to_owned()
@@ -954,6 +963,15 @@ impl<T: platform::Args> ArgumentParser<T> {
         }
 
         help
+    }
+}
+
+impl<T> ArgumentParser<T> {
+    fn insert_long_option(&mut self, name: &'static str, handler: OptionHandler<T>) {
+        assert!(
+            self.options.insert(name, handler).is_none(),
+            "Option --{name} registered more than once"
+        );
     }
 }
 
@@ -1135,7 +1153,7 @@ impl<'a, T> OptionDeclaration<'a, T, NoParam> {
         };
 
         for name in self.long_names {
-            self.parser.options.insert(name, option_handler.clone());
+            self.parser.insert_long_option(name, option_handler.clone());
         }
 
         for option in self.short_names {
@@ -1158,7 +1176,7 @@ impl<'a, T> OptionDeclaration<'a, T, WithParam> {
         };
 
         for name in self.long_names {
-            self.parser.options.insert(name, option_handler.clone());
+            self.parser.insert_long_option(name, option_handler.clone());
         }
 
         for option in self.short_names {
@@ -1188,7 +1206,7 @@ impl<'a, T> OptionDeclaration<'a, T, WithThreeParams> {
         };
 
         for name in self.long_names {
-            self.parser.options.insert(name, option_handler.clone());
+            self.parser.insert_long_option(name, option_handler.clone());
         }
 
         for option in self.short_names {
@@ -1208,7 +1226,7 @@ impl<'a, T> OptionDeclaration<'a, T, WithOptionalParam> {
         };
 
         for name in self.long_names {
-            self.parser.options.insert(name, option_handler.clone());
+            self.parser.insert_long_option(name, option_handler.clone());
         }
 
         for option in self.short_names {
@@ -1315,6 +1333,57 @@ impl std::str::FromStr for CounterKind {
             other => bail!("Unsupported performance counter `{other}`"),
         })
     }
+}
+
+fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
+    parser
+        .declare()
+        .long("write-layout")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().write_layout = true;
+            Ok(())
+        });
+    parser
+        .declare()
+        .long("write-trace")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().write_trace = true;
+            Ok(())
+        });
+    parser
+        .declare_with_param()
+        .long("sym-info")
+        .help("Show symbol information. Accepts symbol name or ID.")
+        .execute(|args, _modifier_stack, value| {
+            args.common_mut().sym_info = Some(value.to_owned());
+            Ok(())
+        });
+    parser
+        .declare()
+        .long("validate-output")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().validate_output = true;
+            Ok(())
+        });
+    parser
+        .declare()
+        .long("update-in-place")
+        .help("Update file in place")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().file_replacement_mode = Some(FileReplacementMode::UpdateInPlace);
+            Ok(())
+        });
+    parser
+        .declare_with_optional_param()
+        .long("time")
+        .help("Show timing information")
+        .execute(|args, _modifier_stack, value| {
+            args.common_mut().time_phase_options = match value {
+                Some(v) => Some(parse_time_phase_options(v)?),
+                None => Some(Vec::new()),
+            };
+            Ok(())
+        });
 }
 
 #[cfg(test)]

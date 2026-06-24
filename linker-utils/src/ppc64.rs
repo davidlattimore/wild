@@ -39,11 +39,38 @@ impl RelaxationKind {
 #[must_use]
 pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
     let (kind, size, range, alignment, bias) = match r_type {
-        // 64-bit absolute address.
+        // Absolute addresses.
         object::elf::R_PPC64_ADDR64 => (
             RelocationKind::Absolute,
             RelocationSize::ByteSize(8),
             AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_ADDR32 => (
+            RelocationKind::Absolute,
+            RelocationSize::ByteSize(4),
+            // `S + A` truncated into a 32-bit field. The overflow check mirrors binutils'
+            // `complain_overflow_bitfield` for this relocation: a value is in range if its bit
+            // pattern fits in 32 bits, whether read as signed or unsigned. That union is
+            // `[-2^31, 2^32)` -- the negative lower bound admits a sign-extended negative addend,
+            // not a negative address.
+            AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
+            1,
+            0,
+        ),
+        // PC-relative data (e.g. .eh_frame pointers).
+        object::elf::R_PPC64_REL64 => (
+            RelocationKind::Relative,
+            RelocationSize::ByteSize(8),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_PPC64_REL32 => (
+            RelocationKind::Relative,
+            RelocationSize::ByteSize(4),
+            AllowedRange::from_bit_size(32, Sign::Signed),
             1,
             0,
         ),

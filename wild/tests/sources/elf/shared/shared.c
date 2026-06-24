@@ -2,6 +2,7 @@
 // object and having that symbol be defined by an archive entry that we don't load.
 
 //#Config:default
+//#SkipArch: ppc64le
 //#LinkArgs:-shared -z now
 //#Mode:dynamic
 //#RunDynSym:foo
@@ -14,6 +15,7 @@
 //#ExpectDynSym:call_bar1
 
 //#Config:symbolic:default
+//#SkipArch: ppc64le
 //#LinkArgs:-shared -z now -Bsymbolic
 //#DiffIgnore:.dynamic.DT_FLAGS.SYMBOLIC
 //#DiffIgnore:.dynamic.DT_SYMBOLIC
@@ -22,12 +24,15 @@
 //#ExpectDynamic:DT_FLAGS
 
 //#Config:symbolic-functions:default
+//#SkipArch: ppc64le
 //#LinkArgs:-shared -z now -Bsymbolic-functions
 
 //#Config:nosymbolic:default
+//#SkipArch: ppc64le
 //#LinkArgs:-shared -z now -Bno-symbolic
 
 //#Config:symbolic-non-weak:default
+//#SkipArch: ppc64le
 //#LinkArgs:-shared -z now -Bsymbolic-non-weak
 //#SkipLinker:ld
 //#EnableLinker:lld
@@ -35,6 +40,7 @@
 //#DiffIgnore:section.relro_padding
 
 //#Config:symbolic-non-weak-functions:default
+//#SkipArch: ppc64le
 //#LinkArgs:-shared -z now -Bsymbolic-non-weak-functions
 //#SkipLinker:ld
 //#EnableLinker:lld

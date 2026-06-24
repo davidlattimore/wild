@@ -326,6 +326,14 @@ pub mod secnames {
     pub const RELRO_PADDING_SECTION_NAME: &[u8] = RELRO_PADDING_SECTION_NAME_STR.as_bytes();
     pub const SYMTAB_SHNDX_SECTION_NAME_STR: &str = ".symtab_shndx";
     pub const SYMTAB_SHNDX_SECTION_NAME: &[u8] = SYMTAB_SHNDX_SECTION_NAME_STR.as_bytes();
+    pub const DEBUG_INFO_SECTION_NAME_STR: &str = ".debug_info";
+    pub const DEBUG_INFO_SECTION_NAME: &[u8] = DEBUG_INFO_SECTION_NAME_STR.as_bytes();
+    pub const GDB_INDEX_SECTION_NAME_STR: &str = ".gdb_index";
+    pub const GDB_INDEX_SECTION_NAME: &[u8] = GDB_INDEX_SECTION_NAME_STR.as_bytes();
+    pub const DEBUG_GNU_PUBNAMES_STR: &str = ".debug_gnu_pubnames";
+    pub const DEBUG_GNU_PUBNAMES: &[u8] = DEBUG_GNU_PUBNAMES_STR.as_bytes();
+    pub const DEBUG_GNU_PUBTYPES_STR: &str = ".debug_gnu_pubtypes";
+    pub const DEBUG_GNU_PUBTYPES: &[u8] = DEBUG_GNU_PUBTYPES_STR.as_bytes();
 
     pub const GNU_LTO_SYMTAB_PREFIX: &str = ".gnu.lto_.symtab";
 }
@@ -730,6 +738,23 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::JumpSlot => object::elf::R_PPC64_JMP_SLOT,
         }
     }
+
+    #[must_use]
+    pub fn from_ppc64_r_type(r_type: u32) -> Option<Self> {
+        let kind = match r_type {
+            object::elf::R_PPC64_COPY => DynamicRelocationKind::Copy,
+            object::elf::R_PPC64_IRELATIVE => DynamicRelocationKind::Irelative,
+            object::elf::R_PPC64_DTPMOD64 => DynamicRelocationKind::DtpMod,
+            object::elf::R_PPC64_DTPREL64 => DynamicRelocationKind::DtpOff,
+            object::elf::R_PPC64_TPREL64 => DynamicRelocationKind::TpOff,
+            object::elf::R_PPC64_RELATIVE => DynamicRelocationKind::Relative,
+            object::elf::R_PPC64_ADDR64 => DynamicRelocationKind::Absolute,
+            object::elf::R_PPC64_GLOB_DAT => DynamicRelocationKind::GotEntry,
+            object::elf::R_PPC64_JMP_SLOT => DynamicRelocationKind::JumpSlot,
+            _ => return None,
+        };
+        Some(kind)
+    }
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
@@ -938,6 +963,21 @@ impl RelocationSize {
             bit_end,
         ))
     }
+
+    /// Returns whether this relocation writes a ppc64 branch instruction, i.e. a call/branch site
+    /// that may need a local-entry-point adjustment. False for every non-ppc64 relocation.
+    #[must_use]
+    pub fn is_ppc64_branch(&self) -> bool {
+        matches!(
+            self,
+            RelocationSize::BitMasking(BitMask {
+                instruction: RelocationInstruction::Ppc64(
+                    Ppc64Instruction::Branch14 | Ppc64Instruction::Branch24
+                ),
+                ..
+            })
+        )
+    }
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
@@ -963,7 +1003,7 @@ pub enum PageMask {
 }
 
 // Allow range (half-open) of a computed value of a relocation
-#[derive(Clone, Debug, Copy, PartialEq)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub struct AllowedRange {
     pub min: i64,
     pub max: i64,

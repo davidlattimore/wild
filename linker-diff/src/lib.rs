@@ -17,17 +17,16 @@ use anyhow::Context as _;
 use anyhow::bail;
 use asm_diff::AddressIndex;
 use clap::Parser;
-use clap::ValueEnum;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::utils::slice_from_all_bytes;
-use object::LittleEndian;
+use object::Endianness;
+use object::File;
 use object::Object as _;
 use object::ObjectSection;
 use object::ObjectSymbol as _;
-use object::read::elf::ElfSection64;
 use section_map::IndexedLayout;
 use section_map::LayoutAndFiles;
 use std::fmt::Display;
@@ -37,6 +36,7 @@ use std::path::PathBuf;
 mod aarch64;
 mod arch;
 mod asm_diff;
+mod colour;
 mod debug_info_diff;
 mod diagnostics;
 mod eh_frame_diff;
@@ -44,6 +44,7 @@ mod gnu_hash;
 mod header_diff;
 mod init_order;
 mod loongarch64;
+mod ppc64;
 mod riscv64;
 mod riscv_attributes;
 pub(crate) mod section_map;
@@ -57,13 +58,14 @@ mod version_diff;
 mod x86_64;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
-type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
-type ElfSymbol64<'data, 'file> = object::read::elf::ElfSymbol64<'data, 'file, LittleEndian>;
+type ElfFile64<'data> = object::read::elf::ElfFile64<'data, Endianness>;
 
+pub use crate::colour::ColourMode;
 use arch::Arch;
 use arch::ArchKind;
-use colored::Colorize;
 pub use diagnostics::enable_diagnostics;
+use object::Section;
+use object::Symbol;
 use section_map::InputSectionId;
 use section_map::OwnedFileIdentifier;
 
@@ -104,25 +106,17 @@ pub struct Config {
     pub match_any: bool,
 
     #[arg(long, alias = "color", default_value = "auto")]
-    pub colour: Colour,
+    pub colour: ColourMode,
 
     /// Primary file that we're validating against the reference file(s)
     pub file: PathBuf,
-}
-
-#[derive(ValueEnum, Copy, Clone, Default)]
-pub enum Colour {
-    #[default]
-    Auto,
-    Never,
-    Always,
 }
 
 /// An output binary such as an executable or shared object.
 pub struct Binary<'data> {
     name: String,
     path: PathBuf,
-    elf_file: &'data ElfFile64<'data>,
+    file: &'data File<'data>,
     address_index: AddressIndex<'data>,
     name_index: NameIndex<'data>,
     indexed_layout: Option<IndexedLayout<'data>>,
@@ -323,6 +317,7 @@ impl Config {
                 .map(ToOwned::to_owned),
             ),
             ArchKind::X86_64 => {}
+            ArchKind::Ppc64 => {}
             ArchKind::LoongArch64 => self.ignore.extend(
                 [
                     "section.sdata",
@@ -410,16 +405,16 @@ impl Config {
 
 impl<'data> Binary<'data> {
     pub(crate) fn new(
-        elf_file: &'data ElfFile64<'data>,
+        file: &'data File<'data>,
         name: String,
         path: PathBuf,
         layout_and_files: Option<&'data LayoutAndFiles>,
     ) -> Result<Self> {
-        let address_index = AddressIndex::new(elf_file);
+        let address_index = AddressIndex::new(file);
         let indexed_layout = layout_and_files.map(IndexedLayout::new).transpose()?;
         let trace = trace::Trace::for_path(&path)?;
 
-        let sections_by_name = elf_file
+        let sections_by_name = file
             .sections()
             .map(|section| {
                 Ok((
@@ -434,10 +429,10 @@ impl<'data> Binary<'data> {
 
         Ok(Self {
             name,
-            elf_file,
+            file,
             path,
             address_index,
-            name_index: NameIndex::new(elf_file),
+            name_index: NameIndex::new(file),
             indexed_layout,
             trace,
             sections_by_name,
@@ -469,7 +464,7 @@ impl<'data> Binary<'data> {
 
         if indexes.len() >= 2 {
             for sym_index in indexes {
-                if let Ok(sym) = self.elf_file.symbol_by_index(*sym_index)
+                if let Ok(sym) = self.file.symbol_by_index(*sym_index)
                     && sym.address() == hint_address
                 {
                     return NameLookupResult::Defined(sym);
@@ -481,7 +476,7 @@ impl<'data> Binary<'data> {
         }
 
         if let Some(symbol_index) = indexes.first() {
-            if let Ok(sym) = self.elf_file.symbol_by_index(*symbol_index) {
+            if let Ok(sym) = self.file.symbol_by_index(*symbol_index) {
                 NameLookupResult::Defined(sym)
             } else {
                 NameLookupResult::Undefined
@@ -491,26 +486,23 @@ impl<'data> Binary<'data> {
         }
     }
 
-    fn section_by_name<'file: 'data>(
-        &'file self,
-        name: &str,
-    ) -> Option<ElfSection64<'data, 'file, LittleEndian>> {
+    fn section_by_name<'file: 'data>(&'file self, name: &str) -> Option<Section<'data, 'file>> {
         self.section_by_name_bytes(name.as_bytes())
     }
 
     fn section_by_name_bytes<'file: 'data>(
         &'file self,
         name: &[u8],
-    ) -> Option<ElfSection64<'data, 'file, LittleEndian>> {
+    ) -> Option<Section<'data, 'file>> {
         let index = self.sections_by_name.get(name)?.index;
-        self.elf_file.section_by_index(index).ok()
+        self.file.section_by_index(index).ok()
     }
 
     fn section_containing_address<'file: 'data>(
         &'file self,
         address: u64,
-    ) -> Option<ElfSection64<'file, 'data, LittleEndian>> {
-        self.elf_file
+    ) -> Option<Section<'file, 'data>> {
+        self.file
             .sections()
             .find(|sec| (sec.address()..sec.address() + sec.size()).contains(&address))
     }
@@ -527,7 +519,7 @@ impl<'data> Binary<'data> {
 enum NameLookupResult<'data, 'file> {
     Undefined,
     Duplicate,
-    Defined(ElfSymbol64<'data, 'file>),
+    Defined(Symbol<'data, 'file>),
 }
 
 fn validate_objects(
@@ -572,6 +564,7 @@ pub struct Report {
 #[derive(Default)]
 pub struct Coverage {
     sections: HashMap<InputSectionId, SectionCoverage>,
+    colour: ColourMode,
 }
 
 struct SectionCoverage {
@@ -590,16 +583,6 @@ struct SectionCoverage {
 
 impl Report {
     pub fn from_config(mut config: Config) -> Result<Report> {
-        // This changes mutable global state, which isn't an ideal thing to be doing from a library.
-        // It's expedient though, and we don't really expect linker-diff to get used as a library
-        // anywhere except the linker-diff binary and wild's integration tests, so this probably
-        // isn't a big deal.
-        match config.colour {
-            Colour::Auto => colored::control::unset_override(),
-            Colour::Never => colored::control::set_override(false),
-            Colour::Always => colored::control::set_override(true),
-        }
-
         let display_names = short_file_display_names(&config)?;
 
         let file_bytes = config
@@ -611,9 +594,9 @@ impl Report {
             })
             .collect::<Result<Vec<Vec<u8>>>>()?;
 
-        let elf_files = file_bytes
+        let files = file_bytes
             .iter()
-            .map(|bytes| -> Result<ElfFile64> { Ok(ElfFile64::parse(bytes.as_slice())?) })
+            .map(|bytes| -> Result<object::File> { Ok(object::File::parse(bytes.as_slice())?) })
             .collect::<Result<Vec<_>>>()?;
 
         let layouts = config
@@ -621,13 +604,13 @@ impl Report {
             .map(|p| LayoutAndFiles::from_base_path(p))
             .collect::<Result<Vec<_>>>()?;
 
-        let objects = elf_files
+        let objects = files
             .iter()
             .zip(display_names)
             .zip(config.filenames())
             .zip(&layouts)
-            .map(|(((elf_file, name), path), layout)| -> Result<Binary> {
-                Binary::new(elf_file, name, path.clone(), layout.as_ref())
+            .map(|(((file, name), path), layout)| -> Result<Binary> {
+                Binary::new(file, name, path.clone(), layout.as_ref())
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -645,7 +628,10 @@ impl Report {
             names: objects.iter().map(|o| o.name.clone()).collect(),
             paths: objects.iter().map(|o| o.path.clone()).collect(),
             diffs: Default::default(),
-            coverage: config.coverage.then(Coverage::default),
+            coverage: config.coverage.then(|| Coverage {
+                colour: config.colour,
+                ..Coverage::default()
+            }),
             config,
         };
 
@@ -709,6 +695,9 @@ impl Report {
             }
             ArchKind::LoongArch64 => {
                 self.report_arch_specific_diffs::<crate::loongarch64::LoongArch64>(objects);
+            }
+            ArchKind::Ppc64 => {
+                self.report_arch_specific_diffs::<crate::ppc64::Ppc64>(objects);
             }
         }
     }
@@ -823,9 +812,9 @@ impl Display for Coverage {
                 sec.original_file,
                 sec.name,
                 if sec.diffed {
-                    "true".green()
+                    self.colour.green("true")
                 } else {
-                    "false".red()
+                    self.colour.red("false")
                 }
             )?;
 
@@ -922,12 +911,12 @@ fn first_equals_any<T: PartialEq>(mut inputs: impl Iterator<Item = T>) -> bool {
 }
 
 impl<'data> NameIndex<'data> {
-    fn new(elf_file: &ElfFile64<'data>) -> NameIndex<'data> {
+    fn new(file: &File<'data>) -> NameIndex<'data> {
         let mut globals_by_name: HashMap<&[u8], Vec<object::SymbolIndex>> = HashMap::new();
         let mut locals_by_name: HashMap<&[u8], Vec<object::SymbolIndex>> = HashMap::new();
         let mut dynamic_by_name: HashMap<&[u8], Vec<object::SymbolIndex>> = HashMap::new();
 
-        for sym in elf_file.symbols() {
+        for sym in file.symbols() {
             // We only index symbols that have a section. Note this is different than the object
             // crate's `is_defined`, which imposes additional requirements that we don't want.
             if sym.section_index().is_none() {
@@ -960,7 +949,7 @@ impl<'data> NameIndex<'data> {
             }
         }
 
-        for sym in elf_file.dynamic_symbols() {
+        for sym in file.dynamic_symbols() {
             if let Ok(name) = sym.name_bytes() {
                 dynamic_by_name.entry(name).or_default().push(sym.index());
             }

@@ -7,8 +7,10 @@
 //#ExpectSym:main
 
 //#Config:gcc:default
+//#SkipArch: ppc64le
 
 //#Config:gcc-static:default
+//#SkipArch: ppc64le
 //#LinkArgs:-static -Wl,--gc-sections
 //#DiffIgnore:section.rela.plt.link
 //#DiffIgnore:section.sdata
@@ -22,9 +24,10 @@
 //#DiffEnabled:false
 //#SkipLinker:ld
 // TODO: #874
-//#SkipArch: riscv64
+//#SkipArch: riscv64,ppc64le
 
 //#Config:clang-static:default
+//#SkipArch: ppc64le
 //#Compiler:clang
 //#LinkArgs:-static
 //#DiffIgnore:section.rela.plt.link
@@ -38,9 +41,10 @@
 //#DiffEnabled:false
 //#SkipLinker:ld
 // For some reason, both linkers cannot find: `rcrt1.o`
-//#SkipArch: riscv64
+//#SkipArch: riscv64,ppc64le
 
 //#Config:clang:default
+//#SkipArch: ppc64le
 //#Compiler: clang
 
 //#Config:gcc-indirect-external:default

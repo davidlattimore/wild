@@ -8,7 +8,6 @@ use std::fs::read_dir;
 use std::path::Path;
 
 #[test]
-#[cfg(target_os = "linux")]
 fn check_sources_format() -> Result {
     use std::process::Command;
     use std::process::Stdio;
@@ -94,7 +93,6 @@ fn check_sources_format() -> Result {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn check_toml_format() -> Result {
     use std::process::Command;
     use std::process::Stdio;
@@ -237,7 +235,7 @@ fn check_elf_specific_code() -> Result {
         for (i, line) in contents.lines().enumerate() {
             if line.starts_with("#[test]") {
                 skip = true;
-            } else if line.starts_with("}") {
+            } else if line.starts_with('}') {
                 skip = false;
             } else if skip {
                 continue;

@@ -7,11 +7,11 @@ use crate::args::Modifiers;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
+use object::Wrap;
 use std::path::Path;
 use winnow::BStr;
 use winnow::Parser as _;
 use winnow::ascii::dec_uint;
-use winnow::ascii::hex_digit1;
 use winnow::ascii::hex_uint;
 use winnow::ascii::multispace0;
 use winnow::combinator::alt;
@@ -75,6 +75,7 @@ pub(crate) enum Command<'a> {
     Provide(ProvideSymbolDefinition<'a>),
     Assert(AssertCommand<'a>),
     Memory(Vec<MemoryRegion<'a>>),
+    Phdrs(Vec<Phdr<'a>>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -85,15 +86,16 @@ pub(crate) struct Sections<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SectionCommand<'a> {
     Section(Section<'a>),
-    SetLocation(Location),
+    SetLocation(Location<'a>),
     Align(Alignment),
     Assert(AssertCommand<'a>),
     Provide(ProvideSymbolDefinition<'a>),
+    SymbolAssignment(SymbolAssignment<'a>),
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub(crate) struct Location {
-    pub(crate) address: u64,
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) struct Location<'a> {
+    pub(crate) address: Expression<'a>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -102,6 +104,9 @@ pub(crate) struct Section<'a> {
     pub(crate) commands: Vec<ContentsCommand<'a>>,
     pub(crate) alignment: Option<Alignment>,
     pub(crate) start_address_expression: Option<Expression<'a>>,
+    pub(crate) phdr: Option<&'a [u8]>,
+    pub(crate) at_address: Option<Expression<'a>>,
+    pub(crate) region: Option<&'a [u8]>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -148,6 +153,13 @@ impl<'a> PartialEq for AssertCommand<'a> {
 }
 
 impl<'a> Eq for AssertCommand<'a> {}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) struct Phdr<'a> {
+    pub(crate) name: &'a [u8],
+    pub(crate) ptype: Expression<'a>,
+    pub(crate) flags: Option<Expression<'a>>,
+}
 
 /// Represents a parsed expression in linker scripts (e.g., in ASSERT commands).
 ///
@@ -212,6 +224,7 @@ pub(crate) enum Expression<'a> {
     LogicalNot(Box<Expression<'a>>),
     BitwiseNot(Box<Expression<'a>>),
     Negate(Box<Expression<'a>>),
+    SizeofHeaders,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -233,7 +246,7 @@ impl<'a> Expression<'a> {
     pub(crate) fn visit_expressions(&self, cb: &mut impl FnMut(&Self) -> bool) {
         if !cb(self) {
             return;
-        };
+        }
         match self {
             Expression::Number(_)
             | Expression::LocationCounter
@@ -243,7 +256,8 @@ impl<'a> Expression<'a> {
             | Expression::Length(_)
             | Expression::Addr(_)
             | Expression::Loadaddr(_)
-            | Expression::Symbol(_) => {}
+            | Expression::Symbol(_)
+            | Expression::SizeofHeaders => {}
             Expression::Add(l, r)
             | Expression::Subtract(l, r)
             | Expression::Multiply(l, r)
@@ -361,6 +375,7 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
         b"PROVIDE_HIDDEN" => Command::Provide(parse_provide(input, true)?),
         b"ASSERT" => Command::Assert(parse_assert(input)?),
         b"MEMORY" => Command::Memory(parse_memory(input)?),
+        b"PHDRS" => Command::Phdrs(parse_phdrs(input)?),
         other => {
             if input.starts_with(b"=") {
                 // Symbol definition
@@ -474,6 +489,66 @@ fn parse_memory<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<MemoryRe
     skip_comments_and_whitespace(input)?;
 
     Ok(regions)
+}
+
+fn parse_phdr<'input>(input: &mut &'input BStr) -> winnow::Result<Phdr<'input>> {
+    let name = parse_token(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    let ptype = if input.starts_with(b"PT_") {
+        let ptype_str = parse_token(input)?;
+
+        match ptype_str {
+            b"PT_NULL" => Expression::Number(object::elf::PT_NULL.into_inner().into()),
+            b"PT_LOAD" => Expression::Number(object::elf::PT_LOAD.into_inner().into()),
+            b"PT_DYNAMIC" => Expression::Number(object::elf::PT_DYNAMIC.into_inner().into()),
+            b"PT_INTERP" => Expression::Number(object::elf::PT_INTERP.into_inner().into()),
+            b"PT_NOTE" => Expression::Number(object::elf::PT_NOTE.into_inner().into()),
+            b"PT_SHLIB" => Expression::Number(object::elf::PT_SHLIB.into_inner().into()),
+            b"PT_PHDR" => Expression::Number(object::elf::PT_PHDR.into_inner().into()),
+            b"PT_TLS" => Expression::Number(object::elf::PT_TLS.into_inner().into()),
+            b"PT_GNU_EH_FRAME" => {
+                Expression::Number(object::elf::PT_GNU_EH_FRAME.into_inner().into())
+            }
+            b"PT_GNU_STACK" => Expression::Number(object::elf::PT_GNU_STACK.into_inner().into()),
+            b"PT_GNU_RELRO" => Expression::Number(object::elf::PT_GNU_RELRO.into_inner().into()),
+            b"PT_GNU_PROPERTY" => {
+                Expression::Number(object::elf::PT_GNU_PROPERTY.into_inner().into())
+            }
+            b"PT_GNU_SFRAME" => Expression::Number(object::elf::PT_GNU_SFRAME.into_inner().into()),
+            _ => {
+                return Err(ContextError::default());
+            }
+        }
+    } else {
+        parse_expression.parse_next(input)?
+    };
+
+    skip_comments_and_whitespace(input)?;
+
+    let flags = if opt("FLAGS").parse_next(input)?.is_some() {
+        '('.parse_next(input)?;
+        let flags = Some(parse_expression.parse_next(input)?);
+        ')'.parse_next(input)?;
+        skip_comments_and_whitespace(input)?;
+        flags
+    } else {
+        None
+    };
+
+    opt(';').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    Ok(Phdr { name, ptype, flags })
+}
+
+fn parse_phdrs<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<Phdr<'input>>> {
+    '{'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let (phdrs, _) = repeat_till(0.., parse_phdr, '}').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    Ok(phdrs)
 }
 
 /// Parse an expression - entry point for expression parsing
@@ -706,8 +781,8 @@ fn parse_number_with_suffix<'a>(input: &mut &'a BStr) -> winnow::Result<Expressi
     let suffix = opt(one_of(b"KkMm")).parse_next(input)?;
 
     let final_value = match suffix {
-        Some(b'K') | Some(b'k') => base_number.wrapping_mul(1024),
-        Some(b'M') | Some(b'm') => base_number.wrapping_mul(1024 * 1024),
+        Some(b'K' | b'k') => base_number.wrapping_mul(1024),
+        Some(b'M' | b'm') => base_number.wrapping_mul(1024 * 1024),
         _ => base_number,
     };
 
@@ -826,6 +901,8 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
             }
             _ => Err(ContextError::default()),
         }
+    } else if ident == b"SIZEOF_HEADERS" {
+        Ok(Expression::SizeofHeaders)
     } else {
         // It's a symbol
         Ok(Expression::Symbol(ident))
@@ -877,11 +954,8 @@ enum MulOp {
     Divide,
 }
 
-fn parse_location(input: &mut &BStr) -> winnow::Result<Location> {
-    "0x".parse_next(input)?;
-    let hex_str =
-        std::str::from_utf8(hex_digit1.parse_next(input)?).map_err(|_| ContextError::new())?;
-    let address = u64::from_str_radix(hex_str, 16).map_err(|_| ContextError::new())?;
+fn parse_location<'input>(input: &mut &'input BStr) -> winnow::Result<Location<'input>> {
+    let address = parse_expression.parse_next(input)?;
     Ok(Location { address })
 }
 
@@ -961,21 +1035,29 @@ fn parse_section_command<'input>(
         _ => {}
     }
 
-    if name == b"." {
-        '='.parse_next(input)?;
+    if opt("=").parse_next(input)?.is_some() {
         skip_comments_and_whitespace(input)?;
+        if name == b"." {
+            let cmd = if input.starts_with(b"ALIGN") {
+                SectionCommand::Align(parse_alignment(input)?)
+            } else {
+                SectionCommand::SetLocation(parse_location.parse_next(input)?)
+            };
 
-        let cmd = if input.starts_with(b"ALIGN") {
-            SectionCommand::Align(parse_alignment(input)?)
-        } else {
-            SectionCommand::SetLocation(parse_location.parse_next(input)?)
-        };
+            skip_comments_and_whitespace(input)?;
+            ';'.parse_next(input)?;
+            skip_comments_and_whitespace(input)?;
 
+            return Ok(cmd);
+        }
+        let expr = parse_expression.parse_next(input)?;
         skip_comments_and_whitespace(input)?;
         ';'.parse_next(input)?;
         skip_comments_and_whitespace(input)?;
-
-        return Ok(cmd);
+        return Ok(SectionCommand::SymbolAssignment(SymbolAssignment {
+            name,
+            expr,
+        }));
     }
 
     let start_address_expression = if input.starts_with(b":") {
@@ -991,9 +1073,14 @@ fn parse_section_command<'input>(
     skip_comments_and_whitespace(input)?;
 
     let mut alignment = None;
+    let mut at_address = None;
 
     while !input.starts_with(b"{") {
-        alignment = Some(parse_alignment.parse_next(input)?);
+        if opt("AT").parse_next(input)?.is_some() {
+            at_address = Some(parse_at_address.parse_next(input)?);
+        } else {
+            alignment = Some(parse_alignment.parse_next(input)?);
+        }
     }
 
     '{'.parse_next(input)?;
@@ -1003,11 +1090,28 @@ fn parse_section_command<'input>(
 
     skip_comments_and_whitespace(input)?;
 
+    let mut phdr = None;
+    let mut region = None;
+    while let Some(prefix) = opt(alt((b":", b">"))).parse_next(input)? {
+        skip_comments_and_whitespace(input)?;
+        match prefix {
+            b":" => phdr = Some(parse_token(input)?),
+            b">" => region = Some(parse_token(input)?),
+            _ => unreachable!(),
+        }
+        skip_comments_and_whitespace(input)?;
+    }
+
+    skip_comments_and_whitespace(input)?;
+
     Ok(SectionCommand::Section(Section {
         output_section_name: name,
         commands,
         alignment,
         start_address_expression,
+        phdr,
+        at_address,
+        region,
     }))
 }
 
@@ -1024,6 +1128,17 @@ fn parse_alignment(input: &mut &BStr) -> winnow::Result<Alignment> {
     ')'.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
     Ok(alignment)
+}
+
+fn parse_at_address<'input>(input: &mut &'input BStr) -> winnow::Result<Expression<'input>> {
+    skip_comments_and_whitespace(input)?;
+    '('.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let address = parse_expression.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    ')'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    Ok(address)
 }
 
 fn parse_contents_command<'input>(
@@ -1223,9 +1338,9 @@ mod tests {
     #[test]
     fn test_inputs_from_script() {
         let inputs = inputs_from_script(
-            r#"/* GNU ld script */
+            r"/* GNU ld script */
             GROUP ( libgcc_s.so.1 -lgcc )
-        "#,
+        ",
         )
         .unwrap();
         assert_equal(
@@ -1252,9 +1367,9 @@ mod tests {
     #[test]
     fn test_test_inputs_from_script() {
         let inputs = inputs_from_script(
-            r#"OUTPUT_FORMAT(elf64-x86-64)
+            r"OUTPUT_FORMAT(elf64-x86-64)
             GROUP ( /lib/x86_64-linux-gnu/libc.so.6 /usr/lib/x86_64-linux-gnu/libc_nonshared.a  AS_NEEDED ( /lib64/ld-linux-x86-64.so.2 ) )
-        "#,
+        ",
         )
         .unwrap();
         assert_equal(
@@ -1368,6 +1483,9 @@ mod tests {
                 ],
                 alignment: None,
                 start_address_expression: None,
+                phdr: None,
+                at_address: None,
+                region: None,
             }),
         );
     }
@@ -1388,6 +1506,9 @@ mod tests {
                 })],
                 alignment: Some(Alignment::new(8).unwrap()),
                 start_address_expression: Some(Expression::Number(0)),
+                phdr: None,
+                at_address: None,
+                region: None,
             }),
         );
     }
@@ -1419,7 +1540,9 @@ mod tests {
                     Command::Entry(b"_start"),
                     Command::Sections(Sections {
                         commands: vec![
-                            SectionCommand::SetLocation(Location { address: 0x1000000 }),
+                            SectionCommand::SetLocation(Location {
+                                address: Expression::Number(0x1000000),
+                            }),
                             SectionCommand::Align(Alignment::new(16).unwrap()),
                             SectionCommand::Section(Section {
                                 output_section_name: b".foo",
@@ -1444,6 +1567,9 @@ mod tests {
                                 ],
                                 alignment: Some(Alignment::new(8).unwrap()),
                                 start_address_expression: None,
+                                phdr: None,
+                                at_address: None,
+                                region: None,
                             }),
                         ],
                     }),
@@ -1455,14 +1581,14 @@ mod tests {
     #[test]
     fn test_version_command() {
         let script = parse_script(
-            r#"
+            r"
             VERSION {
                 VERS_1.0 {
                     global: foo; bar*;
                     local: *;
                 };
             }
-            "#,
+            ",
         )
         .unwrap();
 
@@ -1503,7 +1629,7 @@ mod tests {
     #[test]
     fn test_version_command_with_other_commands() {
         let script = parse_script(
-            r#"
+            r"
             ENTRY(_start)
             VERSION {
                 VERS_1.0 {
@@ -1513,7 +1639,7 @@ mod tests {
             SECTIONS {
                 .text : { *(.text) }
             }
-            "#,
+            ",
         )
         .unwrap();
 
@@ -1538,14 +1664,14 @@ mod tests {
         use crate::version_script::VersionScript;
 
         let script = parse_script(
-            r#"
+            r"
             VERSION {
                 VERS_1.0 {
                     global: foo; bar*;
                     local: *;
                 };
             }
-            "#,
+            ",
         )
         .unwrap();
 
@@ -1592,6 +1718,9 @@ mod tests {
                 ],
                 alignment: None,
                 start_address_expression: None,
+                phdr: None,
+                at_address: None,
+                region: None,
             }),
         );
     }
@@ -1612,6 +1741,9 @@ mod tests {
                 })],
                 alignment: None,
                 start_address_expression: None,
+                phdr: None,
+                at_address: None,
+                region: None,
             }),
         );
     }
@@ -1632,6 +1764,9 @@ mod tests {
                 })],
                 alignment: None,
                 start_address_expression: None,
+                phdr: None,
+                at_address: None,
+                region: None,
             }),
         );
     }
@@ -1660,6 +1795,9 @@ mod tests {
                             })],
                             alignment: None,
                             start_address_expression: None,
+                            phdr: None,
+                            at_address: None,
+                            region: None,
                         })],
                     }),
                     Command::Assert(AssertCommand {
@@ -1699,6 +1837,9 @@ mod tests {
                             })],
                             alignment: None,
                             start_address_expression: None,
+                            phdr: None,
+                            at_address: None,
+                            region: None,
                         }),
                         SectionCommand::Assert(AssertCommand {
                             expression: Expression::LessThan(
@@ -1988,10 +2129,10 @@ mod tests {
     #[test]
     fn test_memory_block_parsing() {
         let script = parse_script(
-            r#"MEMORY {
+            r"MEMORY {
                 rom : ORIGIN = 256K, LENGTH = 1M
                 ram : org = 0x20000000, l = 32K
-            }"#,
+            }",
         )
         .unwrap();
         let Command::Memory(regions) = &script.commands[0] else {

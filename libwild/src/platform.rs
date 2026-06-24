@@ -4,6 +4,7 @@ use crate::alignment::Alignment;
 use crate::bail;
 use crate::error::Warning;
 use crate::grouping::Group;
+use crate::grouping::SequencedLinkerScript;
 use crate::input_data::FileLoader;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
@@ -14,6 +15,7 @@ use crate::layout::Layout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayoutState;
+use crate::layout::SymbolResolutions;
 use crate::layout_rules;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::layout_rules::SectionRule;
@@ -72,6 +74,10 @@ pub(crate) trait Arch: Send + Sync + 'static {
     type Relaxation: Relaxation;
     type Platform: Platform;
 
+    /// Default load address for non-PIE output.
+    /// Override this for architectures that need a different default.
+    const DEFAULT_LOAD_ADDRESS: u64 = 0x400_000;
+
     /// Returns the identifier to be written into the output file that identifies the file as
     /// belonging to this architecture. e.g. for ELF, this is the header magic for the architecture.
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier;
@@ -117,6 +123,13 @@ pub(crate) trait Arch: Send + Sync + 'static {
         false
     }
 
+    /// Returns true if the given relocation type cannot be used when making a shared object.
+    /// On 64-bit architectures, sub-pointer-size absolute relocations cannot be represented
+    /// as dynamic relocations and must be rejected. Default is false (allow).
+    fn is_illegal_in_shared_object(_r_type: u32) -> bool {
+        false
+    }
+
     /// Uses debug info, if available, to get information about where in the source code a
     /// particular offset in a particular section came from.
     fn get_source_info<'data>(
@@ -143,6 +156,13 @@ pub(crate) trait Arch: Send + Sync + 'static {
         _symbol_index: object::SymbolIndex,
     ) -> bool {
         false
+    }
+
+    /// For a call/branch relocation, returns the offset from a callee's global entry point to its
+    /// local entry point, derived from the callee's `st_other`. Only meaningful on ppc64 (ELFv2
+    /// dual-entry functions); defaults to 0.
+    fn local_entry_offset(_st_other: u8) -> u64 {
+        0
     }
 
     /// Tries to create a relaxation for the relocation of the specified kind, to be applied at the
@@ -182,6 +202,15 @@ pub(crate) trait Arch: Send + Sync + 'static {
         // Should only be called if thunk_config returns Some, in which case this must be
         // overridden.
         unimplemented!();
+    }
+
+    /// Return the starting load address for non-PIE output.
+    fn start_memory_address(output_kind: OutputKind) -> u64 {
+        if output_kind.is_relocatable() {
+            0
+        } else {
+            Self::DEFAULT_LOAD_ADDRESS
+        }
     }
 }
 
@@ -227,16 +256,20 @@ pub(crate) trait Platform:
     type EpilogueLayoutExt: Send + Sync + 'static;
     type GroupLayoutExt: std::fmt::Debug + Send + Sync + 'static;
     type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
+    type StubLibraryLayoutStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
+    type StubLibraryLayoutExt: std::fmt::Debug + Send + Sync + 'static;
     type ArchIdentifier: Send + Sync + 'static;
     type Args: Args;
     type ResolutionExt: Default + std::fmt::Debug + Copy + Send + Sync + 'static;
     type SymtabShndxEntry: std::fmt::Debug + Default + Send + Sync + 'static;
+    type ResolvedObjectExt<'data>: Default + std::fmt::Debug + Send + Sync;
+    type FinaliseSizesExt<'data>: Send + Sync;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
 
     /// Format-specific properties produced by the layout phase.
-    type LayoutExt: Send + Sync + 'static;
+    type LayoutExt<'data>: Send + Sync;
 
     type SectionIterator<'a>: Iterator<Item = &'a Self::SectionHeader>
     where
@@ -310,6 +343,11 @@ pub(crate) trait Platform:
         _scope: &Scope<'scope>,
     ) -> Result {
         Ok(())
+    }
+
+    /// Returns whether the supplied file kind is permitted in archives.
+    fn is_allowed_in_archive(_kind: crate::file_kind::FileKind) -> bool {
+        false
     }
 
     /// Returns attributes of the supplied section. This is type+flags and doesn't include other
@@ -394,6 +432,13 @@ pub(crate) trait Platform:
         resolutions_out: &mut layout::ResolutionWriter<Self>,
     ) -> Result<Self::DynamicLayoutExt<'data>>;
 
+    fn finalise_layout_stub<'data>(
+        _state: layout::StubLibraryLayoutState<'data, Self>,
+        _resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
+    ) -> Result<Option<Self::StubLibraryLayoutExt>> {
+        Ok(None)
+    }
+
     /// Returns the next dynamic symbol index, bumping `memory_offsets` to point to the subsequent
     /// one.
     fn take_dynsym_index(
@@ -441,7 +486,7 @@ pub(crate) trait Platform:
     /// what we did wrong. Can optionally return a more helpful error.
     fn verify_resolution_allocation(
         _output_sections: &OutputSections<Self>,
-        _output_order: &OutputOrder,
+        _output_order: &OutputOrder<'_>,
         _output_kind: OutputKind,
         _mem_sizes: &OutputSectionPartMap<u64>,
         _resolution: &layout::Resolution<Self>,
@@ -471,14 +516,19 @@ pub(crate) trait Platform:
     fn built_in_section_infos<'data>()
     -> Vec<crate::output_section_id::SectionOutputInfo<'data, Self>>;
 
-    fn create_layout_properties<'data, 'states, 'files, A: Arch<Platform = Self>>(
+    fn create_finalise_sizes_ext<'data, 'states, 'files, A: Arch<Platform = Self>>(
         args: &Self::Args,
-        objects: impl Iterator<Item = &'files Self::File<'data>>,
-        states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
-    ) -> Result<Self::LayoutExt>
+        groups: &'files [layout::GroupState<'data, Self>],
+        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+    ) -> Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,
         'data: 'states;
+
+    fn create_layout_ext<'data>(
+        finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
+        _resolutions: &SymbolResolutions<Self>,
+    ) -> Result<Self::LayoutExt<'data>>;
 
     fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Self>>(
         object: &mut ObjectLayoutState<'data, Self>,
@@ -500,10 +550,11 @@ pub(crate) trait Platform:
         scope: &Scope<'scope>,
     ) -> Result;
 
-    fn new_epilogue_layout(
+    fn new_epilogue_layout<'data>(
         args: &Self::Args,
         output_kind: OutputKind,
-        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_, Self>],
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'data, Self>],
+        group_states: &[layout::GroupState<'data, Self>],
     ) -> Self::EpilogueLayoutExt;
 
     fn apply_non_addressable_indexes_epilogue(
@@ -521,7 +572,7 @@ pub(crate) trait Platform:
         state: &mut Self::EpilogueLayoutExt,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data, Self>],
-        properties: &Self::LayoutExt,
+        format_specific: &Self::FinaliseSizesExt<'data>,
         symbol_db: &SymbolDb<'data, Self>,
     );
 
@@ -531,12 +582,14 @@ pub(crate) trait Platform:
     );
 
     fn apply_late_size_adjustments_epilogue(
-        state: &mut Self::EpilogueLayoutExt,
-        current_sizes: &OutputSectionPartMap<u64>,
-        extra_sizes: &mut OutputSectionPartMap<u64>,
-        dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
-        args: &Self::Args,
-    ) -> Result;
+        _state: &mut Self::EpilogueLayoutExt,
+        _current_sizes: &OutputSectionPartMap<u64>,
+        _extra_sizes: &mut OutputSectionPartMap<u64>,
+        _dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
+        _args: &Self::Args,
+    ) -> Result {
+        Ok(())
+    }
 
     /// Returns any extra size needed for the part that currently ends last in
     /// the output file, once its file offset and provisional size are known.
@@ -551,7 +604,7 @@ pub(crate) trait Platform:
         epilogue_state: &mut Self::EpilogueLayoutExt,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         symbol_db: &SymbolDb<'data, Self>,
-        common_state: &Self::LayoutExt,
+        common_state: &Self::FinaliseSizesExt<'data>,
         dynsym_start_index: u32,
         dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
     ) -> Result;
@@ -579,11 +632,13 @@ pub(crate) trait Platform:
     }
 
     /// Allocate space for headers based on segment and section counts.
-    fn allocate_header_sizes(
-        prelude: &mut PreludeLayoutState<Self>,
+    fn allocate_header_sizes<'data>(
+        prelude: &mut PreludeLayoutState<'data, Self>,
         sizes: &mut OutputSectionPartMap<u64>,
         header_info: &layout::HeaderInfo,
         output_sections: &OutputSections<Self>,
+        resources: &layout::FinaliseSizesResources<'data, '_, Self>,
+        args: &Self::Args,
     );
 
     /// Gives the platform an opportunity to error out if an input stack section is requesting an
@@ -592,6 +647,13 @@ pub(crate) trait Platform:
         _section: &Self::SectionHeader,
         _object: &impl std::fmt::Display,
         _args: &Self::Args,
+    ) -> Result {
+        Ok(())
+    }
+
+    fn load_stub_library_symbol(
+        _state: &mut layout::StubLibraryLayoutState<Self>,
+        _symbol_id: SymbolId,
     ) -> Result {
         Ok(())
     }
@@ -693,7 +755,23 @@ pub(crate) trait Platform:
         output_kind: OutputKind,
         output_sections: &OutputSections<'data, Self>,
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
-    ) -> (OutputOrder, ProgramSegments<Self::ProgramSegmentDef>);
+    ) -> (OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>);
+
+    fn build_custom_output_order_and_program_segments<'data>(
+        custom: &CustomSectionIds,
+        output_kind: OutputKind,
+        output_sections: &OutputSections<'data, Self>,
+        secondary: &OutputSectionMap<Vec<OutputSectionId>>,
+        _linker_scripts: &[&SequencedLinkerScript<'data, Self>],
+        _phdr_map: &mut hashbrown::HashMap<&[u8], Vec<OutputSectionId>>,
+    ) -> Result<(OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>)> {
+        Ok(Self::build_output_order_and_program_segments(
+            custom,
+            output_kind,
+            output_sections,
+            secondary,
+        ))
+    }
 
     fn will_emit_section_symbol_for_partial_objects(
         _output_sections: &OutputSections<Self>,
@@ -702,6 +780,10 @@ pub(crate) trait Platform:
         false
     }
 
+    /// Whether the symbol table's first entry (index 0) is a reserved null / sentinel entry that
+    /// should be excluded from name resolution. `true` for ELF (`STN_UNDEF`).
+    const HAS_NULL_SYMBOL_ENTRY: bool = false;
+
     /// Used when the linker needs to create a symtab entry from scratch rather than copying one
     /// from an input file.
     fn default_symtab_entry() -> Self::SymtabEntry;
@@ -709,12 +791,10 @@ pub(crate) trait Platform:
     fn lookup_for_partial_link(
         _section_name: &[u8],
         _section: &Self::SectionHeader,
+        _args: &Self::Args,
     ) -> SectionRuleOutcome {
         SectionRuleOutcome::Custom
     }
-
-    /// Return a starting address in memory.
-    fn start_memory_address(output_kind: OutputKind) -> u64;
 
     fn requires_symtab_shndx(_num_sections: usize) -> bool {
         false
@@ -724,6 +804,43 @@ pub(crate) trait Platform:
         _group_sizes: &mut OutputSectionPartMap<u64>,
         _total_sizes: &mut OutputSectionPartMap<u64>,
     ) {
+    }
+
+    fn get_sizeof_headers(_header_info: &layout::HeaderInfo) -> u64 {
+        0
+    }
+
+    /// Scan result for the `.gdb_index` section, if applicable.
+    type GdbIndexScanResult<'data>: Send + Sync;
+
+    /// Compute the size of the `.gdb_index` section and return the scan result for the write phase.
+    fn compute_gdb_index_size<'data>(
+        _groups: &[crate::layout::GroupState<'data, Self>],
+    ) -> crate::error::Result<(u64, Option<Self::GdbIndexScanResult<'data>>)> {
+        Ok((0, None))
+    }
+
+    fn handle_debug_index_section<'data>(
+        _obj: &mut crate::resolution::ResolvedObject<'data, Self>,
+        _section_index: object::SectionIndex,
+        _input_section: &'data Self::SectionHeader,
+        _member: &bumpalo_herd::Member<'data>,
+        _loaded_metrics: &LoadedMetrics,
+    ) -> Result {
+        Ok(())
+    }
+
+    fn new_resolved_object_ext<'data>(
+        _symbol_id_range: crate::symbol_db::SymbolIdRange,
+        _file_id: crate::input_data::FileId,
+    ) -> Self::ResolvedObjectExt<'data> {
+        Default::default()
+    }
+
+    fn new_object_layout_state_ext<'data>(
+        _input: Self::ResolvedObjectExt<'data>,
+    ) -> Self::ObjectLayoutStateExt<'data> {
+        Default::default()
     }
 }
 
@@ -1134,11 +1251,16 @@ pub(crate) trait ProgramSegmentDef: Copy + Send + Sync + Display + 'static {
         self,
         section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
         section_id: OutputSectionId,
+        rosegment: bool,
     ) -> bool;
 
     /// Returns whether the current RW segment should end when this segment ends.
     fn should_cut_rw_segment_when_ending(self) -> bool {
         false
+    }
+
+    fn from_linker_script(_ptype: u32, _flags: u32) -> Self {
+        unreachable!("This function is only called from platforms that support linker scripts.");
     }
 }
 
@@ -1193,7 +1315,9 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn lib_search_path(&self) -> &[Box<Path>];
 
-    fn output(&self) -> &Arc<Path>;
+    fn output(&self) -> &Arc<Path> {
+        &self.common().output
+    }
 
     fn common(&self) -> &crate::args::CommonArgs;
 
@@ -1213,6 +1337,10 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn should_relax(&self) -> bool {
         false
+    }
+
+    fn rosegment(&self) -> bool {
+        true
     }
 
     fn should_emit_got_plt_syms(&self) -> bool {
@@ -1290,7 +1418,13 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         false
     }
 
-    fn relocation_model(&self) -> crate::args::RelocationModel;
+    fn relocation_model(&self) -> crate::args::RelocationModel {
+        self.common().relocation_model
+    }
+
+    fn should_write_gdb_index(&self) -> bool {
+        false
+    }
 
     fn should_output_executable(&self) -> bool;
 

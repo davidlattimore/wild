@@ -785,14 +785,14 @@ mod tests {
     #[test]
     fn parse_rust_version_script() {
         let data = ScriptData {
-            raw: br#"
+            raw: br"
                     {
                     global:
                         foo;
                         bar;
                     local:
                         *;
-                    };"#,
+                    };",
         };
         let script = VersionScript::parse(data).unwrap();
         let VersionScript::Rust(rust_script) = script else {
@@ -810,7 +810,7 @@ mod tests {
     #[test]
     fn test_parse_simple_version_script() {
         let data = ScriptData {
-            raw: br#"
+            raw: br"
                     # Comment starting with a hash
                     {global:
                         /* Single-line comment */
@@ -822,7 +822,7 @@ mod tests {
                         /* Multi-line
                            comment */
                         *;
-                    };"#,
+                    };",
         };
         let script = RegularVersionScript::parse(data).unwrap();
         let version_body = &script.versions[0].version_body;
@@ -854,7 +854,7 @@ mod tests {
     #[test]
     fn test_parse_version_script() {
         let data = ScriptData {
-            raw: br#"
+            raw: br"
                 VERS_1.1 {
                     global:
                         foo1;
@@ -865,7 +865,7 @@ mod tests {
                 VERS_1.2 {
                     foo2;
                 } VERS_1.1;
-            "#,
+            ",
         };
         let script = RegularVersionScript::parse(data).unwrap();
         assert_eq!(script.versions.len(), 3);
@@ -912,7 +912,7 @@ mod tests {
     #[test]
     fn single_line_version_script() {
         let data = ScriptData {
-            raw: br#"VERSION42 { global: *; };"#,
+            raw: br"VERSION42 { global: *; };",
         };
         RegularVersionScript::parse(data).unwrap();
     }
@@ -1082,7 +1082,7 @@ mod tests {
     #[test]
     fn test_version_order() {
         let data = ScriptData {
-            raw: br#"
+            raw: br"
                 VERS_1.1 {
                     foo;
                     foo?;
@@ -1094,7 +1094,7 @@ mod tests {
                     foo*;
                     bar;
                 } VERS_1.1;
-            "#,
+            ",
         };
         let script = RegularVersionScript::parse(data).unwrap();
         let sym = UnversionedSymbolName::prehashed;
@@ -1113,7 +1113,7 @@ mod tests {
     #[test]
     fn test_escape_sequences() {
         let data = ScriptData {
-            raw: br#"
+            raw: br"
                 {
                     global:
                         foo\*bar;
@@ -1123,7 +1123,7 @@ mod tests {
                         b*;
                         f?;
                 };
-            "#,
+            ",
         };
         let script = RegularVersionScript::parse(data).unwrap();
         let version_body = &script.versions[0].version_body;
@@ -1165,7 +1165,7 @@ mod tests {
     #[test]
     fn test_negation() {
         let data = ScriptData {
-            raw: br#"
+            raw: br"
                 VERS_1.1 {
                     f*;
                 };
@@ -1173,7 +1173,7 @@ mod tests {
                 VERS_1.2 {
                     f[^o]*;
                 } VERS_1.1;
-            "#,
+            ",
         };
         let script = RegularVersionScript::parse(data).unwrap();
         let sym = UnversionedSymbolName::prehashed;

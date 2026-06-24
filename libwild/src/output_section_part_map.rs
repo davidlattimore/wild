@@ -2,9 +2,7 @@ use crate::alignment;
 use crate::alignment::Alignment;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
-use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
-use crate::output_section_map::OutputSectionMap;
 use crate::part_id::PartId;
 use crate::platform::Platform;
 use std::mem::take;
@@ -182,28 +180,6 @@ impl<T: Default> OutputSectionPartMap<T> {
     }
 }
 
-impl<T: Copy> OutputSectionPartMap<T> {
-    /// Merges the parts of each section together.
-    pub(crate) fn merge_parts<U: Default + Copy>(
-        &self,
-        mut cb: impl FnMut(OutputSectionId, &[T]) -> U,
-    ) -> OutputSectionMap<U> {
-        let num_sections = PartId::from_usize(self.parts.len())
-            .output_section_id()
-            .as_usize();
-        let mut parts = self.parts.as_slice();
-        let values_out = (0..num_sections)
-            .map(|i| {
-                let num_parts = OutputSectionId::from_usize(i).num_parts();
-                let (section_parts, rest) = parts.split_at(num_parts);
-                parts = rest;
-                cb(OutputSectionId::from_usize(i), section_parts)
-            })
-            .collect();
-        OutputSectionMap::from_values(values_out)
-    }
-}
-
 impl<T: AddAssign + Copy + Default> OutputSectionPartMap<T> {
     pub(crate) fn merge(&mut self, rhs: &Self) {
         if self.num_parts() < rhs.num_parts() {
@@ -227,13 +203,18 @@ impl<'out> OutputSectionPartMap<&'out mut [u8]> {
 #[test]
 fn test_merge_parts() {
     use crate::output_section_id;
+    use crate::output_section_id::OutputSectionId;
 
     let output_sections =
         crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
-    let (output_order, _program_segments) =
-        output_sections.output_order(crate::output_kind::OutputKind::StaticExecutable(
-            crate::args::RelocationModel::NonRelocatable,
-        ));
+    let (output_order, _program_segments) = output_sections
+        .output_order(
+            crate::output_kind::OutputKind::StaticExecutable(
+                crate::args::RelocationModel::NonRelocatable,
+            ),
+            &[],
+        )
+        .unwrap();
     let mut expected_sum_of_sums = 0;
     let all_1 = output_sections.new_part_map::<u32>().output_order_map(
         &output_order,
@@ -247,22 +228,20 @@ fn test_merge_parts() {
     // Subtract the Mach-O specific sections.
     let num_regular_sections = output_sections.num_regular_sections() - 1;
     let mut num_sections_with_17 = 0;
-    let sum_of_1s: OutputSectionMap<u32> = all_1.merge_parts(|_, values| values.iter().sum());
+
+    let mut sum_of_1s = output_sections.new_section_map::<u32>();
+    sum_of_1s.for_each_mut(|section_id, sum| {
+        let range = section_id.part_id_range();
+        *sum = all_1[range].iter().sum();
+    });
 
     const SKIP_SECTIONS: &[OutputSectionId] = &[
         crate::part_id::UNMAPPED.output_section_id(),
-        output_section_id::PAGEZERO_SEGMENT,
-        output_section_id::TEXT_SEGMENT,
-        output_section_id::DATA_SEGMENT,
         output_section_id::CSTRING,
-        output_section_id::ENTRY_POINT,
         output_section_id::LINK_EDIT_SEGMENT,
-        output_section_id::ENTRY_POINT,
-        output_section_id::DYLD_CHAINED_FIXUPS,
+        output_section_id::LOAD_COMMANDS,
         output_section_id::CHAINED_FIXUP_TABLE,
-        output_section_id::SYMTAB_COMMAND,
         output_section_id::CODE_SIGNATURE,
-        output_section_id::CODE_SIGNATURE_COMMAND,
         // Wasm specific sections.
         output_section_id::WASM_TYPE,
         output_section_id::WASM_IMPORT,
@@ -294,7 +273,13 @@ fn test_merge_parts() {
 
     let mut headers_only = output_sections.new_part_map::<u32>();
     *headers_only.get_mut(crate::part_id::FILE_HEADER) += 42;
-    let merged: OutputSectionMap<u32> = headers_only.merge_parts(|_, values| values.iter().sum());
+
+    let mut merged = output_sections.new_section_map::<u32>();
+    merged.for_each_mut(|section_id, sum| {
+        let range = section_id.part_id_range();
+        *sum = headers_only[range].iter().sum();
+    });
+
     assert_eq!(*merged.get(crate::output_section_id::FILE_HEADER), 42);
     assert_eq!(*merged.get(crate::output_section_id::TEXT), 0);
     assert_eq!(*merged.get(crate::output_section_id::BSS), 0);
@@ -343,10 +328,14 @@ fn test_output_order_map_consistent() {
 
     let output_sections =
         crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
-    let (output_order, _program_segments) =
-        output_sections.output_order(crate::output_kind::OutputKind::StaticExecutable(
-            crate::args::RelocationModel::NonRelocatable,
-        ));
+    let (output_order, _program_segments) = output_sections
+        .output_order(
+            crate::output_kind::OutputKind::StaticExecutable(
+                crate::args::RelocationModel::NonRelocatable,
+            ),
+            &[],
+        )
+        .unwrap();
     let part_map = output_sections.new_part_map::<u32>();
 
     // First, make sure that all our built-in part-ids are here. If they're not, we'd fail anyway,
@@ -396,10 +385,14 @@ fn test_output_order_map() {
 
     let output_sections =
         crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
-    let (output_order, _program_segments) =
-        output_sections.output_order(crate::output_kind::OutputKind::StaticExecutable(
-            crate::args::RelocationModel::NonRelocatable,
-        ));
+    let (output_order, _program_segments) = output_sections
+        .output_order(
+            crate::output_kind::OutputKind::StaticExecutable(
+                crate::args::RelocationModel::NonRelocatable,
+            ),
+            &[],
+        )
+        .unwrap();
     let mut part_map = output_sections.new_part_map::<u32>();
 
     const PART_ID1: PartId = output_section_id::DATA.part_id_with_alignment(alignment::USIZE);

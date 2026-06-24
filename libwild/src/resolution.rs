@@ -775,6 +775,8 @@ pub(crate) struct ResolvedObject<'data, P: Platform> {
     /// Total size in bytes of all executable input sections in this object. Used to determine
     /// early-on if we can be sure that thunks won't be needed.
     pub(crate) executable_bytes: u64,
+
+    pub(crate) format_specific: P::ResolvedObjectExt<'data>,
 }
 
 #[derive(Debug)]
@@ -1205,7 +1207,7 @@ fn apply_init_fini_secondaries<'data, P: Platform>(
         match slot {
             SectionSlot::Unloaded(_) | SectionSlot::MustLoad(_) => {}
             _ => continue,
-        };
+        }
 
         let sid =
             output_sections.get_or_create_init_fini_secondary(d.primary, d.priority, d.alignment);
@@ -1215,6 +1217,7 @@ fn apply_init_fini_secondaries<'data, P: Platform>(
 
 impl<'data, P: Platform> ResolvedObject<'data, P> {
     fn new(common: ResolvedCommon<'data, P>, section_id_range: SectionIdRange) -> Self {
+        let format_specific = P::new_resolved_object_ext(common.symbol_id_range, common.file_id);
         Self {
             common,
             section_id_range,
@@ -1226,6 +1229,7 @@ impl<'data, P: Platform> ResolvedObject<'data, P> {
             init_fini_sections: Default::default(),
             script_sorted_sections: Default::default(),
             executable_bytes: 0,
+            format_specific,
         }
     }
 }
@@ -1321,7 +1325,7 @@ fn resolve_section<'data, P: Platform>(
     };
 
     let rule_outcome = if args.should_output_partial_object() {
-        P::lookup_for_partial_link(section_name, input_section)
+        P::lookup_for_partial_link(section_name, input_section, args)
     } else {
         rules.lookup(section_name, file_name, input_section)
     };
@@ -1400,6 +1404,16 @@ fn resolve_section<'data, P: Platform>(
             part_id = part_id::CUSTOM_PLACEHOLDER;
             unloaded_section = UnloadedSection::new();
         }
+        SectionRuleOutcome::DebugIndex => {
+            P::handle_debug_index_section(
+                obj,
+                input_section_index,
+                input_section,
+                allocator,
+                loaded_metrics,
+            )?;
+            return Ok((SectionSlot::Discard, part_id::UNMAPPED));
+        }
         SectionRuleOutcome::Custom => {
             part_id = part_id::CUSTOM_PLACEHOLDER;
             unloaded_section = UnloadedSection::new();
@@ -1411,7 +1425,7 @@ fn resolve_section<'data, P: Platform>(
                 part_id::UNMAPPED,
             ));
         }
-    };
+    }
 
     if part_id == part_id::CUSTOM_PLACEHOLDER {
         let custom_section = CustomSectionDetails {
@@ -1469,11 +1483,11 @@ fn resolve_symbols<'data, 'scope, P: Platform>(
         .try_for_each(
             |((local_symbol_index, local_symbol), definition)| -> Result {
                 // Don't try to resolve symbols that are already defined, e.g. locals and globals
-                // that we define. Also don't try to resolve symbol zero - the undefined symbol.
-                // Hidden symbols exported from shared objects don't make sense, so we skip
-                // resolving them as well.
+                // that we define. Also skip the null symbol entry at index 0 for formats that
+                // have one. Hidden symbols exported from shared objects don't make sense, so we
+                // skip resolving them as well.
                 if !definition.is_undefined()
-                    || start_symbol_offset + local_symbol_index == 0
+                    || (P::HAS_NULL_SYMBOL_ENTRY && start_symbol_offset + local_symbol_index == 0)
                     || (obj.is_dynamic() && local_symbol.is_hidden())
                 {
                     return Ok(());

@@ -53,10 +53,7 @@ fn get_pointer_list<A: Arch>(bin: &Binary, section_name: &str) -> Result<Vec<Res
 
         if let Some(relocation) = relocation {
             if let RelocationTarget::Symbol(symbol_index) = relocation.target() {
-                let dynsym = bin
-                    .elf_file
-                    .dynamic_symbol_table()
-                    .context("Missing .dynsym")?;
+                let dynsym = bin.file.dynamic_symbol_table().context("Missing .dynsym")?;
 
                 symbol_names.push(String::from_utf8_lossy(
                     dynsym.symbol_by_index(symbol_index)?.name_bytes()?,
@@ -78,7 +75,7 @@ fn get_pointer_list<A: Arch>(bin: &Binary, section_name: &str) -> Result<Vec<Res
 
         if symbol_names.is_empty() && address != 0 {
             for symbol_index in bin.address_index.symbols_at_address(address) {
-                let symbol = bin.elf_file.symbol_by_index(*symbol_index)?;
+                let symbol = bin.file.symbol_by_index(*symbol_index)?;
 
                 let name_bytes = symbol.name_bytes()?;
 

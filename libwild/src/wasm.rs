@@ -1,25 +1,48 @@
 // TODO
-#![allow(unused_variables)]
 #![allow(unused)]
 
 use crate::alignment::Alignment;
 use crate::args::wasm::WasmArgs;
+use crate::bail;
 use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::layout;
 use crate::layout_rules::SectionKind;
 use crate::output_section_id::SectionName;
 use crate::platform;
+use crate::symbol_db::SymbolDb;
+use crate::wasm_writer::OutputExport;
+use crate::wasm_writer::OutputGlobal;
+use crate::wasm_writer::OutputImport;
+use crate::wasm_writer::OutputImportEntity;
+use hashbrown::HashMap;
+use leb128::write::unsigned_len as uleb128_size;
 use linker_utils::utils::u32_from_slice;
+use rayon::prelude::*;
 use std::ops::Range;
+use wasmparser::BinaryReader;
+use wasmparser::CodeSectionReader;
+use wasmparser::ConstExpr;
+use wasmparser::DataKind;
+use wasmparser::DataSectionReader;
+use wasmparser::ExportSectionReader;
+use wasmparser::FunctionSectionReader;
+use wasmparser::GlobalSectionReader;
+use wasmparser::GlobalType;
+use wasmparser::ImportSectionReader;
 use wasmparser::KnownCustom;
 use wasmparser::Linking;
+use wasmparser::MemorySectionReader;
+use wasmparser::MemoryType;
 use wasmparser::Parser;
 use wasmparser::Payload;
 use wasmparser::RelocationEntry;
 use wasmparser::SegmentFlags;
 use wasmparser::SymbolFlags;
 use wasmparser::SymbolInfo;
+use wasmparser::TypeRef;
+use wasmparser::TypeSectionReader;
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Wasm;
@@ -276,6 +299,12 @@ impl WasmRelocation {
     }
 }
 
+/// Write `value` as an unsigned LEB128 into `buf`, returning the number of bytes written.
+pub(crate) fn write_uleb128(buf: &mut [u8], value: u64) -> usize {
+    let mut writable = &mut *buf;
+    leb128::write::unsigned(&mut writable, value).unwrap()
+}
+
 /// Write `value` as a 5-byte fixed-width unsigned LEB128. Used for wasm reloc slots that reserve
 /// exactly 5 bytes regardless of the encoded value.
 pub(crate) fn write_uleb128_5(buf: &mut [u8; 5], value: u32) {
@@ -334,10 +363,328 @@ pub(crate) fn apply_relocation(
         | reloc_type::FUNCTION_INDEX_I32 => {
             slot.copy_from_slice(&value.to_le_bytes());
         }
-        other => crate::bail!("unsupported Wasm relocation type {other}"),
+        other => bail!("unsupported Wasm relocation type {other}"),
+    }
+    Ok(())
+}
+
+/// A single imported function. `module` / `name` borrow into the source bytes.
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct WasmFunctionImport<'data> {
+    pub(crate) module: &'data str,
+    pub(crate) name: &'data str,
+    /// Index into the `type` section.
+    pub(crate) type_index: u32,
+}
+
+/// A single imported global.
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct WasmGlobalImport<'data> {
+    pub(crate) module: &'data str,
+    pub(crate) name: &'data str,
+    pub(crate) ty: GlobalType,
+}
+
+/// A function defined inside the module (not imported). Stored as the index into the `type`
+/// section that gives its signature; the function body lives in the `code` section.
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct WasmModuleFunction {
+    pub(crate) type_index: u32,
+}
+
+/// A global defined inside the module (not imported).
+#[derive(Debug, Clone)]
+pub(crate) struct WasmModuleGlobal<'data> {
+    pub(crate) ty: GlobalType,
+    pub(crate) init_expr: ConstExpr<'data>,
+}
+
+/// A single data segment from the `data` section.
+#[derive(Debug, Clone)]
+pub(crate) struct WasmDataSegment<'data> {
+    pub(crate) kind: DataKind<'data>,
+    pub(crate) data: &'data [u8],
+    /// Byte offset of this segment's encoding within the input data section payload.
+    pub(crate) section_offset: u32,
+}
+
+/// Layout for one data segment within an input object.
+#[derive(Debug)]
+pub(crate) struct WasmDataSegmentLayout<'data> {
+    /// Index of this segment within the object's data section.
+    pub(crate) segment_index: u32,
+    pub(crate) kind: DataKind<'data>,
+    pub(crate) data: &'data [u8],
+    /// Relocations targeting this segment's payload bytes (segment-local offsets).
+    pub(crate) relocations: Vec<WasmRelocation>,
+    /// Output memory index after index remapping.
+    pub(crate) output_memory_index: u32,
+    /// Byte offset within the output module's linear memory where the payload is placed.
+    pub(crate) output_memory_offset: u32,
+    /// Byte offset of this segment's encoding within the output data section payload.
+    pub(crate) output_section_offset: u32,
+    /// Encoded size of this segment within the output data section payload.
+    pub(crate) encoded_output_size: u32,
+}
+
+/// Per-object data segment layout.
+#[derive(Debug, Default)]
+pub(crate) struct WasmObjectDataLayout<'data> {
+    pub(crate) file_id: crate::input_data::FileId,
+    pub(crate) segments: Vec<WasmDataSegmentLayout<'data>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ResolvedCodeReloc {
+    /// Byte offset within the body's bytes where the relocation should be applied.
+    pub(crate) offset: u32,
+    /// Wasm relocation type code.
+    pub(crate) ty: u8,
+    /// Resolved output value to write at the relocation site.
+    pub(crate) value: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WasmFunctionBody<'data> {
+    /// Raw body bytes (locals + operators) without the LEB128 size prefix.
+    pub(crate) bytes: &'data [u8],
+    /// Byte offset of this body (starting at its size prefix) within the code section payload.
+    pub(crate) code_offset: u32,
+    pub(crate) relocations: Vec<ResolvedCodeReloc>,
+}
+
+impl<'data> File<'data> {
+    /// Construct a `BinaryReader` over the payload of the standard section with the given id,
+    /// or `None` if the input has no such section.
+    fn standard_section_reader(&self, id: u8) -> Option<BinaryReader<'data>> {
+        let section_index = self.standard_section_index.get(id as usize)?.as_ref()?;
+        let header = self.sections.get(*section_index as usize)?;
+        let payload = self.data.get(header.payload_range_usize())?;
+        Some(BinaryReader::new(
+            payload,
+            header.payload_range.start as usize,
+        ))
     }
 
-    Ok(())
+    pub(crate) fn import_section_reader(&self) -> Result<Option<ImportSectionReader<'data>>> {
+        self.standard_section_reader(section_id::IMPORT)
+            .map(|r| ImportSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    pub(crate) fn function_section_reader(&self) -> Result<Option<FunctionSectionReader<'data>>> {
+        self.standard_section_reader(section_id::FUNCTION)
+            .map(|r| FunctionSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    pub(crate) fn global_section_reader(&self) -> Result<Option<GlobalSectionReader<'data>>> {
+        self.standard_section_reader(section_id::GLOBAL)
+            .map(|r| GlobalSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    pub(crate) fn data_section_reader(&self) -> Result<Option<DataSectionReader<'data>>> {
+        self.standard_section_reader(section_id::DATA)
+            .map(|r| DataSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    pub(crate) fn code_section_reader(&self) -> Result<Option<CodeSectionReader<'data>>> {
+        self.standard_section_reader(section_id::CODE)
+            .map(|r| CodeSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    pub(crate) fn memory_section_reader(&self) -> Result<Option<MemorySectionReader<'data>>> {
+        self.standard_section_reader(section_id::MEMORY)
+            .map(|r| MemorySectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    pub(crate) fn export_section_reader(&self) -> Result<Option<ExportSectionReader<'data>>> {
+        self.standard_section_reader(section_id::EXPORT)
+            .map(|r| ExportSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    pub(crate) fn type_section_reader(&self) -> Result<Option<TypeSectionReader<'data>>> {
+        self.standard_section_reader(section_id::TYPE)
+            .map(|r| TypeSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    /// Imported functions in declaration order. Imports of other kinds are skipped.
+    pub(crate) fn function_imports(&self) -> Result<Vec<WasmFunctionImport<'data>>> {
+        let Some(reader) = self.import_section_reader()? else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for import in reader.into_imports() {
+            let import = import?;
+            if let TypeRef::Func(type_index) = import.ty {
+                out.push(WasmFunctionImport {
+                    module: import.module,
+                    name: import.name,
+                    type_index,
+                });
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Imported globals in declaration order. Imports of other kinds are skipped.
+    pub(crate) fn global_imports(&self) -> Result<Vec<WasmGlobalImport<'data>>> {
+        let Some(reader) = self.import_section_reader()? else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for import in reader.into_imports() {
+            let import = import?;
+            if let TypeRef::Global(ty) = import.ty {
+                out.push(WasmGlobalImport {
+                    module: import.module,
+                    name: import.name,
+                    ty,
+                });
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Functions defined in this module (excluding imports), in `function` section order.
+    pub(crate) fn module_functions(&self) -> Result<Vec<WasmModuleFunction>> {
+        let Some(reader) = self.function_section_reader()? else {
+            return Ok(Vec::new());
+        };
+
+        reader
+            .into_iter()
+            .map(|res| {
+                res.map(|type_index| WasmModuleFunction { type_index })
+                    .map_err(Into::into)
+            })
+            .collect()
+    }
+
+    /// Globals defined in this module (excluding imports), in `global` section order.
+    pub(crate) fn module_globals(&self) -> Result<Vec<WasmModuleGlobal<'data>>> {
+        let Some(reader) = self.global_section_reader()? else {
+            return Ok(Vec::new());
+        };
+
+        reader
+            .into_iter()
+            .map(|res| {
+                res.map(|g| WasmModuleGlobal {
+                    ty: g.ty,
+                    init_expr: g.init_expr,
+                })
+                .map_err(Into::into)
+            })
+            .collect()
+    }
+
+    pub(crate) fn memories(&self) -> Result<Vec<MemoryType>> {
+        let Some(reader) = self.memory_section_reader()? else {
+            return Ok(Vec::new());
+        };
+        reader
+            .into_iter()
+            .map(|res| res.map_err(Into::into))
+            .collect()
+    }
+
+    /// Function bodies in code-section order. The returned bytes include the body size prefix.
+    pub(crate) fn function_bodies(&self) -> Result<Vec<WasmFunctionBody<'data>>> {
+        let Some(reader) = self.code_section_reader()? else {
+            return Ok(Vec::new());
+        };
+        let code_payload_start = self.standard_section_index[section_id::CODE as usize]
+            .and_then(|i| self.sections.get(i as usize))
+            .map_or(0, |h| h.payload_range.start);
+        reader
+            .into_iter()
+            .map(|res| {
+                res.map(|body| {
+                    let range = body.range();
+                    WasmFunctionBody {
+                        bytes: &self.data[range.clone()],
+                        code_offset: range.start as u32 - code_payload_start,
+                        relocations: Vec::new(),
+                    }
+                })
+                .map_err(Into::into)
+            })
+            .collect()
+    }
+
+    /// Data segments in declaration order.
+    pub(crate) fn data_segments(&self) -> Result<Vec<WasmDataSegment<'data>>> {
+        let Some(reader) = self.data_section_reader()? else {
+            return Ok(Vec::new());
+        };
+
+        let mut segments = Vec::new();
+        let mut section_offset = 0u32;
+        for res in reader {
+            let d = res?;
+            segments.push(WasmDataSegment {
+                kind: d.kind.clone(),
+                data: d.data,
+                section_offset,
+            });
+            section_offset = section_offset
+                .checked_add(wasm_data_segment_encoded_size(&d.kind, d.data.len())?)
+                .ok_or_else(|| crate::error!("Wasm data section offset overflow"))?;
+        }
+        Ok(segments)
+    }
+
+    /// Number of imported entries in the `function` index space.
+    pub(crate) fn function_import_count(&self) -> Result<u32> {
+        self.count_imports_of(|ty| matches!(ty, TypeRef::Func(_)))
+    }
+
+    /// Number of imported entries in the `global` index space.
+    pub(crate) fn global_import_count(&self) -> Result<u32> {
+        self.count_imports_of(|ty| matches!(ty, TypeRef::Global(_)))
+    }
+
+    /// Size of the `function` index space: imports + module-defined functions.
+    pub(crate) fn total_function_count(&self) -> Result<u32> {
+        let module_count = self
+            .function_section_reader()?
+            .as_ref()
+            .map_or(0, |r| r.count());
+
+        Ok(self.function_import_count()? + module_count)
+    }
+
+    /// Size of the `global` index space: imports + module-defined globals.
+    pub(crate) fn total_global_count(&self) -> Result<u32> {
+        let module_count = self
+            .global_section_reader()?
+            .as_ref()
+            .map_or(0, |r| r.count());
+        Ok(self.global_import_count()? + module_count)
+    }
+
+    fn count_imports_of(&self, mut matches_kind: impl FnMut(&TypeRef) -> bool) -> Result<u32> {
+        let Some(reader) = self.import_section_reader()? else {
+            return Ok(0);
+        };
+        let mut count: u32 = 0;
+        for import in reader.into_imports() {
+            if matches_kind(&import?.ty) {
+                count += 1;
+            }
+        }
+
+        Ok(count)
+    }
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
@@ -966,6 +1313,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
         self,
         _section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
         section_id: crate::output_section_id::OutputSectionId,
+        _rosegment: bool,
     ) -> bool {
         use crate::output_section_id as osid;
 
@@ -1089,7 +1437,7 @@ pub(crate) struct DynamicTagValues<'data> {
 
 impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues<'data> {
     fn lib_name(&self, input: &crate::input_data::InputRef<'data>) -> &'data [u8] {
-        todo!()
+        input.lib_name()
     }
 }
 
@@ -1144,6 +1492,1080 @@ impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct WasmLayout<'data> {
+    pub(crate) output_types: Vec<wasmparser::FuncType>,
+    pub(crate) imports: Vec<OutputImport<'data>>,
+    pub(crate) function_type_indices: Vec<u32>,
+    pub(crate) globals: Vec<OutputGlobal<'data>>,
+    pub(crate) exports: Vec<OutputExport<'data>>,
+    pub(crate) function_bodies: Vec<WasmFunctionBody<'data>>,
+    pub(crate) memories: Vec<MemoryType>,
+    pub(crate) unsupported_output: Vec<&'static str>,
+    pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
+    pub(crate) object_data_layouts: Vec<WasmObjectDataLayout<'data>>,
+    pub(crate) encoded_sections: WasmEncodedSections,
+    pub(crate) code_section_size: u64,
+    pub(crate) data_section_size: u64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct WasmEncodedSections {
+    pub(crate) ty: Option<Vec<u8>>,
+    pub(crate) import: Option<Vec<u8>>,
+    pub(crate) function: Option<Vec<u8>>,
+    pub(crate) global: Option<Vec<u8>>,
+    pub(crate) export: Option<Vec<u8>>,
+    pub(crate) memory: Option<Vec<u8>>,
+}
+
+impl WasmEncodedSections {
+    fn add_sizes_to(&self, sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>) {
+        add_encoded_section_size(sizes, crate::part_id::WASM_TYPE, self.ty.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_IMPORT, self.import.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_FUNCTION, self.function.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_GLOBAL, self.global.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_EXPORT, self.export.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_MEMORY, self.memory.as_ref());
+    }
+}
+
+fn add_encoded_section_size(
+    sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+    part_id: crate::part_id::PartId,
+    section: Option<&Vec<u8>>,
+) {
+    if let Some(bytes) = section {
+        sizes.increment(part_id, bytes.len() as u64);
+    }
+}
+
+fn encode_wasm_section(section: &impl wasm_encoder::Section) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    section.append_to(&mut bytes);
+    bytes
+}
+
+impl<'data> WasmLayout<'data> {
+    fn encode_metadata_sections(&mut self) -> Result {
+        let type_section = crate::wasm_writer::build_type_section(&self.output_types)?;
+        if !type_section.is_empty() {
+            self.encoded_sections.ty = Some(encode_wasm_section(&type_section));
+        }
+
+        let import_section = crate::wasm_writer::build_import_section(&self.imports)?;
+        if !import_section.is_empty() {
+            self.encoded_sections.import = Some(encode_wasm_section(&import_section));
+        }
+
+        let function_section =
+            crate::wasm_writer::build_function_section(&self.function_type_indices);
+        if !function_section.is_empty() {
+            self.encoded_sections.function = Some(encode_wasm_section(&function_section));
+        }
+
+        let global_section = crate::wasm_writer::build_global_section(&self.globals)?;
+        if !global_section.is_empty() {
+            self.encoded_sections.global = Some(encode_wasm_section(&global_section));
+        }
+
+        let export_section = crate::wasm_writer::build_export_section(&self.exports);
+        if !export_section.is_empty() {
+            self.encoded_sections.export = Some(encode_wasm_section(&export_section));
+        }
+
+        let memory_section = crate::wasm_writer::build_memory_section(&self.memories);
+        if !memory_section.is_empty() {
+            self.encoded_sections.memory = Some(encode_wasm_section(&memory_section));
+        }
+
+        self.code_section_size = compute_code_section_size(&self.function_bodies);
+        self.data_section_size = compute_data_section_size(&self.object_data_layouts);
+
+        Ok(())
+    }
+
+    fn add_code_section_size(
+        &self,
+        sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+    ) {
+        if self.code_section_size > 0 {
+            sizes.increment(crate::part_id::WASM_CODE, self.code_section_size);
+        }
+    }
+
+    fn add_data_section_size(
+        &self,
+        sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+    ) {
+        if self.data_section_size > 0 {
+            sizes.increment(crate::part_id::WASM_DATA, self.data_section_size);
+        }
+    }
+}
+
+fn const_expr_encoded_size(expr: &ConstExpr<'_>) -> Result<u32> {
+    let body = crate::wasm_writer::const_expr_body(expr)
+        .ok_or_else(|| crate::error!("Wasm const expression is missing end opcode"))?;
+    // instruction bytes plus the trailing `end` (0x0B) opcode
+    u32::try_from(body.len() + 1).context("Wasm const expression too large")
+}
+
+/// Encoded size of one segment in the data section payload. See `data` in
+/// <https://webassembly.github.io/spec/core/binary/modules.html#data-section>.
+fn wasm_data_segment_encoded_size(kind: &DataKind<'_>, data_len: usize) -> Result<u32> {
+    let data_len = u32::try_from(data_len).context("Wasm data segment too large")?;
+    let payload_len = uleb128_size(u64::from(data_len)) as u32 + data_len;
+    match kind {
+        DataKind::Passive => Ok(1 + payload_len),
+        DataKind::Active {
+            memory_index,
+            offset_expr,
+        } => {
+            let init_len = const_expr_encoded_size(offset_expr)?;
+            let header = if *memory_index == 0 {
+                1
+            } else {
+                1 + uleb128_size(u64::from(*memory_index)) as u32
+            };
+            Ok(header
+                .checked_add(init_len)
+                .and_then(|n| n.checked_add(payload_len))
+                .ok_or_else(|| crate::error!("Wasm data segment size overflow"))?)
+        }
+    }
+}
+
+/// Byte length of the offset `expr` we emit (`i32.const` + LEB + `end`).
+fn output_i32_const_init_expr_size(offset: u32) -> u32 {
+    1 + uleb128_size(u64::from(offset)) as u32 + 1
+}
+
+fn output_data_segment_encoded_size(
+    kind: &DataKind<'_>,
+    data_len: usize,
+    output_memory_offset: u32,
+    output_memory_index: u32,
+) -> Result<u32> {
+    let data_len = u32::try_from(data_len).context("Wasm data segment too large")?;
+    let payload_len = uleb128_size(u64::from(data_len)) as u32 + data_len;
+    match kind {
+        DataKind::Passive => bail!("passive data segments are not emitted"),
+        DataKind::Active { .. } => {
+            let init_len = output_i32_const_init_expr_size(output_memory_offset);
+            let header = if output_memory_index == 0 {
+                1
+            } else {
+                1 + uleb128_size(u64::from(output_memory_index)) as u32
+            };
+            Ok(header
+                .checked_add(init_len)
+                .and_then(|n| n.checked_add(payload_len))
+                .ok_or_else(|| crate::error!("Wasm data segment size overflow"))?)
+        }
+    }
+}
+
+fn data_segment_payload_offset_in_section(kind: &DataKind<'_>, data_len: usize) -> Result<u32> {
+    let encoded = wasm_data_segment_encoded_size(kind, data_len)?;
+    let data_len = u32::try_from(data_len).context("Wasm data segment too large")?;
+    let payload_len = uleb128_size(u64::from(data_len)) as u32 + data_len;
+    encoded
+        .checked_sub(payload_len)
+        .ok_or_else(|| crate::error!("Wasm data segment payload offset underflow"))
+}
+
+fn classify_data_relocations(
+    segments: &[WasmDataSegment<'_>],
+    relocs: &[WasmRelocation],
+) -> Vec<Vec<WasmRelocation>> {
+    let mut per_segment = vec![Vec::new(); segments.len()];
+    for &reloc in relocs {
+        let Some(segment_idx) = segments.iter().position(|segment| {
+            let Ok(encoded) = wasm_data_segment_encoded_size(&segment.kind, segment.data.len())
+            else {
+                return false;
+            };
+            let start = segment.section_offset;
+            let end = start.saturating_add(encoded);
+            reloc.offset >= start && reloc.offset < end
+        }) else {
+            continue;
+        };
+        let segment = &segments[segment_idx];
+        let Ok(payload_start) =
+            data_segment_payload_offset_in_section(&segment.kind, segment.data.len())
+        else {
+            continue;
+        };
+        let segment_payload_start = segment.section_offset.saturating_add(payload_start);
+        if reloc.offset < segment_payload_start {
+            continue;
+        }
+        per_segment[segment_idx].push(WasmRelocation {
+            offset: reloc.offset - segment_payload_start,
+            ..reloc
+        });
+    }
+    per_segment
+}
+
+fn layout_object_data<'data>(
+    input: &WasmObjectLayoutInput<'data>,
+    index_map: &WasmObjectIndexMap,
+    memory_cursor: &mut u32,
+    section_cursor: &mut u32,
+) -> Result<WasmObjectDataLayout<'data>> {
+    let mut segment_relocations =
+        classify_data_relocations(&input.data_segments, &input.data_relocations);
+    let mut segments = Vec::with_capacity(input.data_segments.len());
+    for (segment_index, segment) in input.data_segments.iter().enumerate() {
+        let DataKind::Active { memory_index, .. } = segment.kind else {
+            bail!("passive data segments are not emitted");
+        };
+        let output_memory_index =
+            remap_wasm_index(&index_map.memory_indices, memory_index, "memory")?;
+        let output_memory_offset = *memory_cursor;
+        let output_section_offset = *section_cursor;
+        let encoded_output_size = output_data_segment_encoded_size(
+            &segment.kind,
+            segment.data.len(),
+            output_memory_offset,
+            output_memory_index,
+        )?;
+        *memory_cursor = memory_cursor
+            .checked_add(u32::try_from(segment.data.len()).context("Wasm data segment too large")?)
+            .ok_or_else(|| crate::error!("Wasm output memory offset overflow"))?;
+        *section_cursor = section_cursor
+            .checked_add(encoded_output_size)
+            .ok_or_else(|| crate::error!("Wasm data section offset overflow"))?;
+        segments.push(WasmDataSegmentLayout {
+            segment_index: u32::try_from(segment_index).context("too many Wasm data segments")?,
+            kind: segment.kind.clone(),
+            data: segment.data,
+            relocations: std::mem::take(&mut segment_relocations[segment_index]),
+            output_memory_index,
+            output_memory_offset,
+            output_section_offset,
+            encoded_output_size,
+        });
+    }
+    Ok(WasmObjectDataLayout {
+        file_id: input.file_id,
+        segments,
+    })
+}
+
+fn compute_data_section_size(object_data_layouts: &[WasmObjectDataLayout<'_>]) -> u64 {
+    let segment_count: u32 = object_data_layouts
+        .iter()
+        .map(|obj| u32::try_from(obj.segments.len()).unwrap_or(u32::MAX))
+        .sum();
+    if segment_count == 0 {
+        return 0;
+    }
+    let count_leb_size = uleb128_size(u64::from(segment_count)) as u64;
+    let segments_total: u64 = object_data_layouts
+        .iter()
+        .flat_map(|obj| obj.segments.iter())
+        .map(|segment| u64::from(segment.encoded_output_size))
+        .sum();
+    let payload_size = count_leb_size + segments_total;
+    let payload_size_leb_size = uleb128_size(payload_size) as u64;
+
+    // `section` envelope. See <https://webassembly.github.io/spec/core/binary/modules.html#binary-section>
+    1 + payload_size_leb_size + payload_size
+}
+
+fn compute_code_section_size(bodies: &[WasmFunctionBody<'_>]) -> u64 {
+    if bodies.is_empty() {
+        return 0;
+    }
+    let count = bodies.len() as u32;
+    let count_leb_size = uleb128_size(u64::from(count)) as u64;
+    let bodies_with_prefix_total: u64 = bodies
+        .iter()
+        .map(|b| {
+            let body_len = b.bytes.len() as u64;
+            uleb128_size(body_len) as u64 + body_len
+        })
+        .sum();
+    let payload_size = count_leb_size + bodies_with_prefix_total;
+    let payload_size_leb_size = uleb128_size(payload_size) as u64;
+
+    // section id (1 byte) + payload size LEB + payload
+    1 + payload_size_leb_size + payload_size
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct WasmObjectIndexMap {
+    pub(crate) type_index_base: u32,
+    pub(crate) function_indices: Vec<u32>,
+    pub(crate) global_indices: Vec<u32>,
+    pub(crate) memory_indices: Vec<u32>,
+}
+
+impl WasmObjectIndexMap {
+    /// Resolve a code relocation to its output value using the symbol table from the same object.
+    pub(crate) fn resolve_reloc(
+        &self,
+        reloc: &WasmRelocation,
+        symbols: &[WasmSymbol],
+    ) -> Result<u32> {
+        if reloc.ty == R_WASM_TYPE_INDEX_LEB {
+            return self
+                .type_index_base
+                .checked_add(reloc.index)
+                .ok_or_else(|| crate::error!("Wasm type index overflow"));
+        }
+
+        let sym = symbols
+            .get(reloc.index as usize)
+            .ok_or_else(|| crate::error!("relocation symbol index {} out of range", reloc.index))?;
+
+        match reloc.ty {
+            reloc_type::FUNCTION_INDEX_LEB | reloc_type::FUNCTION_INDEX_I32 => {
+                ensure!(
+                    sym.kind == WasmSymbolKind::Func,
+                    "R_WASM_FUNCTION_INDEX_* references non-function symbol"
+                );
+                remap_wasm_index(&self.function_indices, sym.index, "function")
+            }
+            reloc_type::GLOBAL_INDEX_LEB | reloc_type::GLOBAL_INDEX_I32 => {
+                ensure!(
+                    sym.kind == WasmSymbolKind::Global,
+                    "R_WASM_GLOBAL_INDEX_* references non-global symbol"
+                );
+                remap_wasm_index(&self.global_indices, sym.index, "global")
+            }
+            reloc_type::TABLE_NUMBER_LEB => {
+                ensure!(
+                    sym.kind == WasmSymbolKind::Table,
+                    "R_WASM_TABLE_NUMBER_LEB references non-table symbol"
+                );
+                bail!("table relocations are not supported yet");
+            }
+            reloc_type::MEMORY_ADDR_LEB
+            | reloc_type::MEMORY_ADDR_SLEB
+            | reloc_type::MEMORY_ADDR_I32 => {
+                bail!("memory address relocations are not supported yet");
+            }
+            reloc_type::TABLE_INDEX_SLEB | reloc_type::TABLE_INDEX_I32 => {
+                bail!("table index relocations are not supported yet");
+            }
+            reloc_type::EVENT_INDEX_LEB => {
+                bail!("event index relocations are not supported yet");
+            }
+            reloc_type::FUNCTION_OFFSET_I32 => {
+                bail!("function offset relocations are not supported yet");
+            }
+            reloc_type::SECTION_OFFSET_I32 => {
+                bail!("section offset relocations are not supported yet");
+            }
+            other => bail!("unsupported Wasm relocation type {other}"),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct WasmObjectLayout<'data> {
+    pub(crate) symbol_id_range: crate::symbol_db::SymbolIdRange,
+    pub(crate) file_id: crate::input_data::FileId,
+    _phantom: std::marker::PhantomData<&'data ()>,
+}
+
+#[derive(Debug)]
+struct WasmObjectLayoutInput<'data> {
+    types: Vec<wasmparser::FuncType>,
+    function_imports: Vec<WasmFunctionImport<'data>>,
+    global_imports: Vec<WasmGlobalImport<'data>>,
+    module_functions: Vec<WasmModuleFunction>,
+    globals: Vec<OutputGlobal<'data>>,
+    exports: Vec<OutputExport<'data>>,
+    function_bodies: Vec<WasmFunctionBody<'data>>,
+    memories: Vec<MemoryType>,
+    unsupported_output: Vec<&'static str>,
+    code_relocations: Vec<WasmRelocation>,
+    data_segments: Vec<WasmDataSegment<'data>>,
+    data_relocations: Vec<WasmRelocation>,
+    symbols: Vec<WasmSymbol>,
+    symbol_id_range: crate::symbol_db::SymbolIdRange,
+    file_id: crate::input_data::FileId,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WasmObjectIndexBases {
+    type_index_base: u32,
+    function_import_base: u32,
+    defined_function_base: u32,
+    global_import_base: u32,
+    defined_global_base: u32,
+    memory_base: u32,
+}
+
+#[derive(Debug)]
+struct WasmObjectOutputLayout<'data> {
+    types: Vec<wasmparser::FuncType>,
+    imports: Vec<OutputImport<'data>>,
+    function_type_indices: Vec<u32>,
+    globals: Vec<OutputGlobal<'data>>,
+    exports: Vec<OutputExport<'data>>,
+    function_bodies: Vec<WasmFunctionBody<'data>>,
+    memories: Vec<MemoryType>,
+    unsupported_output: Vec<&'static str>,
+    index_map: WasmObjectIndexMap,
+}
+
+impl<'data> WasmObjectLayoutInput<'data> {
+    fn from_file(
+        file: &File<'data>,
+        symbol_id_range: crate::symbol_db::SymbolIdRange,
+        file_id: crate::input_data::FileId,
+    ) -> Result<Self> {
+        let mut types = Vec::new();
+        if let Some(type_section) = file.type_section_reader()? {
+            for group in type_section {
+                for ty in group?.into_types() {
+                    let wasmparser::CompositeInnerType::Func(func) = ty.composite_type.inner else {
+                        bail!("Wasm non-function types are not emitted")
+                    };
+                    types.push(func);
+                }
+            }
+        }
+
+        let mut function_imports = Vec::new();
+        let mut global_imports = Vec::new();
+        if let Some(imports) = file.import_section_reader()? {
+            for import in imports.into_imports() {
+                let import = import?;
+                match import.ty {
+                    TypeRef::Func(type_index) | TypeRef::FuncExact(type_index) => {
+                        function_imports.push(WasmFunctionImport {
+                            module: import.module,
+                            name: import.name,
+                            type_index,
+                        });
+                    }
+                    TypeRef::Global(ty) => {
+                        global_imports.push(WasmGlobalImport {
+                            module: import.module,
+                            name: import.name,
+                            ty,
+                        });
+                    }
+                    TypeRef::Table(_) => bail!("Wasm table imports are not emitted"),
+                    TypeRef::Memory(_) => bail!("Wasm memory imports are not emitted"),
+                    TypeRef::Tag(_) => bail!("Wasm tag imports are not emitted"),
+                }
+            }
+        }
+
+        let code_section_index = file.standard_section_index[section_id::CODE as usize];
+        let code_relocations: Vec<WasmRelocation> = code_section_index
+            .and_then(|code_idx| {
+                file.reloc_sections
+                    .iter()
+                    .find(|s| s.target_section_index == code_idx)
+            })
+            .map(|s| s.entries.clone())
+            .unwrap_or_default();
+
+        let data_section_index = file.standard_section_index[section_id::DATA as usize];
+        let data_relocations: Vec<WasmRelocation> = data_section_index
+            .and_then(|data_idx| {
+                file.reloc_sections
+                    .iter()
+                    .find(|s| s.target_section_index == data_idx)
+            })
+            .map(|s| s.entries.clone())
+            .unwrap_or_default();
+
+        let has_other_non_code_relocs = file.reloc_sections.iter().any(|s| {
+            let target = Some(s.target_section_index);
+            target != code_section_index && target != data_section_index
+        });
+
+        let mut unsupported_output = Vec::new();
+        if has_other_non_code_relocs {
+            unsupported_output.push("non-code relocation");
+        }
+        if !data_relocations.is_empty() {
+            unsupported_output.push("data relocation");
+        }
+        if file.standard_section_index[section_id::TABLE as usize].is_some() {
+            unsupported_output.push("table");
+        }
+        if file.standard_section_index[section_id::ELEMENT as usize].is_some() {
+            unsupported_output.push("element");
+        }
+        if file.standard_section_index[section_id::START as usize].is_some() {
+            unsupported_output.push("start");
+        }
+        if file.standard_section_index[section_id::DATA_COUNT as usize].is_some() {
+            unsupported_output.push("data_count");
+        }
+
+        let data_segments = file.data_segments()?;
+        for segment in &data_segments {
+            if let DataKind::Passive = segment.kind {
+                unsupported_output.push("passive data segment");
+                break;
+            }
+        }
+
+        let module_functions = file.module_functions()?;
+        let function_bodies = file.function_bodies()?;
+        ensure!(
+            module_functions.len() == function_bodies.len(),
+            "Wasm function and code section counts differ"
+        );
+        let memories = file.memories()?;
+
+        let globals = file
+            .module_globals()?
+            .into_iter()
+            .map(|global| {
+                let init_expr_body = crate::wasm_writer::const_expr_body(&global.init_expr)
+                    .ok_or_else(|| {
+                        crate::error!("Wasm global initializer is missing end opcode")
+                    })?;
+                Ok(OutputGlobal {
+                    ty: global.ty,
+                    init_expr_body,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut exports = Vec::new();
+        if let Some(export_section) = file.export_section_reader()? {
+            for export in export_section {
+                let export = export?;
+                exports.push(OutputExport {
+                    name: export.name,
+                    kind: export.kind,
+                    index: export.index,
+                });
+            }
+        }
+
+        Ok(Self {
+            types,
+            function_imports,
+            global_imports,
+            module_functions,
+            globals,
+            exports,
+            function_bodies,
+            memories,
+            unsupported_output,
+            code_relocations,
+            data_segments,
+            data_relocations,
+            symbols: file.symbols.clone(),
+            symbol_id_range,
+            file_id,
+        })
+    }
+
+    fn build_object_output_layout(
+        &self,
+        index_bases: WasmObjectIndexBases,
+        resolutions: &ObjectImportResolutions,
+        all_index_bases: &[WasmObjectIndexBases],
+    ) -> Result<WasmObjectOutputLayout<'data>> {
+        ensure!(
+            resolutions.function_resolutions.len() == self.function_imports.len(),
+            "Wasm function import resolution count mismatch"
+        );
+        ensure!(
+            resolutions.global_resolutions.len() == self.global_imports.len(),
+            "Wasm global import resolution count mismatch"
+        );
+
+        let mut index_map = WasmObjectIndexMap {
+            type_index_base: index_bases.type_index_base,
+            function_indices: Vec::with_capacity(
+                self.function_imports.len() + self.module_functions.len(),
+            ),
+            global_indices: Vec::with_capacity(self.global_imports.len() + self.globals.len()),
+            memory_indices: Vec::with_capacity(self.memories.len()),
+        };
+
+        let mut imports =
+            Vec::with_capacity(self.function_imports.len() + self.global_imports.len());
+        let mut unresolved_func_count = 0u32;
+        for (i, import) in self.function_imports.iter().enumerate() {
+            match resolutions.function_resolutions[i] {
+                ImportResolution::Unresolved => {
+                    let output_type_index = index_bases
+                        .type_index_base
+                        .checked_add(import.type_index)
+                        .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+                    let output_function_index = index_bases
+                        .function_import_base
+                        .checked_add(unresolved_func_count)
+                        .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+                    unresolved_func_count += 1;
+                    index_map.function_indices.push(output_function_index);
+                    imports.push(OutputImport {
+                        module: import.module,
+                        name: import.name,
+                        entity: OutputImportEntity::Function {
+                            type_index: output_type_index,
+                        },
+                    });
+                }
+                ImportResolution::ResolvedFunction {
+                    object_index,
+                    local_defined_index,
+                } => {
+                    ensure!(
+                        object_index < all_index_bases.len(),
+                        "Wasm function import resolution references object index {object_index} \
+                         out of range"
+                    );
+                    let target_bases = &all_index_bases[object_index];
+                    let output_function_index = target_bases
+                        .defined_function_base
+                        .checked_add(local_defined_index)
+                        .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+                    index_map.function_indices.push(output_function_index);
+                }
+                ImportResolution::ResolvedGlobal { .. } => {
+                    bail!("function import resolved as global");
+                }
+            }
+        }
+
+        let mut unresolved_global_count = 0u32;
+        for (i, import) in self.global_imports.iter().enumerate() {
+            match resolutions.global_resolutions[i] {
+                ImportResolution::Unresolved => {
+                    let output_global_index = index_bases
+                        .global_import_base
+                        .checked_add(unresolved_global_count)
+                        .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+                    unresolved_global_count += 1;
+                    index_map.global_indices.push(output_global_index);
+                    imports.push(OutputImport {
+                        module: import.module,
+                        name: import.name,
+                        entity: OutputImportEntity::Global(import.ty),
+                    });
+                }
+                ImportResolution::ResolvedGlobal {
+                    object_index,
+                    local_defined_index,
+                } => {
+                    ensure!(
+                        object_index < all_index_bases.len(),
+                        "Wasm global import resolution references object index {object_index} out \
+                         of range"
+                    );
+                    let target_bases = &all_index_bases[object_index];
+                    let output_global_index = target_bases
+                        .defined_global_base
+                        .checked_add(local_defined_index)
+                        .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+                    index_map.global_indices.push(output_global_index);
+                }
+                ImportResolution::ResolvedFunction { .. } => {
+                    bail!("global import resolved as function");
+                }
+            }
+        }
+
+        let mut function_type_indices = Vec::with_capacity(self.module_functions.len());
+        for (i, function) in self.module_functions.iter().enumerate() {
+            let output_type_index = index_bases
+                .type_index_base
+                .checked_add(function.type_index)
+                .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+            let output_function_index = index_bases
+                .defined_function_base
+                .checked_add(u32::try_from(i).context("too many Wasm functions")?)
+                .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+            function_type_indices.push(output_type_index);
+            index_map.function_indices.push(output_function_index);
+        }
+
+        for i in 0..self.globals.len() {
+            let output_global_index = index_bases
+                .defined_global_base
+                .checked_add(u32::try_from(i).context("too many Wasm globals")?)
+                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+            index_map.global_indices.push(output_global_index);
+        }
+
+        index_map.memory_indices =
+            wasm_index_range(index_bases.memory_base, self.memories.len(), "memories")?;
+
+        let exports = self
+            .exports
+            .iter()
+            .map(|export| {
+                let index = match export.kind {
+                    wasmparser::ExternalKind::Func | wasmparser::ExternalKind::FuncExact => {
+                        remap_wasm_index(&index_map.function_indices, export.index, "function")?
+                    }
+                    wasmparser::ExternalKind::Global => {
+                        remap_wasm_index(&index_map.global_indices, export.index, "global")?
+                    }
+                    wasmparser::ExternalKind::Memory => {
+                        remap_wasm_index(&index_map.memory_indices, export.index, "memory")?
+                    }
+                    wasmparser::ExternalKind::Table => bail!("Wasm table exports are not emitted"),
+                    wasmparser::ExternalKind::Tag => bail!("Wasm tag exports are not emitted"),
+                };
+                Ok(OutputExport { index, ..*export })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut function_bodies = self.function_bodies.clone();
+        resolve_code_relocations(
+            &mut function_bodies,
+            &self.code_relocations,
+            &self.symbols,
+            &index_map,
+        )?;
+
+        Ok(WasmObjectOutputLayout {
+            types: self.types.clone(),
+            imports,
+            function_type_indices,
+            globals: self.globals.clone(),
+            exports,
+            function_bodies,
+            memories: self.memories.clone(),
+            unsupported_output: self.unsupported_output.clone(),
+            index_map,
+        })
+    }
+}
+
+/// Describes how a single import was resolved during cross-object linking.
+#[derive(Debug, Clone, Copy)]
+enum ImportResolution {
+    /// The import was not resolved; keep it in the output import section.
+    Unresolved,
+    /// The import was resolved to a defined function in `object_index` at local defined-function
+    /// position `local_defined_index`.
+    ResolvedFunction {
+        object_index: usize,
+        local_defined_index: u32,
+    },
+    /// The import was resolved to a defined global in `object_index` at local defined-global
+    /// position `local_defined_index`.
+    ResolvedGlobal {
+        object_index: usize,
+        local_defined_index: u32,
+    },
+}
+
+#[derive(Debug, Default)]
+struct ObjectImportResolutions {
+    function_resolutions: Vec<ImportResolution>,
+    global_resolutions: Vec<ImportResolution>,
+    unresolved_function_count: u32,
+    unresolved_global_count: u32,
+}
+
+fn local_defined_function_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> u32 {
+    sym.index - input.function_imports.len() as u32
+}
+
+fn local_defined_global_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> u32 {
+    sym.index - input.global_imports.len() as u32
+}
+
+/// Resolve cross-object imports. For each object's undefined function/global symbol, checks whether
+/// `SymbolDb::definition()` points to a defined symbol. Resolutions are keyed by import ordinal
+/// (`sym.index`), not symbol-table order.
+fn resolve_cross_object_imports<'data>(
+    inputs: &[WasmObjectLayoutInput<'data>],
+    symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
+) -> Result<Vec<ObjectImportResolutions>> {
+    let file_id_to_index: HashMap<crate::input_data::FileId, usize> = inputs
+        .iter()
+        .enumerate()
+        .map(|(i, input)| (input.file_id, i))
+        .collect();
+
+    inputs
+        .par_iter()
+        .map(|input| {
+            let (function_resolutions, unresolved_function_count) = resolve_import_symbols(
+                input.function_imports.len(),
+                WasmSymbolKind::Func,
+                input,
+                inputs,
+                symbol_db,
+                &file_id_to_index,
+            )?;
+            let (global_resolutions, unresolved_global_count) = resolve_import_symbols(
+                input.global_imports.len(),
+                WasmSymbolKind::Global,
+                input,
+                inputs,
+                symbol_db,
+                &file_id_to_index,
+            )?;
+            Ok(ObjectImportResolutions {
+                function_resolutions,
+                global_resolutions,
+                unresolved_function_count,
+                unresolved_global_count,
+            })
+        })
+        .collect()
+}
+
+fn resolve_import_symbols<'data>(
+    import_count: usize,
+    kind: WasmSymbolKind,
+    input: &WasmObjectLayoutInput<'data>,
+    all_inputs: &[WasmObjectLayoutInput<'data>],
+    symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
+    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
+) -> Result<(Vec<ImportResolution>, u32)> {
+    ensure!(u32::try_from(import_count).is_ok(), "too many Wasm imports");
+    let mut resolutions = vec![ImportResolution::Unresolved; import_count];
+    let mut unresolved_count = u32::try_from(import_count).expect("checked above");
+
+    for (sym_offset, sym) in input.symbols.iter().enumerate() {
+        if !sym.is_undefined() || sym.kind != kind {
+            continue;
+        }
+        let import_idx = sym.index as usize;
+        if import_idx >= import_count {
+            continue;
+        }
+        let resolution = resolve_one_import(
+            sym_offset,
+            kind,
+            input,
+            all_inputs,
+            symbol_db,
+            file_id_to_index,
+        )?;
+        if matches!(resolutions[import_idx], ImportResolution::Unresolved)
+            && !matches!(resolution, ImportResolution::Unresolved)
+        {
+            unresolved_count -= 1;
+            resolutions[import_idx] = resolution;
+        }
+    }
+
+    Ok((resolutions, unresolved_count))
+}
+
+/// Try to resolve a single undefined import symbol.
+fn resolve_one_import<'data>(
+    sym_offset: usize,
+    expected_kind: WasmSymbolKind,
+    input: &WasmObjectLayoutInput<'data>,
+    all_inputs: &[WasmObjectLayoutInput<'data>],
+    symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
+    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
+) -> Result<ImportResolution> {
+    let symbol_id = input.symbol_id_range.offset_to_id(sym_offset);
+    let def_id = symbol_db.definition(symbol_id);
+    if def_id == symbol_id {
+        return Ok(ImportResolution::Unresolved);
+    }
+    let def_file_id = symbol_db.file_id_for_symbol(def_id);
+    let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) else {
+        return Ok(ImportResolution::Unresolved);
+    };
+    let def_input = &all_inputs[def_obj_idx];
+    let def_sym = &def_input.symbols[def_input.symbol_id_range.id_to_offset(def_id)];
+    if def_sym.is_undefined() || def_sym.kind != expected_kind {
+        return Ok(ImportResolution::Unresolved);
+    }
+    match expected_kind {
+        WasmSymbolKind::Func => {
+            ensure!(
+                def_sym.index >= def_input.function_imports.len() as u32,
+                "defined Wasm function symbol index {} is within import range",
+                def_sym.index
+            );
+            Ok(ImportResolution::ResolvedFunction {
+                object_index: def_obj_idx,
+                local_defined_index: local_defined_function_index(def_input, def_sym),
+            })
+        }
+        WasmSymbolKind::Global => {
+            ensure!(
+                def_sym.index >= def_input.global_imports.len() as u32,
+                "defined Wasm global symbol index {} is within import range",
+                def_sym.index
+            );
+            Ok(ImportResolution::ResolvedGlobal {
+                object_index: def_obj_idx,
+                local_defined_index: local_defined_global_index(def_input, def_sym),
+            })
+        }
+        _ => Ok(ImportResolution::Unresolved),
+    }
+}
+
+fn build_output_module_layout<'data, 'files>(
+    groups: &'files [layout::GroupState<'data, Wasm>],
+    symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
+) -> Result<WasmLayout<'data>>
+where
+    'data: 'files,
+{
+    let objects_and_states: Vec<_> = layout::objects_iter(groups)
+        .map(|state| (&state.object, &state.format_specific))
+        .collect();
+    let layout_inputs = objects_and_states
+        .par_iter()
+        .map(|(object, state)| {
+            WasmObjectLayoutInput::from_file(object, state.symbol_id_range, state.file_id)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let import_resolutions = resolve_cross_object_imports(&layout_inputs, symbol_db)?;
+    let index_bases = allocate_wasm_object_index_bases(&layout_inputs, &import_resolutions)?;
+    let object_layouts = layout_inputs
+        .par_iter()
+        .zip(import_resolutions.par_iter())
+        .enumerate()
+        .map(|(obj_idx, (input, resolutions))| {
+            input.build_object_output_layout(index_bases[obj_idx], resolutions, &index_bases)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut layout = WasmLayout::default();
+    let mut memory_cursor = 0u32;
+    let mut section_cursor = 0u32;
+    for (input, object_layout) in layout_inputs.iter().zip(object_layouts) {
+        layout.output_types.extend(object_layout.types);
+        layout.imports.extend(object_layout.imports);
+        layout
+            .function_type_indices
+            .extend(object_layout.function_type_indices);
+        layout.globals.extend(object_layout.globals);
+        layout.exports.extend(object_layout.exports);
+        layout.function_bodies.extend(object_layout.function_bodies);
+        layout.memories.extend(object_layout.memories);
+        layout
+            .unsupported_output
+            .extend(object_layout.unsupported_output);
+        layout.object_index_maps.push(object_layout.index_map);
+        layout.object_data_layouts.push(layout_object_data(
+            input,
+            layout.object_index_maps.last().expect("index map pushed"),
+            &mut memory_cursor,
+            &mut section_cursor,
+        )?);
+    }
+    layout.encode_metadata_sections()?;
+    Ok(layout)
+}
+
+fn allocate_wasm_object_index_bases(
+    layout_inputs: &[WasmObjectLayoutInput<'_>],
+    import_resolutions: &[ObjectImportResolutions],
+) -> Result<Vec<WasmObjectIndexBases>> {
+    let mut index_bases = Vec::with_capacity(layout_inputs.len());
+    let mut next_type_index = 0u32;
+    let mut next_function_import_index = 0u32;
+    let mut next_global_import_index = 0u32;
+    let mut next_memory_index = 0u32;
+
+    for (input, resolutions) in layout_inputs.iter().zip(import_resolutions) {
+        index_bases.push(WasmObjectIndexBases {
+            type_index_base: next_type_index,
+            function_import_base: next_function_import_index,
+            defined_function_base: 0,
+            global_import_base: next_global_import_index,
+            defined_global_base: 0,
+            memory_base: next_memory_index,
+        });
+        next_type_index = next_type_index
+            .checked_add(u32::try_from(input.types.len()).context("too many Wasm types")?)
+            .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+        next_function_import_index = next_function_import_index
+            .checked_add(resolutions.unresolved_function_count)
+            .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+        next_global_import_index = next_global_import_index
+            .checked_add(resolutions.unresolved_global_count)
+            .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+        next_memory_index = next_memory_index
+            .checked_add(u32::try_from(input.memories.len()).context("too many Wasm memories")?)
+            .ok_or_else(|| crate::error!("Wasm memory index overflow"))?;
+    }
+
+    let mut next_defined_function_index = next_function_import_index;
+    let mut next_defined_global_index = next_global_import_index;
+    for (input, index_base) in layout_inputs.iter().zip(index_bases.iter_mut()) {
+        index_base.defined_function_base = next_defined_function_index;
+        index_base.defined_global_base = next_defined_global_index;
+        next_defined_function_index = next_defined_function_index
+            .checked_add(
+                u32::try_from(input.module_functions.len()).context("too many Wasm functions")?,
+            )
+            .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+        next_defined_global_index = next_defined_global_index
+            .checked_add(u32::try_from(input.globals.len()).context("too many Wasm globals")?)
+            .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+    }
+
+    Ok(index_bases)
+}
+
+fn resolve_code_relocations<'data>(
+    bodies: &mut [WasmFunctionBody<'data>],
+    relocs: &[WasmRelocation],
+    symbols: &[WasmSymbol],
+    index_map: &WasmObjectIndexMap,
+) -> Result {
+    if relocs.is_empty() {
+        return Ok(());
+    }
+
+    let mut reloc_iter = relocs.iter().peekable();
+    for body in bodies.iter_mut() {
+        let body_start = body.code_offset;
+        let body_end = body_start + body.bytes.len() as u32;
+
+        while let Some(reloc) = reloc_iter.peek().copied() {
+            if reloc.offset >= body_end {
+                break;
+            }
+            reloc_iter.next();
+            if reloc.offset >= body_start {
+                let value = index_map.resolve_reloc(reloc, symbols)?;
+                body.relocations.push(ResolvedCodeReloc {
+                    offset: reloc.offset - body_start,
+                    ty: reloc.ty,
+                    value,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn remap_wasm_index(indices: &[u32], index: u32, kind: &str) -> Result<u32> {
+    indices
+        .get(index as usize)
+        .copied()
+        .ok_or_else(|| crate::error!("Wasm {kind} index {index} out of range"))
+}
+
+fn wasm_index_range(base: u32, len: usize, kind: &str) -> Result<Vec<u32>> {
+    let len = u32::try_from(len).with_context(|| format!("too many Wasm {kind}"))?;
+    let end = base
+        .checked_add(len)
+        .ok_or_else(|| crate::error!("too many Wasm {kind}"))?;
+    Ok((base..end).collect())
+}
+
 impl platform::Platform for Wasm {
     type File<'data> = File<'data>;
     type FileFlags = u32;
@@ -1164,12 +2586,16 @@ impl platform::Platform for Wasm {
     type EpilogueLayoutExt = ();
     type GroupLayoutExt = ();
     type CommonGroupStateExt = ();
+    type StubLibraryLayoutStateExt = ();
+    type StubLibraryLayoutExt = ();
     type ArchIdentifier = ();
     type Args = WasmArgs;
     type ResolutionExt = ();
     type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
-    type LayoutExt = ();
+    type FinaliseSizesExt<'data> = WasmLayout<'data>;
+    type LayoutExt<'data> = WasmLayout<'data>;
+    type GdbIndexScanResult<'data> = ();
     type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
     type DynamicTagValues<'data> = DynamicTagValues<'data>;
     type RelocationList<'data> = RelocationList<'data>;
@@ -1178,17 +2604,18 @@ impl platform::Platform for Wasm {
     type LayoutResourcesExt<'data> = ();
     type PreludeLayoutStateExt = ();
     type PreludeLayoutExt = ();
-    type ObjectLayoutStateExt<'data> = ();
+    type ObjectLayoutStateExt<'data> = WasmObjectLayout<'data>;
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
+    type ResolvedObjectExt<'data> = WasmObjectLayout<'data>;
 
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
         args: &'data Self::Args,
     ) -> crate::error::Result<crate::LinkerOutput<'data>> {
         if !cfg!(feature = "wasm") {
-            crate::bail!(
+            bail!(
                 "Wasm support is still experimental. Rebuild with `--features wasm` to enable it."
             );
         }
@@ -1243,64 +2670,60 @@ impl platform::Platform for Wasm {
     }
 
     fn activate_dynamic<'data>(
-        state: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _state: &mut crate::layout::DynamicLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) {
-        todo!()
+        // Dynamic Wasm objects are not emitted by this backend.
     }
 
     fn pre_finalise_sizes_prelude<'scope, 'data>(
-        prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        resources: &crate::layout::GraphResources<'data, 'scope, Self>,
+        _prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _resources: &crate::layout::GraphResources<'data, 'scope, Self>,
     ) {
-        todo!()
     }
 
     fn finalise_sizes_dynamic<'data>(
-        object: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _object: &mut crate::layout::DynamicLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn finalise_object_sizes<'data>(
-        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) {
-        todo!()
     }
 
     fn finalise_object_layout<'data>(
-        object: &crate::layout::ObjectLayoutState<'data, Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _object: &crate::layout::ObjectLayoutState<'data, Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) {
-        todo!()
     }
 
     fn finalise_layout_dynamic<'data>(
-        state: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
-        resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
+        _state: &mut crate::layout::DynamicLayoutState<'data, Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
+        _resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
     ) -> crate::error::Result<Self::DynamicLayoutExt<'data>> {
-        todo!()
+        Ok(())
     }
 
     fn take_dynsym_index(
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        section_layouts: &crate::output_section_map::OutputSectionMap<
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _section_layouts: &crate::output_section_map::OutputSectionMap<
             crate::layout::OutputRecordLayout,
         >,
     ) -> crate::error::Result<u32> {
-        todo!()
+        crate::bail!("Wasm dynamic symbol table is not emitted")
     }
 
     fn compute_object_addresses<'data>(
-        object: &crate::layout::ObjectLayoutState<'data, Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _object: &crate::layout::ObjectLayoutState<'data, Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) {
-        todo!()
     }
 
     fn layout_resources_ext<'data>(
@@ -1309,30 +2732,29 @@ impl platform::Platform for Wasm {
     }
 
     fn load_object_section_relocations<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        state: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        queue: &mut crate::layout::LocalWorkQueue,
-        resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
-        section: crate::layout::Section,
-        section_index: object::SectionIndex,
-        scope: &rayon::Scope<'scope>,
+        _state: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _queue: &mut crate::layout::LocalWorkQueue,
+        _resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
+        _section: crate::layout::Section,
+        _section_index: object::SectionIndex,
+        _scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn create_dynamic_symbol_definition<'data>(
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        symbol_id: crate::symbol_db::SymbolId,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _symbol_id: crate::symbol_db::SymbolId,
     ) -> crate::error::Result<crate::layout::DynamicSymbolDefinition<'data, Self>> {
-        todo!()
+        crate::bail!("Wasm dynamic symbol definitions are not emitted")
     }
 
     fn update_segment_keep_list(
-        program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
-        keep_segments: &mut [bool],
-        args: &Self::Args,
+        _program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
+        _keep_segments: &mut [bool],
+        _args: &Self::Args,
     ) {
-        todo!()
     }
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
@@ -1360,21 +2782,48 @@ impl platform::Platform for Wasm {
                 kind: d.kind,
                 min_alignment: crate::alignment::MIN,
                 location: None,
+                load_location: None,
                 secondary_order: None,
+                phdr_name: None,
+                region_name: None,
             })
             .collect()
     }
 
-    fn create_layout_properties<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
-        args: &Self::Args,
-        objects: impl Iterator<Item = &'files Self::File<'data>>,
-        states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
-    ) -> crate::error::Result<Self::LayoutExt>
+    fn new_resolved_object_ext<'data>(
+        symbol_id_range: crate::symbol_db::SymbolIdRange,
+        file_id: crate::input_data::FileId,
+    ) -> Self::ResolvedObjectExt<'data> {
+        WasmObjectLayout {
+            symbol_id_range,
+            file_id,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    fn new_object_layout_state_ext<'data>(
+        input: Self::ResolvedObjectExt<'data>,
+    ) -> Self::ObjectLayoutStateExt<'data> {
+        input
+    }
+
+    fn create_finalise_sizes_ext<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
+        _args: &Self::Args,
+        groups: &'files [layout::GroupState<'data, Self>],
+        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+    ) -> crate::error::Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,
         'data: 'states,
     {
-        Ok(())
+        build_output_module_layout(groups, symbol_db)
+    }
+
+    fn create_layout_ext<'data>(
+        finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
+        _resolutions: &layout::SymbolResolutions<Self>,
+    ) -> Result<Self::LayoutExt<'data>> {
+        Ok(finalise_sizes_ext)
     }
 
     fn load_exception_frame_data<'data, 'scope, A: platform::Arch<Platform = Self>>(
@@ -1390,20 +2839,21 @@ impl platform::Platform for Wasm {
     }
 
     fn non_empty_section_loaded<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        queue: &mut crate::layout::LocalWorkQueue,
-        unloaded: crate::resolution::UnloadedSection,
-        resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
-        scope: &rayon::Scope<'scope>,
+        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _queue: &mut crate::layout::LocalWorkQueue,
+        _unloaded: crate::resolution::UnloadedSection,
+        _resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
+        _scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
-    fn new_epilogue_layout(
+    fn new_epilogue_layout<'data>(
         args: &Self::Args,
         output_kind: crate::output_kind::OutputKind,
-        dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'_, Self>],
+        dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'data, Self>],
+        group_states: &[layout::GroupState<'data, Self>],
     ) -> Self::EpilogueLayoutExt {
     }
 
@@ -1421,44 +2871,38 @@ impl platform::Platform for Wasm {
             Item = &'groups mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         >,
     ) {
-        // No-op for now.
+        // Wasm has no non-addressable side tables.
     }
 
     fn finalise_sizes_epilogue<'data>(
-        state: &mut Self::EpilogueLayoutExt,
+        _state: &mut Self::EpilogueLayoutExt,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
-        properties: &Self::LayoutExt,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
+        properties: &Self::LayoutExt<'data>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
-        todo!()
+        properties.encoded_sections.add_sizes_to(mem_sizes);
+        properties.add_code_section_size(mem_sizes);
+        properties.add_data_section_size(mem_sizes);
     }
 
     fn finalise_sizes_all<'data>(
-        mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
-        todo!()
-    }
-
-    fn apply_late_size_adjustments_epilogue(
-        state: &mut Self::EpilogueLayoutExt,
-        current_sizes: &crate::output_section_part_map::OutputSectionPartMap<u64>,
-        extra_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
-        args: &Self::Args,
-    ) -> crate::error::Result {
-        Ok(())
     }
 
     fn finalise_layout_epilogue<'data>(
-        epilogue_state: &mut Self::EpilogueLayoutExt,
+        _epilogue_state: &mut Self::EpilogueLayoutExt,
         memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        common_state: &Self::LayoutExt,
-        dynsym_start_index: u32,
-        dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        common_state: &Self::LayoutExt<'data>,
+        _dynsym_start_index: u32,
+        _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
     ) -> crate::error::Result {
+        common_state.encoded_sections.add_sizes_to(memory_offsets);
+        common_state.add_code_section_size(memory_offsets);
+        common_state.add_data_section_size(memory_offsets);
         Ok(())
     }
 
@@ -1476,56 +2920,56 @@ impl platform::Platform for Wasm {
         true
     }
 
-    fn allocate_header_sizes(
-        prelude: &mut crate::layout::PreludeLayoutState<Self>,
+    fn allocate_header_sizes<'data>(
+        _prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        header_info: &crate::layout::HeaderInfo,
-        output_sections: &crate::output_section_id::OutputSections<Self>,
+        _header_info: &crate::layout::HeaderInfo,
+        _output_sections: &crate::output_section_id::OutputSections<Self>,
+        _resources: &layout::FinaliseSizesResources<'data, '_, Self>,
+        _args: &Self::Args,
     ) {
-        todo!()
+        sizes.increment(crate::part_id::FILE_HEADER, (WASM_MAGIC.len() + 4) as u64);
     }
 
     fn finalise_sizes_for_symbol<'data>(
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        symbol_id: crate::symbol_db::SymbolId,
-        flags: crate::value_flags::ValueFlags,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _symbol_id: crate::symbol_db::SymbolId,
+        _flags: crate::value_flags::ValueFlags,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn allocate_resolution(
-        flags: crate::value_flags::ValueFlags,
-        mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        output_kind: crate::output_kind::OutputKind,
-        args: &Self::Args,
+        _flags: crate::value_flags::ValueFlags,
+        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _output_kind: crate::output_kind::OutputKind,
+        _args: &Self::Args,
     ) {
-        todo!()
     }
 
     fn allocate_object_symtab_space<'data>(
-        state: &crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
+        _state: &crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn allocate_internal_symbol(
-        symbol_id: crate::symbol_db::SymbolId,
-        def_info: &crate::parsing::InternalSymDefInfo<Self>,
-        sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        symbol_db: &crate::symbol_db::SymbolDb<Self>,
+        _symbol_id: crate::symbol_db::SymbolId,
+        _def_info: &crate::parsing::InternalSymDefInfo<Self>,
+        _sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn allocate_prelude(
-        common: &mut crate::layout::CommonGroupState<Self>,
-        symbol_db: &crate::symbol_db::SymbolDb<Self>,
+        _common: &mut crate::layout::CommonGroupState<Self>,
+        _symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) {
-        todo!()
     }
 
     fn finalise_prelude_layout<'data>(
@@ -1540,9 +2984,14 @@ impl platform::Platform for Wasm {
         flags: crate::value_flags::ValueFlags,
         raw_value: u64,
         dynamic_symbol_index: Option<std::num::NonZeroU32>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> crate::layout::Resolution<Self> {
-        todo!()
+        crate::layout::Resolution {
+            raw_value,
+            dynamic_symbol_index,
+            flags,
+            format_specific: (),
+        }
     }
 
     fn raw_symbol_name<'data>(
@@ -1574,7 +3023,7 @@ impl platform::Platform for Wasm {
             Vec<crate::output_section_id::OutputSectionId>,
         >,
     ) -> (
-        crate::output_section_id::OutputOrder,
+        crate::output_section_id::OutputOrder<'data>,
         crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
     ) {
         use crate::output_section_id as osid;
@@ -1583,6 +3032,7 @@ impl platform::Platform for Wasm {
             output_kind,
             output_sections,
             secondary,
+            false,
         );
 
         builder.add_section(osid::FILE_HEADER);
@@ -1604,11 +3054,6 @@ impl platform::Platform for Wasm {
 
     fn default_symtab_entry() -> Self::SymtabEntry {
         WasmSymbol::default()
-    }
-
-    fn start_memory_address(_output_kind: crate::output_kind::OutputKind) -> u64 {
-        // Wasm uses linear memory; the linker just lays out at offset 0.
-        0
     }
 }
 
@@ -1674,6 +3119,11 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         });
     }
 
+    // Backfill names for unnamed undefined function/global symbols from the import section.
+    // The Wasm linking convention allows symbol entries to omit the name when the symbol is
+    // undefined; the canonical name lives in the import entry instead.
+    backfill_unnamed_import_symbols(input, &standard_section_index, &sections, &mut symbols)?;
+
     Ok(File {
         data: input,
         version,
@@ -1685,6 +3135,74 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         linking_version,
         target_features_raw,
     })
+}
+
+/// For unnamed undefined Func/Global symbols, derive the name from the corresponding import
+/// section entry. In Wasm relocatable objects, undefined symbols in the linking section may
+/// omit their name; the canonical name is carried by the import entry instead.
+fn backfill_unnamed_import_symbols(
+    data: &[u8],
+    standard_section_index: &[Option<u32>; STANDARD_SECTION_LOOKUP_LEN],
+    sections: &[SectionHeader],
+    symbols: &mut [WasmSymbol],
+) -> Result {
+    // Collect import names only if there are unnamed undefined symbols that need backfilling.
+    let needs_backfill = symbols.iter().any(|s| {
+        s.is_undefined()
+            && !s.has_name()
+            && matches!(s.kind, WasmSymbolKind::Func | WasmSymbolKind::Global)
+    });
+    if !needs_backfill {
+        return Ok(());
+    }
+
+    let data_start = data.as_ptr() as usize;
+
+    // Parse the import section to build name lookup tables indexed by function/global import
+    // ordinal.
+    let Some(import_payload) = standard_section_index
+        .get(section_id::IMPORT as usize)
+        .and_then(|idx| idx.as_ref())
+        .and_then(|&idx| sections.get(idx as usize))
+        .and_then(|header| data.get(header.payload_range_usize()))
+    else {
+        return Ok(());
+    };
+    let import_reader = ImportSectionReader::new(BinaryReader::new(import_payload, 0))?;
+
+    let mut func_import_names: Vec<(u32, u32)> = Vec::new();
+    let mut global_import_names: Vec<(u32, u32)> = Vec::new();
+    for import in import_reader.into_imports() {
+        let import = import?;
+        let name_ptr = import.name.as_ptr() as usize - data_start;
+        let name_entry = (name_ptr as u32, import.name.len() as u32);
+        match import.ty {
+            TypeRef::Func(_) | TypeRef::FuncExact(_) => func_import_names.push(name_entry),
+            TypeRef::Global(_) => global_import_names.push(name_entry),
+            _ => {}
+        }
+    }
+
+    for sym in symbols.iter_mut() {
+        if !sym.is_undefined() || sym.has_name() {
+            continue;
+        }
+        let (start, len) = match sym.kind {
+            WasmSymbolKind::Func => func_import_names
+                .get(sym.index as usize)
+                .copied()
+                .unwrap_or((0, 0)),
+            WasmSymbolKind::Global => global_import_names
+                .get(sym.index as usize)
+                .copied()
+                .unwrap_or((0, 0)),
+            _ => continue,
+        };
+        sym.name_start = start;
+        sym.name_len = len;
+    }
+
+    Ok(())
 }
 
 fn parse_linking_subsections<'data>(

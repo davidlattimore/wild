@@ -1,5 +1,7 @@
 # Wild linker
 
+![Wild logo - drawing of rusty chain links with vines](/images/wild.png)
+
 Wild is a linker with the goal of being very fast for iterative development.
 
 The plan is to eventually make it incremental, however that isn't yet implemented. It is however
@@ -49,56 +51,69 @@ To use a stable Wild from Nixpkgs:
 let
  wildStdenv = pkgs.useWildLinker pkgs.stdenv;
 in
-pkgs.callPackage ./package { stdenv = wildStdenv; }  
+pkgs.callPackage ./package { stdenv = wildStdenv; }
 ```
 
 to use the latest unstable git revision of wild, see [the nix documentation](./nix/nix.md)
 
 ## Using as your default linker
 
-If you'd like to use Wild as your default linker for building Rust code, you can put the following
-in `~/.cargo/config.toml`.
+Being a drop-in replacement, Wild can be used similarly to other linkers by being invoked by GCC or
+Clang. Meaning you have several options:
 
-On Linux:
+* Clang's exclusive option `--ld-path=wild`
+* GCC 16.1+ and Clang's option `-fuse-ld=wild` (note that Clang requires `ld.wild` binary/symlink)
+* Generally supported `-B <path>`, where `<path>` is the directory containing `ld` that points to
+  `wild`
+
+Below are examples of integrating Wild with various build systems.
+
+### Rust (Cargo)
+
+You can use one of the options mentioned above in `~/.cargo/config.toml`:
+
 ```toml
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
 rustflags = ["-Clink-arg=--ld-path=wild"]
 ```
 
-Alternatively, you can create symlink `ld.wild` pointing to `wild` and use:
+Or:
+
 ```toml
 [target.x86_64-unknown-linux-gnu]
-linker = "clang"
+# linker = "clang" # Uncomment this line if your GCC is older than version 16.
 rustflags = ["-Clink-arg=-fuse-ld=wild"]
 ```
-The above steps also work for clang when building C/C++ code, just add the following to your LDFLAGS
-after adding the `ld.wild` symlink:
-```
+
+### C/C++ (autotools, CMake, meson, etc.)
+
+Usually setting `LDFLAGS` is enough, but there are projects that implement their own solutions:
+
+```sh
 export LDFLAGS="${LDFLAGS} -fuse-ld=wild"
 ```
 
-Starting with GCC **16.1**, use `-fuse-ld=wild`.
-
-For older GCC releases, you can make it force use it with the [-Bprefix](https://gcc.gnu.org/onlinedocs/gcc/Directory-Options.html#index-B) option.
-Create a symlink `ld` pointing to `wild` and pass the directory containing it to gcc. For example you can do the following:
+Or (especially useful for older GCC versions), create a symlink `ld` pointing to `wild` and pass the
+directory to GCC:
 
 ```sh
 ln -s /usr/bin/wild /tmp/ld
-```
 
-And when compiling C/C++ code pass the directory containing `ld` to your `CFLAGS`, `CXXFLAGS`, and `LDFLAGS`:
-
-```sh
 export CFLAGS="${CFLAGS} -B/tmp"
 export CXXFLAGS="${CXXFLAGS} -B/tmp"
 export LDFLAGS="${LDFLAGS} -B/tmp"
 ```
 
-Afterwards you can check if wild was used for linking with [readelf](#how-can-i-verify-that-wild-was-used-to-link-a-binary)
+Then configure the project (you might need to remove the configuration cache first) and run your
+usual build steps.
 
-On Illumos:
-```
+Due to the complexity of these build systems, you might want to verify that Wild was used to link a
+binary with [readelf](#how-can-i-verify-that-wild-was-used-to-link-a-binary).
+
+### Illumos specific Cargo configuration:
+
+```toml
 [target.x86_64-unknown-illumos]
 # Absolute path to clang - on OmniOS this is likely something like /opt/ooce/bin/clang.
 linker = "/usr/bin/clang"

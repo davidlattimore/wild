@@ -16,6 +16,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::platform::Arch;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
+use crate::platform::SectionFlags as _;
 use crate::resolution::SectionSlot;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
@@ -61,6 +62,7 @@ pub(crate) fn maybe_compress_debug_sections_elf<A: Arch<Platform = Elf>>(
         if let Some(name) = layout.output_sections.name(section_id)
             && name.bytes().starts_with(b".debug_")
             && layout.section_layouts.get(section_id).file_size > 0
+            && !layout.output_sections.section_flags(section_id).is_alloc()
         {
             debug_sections.push(section_id);
         }
@@ -326,7 +328,10 @@ fn update_allocation_sizes<P: Platform>(layout: &mut Layout<P>) {
             }
         }
 
-        *layout.merged_strings.get_mut(section_id) = Default::default();
+        // Free only `buckets`; the offset maps are still needed to resolve relocations from other
+        // debug sections (e.g. `.debug_str_offsets`) that are written later.
+        // https://github.com/wild-linker/wild/issues/2113
+        layout.merged_strings.get_mut(section_id).buckets = Vec::new();
     }
 }
 

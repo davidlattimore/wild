@@ -1,3 +1,4 @@
+//#SkipArch: ppc64le
 //#CompArgs:-fPIC -g
 //#LinkerDriver:gcc
 //#LinkArgs:-pie -Wl,-z,now

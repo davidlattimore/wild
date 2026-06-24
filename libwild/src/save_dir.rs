@@ -626,7 +626,7 @@ fn shell_escape_string(value: &'_ str) -> Cow<'_, str> {
     if !value.contains('\\') && !value.contains('\"') {
         return Cow::Borrowed(value);
     }
-    Cow::Owned(value.replace("\\", "\\\\").replace("\"", "\\\""))
+    Cow::Owned(value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 #[cfg(test)]

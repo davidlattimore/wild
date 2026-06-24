@@ -14,6 +14,7 @@
 //#DiffIgnore:dynsym.var1.section
 
 //#Config:shared-first-archive-not-loaded:default
+//#SkipArch: ppc64le
 //#Shared:shared-priority-1.c
 //#Archive:shared-priority-2.c
 

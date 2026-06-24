@@ -189,7 +189,7 @@ where
             };
 
             println!("{indent}{reading} {name}{}", data.attributes_string);
-        };
+        }
     }
 }
 

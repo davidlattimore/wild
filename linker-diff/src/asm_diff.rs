@@ -42,9 +42,11 @@ use self::section_map::IndexedLayout;
 use self::section_map::InputSectionId;
 use self::section_map::SymbolInfo;
 use crate::Binary;
+use crate::ColourMode;
 use crate::Diff;
 use crate::DiffValues;
 use crate::ElfFile64;
+use crate::File;
 use crate::Report;
 use crate::Result;
 use crate::SectionCoverage;
@@ -61,8 +63,6 @@ use anyhow::Context as _;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::ensure;
-use colored::ColoredString;
-use colored::Colorize as _;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
 use linker_utils::elf::BitMask;
@@ -74,7 +74,7 @@ use linker_utils::elf::RelocationSize;
 use linker_utils::elf::secnames::*;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::utils::u32_from_slice;
-use object::LittleEndian;
+use object::Endianness;
 use object::Object as _;
 use object::ObjectKind;
 use object::ObjectSection as _;
@@ -219,9 +219,9 @@ fn compare_sections<A: Arch>(
             .iter()
             .any(|t| t.next_modifier == RelocationModifier::SkipNextRelocation)
         {
-            testers
-                .iter_mut()
-                .for_each(|t| t.next_modifier = RelocationModifier::Normal);
+            for t in &mut testers {
+                t.next_modifier = RelocationModifier::Normal;
+            }
 
             continue;
         }
@@ -267,6 +267,7 @@ fn compare_sections<A: Arch>(
                         section_versions.input_section_id,
                         layout,
                         trace,
+                        report.config.colour,
                     )?;
                     report.add_diff(diff);
                 }
@@ -280,7 +281,7 @@ fn compare_sections<A: Arch>(
                     &mut relocations,
                 )?;
             }
-        };
+        }
     }
 
     // There are no more relocations. Diff literal bytes up to the end of the section.
@@ -336,7 +337,9 @@ fn update_offsets_if_match_failed<A: Arch>(
             .unwrap_or(section_size);
 
         // Update all testers to the new location.
-        testers.iter_mut().for_each(|t| t.previous_end = new_offset);
+        for t in testers.iter_mut() {
+            t.previous_end = new_offset;
+        }
 
         // Skip any relocations that applied to the addresses we skipped.
         while let Some((next_rel_offset, _rel)) = relocations.peek() {
@@ -346,7 +349,7 @@ fn update_offsets_if_match_failed<A: Arch>(
                 break;
             }
         }
-    };
+    }
 
     Ok(())
 }
@@ -599,6 +602,7 @@ fn diff_literal_bytes<'data, A: Arch>(
                 section_versions.input_section_id,
                 layout,
                 TraceOutput::default(),
+                report.config.colour,
             )?);
         }
     }
@@ -614,6 +618,7 @@ struct ExecDiff<'data, A: Arch> {
     testers: &'data [RelaxationTester<'data>],
     section_id: InputSectionId,
     trace: TraceOutput,
+    colour: ColourMode,
 }
 
 impl<A: Arch> ExecDiff<'_, A> {
@@ -634,8 +639,10 @@ impl<A: Arch> ExecDiff<'_, A> {
         writeln!(
             f,
             "{file_identifier} {section_name} {function_name}",
-            section_name = original_section.name()?.blue(),
-            function_name = String::from_utf8_lossy(function_info.name).cyan()
+            section_name = self.colour.blue(original_section.name()?),
+            function_name = self
+                .colour
+                .cyan(String::from_utf8_lossy(function_info.name))
         )?;
 
         let mut trace = TraceOutput::default();
@@ -663,10 +670,11 @@ impl<A: Arch> ExecDiff<'_, A> {
             section_bytes: original_section.data().ok(),
             section_size: original_section.size(),
             section_address: 0,
-            range: range.start..range.end,
+            range: range.clone(),
             function_info,
             instructions: Default::default(),
             trace,
+            colour: self.colour,
         }];
 
         for (res, tester) in self.resolutions.iter().zip(self.testers) {
@@ -682,10 +690,11 @@ impl<A: Arch> ExecDiff<'_, A> {
                 section_bytes,
                 section_size: tester.section_size,
                 section_address: tester.section_address,
-                range: range.start..range.end,
+                range: range.clone(),
                 function_info,
                 instructions: Default::default(),
                 trace: res.trace.clone(),
+                colour: self.colour,
             };
 
             blocks.push(block);
@@ -730,6 +739,7 @@ fn resolution_diff_exec<A: Arch>(
     section_id: InputSectionId,
     layout: &IndexedLayout,
     trace: TraceOutput,
+    colour: ColourMode,
 ) -> Result<Diff> {
     let diff = ExecDiff {
         offset,
@@ -738,6 +748,7 @@ fn resolution_diff_exec<A: Arch>(
         testers,
         section_id,
         trace,
+        colour,
     };
 
     let mut out = String::new();
@@ -754,28 +765,34 @@ fn get_original_referent<'data, R: RType>(
     rel: &object::Relocation,
     input_file: &crate::section_map::InputFile<'data>,
 ) -> Result<Referent<'data, R>> {
+    let e = input_file.file.endianness();
     if let RelocationTarget::Symbol(symbol_index) = rel.target() {
-        let symbol = input_file.elf_file.symbol_by_index(symbol_index)?;
+        let symbol = input_file.file.symbol_by_index(symbol_index)?;
 
         if let Some(section_index) = symbol.section_index() {
-            let section = input_file.elf_file.section_by_index(section_index)?;
+            match &input_file.file {
+                File::Elf64(elf_file) => {
+                    let section = elf_file.section_by_index(section_index)?;
 
-            let flags = section.elf_section_header().sh_flags(LittleEndian);
+                    let flags = section.elf_section_header().sh_flags(e);
 
-            if flags.contains(object::elf::SHF_MERGE | object::elf::SHF_STRINGS) {
-                let section_data = section.data()?;
-                let string_plus_rest = &section_data[symbol.address() as usize..];
-                if let Some(end_offset) = memchr::memchr(0, string_plus_rest) {
-                    let addend = symbol
-                        .name_bytes()
-                        .is_ok_and(|name| !name.is_empty())
-                        .then(|| rel.addend());
+                    if flags.contains(object::elf::SHF_MERGE | object::elf::SHF_STRINGS) {
+                        let section_data = section.data()?;
+                        let string_plus_rest = &section_data[symbol.address() as usize..];
+                        if let Some(end_offset) = memchr::memchr(0, string_plus_rest) {
+                            let addend = symbol
+                                .name_bytes()
+                                .is_ok_and(|name| !name.is_empty())
+                                .then(|| rel.addend());
 
-                    return Ok(Referent::MergedString(MergedStringRef {
-                        data: &string_plus_rest[..end_offset],
-                        named_symbol_addend: addend,
-                    }));
+                            return Ok(Referent::MergedString(MergedStringRef {
+                                data: &string_plus_rest[..end_offset],
+                                named_symbol_addend: addend,
+                            }));
+                        }
+                    }
                 }
+                _ => {}
             }
         }
 
@@ -879,80 +896,77 @@ fn diff_key_for_res_mismatch<A: Arch>(
         .as_ref()
         .and_then(|r| r.first_if_matched());
 
-    match (ours, reference) {
-        (Some(r1), Some(r2)) => {
-            let Some(orig) = original_annotations.first() else {
-                return "missing-original".to_owned();
-            };
+    if let (Some(r1), Some(r2)) = (ours, reference) {
+        let Some(orig) = original_annotations.first() else {
+            return "missing-original".to_owned();
+        };
 
-            match (
-                r1.relaxation.relaxation_kind.is_no_op(),
-                r2.relaxation.relaxation_kind.is_no_op(),
-            ) {
-                (true, false) => {
-                    format!(
-                        "rel.missing-opt.{}.{:?}.{}",
-                        orig.success.r_type,
-                        r2.relaxation.relaxation_kind,
-                        bin_attributes.type_name()
-                    )
-                }
-                (false, true) => {
-                    format!(
-                        "rel.extra-opt.{}.{:?}.{}",
-                        orig.success.r_type,
-                        r1.relaxation.relaxation_kind,
-                        bin_attributes.type_name()
-                    )
-                }
-                _ => {
-                    let ours_is_copy = resolutions[0].reference.referent.is_copy_relocation();
-                    let any_others_copy = resolutions[1..]
-                        .iter()
-                        .any(|r| r.reference.referent.is_copy_relocation());
+        match (
+            r1.relaxation.relaxation_kind.is_no_op(),
+            r2.relaxation.relaxation_kind.is_no_op(),
+        ) {
+            (true, false) => {
+                format!(
+                    "rel.missing-opt.{}.{:?}.{}",
+                    orig.success.r_type,
+                    r2.relaxation.relaxation_kind,
+                    bin_attributes.type_name()
+                )
+            }
+            (false, true) => {
+                format!(
+                    "rel.extra-opt.{}.{:?}.{}",
+                    orig.success.r_type,
+                    r1.relaxation.relaxation_kind,
+                    bin_attributes.type_name()
+                )
+            }
+            _ => {
+                let ours_is_copy = resolutions[0].reference.referent.is_copy_relocation();
+                let any_others_copy = resolutions[1..]
+                    .iter()
+                    .any(|r| r.reference.referent.is_copy_relocation());
 
-                    if ours_is_copy && !any_others_copy {
-                        format!("rel.extra-copy-relocation.{}", orig.success.r_type)
-                    } else if !ours_is_copy && any_others_copy {
-                        format!("rel.missing-copy-relocation.{}", orig.success.r_type)
-                    } else {
-                        format!(
-                            "rel.{}.{}",
-                            r1.relaxation.new_r_type, r2.relaxation.new_r_type
-                        )
-                    }
+                if ours_is_copy && !any_others_copy {
+                    format!("rel.extra-copy-relocation.{}", orig.success.r_type)
+                } else if !ours_is_copy && any_others_copy {
+                    format!("rel.missing-copy-relocation.{}", orig.success.r_type)
+                } else {
+                    format!(
+                        "rel.{}.{}",
+                        r1.relaxation.new_r_type, r2.relaxation.new_r_type
+                    )
                 }
             }
         }
-        _ => {
-            let failure_kind = |r: &ResolvedGroup<A>| {
-                if r.annotations
+    } else {
+        let failure_kind = |r: &ResolvedGroup<A>| {
+            if r.annotations
+                .iter()
+                .any(|a| matches!(a.kind, AnnotationKind::LiteralByteMismatch))
+            {
+                Some("literal-byte-mismatch".to_owned())
+            } else {
+                r.annotations
                     .iter()
-                    .any(|a| matches!(a.kind, AnnotationKind::LiteralByteMismatch))
-                {
-                    Some("literal-byte-mismatch".to_owned())
-                } else {
-                    r.annotations
-                        .iter()
-                        .zip(original_annotations)
-                        .find_map(|(a, orig)| match &a.kind {
-                            AnnotationKind::Ambiguous(_) => Some("rel.multiple_matches".to_owned()),
-                            AnnotationKind::MatchFailed(_) => {
-                                Some(format!("rel.match_failed.{}", orig.success.r_type))
-                            }
-                            AnnotationKind::MatchedRelaxation(_) => None,
-                            AnnotationKind::LiteralByteMismatch => {
-                                unreachable!();
-                            }
-                            AnnotationKind::Error(e) => Some(e.clone()),
-                        })
-                }
-            };
+                    .zip(original_annotations)
+                    .find_map(|(a, orig)| match &a.kind {
+                        AnnotationKind::Ambiguous(_) => Some("rel.multiple_matches".to_owned()),
+                        AnnotationKind::MatchFailed(_) => {
+                            Some(format!("rel.match_failed.{}", orig.success.r_type))
+                        }
+                        AnnotationKind::MatchedRelaxation(_) => None,
+                        AnnotationKind::LiteralByteMismatch => {
+                            unreachable!();
+                        }
+                        AnnotationKind::Error(e) => Some(e.clone()),
+                    })
+            }
+        };
 
-            failure_kind(&resolutions[0])
-                .or(failure_kind(&resolutions[1]))
-                .unwrap_or("rel.unknown_failure".to_owned())
-        }
+        failure_kind(&resolutions[0])
+            .or(failure_kind(&resolutions[1]))
+            .unwrap_or("rel.unknown_failure".to_owned())
     }
 }
 
@@ -987,6 +1001,8 @@ struct RelocationInstructionBlock<'data, A: Arch> {
     instructions: Vec<Instruction<'data, A>>,
 
     trace: TraceOutput,
+
+    colour: ColourMode,
 }
 
 struct OriginalAnnotation<'data, A: Arch> {
@@ -1191,7 +1207,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
             write!(
                 f,
                 "{:name_width$} 0x{:0address_width$x}: [ ",
-                self.name.blue(),
+                self.colour.blue(self.name),
                 instruction.address()
             )?;
 
@@ -1203,7 +1219,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
                     // Bytes within the range that we would have compared are highlighted yellow,
                     // while bytes outside the range are left in the default colour. This makes it
                     // easier to spot what's going on if our ranges are wrong.
-                    write!(f, "{} ", format!("{v:02x}").yellow())?;
+                    write!(f, "{} ", self.colour.yellow(format!("{v:02x}")))?;
                 } else {
                     write!(f, "{v:02x} ")?;
                 }
@@ -1214,7 +1230,12 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
             let instruction_padding =
                 (maximum_widths.instruction_bytes - instruction.bytes.len()) * 3;
 
-            writeln!(f, "{:instruction_padding$}] {}", "", out.purple())?;
+            writeln!(
+                f,
+                "{:instruction_padding$}] {}",
+                "",
+                self.colour.magenta(out)
+            )?;
 
             if let Some(annotation) = annotations.peek()
                 && annotation.offset_in_section >= instruction_offset
@@ -1225,7 +1246,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
                     + 7
                     + (annotation.offset_in_section - instruction_offset) as usize * 3;
 
-                annotation.write(f, &format!("{:num_spaces$}", ""))?;
+                annotation.write(f, &format!("{:num_spaces$}", ""), self.colour)?;
 
                 annotations.next();
             }
@@ -1235,7 +1256,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
             write!(
                 f,
                 "{name:name_width$} 0x{address:0address_width$x}: [ ",
-                name = self.name.blue(),
+                name = self.colour.blue(self.name),
                 address = self.section_address + self.range.start,
             )?;
 
@@ -1245,7 +1266,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
                     .and_then(|bytes| bytes.get(i as usize).copied())
                     .unwrap_or(0);
 
-                write!(f, "{} ", format!("{byte:02x}").yellow())?;
+                write!(f, "{} ", self.colour.yellow(format!("{byte:02x}")))?;
             }
             writeln!(f, "]")?;
         }
@@ -1253,12 +1274,16 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
         // Print any remaining annotations.
         for annotation in annotations {
             let num_spaces = name_width + address_width + 6;
-            annotation.write(f, &format!("{:num_spaces$} ", self.name.blue()))?;
+            annotation.write(
+                f,
+                &format!("{:num_spaces$} ", self.colour.blue(self.name)),
+                self.colour,
+            )?;
         }
 
         if let Some(r) = self.reference {
-            write!(f, "{:name_width$} ", self.name.blue())?;
-            r.write_to(f)?;
+            write!(f, "{:name_width$} ", self.colour.blue(self.name))?;
+            r.write_to(f, self.colour)?;
         }
 
         writeln!(f)?;
@@ -1266,7 +1291,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
         self.write_traces(f, maximum_widths)?;
 
         for message in &self.trace.messages {
-            writeln!(f, "{:name_width$} {message}", self.name.blue())?;
+            writeln!(f, "{:name_width$} {message}", self.colour.blue(self.name))?;
         }
 
         Ok(())
@@ -1277,7 +1302,11 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
         let prefix = " TRACE: ";
 
         for trace in &self.trace_messages {
-            writeln!(f, "{:name_width$}{prefix}{trace}", self.name.blue())?;
+            writeln!(
+                f,
+                "{:name_width$}{prefix}{trace}",
+                self.colour.blue(self.name)
+            )?;
         }
 
         Ok(())
@@ -1285,27 +1314,27 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
 }
 
 impl<A: Arch> Annotation<'_, A> {
-    fn write(&self, f: &mut String, line_prefix: &str) -> Result {
+    fn write(&self, f: &mut String, line_prefix: &str, colour: ColourMode) -> Result {
         match &self.kind {
             AnnotationKind::MatchedRelaxation(inner) => {
-                inner.write_to(f, line_prefix)?;
+                inner.write_to(f, line_prefix, colour)?;
                 writeln!(f)?;
             }
             AnnotationKind::Ambiguous(possible) => {
                 for a in possible {
-                    a.write_to(f, line_prefix)?;
+                    a.write_to(f, line_prefix, colour)?;
                     writeln!(f)?;
                 }
             }
             AnnotationKind::MatchFailed(failures) => {
                 for m in failures {
                     write!(f, "{line_prefix}")?;
-                    m.write_to(f)?;
+                    m.write_to(f, colour)?;
                     writeln!(f)?;
                 }
             }
             AnnotationKind::Error(error) => {
-                writeln!(f, "{line_prefix}{}", error.red())?;
+                writeln!(f, "{line_prefix}{}", colour.red(error))?;
             }
             AnnotationKind::LiteralByteMismatch => {
                 return Ok(());
@@ -1317,12 +1346,12 @@ impl<A: Arch> Annotation<'_, A> {
 }
 
 impl<A: Arch> MatchedRelaxation<A> {
-    fn write_to(&self, f: &mut String, line_prefix: &str) -> Result {
+    fn write_to(&self, f: &mut String, line_prefix: &str, colour: ColourMode) -> Result {
         write!(f, "{line_prefix}")?;
         write_carets_for_r_type(f, self.r_type)?;
-        write!(f, "{} ", self.r_type.to_string().green())?;
+        write!(f, "{} ", colour.green(self.r_type.to_string()))?;
         if let Some(r) = self.relaxation_kind {
-            write!(f, "{} ", format!("{r:?}").bright_green())?;
+            write!(f, "{} ", colour.bright_green(format!("{r:?}")))?;
         }
 
         Ok(())
@@ -1330,22 +1359,22 @@ impl<A: Arch> MatchedRelaxation<A> {
 }
 
 impl<'data, A: Arch> RelaxationMatch<'data, A> {
-    fn write_to(&self, f: &mut String, line_prefix: &str) -> Result {
+    fn write_to(&self, f: &mut String, line_prefix: &str, colour: ColourMode) -> Result {
         let rel = self.relaxation;
 
         write!(f, "{line_prefix}")?;
         write_carets_for_r_type(f, rel.new_r_type)?;
 
-        write!(f, "{} ", rel.new_r_type.to_string().green())?;
+        write!(f, "{} ", colour.green(rel.new_r_type.to_string()))?;
 
         if let Some(alt) = rel.alt_r_type {
-            write!(f, "/{} ", alt.to_string().green())?;
+            write!(f, "/{} ", colour.green(alt.to_string()))?;
         }
 
         writeln!(
             f,
             "{} ",
-            format!("{:?}", rel.relaxation_kind).bright_green()
+            colour.bright_green(format!("{:?}", rel.relaxation_kind))
         )?;
 
         Ok(())
@@ -1374,15 +1403,15 @@ fn num_carets_for_r_type<R: RType>(r_type: R) -> usize {
 }
 
 impl<A: Arch> FailedMatch<A> {
-    fn write_to(&self, f: &mut String) -> Result {
+    fn write_to(&self, f: &mut String, colour: ColourMode) -> Result {
         write_carets_for_r_type(f, self.candidate.new_r_type)?;
 
         write!(
             f,
             "{} {:?} {}",
-            self.candidate.new_r_type.to_string().green(),
+            colour.green(self.candidate.new_r_type.to_string()),
             self.candidate.relaxation_kind,
-            self.reason.red()
+            colour.red(&self.reason)
         )?;
         Ok(())
     }
@@ -1548,18 +1577,32 @@ struct UnmatchedAddress {
 }
 
 impl<'data, R: RType> Reference<'data, R> {
-    fn write_to(&self, f: &mut String) -> Result {
+    fn write_to(&self, f: &mut String, colour: ColourMode) -> Result {
         match self.indirection {
             Indirection::Direct => {}
-            Indirection::Got => write!(f, "GOT{}", arrow())?,
-            Indirection::PltGot => write!(f, "PLT{}GOT{}", arrow(), arrow())?,
-            Indirection::GotPltGot => write!(f, "GOT{}PLT{}GOT{}", arrow(), arrow(), arrow())?,
+            Indirection::Got => write!(f, "GOT{}", arrow(colour))?,
+            Indirection::PltGot => write!(f, "PLT{}GOT{}", arrow(colour), arrow(colour))?,
+            Indirection::GotPltGot => {
+                write!(
+                    f,
+                    "GOT{}PLT{}GOT{}",
+                    arrow(colour),
+                    arrow(colour),
+                    arrow(colour)
+                )?;
+            }
             Indirection::ThunkPltGot => {
-                write!(f, "thunk{}PLT{}GOT{}", arrow(), arrow(), arrow())?;
+                write!(
+                    f,
+                    "thunk{}PLT{}GOT{}",
+                    arrow(colour),
+                    arrow(colour),
+                    arrow(colour)
+                )?;
             }
         }
 
-        self.referent.write_to(f)?;
+        self.referent.write_to(f, colour)?;
 
         Ok(())
     }
@@ -1603,7 +1646,7 @@ impl<'data, R: RType> Reference<'data, R> {
 }
 
 impl<R: RType> Referent<'_, R> {
-    fn write_to(&self, f: &mut String) -> Result {
+    fn write_to(&self, f: &mut String, colour: ColourMode) -> Result {
         match self {
             Referent::Unknown => write!(f, "??")?,
             Referent::Named(symbol_name, offset) => {
@@ -1634,7 +1677,9 @@ impl<R: RType> Referent<'_, R> {
             Referent::MergedString(merged) => {
                 merged.write_to(f)?;
             }
-            Referent::DynamicRelocation(dynamic_relocation) => dynamic_relocation.write_to(f)?,
+            Referent::DynamicRelocation(dynamic_relocation) => {
+                dynamic_relocation.write_to(f, colour)?;
+            }
             Referent::TlsDesc(symbol) => write!(f, "TlsDesc({symbol})")?,
             Referent::IFunc(Some(symbol)) => write!(f, "IFunc({symbol})")?,
             Referent::IFunc(None) => write!(f, "UnknownIFunc")?,
@@ -1721,13 +1766,13 @@ impl<R: RType> DynamicRelocation<'_, R> {
 }
 
 impl<R: RType> DynamicRelocation<'_, R> {
-    fn write_to(&self, f: &mut String) -> Result {
+    fn write_to(&self, f: &mut String, colour: ColourMode) -> Result {
         write!(
             f,
             "{}{}{}",
-            self.r_type.to_string().green().bold(),
-            arrow(),
-            self.entry.to_string().cyan()
+            colour.green_bold(self.r_type.to_string()),
+            arrow(colour),
+            colour.cyan(self.entry.to_string())
         )?;
         if self.addend != 0 {
             write!(f, " {:+}", self.addend)?;
@@ -1736,8 +1781,8 @@ impl<R: RType> DynamicRelocation<'_, R> {
     }
 }
 
-fn arrow() -> ColoredString {
-    "->".bright_yellow()
+fn arrow(colour: ColourMode) -> impl std::fmt::Display {
+    colour.bright_yellow("->")
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -1793,7 +1838,7 @@ struct RelaxationTester<'data> {
 
 impl<'data> RelaxationTester<'data> {
     fn new(
-        original_section: &ElfSection64<'data, '_, LittleEndian>,
+        original_section: &ElfSection64<'data, '_, Endianness>,
         bin: &'data Binary<'data>,
         section_address: u64,
         input_file: &section_map::InputFile,
@@ -1808,7 +1853,7 @@ impl<'data> RelaxationTester<'data> {
                 section_bytes = None;
             }
             _ => {
-                section_bytes = read_bytes(bin.elf_file, section_address, section_len);
+                section_bytes = read_bytes(bin.file, section_address, section_len);
 
                 if section_bytes.is_none() {
                     bail!(
@@ -2243,7 +2288,7 @@ impl<'data> RelaxationTester<'data> {
         expected_symbol_name: &[u8],
     ) -> Option<Reference<'data, <A as Arch>::RType>> {
         let thunk_target =
-            read_bytes(self.bin.elf_file, address, 16).and_then(|b| A::decode_thunk(b, address))?;
+            read_bytes(self.bin.file, address, 16).and_then(|b| A::decode_thunk(b, address))?;
 
         let got_address = self
             .bin
@@ -2354,9 +2399,8 @@ impl<'data> RelaxationTester<'data> {
                             // range-extension thunk. Try to follow the thunk to check whether it
                             // ultimately jumps to the expected symbol (directly or via PLT->GOT for
                             // ifuncs / non-interposable symbols).
-                            if let Some(thunk_target) =
-                                read_bytes(self.bin.elf_file, *merged_value, 16)
-                                    .and_then(|b| A::decode_thunk(b, *merged_value))
+                            if let Some(thunk_target) = read_bytes(self.bin.file, *merged_value, 16)
+                                .and_then(|b| A::decode_thunk(b, *merged_value))
                             {
                                 // The thunk may redirect through a PLT entry (e.g. for
                                 // ifuncs or other indirectly-called local symbols). Follow
@@ -2459,7 +2503,7 @@ impl<'data> RelaxationTester<'data> {
             merged_value
         };
 
-        let bytes = read_bytes_starting_at(self.bin.elf_file, string_address)
+        let bytes = read_bytes_starting_at(self.bin.file, string_address)
             .with_context(|| format!("Failed to read bytes starting at 0x{string_address:x}"))?;
         let null_offset = memchr::memchr(0, bytes).with_context(|| {
             format!("Missing null-terminator for merged string starting at 0x{string_address:x}")
@@ -2566,7 +2610,7 @@ impl<'data> RelaxationTester<'data> {
                         Err(failure) => {
                             failed_matches.push(failure);
                         }
-                    };
+                    }
                 });
 
                 let m = match matched_relaxations.len() {
@@ -2755,6 +2799,8 @@ fn symbol_versions_by_name<'data>(
     binaries: &'data [Binary<'data>],
     layout: &IndexedLayout<'data>,
 ) -> HashMap<&'data [u8], SymbolVersions> {
+    let e = binaries[0].file.endianness();
+
     // Populate our map with eligible unique symbols from the input files.
     let mut by_name: HashMap<&[u8], SymbolVersions> = layout
         .symbol_name_to_section_id
@@ -2764,7 +2810,7 @@ fn symbol_versions_by_name<'data>(
 
             // Merge sections are ignored, since they're split before copying, so can't be compared
             // 1:1 between output files.
-            if is_merge_section(&section)
+            if is_merge_section(&section, e)
                 || section.size() == 0
                 || !SUPPORTED_SECTION_KINDS.contains(&section.kind())
             {
@@ -2782,7 +2828,7 @@ fn symbol_versions_by_name<'data>(
 
     // Try to find those same symbols in all the output files.
     for (object_index, obj) in binaries.iter().enumerate() {
-        for sym in obj.elf_file.symbols() {
+        for sym in obj.file.symbols() {
             let Ok(name) = sym.name_bytes() else { continue };
 
             if let hashbrown::hash_map::Entry::Occupied(mut entry) = by_name.entry(name) {
@@ -2810,10 +2856,10 @@ fn symbol_versions_by_name<'data>(
 
 /// Returns whether the supplied section has the merge flag set. Merge sections aren't copied in
 /// their entirety, so need special handling.
-fn is_merge_section(section: &ElfSection64<LittleEndian>) -> bool {
+fn is_merge_section(section: &ElfSection64<Endianness>, e: Endianness) -> bool {
     section
         .elf_section_header()
-        .sh_flags(LittleEndian)
+        .sh_flags(e)
         .contains(object::elf::SHF_MERGE)
 }
 
@@ -2922,7 +2968,7 @@ impl<'data> SectionVersions<'data> {
     fn original_section<'layout>(
         &self,
         layout: &'layout IndexedLayout<'data>,
-    ) -> Result<ElfSection64<'data, 'layout, LittleEndian>> {
+    ) -> Result<ElfSection64<'data, 'layout, Endianness>> {
         layout.get_elf_section(self.input_section_id)
     }
 
@@ -3123,14 +3169,14 @@ impl PltIndex<'_> {
 }
 
 impl<'data> AddressIndex<'data> {
-    pub(crate) fn new(elf_file: &'data ElfFile64<'data>) -> Self {
+    pub(crate) fn new(file: &'data object::File<'data>) -> Self {
         let mut info = Self {
             index_error: None,
             jmprel_address: None,
             versym_address: None,
             dynamic_segment_address: None,
             got_base_address: None,
-            tls_segment_size: get_tls_segment_size(elf_file),
+            tls_segment_size: get_tls_segment_size(file),
             plt_indexes: Default::default(),
             got_tables: Default::default(),
             verdef: Default::default(),
@@ -3140,7 +3186,7 @@ impl<'data> AddressIndex<'data> {
             dynamic_relocations_by_address: Default::default(),
             bin_attributes: BinAttributes {
                 // These may be overridden in `index_dynamic`.
-                output_kind: if elf_file.kind() == ObjectKind::Executable {
+                output_kind: if file.kind() == ObjectKind::Executable {
                     OutputKind::Executable
                 } else {
                     OutputKind::SharedObject
@@ -3149,28 +3195,30 @@ impl<'data> AddressIndex<'data> {
                 link_type: LinkType::Static,
             },
             dynamic_relocations_by_symbol_index: Default::default(),
-            symbols_by_address: index_symbols_by_address(elf_file),
+            symbols_by_address: index_symbols_by_address(file),
         };
 
-        if let Err(error) = info.build_indexes(elf_file) {
+        if let Err(error) = info.build_indexes(file) {
             info.index_error = Some(error);
         }
         info
     }
 
-    fn build_indexes(&mut self, elf_file: &ElfFile64<'data>) -> Result {
-        self.index_dynamic(elf_file);
-        self.verdef = Self::index_verdef(elf_file)?;
-        self.verneed = Self::index_verneed(elf_file)?;
-        self.dynamic_symbols = self.index_dynamic_symbols(elf_file)?;
-        self.index_got_tables(elf_file).unwrap();
-        self.index_relocations(elf_file);
-        self.index_plt_sections(elf_file)?;
+    fn build_indexes(&mut self, file: &File<'data>) -> Result {
+        if let object::File::Elf64(elf_file) = file {
+            self.index_dynamic(elf_file);
+            self.verdef = Self::index_verdef(elf_file)?;
+            self.verneed = Self::index_verneed(elf_file)?;
+            self.dynamic_symbols = self.index_dynamic_symbols(elf_file)?;
+            self.index_got_tables(elf_file).unwrap();
+            self.index_relocations(elf_file);
+            self.index_plt_sections(elf_file)?;
+        }
         Ok(())
     }
 
     fn index_verdef(elf_file: &ElfFile64<'data>) -> Result<Vec<Option<&'data [u8]>>> {
-        let e = LittleEndian;
+        let e = elf_file.endian();
         let mut versions = Vec::new();
 
         let maybe_verdef = elf_file
@@ -3203,7 +3251,7 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn index_verneed(elf_file: &ElfFile64<'data>) -> Result<Vec<Option<&'data [u8]>>> {
-        let e = LittleEndian;
+        let e = elf_file.endian();
         let mut versions = Vec::new();
 
         let maybe_verneed = elf_file
@@ -3242,7 +3290,8 @@ impl<'data> AddressIndex<'data> {
         &self,
         elf_file: &ElfFile64<'data>,
     ) -> Result<Vec<SymtabEntryInfo<'data>>> {
-        let symbol_version_indexes: Option<&[object::elf::Versym<LittleEndian>]> = self
+        let e = elf_file.endian();
+        let symbol_version_indexes: Option<&[object::elf::Versym<Endianness>]> = self
             .versym_address
             .and_then(|address| {
                 elf_file
@@ -3260,10 +3309,10 @@ impl<'data> AddressIndex<'data> {
             max_index = max_index.max(sym_index);
             let version_index = symbol_version_indexes
                 .and_then(|indexes| indexes.get(sym_index))
-                .map(|versym| versym.0.get(LittleEndian).index());
+                .map(|versym| versym.0.get(e).index());
 
             let version: Option<&[u8]> = match version_index {
-                Some(object::elf::VER_NDX_LOCAL) | Some(object::elf::VER_NDX_GLOBAL)
+                Some(object::elf::VER_NDX_LOCAL | object::elf::VER_NDX_GLOBAL)
                     if !sym.is_definition() =>
                 {
                     // Unversioned, undefined symbols are sometimes emitted as VER_NDX_GLOBAL (LLD
@@ -3367,7 +3416,9 @@ impl<'data> AddressIndex<'data> {
             return Ok(());
         };
 
-        let entry_length = section.elf_section_header().sh_entsize(LittleEndian) as usize;
+        let e = elf_file.endian();
+
+        let entry_length = section.elf_section_header().sh_entsize(e) as usize;
 
         if ![0, 8, 0x10].contains(&entry_length) {
             bail!("{section_name} has unrecognised entry length {entry_length}");
@@ -3422,27 +3473,27 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn index_dynamic(&mut self, elf_file: &ElfFile64) {
-        let e = LittleEndian;
+        let e = elf_file.endian();
 
         let dynamic_segment = elf_file
             .elf_program_headers()
             .iter()
-            .find(|seg| seg.p_type(LittleEndian) == object::elf::PT_DYNAMIC);
+            .find(|seg| seg.p_type(e) == object::elf::PT_DYNAMIC);
 
         self.dynamic_segment_address = dynamic_segment.map(|seg| seg.p_vaddr(e));
 
-        if elf_file.elf_header().e_type(LittleEndian) == object::elf::ET_DYN {
+        if elf_file.elf_header().e_type(e) == object::elf::ET_DYN {
             self.bin_attributes.relocatability = Relocatability::Relocatable;
         }
 
         if dynamic_segment.is_none() {
             self.bin_attributes.output_kind = OutputKind::Executable;
-        };
+        }
 
         dynamic_segment
-            .and_then(|seg| seg.data(LittleEndian, elf_file.data()).ok())
+            .and_then(|seg| seg.data(e, elf_file.data()).ok())
             .and_then(|dynamic_table_data| {
-                object::slice_from_all_bytes::<object::elf::Dyn64<LittleEndian>>(dynamic_table_data)
+                object::slice_from_all_bytes::<object::elf::Dyn64<Endianness>>(dynamic_table_data)
                     .ok()
             })
             .unwrap_or_default()
@@ -3511,21 +3562,27 @@ impl<'data> AddressIndex<'data> {
     }
 }
 
-fn get_tls_segment_size(elf_file: &ElfFile64) -> u64 {
-    elf_file
-        .elf_program_headers()
-        .iter()
-        .find_map(|header| {
-            (header.p_type(LittleEndian) == object::elf::PT_TLS)
-                .then(|| header.p_memsz(LittleEndian))
-        })
-        .unwrap_or(0)
+fn get_tls_segment_size(file: &object::File) -> u64 {
+    match file {
+        object::File::Elf64(elf_file) => {
+            let e = elf_file.endian();
+
+            elf_file
+                .elf_program_headers()
+                .iter()
+                .find_map(|header| {
+                    (header.p_type(e) == object::elf::PT_TLS).then(|| header.p_memsz(e))
+                })
+                .unwrap_or(0)
+        }
+        _ => 0,
+    }
 }
 
-fn index_symbols_by_address(elf_file: &ElfFile64) -> HashMap<u64, Vec<object::SymbolIndex>> {
+fn index_symbols_by_address(file: &object::File) -> HashMap<u64, Vec<object::SymbolIndex>> {
     let mut out: HashMap<u64, Vec<object::SymbolIndex>> = HashMap::new();
 
-    for sym in elf_file.symbols() {
+    for sym in file.symbols() {
         out.entry(sym.address()).or_default().push(sym.index());
     }
 
@@ -3599,7 +3656,7 @@ impl<'data> GotIndex<'data> {
                             // TLS variable within the current DSO. Read
                             // the next word of data to get the offset.
                             let tls_offset =
-                                read_word_at(bin.elf_file, got_address + size_of::<u64>() as u64)
+                                read_word_at(bin.file, got_address + size_of::<u64>() as u64)
                                     .context("Short read after DTPMOD")?
                                     as i64;
                             Ok(Referent::UnmatchedTlsOffset(tls_offset))
@@ -3695,7 +3752,10 @@ fn determine_ifunc_name<'data>(address: u64, bin: &Binary<'data>) -> Option<Symb
         .symbols_at_address(address)
         .iter()
         .filter_map(|symbol_index| {
-            let symbol = bin.elf_file.symbol_by_index(*symbol_index).ok()?;
+            let File::Elf64(elf_file) = &bin.file else {
+                return None;
+            };
+            let symbol = elf_file.symbol_by_index(*symbol_index).ok()?;
 
             // We're likely to get symbols of type STT_GNU_IFUNC. The resolver should be just a
             // regular function and that's what we want.
@@ -3719,14 +3779,21 @@ struct DynamicRelocation<'data, R: RType> {
 }
 
 /// Attempts to read some data starting at `address` up to the end of the segment.
-fn read_segment<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<Data<'data>> {
+fn read_segment<'data>(file: &File<'data>, address: u64) -> Option<Data<'data>> {
+    match file {
+        File::Elf64(elf_file) => read_segment_elf(elf_file, address),
+        _ => unimplemented!(),
+    }
+}
+
+fn read_segment_elf<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<Data<'data>> {
     // This could well end up needing to be optimised if we end up caring about performance.
+    let e = elf_file.endian();
     for raw_seg in elf_file.elf_program_headers() {
-        let e = LittleEndian;
         if raw_seg.p_type(e) != object::elf::PT_LOAD {
             continue;
         }
-        let seg_address = raw_seg.p_paddr(e);
+        let seg_address = raw_seg.p_vaddr(e);
         let seg_len = raw_seg.p_memsz(e);
         let seg_end = seg_address + seg_len;
 
@@ -3751,14 +3818,14 @@ fn read_segment<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<Data
     None
 }
 
-fn read_word_at(elf_file: &ElfFile64, address: u64) -> Option<u64> {
-    let bytes = read_bytes(elf_file, address, size_of::<u64>() as u64)?;
+fn read_word_at(file: &File, address: u64) -> Option<u64> {
+    let bytes = read_bytes(file, address, size_of::<u64>() as u64)?;
     let chunk = bytes.first_chunk()?;
     Some(u64::from_le_bytes(*chunk))
 }
 
-fn read_bytes<'data>(elf_file: &ElfFile64<'data>, address: u64, len: u64) -> Option<&'data [u8]> {
-    read_segment(elf_file, address).and_then(|data| match data {
+fn read_bytes<'data>(file: &File<'data>, address: u64, len: u64) -> Option<&'data [u8]> {
+    read_segment(file, address).and_then(|data| match data {
         Data::Bytes(bytes) => bytes.get(..len as usize),
         Data::Bss => None,
     })
@@ -3766,8 +3833,8 @@ fn read_bytes<'data>(elf_file: &ElfFile64<'data>, address: u64, len: u64) -> Opt
 
 /// Returns bytes starting at `address` up to the end of the containing segment. This is useful when
 /// you don't know what length you need to read, e.g. when reading a null-terminated string.
-fn read_bytes_starting_at<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<&'data [u8]> {
-    read_segment(elf_file, address).and_then(|data| match data {
+fn read_bytes_starting_at<'data>(file: &File<'data>, address: u64) -> Option<&'data [u8]> {
+    read_segment(file, address).and_then(|data| match data {
         Data::Bytes(bytes) => Some(bytes),
         Data::Bss => None,
     })
@@ -3952,7 +4019,7 @@ impl Display for OutputKind {
 }
 
 impl Visibility {
-    fn from_sym(elf_symbol: &object::elf::Sym64<LittleEndian>) -> Visibility {
+    fn from_sym(elf_symbol: &object::elf::Sym64<Endianness>) -> Visibility {
         match elf_symbol.st_visibility() {
             object::elf::STV_DEFAULT => Visibility::Default,
             object::elf::STV_PROTECTED => Visibility::Protected,

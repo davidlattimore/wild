@@ -154,7 +154,7 @@ struct PendingVersionedSymbol<'data> {
 
 /// An ID for a symbol. All symbols from all input files are allocated a unique symbol ID. The
 /// symbol ID 0 is reserved for the undefined symbol.
-#[derive(Clone, Copy, derive_more::Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, derive_more::Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[debug("sym-{_0}")]
 pub(crate) struct SymbolId(u32);
 
@@ -166,7 +166,7 @@ struct AtomicSymbolId(AtomicU32);
 /// - A `SymbolId` is a globally unique identifier for a symbol.
 /// - An `object::SymbolIndex` is an index into the ELF symbol table of the input file.
 /// - A `usize` offset is an index into our own data structures for the file.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SymbolIdRange {
     start_symbol_id: SymbolId,
     num_symbols: usize,
@@ -445,7 +445,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             &self.version_script,
             &mut per_group_shards,
             self.args,
-            &self.export_list,
+            self.export_list.as_ref(),
             self.output_kind,
         )?;
 
@@ -490,10 +490,9 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
 
         let lto_objects = lto_objects.into_iter().collect::<Result<Vec<_>>>()?;
 
-        for group_objects in lto_objects
+        for group_objects in &lto_objects
             .into_iter()
             .chunks(crate::input_data::MAX_FILES_PER_GROUP as usize)
-            .into_iter()
         {
             let mut next_symbol_id = self.next_symbol_id();
             let group_index = self.next_group_index();
@@ -587,7 +586,16 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
 
         for name in wrap {
             let name_bytes = allocator.alloc_slice_copy(name.as_bytes());
-            let orig_id = self.get_unversioned(&UnversionedSymbolName::prehashed(name_bytes));
+            let real_name = allocator.alloc_slice_copy(format!("__real_{name}").as_bytes());
+
+            // When this function is called a second time (after LTO), the name table already has
+            // "foo" mapped to __wrap_foo's symbol ID from the first call. To get the ORIGINAL foo
+            // symbol ID, we first check if __real_foo already has a mapping (set by the first
+            // call), and fall back to looking up "foo" only on the first call.
+            let orig_id = self
+                .get_unversioned(&UnversionedSymbolName::prehashed(real_name))
+                .or_else(|| self.get_unversioned(&UnversionedSymbolName::prehashed(name_bytes)));
+
             let wrap_name = format!("__wrap_{name}");
             if let Some(wrap_id) =
                 self.get_unversioned(&UnversionedSymbolName::prehashed(wrap_name.as_bytes()))
@@ -596,7 +604,6 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             }
 
             if let Some(orig_id) = orig_id {
-                let real_name = allocator.alloc_slice_copy(format!("__real_{name}").as_bytes());
                 self.override_name(UnversionedSymbolName::prehashed(real_name), orig_id);
             }
         }
@@ -1447,7 +1454,7 @@ fn read_symbols<'data, P: Platform>(
     version_script: &VersionScript,
     shards: &mut [SymbolWriterShard<'_, '_, 'data, P>],
     args: &P::Args,
-    export_list: &Option<ExportList<'data>>,
+    export_list: Option<&ExportList<'data>>,
     output_kind: OutputKind,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
     timing_phase!("Read symbols");
@@ -1472,7 +1479,7 @@ fn read_symbols<'data, P: Platform>(
 fn read_symbols_for_group<'data, P: Platform>(
     shard: &mut SymbolWriterShard<'_, '_, 'data, P>,
     version_script: &VersionScript,
-    export_list: &Option<ExportList<'data>>,
+    export_list: Option<&ExportList<'data>>,
     num_buckets: usize,
     args: &P::Args,
     output_kind: OutputKind,
@@ -1635,7 +1642,7 @@ fn load_symbols_from_file<'data, P: Platform>(
     symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
     outputs: &mut SymbolLoadOutputs<'data>,
     args: &P::Args,
-    export_list: &Option<ExportList<'data>>,
+    export_list: Option<&ExportList<'data>>,
     output_kind: OutputKind,
 ) -> Result {
     if s.is_dynamic() {
@@ -1764,7 +1771,7 @@ struct RegularObjectSymbolLoader<'a, 'data, P: Platform> {
     version_script: &'a VersionScript<'a>,
     archive_semantics: bool,
     lib_name: &'data [u8],
-    export_list: &'a Option<ExportList<'a>>,
+    export_list: Option<&'a ExportList<'a>>,
     output_kind: OutputKind,
 }
 
@@ -1792,7 +1799,7 @@ impl<'data, P: Platform> SymbolLoader<'data, P> for RegularObjectSymbolLoader<'_
             self.args,
             sym,
             self.output_kind,
-            self.export_list.as_ref(),
+            self.export_list,
             self.lib_name,
             self.archive_semantics,
             is_undefined,

@@ -1,5 +1,1 @@
-exclude = [
-  ".cargo-home/**",
-  "external_test_suites/mold/third-party/blake3/Cargo.toml",
-  "target/**",
-]
+exclude = [".cargo-home/**", "external_test_suites/**", "target/**"]

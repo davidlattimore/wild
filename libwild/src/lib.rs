@@ -22,6 +22,7 @@ pub(crate) mod file_kind;
 pub(crate) mod file_writer;
 pub(crate) mod fs;
 pub(crate) mod gc_stats;
+pub(crate) mod gdb_index;
 pub(crate) mod glob_match;
 pub(crate) mod grouping;
 pub(crate) mod hash;
@@ -37,8 +38,10 @@ mod linker_plugins;
 pub(crate) mod linker_script;
 pub(crate) mod macho;
 pub(crate) mod macho_aarch64;
+pub(crate) mod macho_object;
 pub(crate) mod macho_stub_library;
 pub(crate) mod macho_writer;
+pub mod malfunction;
 pub(crate) mod output_kind;
 pub(crate) mod output_section_id;
 pub(crate) mod output_section_map;
@@ -55,7 +58,11 @@ pub(crate) mod perf;
     not(target_os = "linux"),
     all(
         target_os = "linux",
-        any(target_arch = "riscv64", target_arch = "loongarch64")
+        any(
+            target_arch = "riscv64",
+            target_arch = "loongarch64",
+            target_arch = "powerpc64"
+        )
     )
 ))]
 #[path = "perf_unsupported.rs"]
@@ -108,6 +115,7 @@ use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
 use std::io::BufWriter;
+use std::io::IsTerminal;
 use std::io::Write;
 use std::path::Path;
 pub use subprocess::run_in_subprocess;
@@ -137,7 +145,7 @@ pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
         debug_trace::init()
     } else {
         tracing_subscriber::registry()
-            .with(fmt::layer())
+            .with(fmt::layer().with_ansi(std::io::stdout().is_terminal()))
             .with(EnvFilter::from_env("WILD_LOG"))
             .try_init()
             .map_err(|_| AlreadyInitialised)
@@ -278,7 +286,8 @@ impl Linker {
         let mut output = file_writer::Output::new(args, output_kind);
 
         let mut output_sections =
-            OutputSections::with_base_address(P::start_memory_address(output_kind));
+            OutputSections::with_base_address(A::start_memory_address(output_kind));
+        output_sections.set_rosegment(args.rosegment());
 
         let mut layout_rules_builder = LayoutRulesBuilder::default();
 
@@ -294,8 +303,6 @@ impl Linker {
             loaded,
         )?;
 
-        // TODO: Doing this here means that we can't wrap symbols produced by the linker plugin.
-        // Moving it earlier or later however requires some rethought as to how this works.
         symbol_db.apply_wrapped_symbol_overrides();
 
         let mut resolver = resolution::Resolver::default();

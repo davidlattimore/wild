@@ -126,9 +126,22 @@ where
     }
 }
 
+impl Error {
+    /// Convert an anyhow error, preserving the full error chain.
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn from_anyhow(err: anyhow::Error) -> Self {
+        let mut messages = vec![err.to_string()];
+        for cause in err.chain().skip(1) {
+            messages.push(cause.to_string());
+        }
+        Error(Box::new(ErrorPayload { messages }))
+    }
+}
+
 pub trait Context<T> {
     fn with_context(self, callback: impl FnOnce() -> String) -> Result<T>;
-    fn context(self, message: impl Into<String>) -> Result<T>;
+    fn context(self, message: &'static str) -> Result<T>;
 }
 
 impl<T, E: Into<Error>> Context<T> for Result<T, E> {
@@ -143,7 +156,7 @@ impl<T, E: Into<Error>> Context<T> for Result<T, E> {
         }
     }
 
-    fn context(self, message: impl Into<String>) -> Result<T> {
+    fn context(self, message: &'static str) -> Result<T> {
         match self {
             Ok(v) => Ok(v),
             Err(error) => {
@@ -163,7 +176,7 @@ impl<T> Context<T> for Option<T> {
         }
     }
 
-    fn context(self, message: impl Into<String>) -> Result<T> {
+    fn context(self, message: &'static str) -> Result<T> {
         match self {
             Some(v) => Ok(v),
             None => Err(Error::with_message(message)),

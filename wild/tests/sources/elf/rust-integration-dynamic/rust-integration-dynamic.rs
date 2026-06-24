@@ -1,4 +1,5 @@
 //#Config:default
+//#SkipArch: ppc64le
 //#DiffIgnore:.dynamic.*
 // It looks like GNU ld sets .tdata's alignment to match .tbss's alignment
 //#DiffIgnore:section.tdata.alignment

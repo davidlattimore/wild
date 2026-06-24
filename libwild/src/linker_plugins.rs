@@ -25,6 +25,7 @@ use crate::input_data::FileLoader;
 use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSections;
+use crate::platform::Args as _;
 use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::resolution::ResolutionResources;
@@ -174,20 +175,22 @@ impl<'data> LinkerPlugin<'data> {
         input_ref: InputRef<'data>,
         file: &File,
         kind: FileKind,
-    ) -> Result<Box<LtoInputInfo<'data>>> {
+    ) -> Result<Option<Box<LtoInputInfo<'data>>>> {
         verbose_timing_phase!("Linker plugin process input");
 
         let fd = file.as_raw_fd();
 
-        self.claim_file(input_ref, fd)
-            .transpose()
-            .with_context(|| {
-                format!(
-                    "Input file {input_ref} contains {kind}, \
-                            but the linker plugin ({self}) didn't claim it"
-                )
-            })
-            .flatten()
+        if let Some(info) = self.claim_file(input_ref, fd)? {
+            Ok(Some(info))
+        } else {
+            if input_ref.has_archive_semantics() {
+                return Ok(None);
+            }
+            bail!(
+                "Input file {input_ref} contains {kind}, \
+                        but the linker plugin ({self}) didn't claim it"
+            );
+        }
     }
 
     /// Notify the plugin that all symbols have now been read. This will cause it to build
@@ -208,6 +211,11 @@ impl<'data> LinkerPlugin<'data> {
         }
 
         timing_phase!("Linker plugin codegen");
+
+        // Mark wrapped symbol names and their __wrap_/__real_ variants as referenced by non-IR
+        // code. This ensures the plugin keeps them in the LTO output rather than
+        // internalising/removing them.
+        mark_wrap_symbols_as_non_ir_ref(symbol_db, per_symbol_flags);
 
         let plugin_outputs = self.store.loaded()?.with_callbacks(|callbacks| {
             if let Some(cb) = callbacks.all_symbols_read {
@@ -235,6 +243,10 @@ impl<'data> LinkerPlugin<'data> {
             layout_rules_builder,
             plugin_loaded,
         )?;
+
+        // Re-apply --wrap overrides so that wrapped names now map to definitions from the LTO
+        // output rather than the LTO input objects.
+        symbol_db.apply_wrapped_symbol_overrides();
 
         resolver.resolve_symbols_and_select_archive_entries(symbol_db, per_symbol_flags)?;
 
@@ -294,14 +306,13 @@ impl<'data> LinkerPlugin<'data> {
                 file_size: data.len() as libc::off_t,
                 // Whatever we store here needs to be valid for 'data, since the plugin might pass
                 // this back to us at a later point. e.g. get_symbols does so.
-                handle: handle as *const FileHandle as *mut libc::c_void,
+                handle: std::ptr::from_ref::<FileHandle>(handle) as *mut libc::c_void,
             };
 
             let mut claimed = 0;
 
             ctx.set_current_while(|| {
-                unsafe { cb(&file as *const LdPluginInputFile, &mut claimed as *mut i32) }
-                    .to_result("claim_file")
+                unsafe { cb(&raw const file, &raw mut claimed) }.to_result("claim_file")
             })?;
 
             check_for_errors()?;
@@ -343,9 +354,12 @@ impl<'data> WrapSymbols<'data> {
         let mut wrap_args = Vec::new();
         for w in wrap {
             let w_cstring = CString::new(w.as_bytes())?;
-            wrap_args
-                .push(allocator.alloc_slice_copy(w_cstring.as_bytes()).as_ptr()
-                    as *const libc::c_char);
+            wrap_args.push(
+                allocator
+                    .alloc_slice_copy(w_cstring.as_bytes())
+                    .as_ptr()
+                    .cast::<libc::c_char>(),
+            );
         }
         Ok(Self(&*allocator.alloc_slice_copy(wrap_args.as_slice())))
     }
@@ -378,10 +392,10 @@ impl LoadedPlugin {
             unsafe { lib.get(b"onload") }
                 .context("Failed to get `onload` function from linker plugin")?;
 
-        let output_name = CString::new(args.output.as_os_str().as_encoded_bytes())?;
+        let output_name = CString::new(args.common.output.as_os_str().as_encoded_bytes())?;
 
         let output_kind = if args.should_output_executable {
-            match args.relocation_model {
+            match args.common.relocation_model {
                 crate::args::RelocationModel::NonRelocatable => OutputFileType::Exec,
                 crate::args::RelocationModel::Relocatable => OutputFileType::Pie,
             }
@@ -867,7 +881,7 @@ extern "C" fn get_symbols_v3(
 ) -> Status {
     catch_panics(|| {
         AllSymbolsReadContext::with_current(|ctx| {
-            let handle = unsafe { &*(handle as *const FileHandle) };
+            let handle = unsafe { &*handle.cast::<FileHandle>() };
 
             let Some(file_id) = handle.file_id.load() else {
                 panic!("get_symbols_v3 called without first supplying FileId");
@@ -918,6 +932,20 @@ fn get_symbol_resolution<'data>(
     if !sym.version.is_null() {
         raw_name.version_name = Some(unsafe { CStr::from_ptr(sym.version) }.to_bytes());
     }
+
+    // If the symbol was wrapped via --wrap, the name table has been modified to map the original
+    // name to __wrap_<name>. We must not report the wrapped resolution to the plugin, since the
+    // plugin needs to know the pre-wrap state.
+    let wrap_names = symbol_db.args.symbol_names_to_wrap();
+    let is_wrapped = wrap_names.iter().any(|w| w.as_bytes() == raw_name.name);
+    if is_wrapped {
+        return if sym.is_undefined() {
+            PluginSymbolResolution::ResolvedExec
+        } else {
+            PluginSymbolResolution::PreemptedReg
+        };
+    }
+
     let symbol_id = symbol_db
         .get(&PreHashedSymbolName::from_raw(&raw_name), true)
         .map(|id| symbol_db.definition(id));
@@ -969,7 +997,7 @@ extern "C" fn get_input_file(handle: *const libc::c_void, file: *mut LdPluginInp
         if handle.is_null() || file.is_null() {
             return Status::Err;
         }
-        let handle = unsafe { &*(handle as *const FileHandle) };
+        let handle = unsafe { &*handle.cast::<FileHandle>() };
         let file = unsafe { &mut *file };
 
         file.fd = handle.fd;
@@ -994,8 +1022,8 @@ extern "C" fn get_view(
         if handle.is_null() {
             return Status::Err;
         }
-        let handle = unsafe { &*(handle as *const FileHandle) };
-        unsafe { view_pointer.write(handle.data.as_ptr() as *const libc::c_void) };
+        let handle = unsafe { &*handle.cast::<FileHandle>() };
+        unsafe { view_pointer.write(handle.data.as_ptr().cast::<libc::c_void>()) };
         Status::Ok
     })
 }
@@ -1105,13 +1133,13 @@ impl ClaimContext<'_> {
         if ptr.is_null() {
             ERROR_MESSAGE.set(Some("Tried to obtain ClaimContext when not set".to_owned()));
             return Status::Err;
-        };
-        let ctx = unsafe { &mut *(ptr as *mut ClaimContext) };
+        }
+        let ctx = unsafe { &mut *ptr.cast::<ClaimContext>() };
         cb(ctx)
     }
 
     fn set_current_while<R>(&mut self, cb: impl FnOnce() -> R) -> R {
-        CLAIM_CONTEXT.set(self as *mut _ as *mut libc::c_void);
+        CLAIM_CONTEXT.set(std::ptr::from_mut(self).cast::<libc::c_void>());
         let r = cb();
         CLAIM_CONTEXT.take();
         r
@@ -1134,14 +1162,16 @@ impl<'scope, 'data, P: Platform> AllSymbolsReadContext<'scope, 'data, P> {
                 "Tried to obtain AllSymbolsReadContext when not set".to_owned(),
             ));
             return Status::Err;
-        };
+        }
         let ctx = unsafe { &mut *(ptr as *mut AllSymbolsReadContext<'scope, 'data, P>) };
         cb(ctx)
     }
 
     fn set_current_while<R>(&self, cb: impl FnOnce() -> R) -> R {
-        ALL_SYMBOLS_READ_CONTEXT
-            .set(self as *const AllSymbolsReadContext<'scope, 'data, P> as *const libc::c_void);
+        ALL_SYMBOLS_READ_CONTEXT.set(
+            std::ptr::from_ref::<AllSymbolsReadContext<'scope, 'data, P>>(self)
+                .cast::<libc::c_void>(),
+        );
         let r = cb();
         ALL_SYMBOLS_READ_CONTEXT.take();
         r
@@ -1411,4 +1441,25 @@ pub(crate) fn resolve_lto_symbols<'data, 'scope>(
                 Ok(())
             },
         )
+}
+
+/// Marks symbols related to --wrap as having non-IR references. This ensures that the linker
+/// plugin preserves these symbols in its output rather than internalising them.
+fn mark_wrap_symbols_as_non_ir_ref<'data, P: Platform>(
+    symbol_db: &SymbolDb<'data, P>,
+    per_symbol_flags: &mut PerSymbolFlags,
+) {
+    for name in symbol_db.args.symbol_names_to_wrap() {
+        for lookup_name in [
+            name.clone(),
+            format!("__wrap_{name}"),
+            format!("__real_{name}"),
+        ] {
+            if let Some(symbol_id) =
+                symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(lookup_name.as_bytes()))
+            {
+                per_symbol_flags.set_flag(symbol_id, ValueFlags::HAS_NON_IR_REF);
+            }
+        }
+    }
 }

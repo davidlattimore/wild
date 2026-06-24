@@ -34,7 +34,7 @@ impl<'data> LinkerPlugin<'data> {
         _input_ref: crate::input_data::InputRef<'_>,
         _file: &std::fs::File,
         _kind: crate::file_kind::FileKind,
-    ) -> Result<Box<LtoInputInfo<'data>>> {
+    ) -> Result<Option<Box<LtoInputInfo<'data>>>> {
         unreachable!();
     }
 

@@ -3,6 +3,7 @@ use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
 use crate::platform::Platform;
+use itertools::AllEqualValueError;
 use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::PAGE_MASK_4KB;
@@ -44,6 +45,10 @@ impl crate::platform::Arch for ElfLoongArch64 {
                 Self::rel_type_to_string(r_type)
             )
         })
+    }
+
+    fn is_illegal_in_shared_object(r_type: u32) -> bool {
+        matches!(r_type, object::elf::R_LARCH_32)
     }
 
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
@@ -88,9 +93,12 @@ impl crate::platform::Arch for ElfLoongArch64 {
     fn merge_eflags(
         mut eflags: impl Iterator<Item = object::elf::FileFlags>,
     ) -> Result<object::elf::FileFlags> {
-        eflags
-            .all_equal_value()
-            .map_err(|_e| error!("non-unique e_flags"))
+        match eflags.all_equal_value() {
+            Ok(flags) => Ok(flags),
+            // no items, return blank flags
+            Err(AllEqualValueError(None)) => Ok(object::elf::FileFlags(0)),
+            Err(AllEqualValueError(Some([a, b]))) => Err(error!("non-unique e_flags: {a}, {b}")),
+        }
     }
 
     fn high_part_relocations() -> &'static [u32] {
@@ -124,6 +132,15 @@ impl crate::platform::Arch for ElfLoongArch64 {
         let offset = offset_in_section as usize;
 
         match relocation_kind {
+            object::elf::R_LARCH_CALL36 if !interposable => {
+                relocation.kind = RelocationKind::Relative;
+                return Some(Relaxation {
+                    kind: RelaxationKind::NoOp,
+                    rel_info: relocation,
+                    mandatory: true,
+                });
+            }
+
             object::elf::R_LARCH_B26 if !interposable => {
                 relocation.kind = RelocationKind::Relative;
                 return Some(Relaxation {

@@ -7,7 +7,8 @@ on:
     branches: ['**']
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  packages: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,89 +16,55 @@ env:
 
 jobs:
   test-nightly:
-    name: Test Linux (${{ contains(matrix.runs-on, 'arm') && 'AArch64' || 'x86_64'}}, ${{ matrix.container }}${{ matrix.test-qemu && ', QEMU' || ''}})
+    name: Test Linux (${{ matrix.container }})
 
     strategy:
       matrix:
-        runs-on:
-          - ubuntu-24.04
-          - ubuntu-24.04-arm
-        container:
-          - 'ubuntu:24.04'
-          - 'opensuse/tumbleweed:latest'
-          - 'rust:1.94-alpine'
-        test-qemu:
-          - false
-        test-plugins:
-          - false
         include:
           - runs-on: ubuntu-24.04
-            container: 'ubuntu:25.10'
-            test-qemu: true
+            container: ci-ubuntu-cross-amd64
           - runs-on: ubuntu-24.04-arm
-            container: 'ubuntu:25.10'
-            test-qemu: false
-            test-plugins: true
+            container: ci-ubuntu-arm64
           - runs-on: ubuntu-24.04
-            container: 'ubuntu:26.04'
-            test-qemu: true
+            container: ci-alpine-amd64
+          - runs-on: ubuntu-24.04
+            container: ci-opensuse-amd64
           - runs-on: ubuntu-24.04-arm
-            container: 'ubuntu:26.04'
-            test-qemu: false
-        exclude: # TODO: https://github.com/actions/runner/issues/1637
-          - runs-on: ubuntu-24.04-arm
-            container: 'rust:1.94-alpine'
+            container: ci-opensuse-arm64
+
       fail-fast: false
 
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 10
 
     container:
-      image: ${{ matrix.container }}
+      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-b58cc74a969f3f81c8a01b5d626fa850e3d39c38
 
     steps:
+      # https://github.com/actions/runner/issues/3210
+      - run: echo "$PATH" >> "$GITHUB_PATH"
+        if: ${{ contains(matrix.container, 'opensuse') }}
       - run: echo "WILD_TEST_CONFIG=test-config-ci.toml" >> $GITHUB_ENV
       - run: echo "WILD_TEST_CROSS=all" >> $GITHUB_ENV
-        if: ${{ matrix.test-qemu }}
-      - run: apt-get update && apt-get -y install gcc g++ clang clang-format lld curl bubblewrap
-        if: ${{ contains(matrix.container, 'ubuntu') }}
-      - run: apt-get update && apt-get -y install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-riscv64-linux-gnu g++-riscv64-linux-gnu gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu binutils-loongarch64-linux-gnu
-        if: ${{ matrix.test-qemu }}
-      - run: zypper refresh && zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
-        if: ${{ contains(matrix.container, 'opensuse') }}
-      - run: apk add build-base lld clang clang-extra-tools bash curl tar
-        if: ${{ contains(matrix.container, 'alpine') }}
-      - name: Install Taplo (x86_64)
-        if: ${{ runner.arch == 'X64' }}
-        run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
-      - name: Install Taplo (AArch64)
-        if: ${{ runner.arch == 'ARM64' }}
-        run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-aarch64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
-      - uses: actions/checkout@v6
+        if: ${{ contains(matrix.container, '-cross') }}
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@nightly
-        id: rust-toolchain
-        with:
-          targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,riscv64gc-unknown-linux-gnu,riscv64gc-unknown-linux-musl,loongarch64-unknown-linux-gnu,loongarch64-unknown-linux-musl
-          components: rustc-codegen-cranelift-preview
       - uses: wild-linker/action@latest
-        with:
-          wild-version: "0.8.0"
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}
       - run: cargo build --profile ci --workspace --no-default-features
-      - run: cargo test --profile ci --features plugins
-        if: ${{ matrix.test-plugins }}
       - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
 
   riscv-build:
     name: Build Linux (RISC-V)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    container:
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-b58cc74a969f3f81c8a01b5d626fa850e3d39c38
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -105,7 +72,6 @@ jobs:
         with:
           targets: riscv64gc-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install build-essential lld gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
       - run: cp -f .cargo/config.toml.cross-riscv .cargo/config.toml
       - run: cargo build --target riscv64gc-unknown-linux-gnu
 
@@ -114,12 +80,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ubuntu:25.10
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-b58cc74a969f3f81c8a01b5d626fa850e3d39c38
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - run: apt-get update && apt-get install -y build-essential lld gcc gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu curl
       - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
         with:
@@ -128,6 +93,27 @@ jobs:
       - run: cp -f .cargo/config.toml.cross-loongarch64 .cargo/config.toml
       - run: cargo build --target loongarch64-unknown-linux-gnu
 
+  ppc64le-build:
+    name: Build Linux (PPC64LE)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-b58cc74a969f3f81c8a01b5d626fa850e3d39c38
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
+        with:
+          targets: powerpc64le-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - run: cp -f .cargo/config.toml.cross-ppc64le .cargo/config.toml
+      - run: cargo build --target powerpc64le-unknown-linux-gnu
+
+  # TODO: Switch this to use our own container rather than apt-get installing stuff. The use of
+  # gcc-multilib is the problematic part since it conflicts with packages we install in our cross
+  # container. Ideally, it shouldn't be needed if builds are configured correctly.
   wasip1-build:
     name: Build wasip1
     runs-on: ubuntu-24.04
@@ -141,7 +127,7 @@ jobs:
         uses: bytecodealliance/actions/wasmtime/setup@v1
         with:
           version: '43.0.0'
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - run: apt-get install --update -y build-essential gcc gcc-multilib clang curl
@@ -156,12 +142,35 @@ jobs:
       # spawning processes, which isn't supported on wasi.
       - run: cargo test --profile ci -p libwild --target wasm32-wasip1
 
+  wasm-test:
+    name: Test Wasm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y wabt lld
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-tools
+      - name: Setup Wasmtime
+        uses: bytecodealliance/actions/wasmtime/setup@v1
+        with:
+          version: '43.0.0'
+      - run: cargo test --features wasm -- wasm
+
   macho-build:
     name: Test Mach-O (AArch64)
     runs-on: macos-latest
     timeout-minutes: 10
+    env:
+      WILD_TEST_IGNORE_FORMAT: "1" # Checked by other jobs
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -177,7 +186,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -188,22 +197,17 @@ jobs:
   minimal-versions:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    container:
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:sha-b58cc74a969f3f81c8a01b5d626fa850e3d39c38
     steps:
-      - run: sudo apt-get update && sudo apt-get -y install gcc g++ clang clang-format lld curl
-      - name: Install Taplo (x86_64)
-        if: ${{ runner.arch == 'X64' }}
-        run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
-      - name: Install Taplo (AArch64)
-        if: ${{ runner.arch == 'ARM64' }}
-        run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-aarch64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-hack,cargo-minimal-versions
+          tool: cargo-hack,cargo-minimal-versions,taplo
       - uses: Swatinem/rust-cache@v2
       - run: cargo minimal-versions --direct test --profile ci
 
@@ -212,7 +216,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # This is where we check that we're not using features from a more recent rust version. When
@@ -222,8 +226,6 @@ jobs:
         with:
           components: clippy
       - uses: wild-linker/action@latest
-        with:
-          wild-version: "0.8.0"
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --workspace --target x86_64-unknown-linux-gnu
 
@@ -232,7 +234,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
@@ -245,7 +247,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-go@v6
@@ -256,32 +258,16 @@ jobs:
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: yamlfmt -lint .
 
-  taplo:
-    name: TOML format
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - name: Install Taplo (x86_64)
-        if: ${{ runner.arch == 'X64' }}
-        run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
-      - name: Install Taplo (AArch64)
-        if: ${{ runner.arch == 'ARM64' }}
-        run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-aarch64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
-      - run: taplo format --check --diff
-
   spelling:
     name: Spell Check with Typos
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Spell Check Repo
-        uses: crate-ci/typos@v1.46.2
+        uses: crate-ci/typos@v1.47.2
 
   calc-matrix:
     name: Find Nix checks
@@ -292,13 +278,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v34
+        uses: nixbuild/nix-quick-install-action@v35
         with:
           nix_on_tmpfs: true
 
@@ -323,13 +309,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v34
+        uses: nixbuild/nix-quick-install-action@v35
 
       - name: Restore Nix store
         uses: nix-community/cache-nix-action/restore@v7

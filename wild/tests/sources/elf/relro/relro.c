@@ -9,10 +9,12 @@
 //#DiffIgnore:.dynamic.DT_RELAENT
 
 //#Config:enabled:default
+//#SkipArch: ppc64le
 //#LinkArgs:-z relro
-//#ExpectProgramHeader:GNU_RELRO
+//#ExpectProgramHeader:GNU_RELRO flags=R,sections=[*]
 
 //#Config:disabled:default
+//#SkipArch: ppc64le
 //#LinkArgs:-z norelro
 //#NoProgramHeader:GNU_RELRO
 //#DoesNotContain:relro_padding

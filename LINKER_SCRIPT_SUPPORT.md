@@ -42,21 +42,22 @@ end lists the features required to link the Linux kernel.
 | `KEEP(...)` to prevent garbage collection | ✅ | |
 | `PROVIDE(sym = expr)` inside sections | ✅ | |
 | `PROVIDE_HIDDEN(sym = expr)` inside sections | ✅ | |
-| Symbol assignment inside sections (`sym = .`) | 🧪 | Only assignment of the location counter (`sym = .`) is supported; arbitrary expressions on the right-hand side are not |
-| Location counter assignment (`. = expr`) | 🧪 | Hex address literals (e.g. `. = 0x1000`) supported between output sections only; not inside section contents |
+| Symbol assignment inside sections (`sym = .`) | ✅ | |
+| Location counter assignment (`. = expr`) | 🧪 | constant expressions (e.g. `. = 0x1000 * 2`) supported between output sections only; not inside section contents |
 | `ALIGN(n)` on the location counter (`. = ALIGN(n)`) | ✅ | |
 | Per-section `ALIGN(n)` specifier | ✅ | |
 | `ASSERT(expr, "msg")` inside `SECTIONS` | ✅ | |
 | `OVERLAY { ... }` | ❌ | |
 | Output section type specifiers (`(NOLOAD)`, `(COPY)`, etc.) | 📅 | |
 | `FILL(value)` and `=fillexp` | 📅 | |
-| `AT(addr)` load-address specifier on output sections | 📅 | |
+| `AT(addr)` load-address specifier on output sections | ✅ | |
 | Numeric address between section name and `:` (e.g. `name 0 : { ... }`) | 🧪 | Only numeric literals are currently supported |
 | `SORT_BY_NAME(...)`, `SORT_BY_ALIGNMENT(...)`, `SORT_BY_INIT_PRIORITY(...)` | 📅 | |
 | `EXCLUDE_FILE(...)` inside input section matchers | 📅 | |
 | `BYTE(expr)`, `SHORT(expr)`, `LONG(expr)`, `QUAD(expr)` output data | ❌ | |
 | `SUBALIGN(n)` forced input alignment | ❌ | |
 | `ONLY_IF_RO` / `ONLY_IF_RW` output section constraints | ❌ | |
+| `:phdr` output section phdrs | 🧪 | Only a single `:phdr` specifier is supported per output section. |
 
 ## Expressions and Functions
 
@@ -74,7 +75,7 @@ end lists the features required to link the Linux kernel.
 | `SIZEOF(section)` | ✅ | |
 | `ALIGNOF(section)` | ✅ | |
 | `ADDR(section)` | ✅ | |
-| `LOADADDR(section)` | 🧪 | Implemented as alias for `ADDR` (returns VMA); full LMA requires `AT(addr)` support |
+| `LOADADDR(section)` | ✅ | |
 | `ALIGN(expr)` | ✅ | |
 | `LENGTH(region)` | ✅ | |
 | `ORIGIN(region)` | ✅ | |
@@ -82,7 +83,7 @@ end lists the features required to link the Linux kernel.
 | `MAX(a, b)` | ✅ | |
 | Ternary operator (`condition ? a : b`) | 📅 | |
 | `DEFINED(sym)` | 📅 | |
-| `SIZEOF_HEADERS` | 📅 | |
+| `SIZEOF_HEADERS` | ✅ | |
 | `SEGMENT_START(segment, default)` | ✅ | Supports `"text"`, `"data"`, `"bss"`, `"rodata"`; returns `-Ttext`/`-Tdata`/`-Tbss` override if provided, otherwise `default`; unknown segment names always return `default` |
 
 ## MEMORY Command
@@ -114,12 +115,13 @@ see at a glance what remains before Wild can link the kernel.
 | `OVERLAY { ... }` sections | ❌ | |
 | Output section type specifiers (`(NOLOAD)`, `(COPY)`) | 📅 | |
 | `FILL(value)` and `=fillexp` | 📅 | |
-| `AT(addr)` load-address specifier on output sections | 📅 | |
+| `AT(addr)` load-address specifier on output sections | ✅ | |
 | `>region` and `AT>region` memory region placement | 📅 | |
 | `SORT_BY_NAME(...)`, `SORT_BY_ALIGNMENT(...)`, `SORT_BY_INIT_PRIORITY(...)` | 📅 | |
 | `EXCLUDE_FILE(...)` inside input section matchers | 📅 | |
 | `CONSTRUCTORS` command | 📅 | |
-| `PHDRS` command for explicit program header definition | 📅 | |
+| `PHDRS` command for explicit program header definition | 🧪 | The FILEHDR and PHDRS keywords aren't yet supported. |
 | Ternary operator (`condition ? a : b`) | 📅 | |
 | `DEFINED(sym)` function | 📅 | |
-| `SIZEOF_HEADERS` built-in symbol | 📅 | |
+| `SIZEOF_HEADERS` built-in symbol | ✅ | |
+| `/DISCARD/` command | ✅ | |

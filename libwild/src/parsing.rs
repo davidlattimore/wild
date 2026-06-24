@@ -54,6 +54,7 @@ pub(crate) struct ProcessedLinkerScript<'data, P: Platform> {
     /// `AssertCommand::remainder` when reporting errors.
     pub(crate) file_bytes: &'data [u8],
     pub(crate) memory_regions: Vec<crate::linker_script::MemoryRegion<'data>>,
+    pub(crate) program_headers: Vec<crate::linker_script::Phdr<'data>>,
 }
 
 #[derive(Debug)]
@@ -96,11 +97,12 @@ pub(crate) enum SymbolPlacement<'data> {
     LoadBaseAddress,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum SymbolLoc {
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) enum SymbolLoc<'data> {
     SectionStart(OutputSectionId),
     SectionEnd(OutputSectionId),
     FirstSection,
+    Expression(Expression<'data>, Option<OutputSectionId>),
     None,
 }
 
@@ -108,7 +110,7 @@ pub(crate) enum SymbolLoc {
 pub(crate) struct Redirect<'data> {
     pub(crate) kind: RedirectKind,
     pub(crate) expression: Expression<'data>,
-    pub(crate) loc: SymbolLoc,
+    pub(crate) loc: SymbolLoc<'data>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

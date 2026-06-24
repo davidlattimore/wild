@@ -4,10 +4,6 @@
 //#EnableLinker:lld
 //#LinkArgs:-shared -z now -T ./linker-script-discard.ld
 //#DiffIgnore:section.got
-//#DiffIgnore:section.riscv.attributes
-//#DiffIgnore:segment.RISCV_ATTRIBUTES.*
-// lld emits `.riscv.attributes`, but Wild does not
-//#DiffIgnore:riscv_attributes.*
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
 // Wild does not emit the `.eh_frame` section as all code sections are discarded, but lld still

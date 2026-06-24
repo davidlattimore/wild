@@ -79,8 +79,8 @@ impl FileKind {
             // Wasm binary magic number is `\0asm` followed by a 4-byte version.
             ensure!(bytes.len() >= 8, "Invalid Wasm file (too short)");
             Ok(FileKind::WasmObject)
-        } else if bytes.starts_with(macho::FAT_MAGIC.as_bytes())
-            || bytes.starts_with(macho::FAT_CIGAM.as_bytes())
+        } else if bytes.starts_with(&macho::FAT_MAGIC.to_be_bytes())
+            || bytes.starts_with(&macho::FAT_MAGIC_64.to_be_bytes())
         {
             Ok(FileKind::FatMachOObject)
         } else if bytes.starts_with(b"--- !tapi-tbd") || bytes.starts_with(b"tbd-version:") {
@@ -89,8 +89,10 @@ impl FileKind {
             Ok(FileKind::Text)
         } else if bytes.starts_with(b"BC") {
             Ok(FileKind::LlvmIr)
+        } else if let Some(start) = bytes.get(..4) {
+            bail!("Couldn't identify file type starting with {start:x?}");
         } else {
-            bail!("Couldn't identify file type");
+            bail!("Input file is only {} bytes", bytes.len());
         }
     }
 

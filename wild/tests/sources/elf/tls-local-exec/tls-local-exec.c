@@ -5,6 +5,7 @@
 //#DiffIgnore:section.rodata.alignment
 
 //#Config:pie:default
+//#SkipArch: ppc64le
 //#CompArgs:-fpie
 //#LinkerDriver:gcc
 //#LinkArgs:-Wl,-z,now

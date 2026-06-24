@@ -7,7 +7,7 @@ use linker_utils::elf::BitMask;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
-use object::LittleEndian;
+use object::Object;
 use object::read::elf::FileHeader as _;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -19,6 +19,7 @@ pub(crate) enum ArchKind {
     Aarch64,
     RiscV64,
     LoongArch64,
+    Ppc64,
 }
 
 /// Provides architecture-specific functionality needed by linker-diff.
@@ -276,12 +277,25 @@ pub(crate) enum PltEntry {
 
 impl ArchKind {
     pub(crate) fn from_objects(bins: &[Binary]) -> Result<ArchKind> {
-        match bins[0].elf_file.elf_header().e_machine(LittleEndian) {
-            object::elf::EM_X86_64 => Ok(ArchKind::X86_64),
-            object::elf::EM_AARCH64 => Ok(ArchKind::Aarch64),
-            object::elf::EM_RISCV => Ok(ArchKind::RiscV64),
-            object::elf::EM_LOONGARCH => Ok(ArchKind::LoongArch64),
-            other => bail!("Unsupported object architecture {other}",),
+        match &bins[0].file {
+            object::File::Elf64(file) => {
+                let e = file.endian();
+                match file.elf_header().e_machine(e) {
+                    object::elf::EM_X86_64 => Ok(ArchKind::X86_64),
+                    object::elf::EM_AARCH64 => Ok(ArchKind::Aarch64),
+                    object::elf::EM_RISCV => Ok(ArchKind::RiscV64),
+                    object::elf::EM_LOONGARCH => Ok(ArchKind::LoongArch64),
+                    object::elf::EM_PPC64 => Ok(ArchKind::Ppc64),
+                    other => bail!("Unsupported ELF architecture {other}"),
+                }
+            }
+            object::File::MachO64(file) => {
+                match file.macho_header().cputype.get(file.endianness()) {
+                    object::macho::CPU_TYPE_ARM64 => Ok(ArchKind::Aarch64),
+                    other => bail!("Unsupported MachO architecture {other}"),
+                }
+            }
+            other => bail!("Unsupported file format: {:?}", other.format()),
         }
     }
 }

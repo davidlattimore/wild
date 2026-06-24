@@ -17,7 +17,7 @@ use itertools::Itertools;
 use serde::Deserialize;
 use std::collections::HashSet;
 
-const ARM64_LIB_ARCH: &str = "arm64-macos";
+const ARM64_LIB_ARCH: &str = "arm64e-macos";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -80,9 +80,9 @@ struct Exports<'a> {
 #[derive(Debug, Clone)]
 pub(crate) struct DefinedStubLibrary<'a> {
     /// Install name of the dynamic library, including its `.dylib` suffix.    
-    pub(crate) install_name: String,
+    pub(crate) install_name: &'a str,
     /// Current version recorded for the library, if present.
-    pub(crate) current_version: String,
+    pub(crate) current_version: &'a str,
     /// Global symbols defined by the library or by any reexported child library.
     pub(crate) symbols: Vec<&'a str>,
     /// Weak symbols defined by the library or by any reexported child library.
@@ -105,7 +105,8 @@ pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibr
         .ok_or_else(|| error!("root library must be defined"))?;
     ensure!(
         main_library.targets.contains(&ARM64_LIB_ARCH),
-        "'{ARM64_LIB_ARCH}' architecture not implemented by the library"
+        "Library only supports {targets:?}, but we need {ARM64_LIB_ARCH}",
+        targets = main_library.targets,
     );
 
     ensure!(
@@ -113,8 +114,8 @@ pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibr
         "Missing library version of the main library"
     );
     let mut defined_library = DefinedStubLibrary {
-        install_name: main_library.install_name.to_string(),
-        current_version: main_library.current_version.to_string(),
+        install_name: main_library.install_name,
+        current_version: main_library.current_version,
         symbols: Vec::with_capacity(
             library_definitions
                 .iter()
@@ -141,7 +142,8 @@ pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibr
     {
         ensure!(
             exported_libraries.targets.contains(&ARM64_LIB_ARCH),
-            "'{ARM64_LIB_ARCH}' architecture not covered in the exported library"
+            "Exported library only supports {:?}, but we need {ARM64_LIB_ARCH}",
+            exported_libraries.targets
         );
         let exported_libraries: HashSet<_> = exported_libraries.libraries.iter().copied().collect();
         exported_libraries
@@ -183,16 +185,16 @@ mod tests {
     #[test]
     fn parse_library_with_reexports() {
         let stub_library = parse_defined_library(
-            r#"--- !tapi-tbd
+            r"--- !tapi-tbd
 tbd-version:     4
-targets:         [ x86_64-macos, arm64-macos ]
+targets:         [ x86_64-macos, arm64e-macos ]
 install-name:    '/usr/lib/libMain.dylib'
 current-version: 1.2.3
 reexported-libraries:
-  - targets:         [ x86_64-macos, arm64-macos ]
+  - targets:         [ x86_64-macos, arm64e-macos ]
     libraries:       [ '/usr/lib/libA.dylib', '/usr/lib/libB.dylib' ]
 exports:
-  - targets:         [ arm64-macos ]
+  - targets:         [ arm64e-macos ]
     symbols:         [ _main_arm64 ]
     weak-symbols:    [ _main_weak_arm64 ]
   - targets:         [ x86_64-macos ]
@@ -200,34 +202,34 @@ exports:
     weak-symbols:    [ _main_weak_x86_64 ]
 --- !tapi-tbd
 tbd-version:     4
-targets:         [ x86_64-macos, arm64-macos ]
+targets:         [ x86_64-macos, arm64e-macos ]
 install-name:    '/usr/lib/libA.dylib'
 current-version: 10
 parent-umbrella:
-  - targets:         [ x86_64-macos, arm64-macos ]
+  - targets:         [ x86_64-macos, arm64e-macos ]
     umbrella:        Main
 exports:
-  - targets:         [ arm64-macos ]
+  - targets:         [ arm64e-macos ]
     symbols:         [ _a_arm64 ]
     weak-symbols:    [ _a_weak_arm64 ]
   - targets:         [ x86_64-macos ]
     symbols:         [ _a_x86_64 ]
 --- !tapi-tbd
 tbd-version:     4
-targets:         [ x86_64-macos, arm64-macos ]
+targets:         [ x86_64-macos, arm64e-macos ]
 install-name:    '/usr/lib/libB.dylib'
 current-version: 11
 parent-umbrella:
-  - targets:         [ x86_64-macos, arm64-macos ]
+  - targets:         [ x86_64-macos, arm64e-macos ]
     umbrella:        Main
 exports:
-  - targets:         [ arm64-macos ]
+  - targets:         [ arm64e-macos ]
     symbols:         [ _b_arm64 ]
 reexports:
-  - targets:         [ arm64-macos ]
+  - targets:         [ arm64e-macos ]
     symbols:         [ _b_exported_arm64 ]
     weak-symbols:    [ _b_weak_exported_arm64 ]
-"#,
+",
         )
         .expect("definition should parse");
 

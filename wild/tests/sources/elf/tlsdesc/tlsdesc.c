@@ -14,7 +14,7 @@
 
 //#Config:gcc-tls-desc-desc:gcc-tls-desc
 //#CompArgs:-mtls-dialect=desc -fPIC
-//#SkipArch: x86_64,riscv64
+//#SkipArch: x86_64,riscv64,ppc64le
 
 //#Config:gcc-tls-desc-pie:gcc-tls-desc
 //#CompArgs:-mtls-dialect=gnu2 -fPIE
@@ -22,7 +22,7 @@
 
 //#Config:gcc-tls-desc-pie-desc:gcc-tls-desc-pie
 //#CompArgs:-mtls-dialect=desc
-//#SkipArch: x86_64,riscv64
+//#SkipArch: x86_64,riscv64,ppc64le
 
 //#Config:gcc-tls-desc-static:gcc-tls-desc
 //#CompArgs:-mtls-dialect=gnu2 -fPIC -static
@@ -37,7 +37,7 @@
 
 //#Config:gcc-tls-desc-shared-desc:gcc-tls-desc-shared
 //#CompArgs:-mtls-dialect=desc
-//#SkipArch: x86_64,riscv64,loongarch64
+//#SkipArch: x86_64,riscv64,loongarch64,ppc64le
 
 //#Config:clang-tls-desc:gcc-tls-desc
 //#CompArgs:-mtls-dialect=gnu2 -fPIC

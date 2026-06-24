@@ -10,7 +10,7 @@ use crate::arch::Architecture;
 use crate::args::CommonArgs;
 use crate::args::CopyRelocations;
 use crate::args::CopyRelocationsDisabledReason;
-use crate::args::FileWriteMode;
+use crate::args::FileReplacementMode;
 use crate::args::Modifiers;
 use crate::args::RelocationModel;
 use crate::args::UnresolvedSymbols;
@@ -18,6 +18,7 @@ use crate::args::VersionMode;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::file_writer::FileWriteMode;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::output_kind::OutputKind;
 use crate::output_section_id::SectionName;
@@ -47,7 +48,6 @@ pub struct ElfArgs {
 
     pub(crate) arch: Architecture,
     pub(crate) lib_search_path: Vec<Box<Path>>,
-    pub(crate) output: Arc<Path>,
     pub(crate) dynamic_linker: Option<Box<Path>>,
     pub(crate) strip: Strip,
     pub(crate) merge_sections: bool,
@@ -123,11 +123,12 @@ pub struct ElfArgs {
     pub(crate) use_android_relr_tags: bool,
     pub(crate) discard_sframe: bool,
 
-    pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
     pub(crate) should_output_partial_object: bool,
 
     pub(crate) nmagic: bool,
+    pub(crate) rosegment: bool,
+    pub(crate) gdb_index: bool,
 
     rpath_set: IndexSet<String>,
 
@@ -234,7 +235,6 @@ const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
 ];
 
 const IGNORED_FLAGS: &[&str] = &[
-    "gdb-index",
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
     "discard-all",
@@ -262,7 +262,6 @@ impl Default for ElfArgs {
             arch: default_target_arch(),
 
             lib_search_path: Vec::new(),
-            output: Arc::from(Path::new("a.out")),
             should_output_executable: true,
             should_output_partial_object: false,
             dynamic_linker: None,
@@ -276,7 +275,6 @@ impl Default for ElfArgs {
             gc_sections: true,
             merge_sections: true,
             copy_relocations: CopyRelocations::Allowed,
-            relocation_model: RelocationModel::NonRelocatable,
             version_script_path: None,
             debug_address: None,
             should_write_eh_frame_hdr: false,
@@ -318,6 +316,7 @@ impl Default for ElfArgs {
             discard_sframe: false,
 
             nmagic: false,
+            rosegment: true,
 
             unresolved_symbols: UnresolvedSymbols::ReportAll,
             error_unresolved_symbols: true,
@@ -334,6 +333,7 @@ impl Default for ElfArgs {
 
             experimental_sframe: false,
             debug_compression_kind: None,
+            gdb_index: false,
         }
     }
 }
@@ -763,7 +763,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .prefix("o")
         .help("Set the output filename")
         .execute(|args, _modifier_stack, value| {
-            args.output = Arc::from(Path::new(value));
+            args.common.output = Arc::from(Path::new(value));
             Ok(())
         });
 
@@ -821,7 +821,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("pic-executable")
         .help("Create a position-independent executable")
         .execute(|args, _modifier_stack| {
-            args.relocation_model = RelocationModel::Relocatable;
+            args.common.relocation_model = RelocationModel::Relocatable;
             args.should_output_executable = true;
             Ok(())
         });
@@ -831,7 +831,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("no-pie")
         .help("Do not create a position-independent executable (default)")
         .execute(|args, _modifier_stack| {
-            args.relocation_model = RelocationModel::NonRelocatable;
+            args.common.relocation_model = RelocationModel::NonRelocatable;
             args.should_output_executable = true;
             Ok(())
         });
@@ -922,18 +922,6 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         });
 
     parser
-        .declare_with_optional_param()
-        .long("time")
-        .help("Show timing information")
-        .execute(|args, _modifier_stack, value| {
-            args.common.time_phase_options = match value {
-                Some(v) => Some(super::parse_time_phase_options(v)?),
-                None => Some(Vec::new()),
-            };
-            Ok(())
-        });
-
-    parser
         .declare_with_param()
         .long("dynamic-linker")
         .help("Set dynamic linker path")
@@ -956,7 +944,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("mmap-output-file")
         .help("Write output file using mmap (default)")
         .execute(|args, _modifier_stack| {
-            args.common_mut().mmap_output_file = true;
+            args.common_mut().file_write_mode = Some(FileWriteMode::Mmap);
             Ok(())
         });
 
@@ -965,7 +953,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("no-mmap-output-file")
         .help("Write output file without mmap")
         .execute(|args, _modifier_stack| {
-            args.common_mut().mmap_output_file = false;
+            args.common_mut().file_write_mode = Some(FileWriteMode::BufferThenWrite);
             Ok(())
         });
 
@@ -1124,10 +1112,28 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .execute(|args, _modifier_stack, value| {
             match value {
                 "none" => args.debug_compression_kind = None,
-                "zlib" => args.debug_compression_kind = Some(CompressionKind::Zlib),
+                "zlib" | "zlib-gabi" => args.debug_compression_kind = Some(CompressionKind::Zlib),
                 "zstd" => args.debug_compression_kind = Some(CompressionKind::Zstd),
                 value => bail!("--compress-debug-sections={value}"),
             }
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("gdb-index")
+        .help("Generate GDB index")
+        .execute(|args, _modifier_stack| {
+            args.gdb_index = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-gdb-index")
+        .help("Disable GDB index generation")
+        .execute(|args, _modifier_stack| {
+            args.gdb_index = false;
             Ok(())
         });
 
@@ -1192,30 +1198,6 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Disable relaxation")
         .execute(|args, _modifier_stack| {
             args.relax = false;
-            Ok(())
-        });
-
-    parser
-        .declare()
-        .long("validate-output")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().validate_output = true;
-            Ok(())
-        });
-
-    parser
-        .declare()
-        .long("write-layout")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().write_layout = true;
-            Ok(())
-        });
-
-    parser
-        .declare()
-        .long("write-trace")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().write_trace = true;
             Ok(())
         });
 
@@ -1683,15 +1665,6 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         });
 
     parser
-        .declare_with_param()
-        .long("sym-info")
-        .help("Show symbol information. Accepts symbol name or ID.")
-        .execute(|args, _modifier_stack, value| {
-            args.common_mut().sym_info = Some(value.to_owned());
-            Ok(())
-        });
-
-    parser
         .declare()
         .long("start-lib")
         .help("Start library group")
@@ -1720,19 +1693,10 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
     parser
         .declare()
-        .long("update-in-place")
-        .help("Update file in place")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().file_write_mode = Some(FileWriteMode::UpdateInPlace);
-            Ok(())
-        });
-
-    parser
-        .declare()
         .long("no-update-in-place")
         .help("Delete and recreate the file")
         .execute(|args, _modifier_stack| {
-            args.common_mut().file_write_mode = Some(FileWriteMode::UnlinkAndReplace);
+            args.common_mut().file_replacement_mode = Some(FileReplacementMode::UnlinkAndReplace);
             Ok(())
         });
 
@@ -1846,12 +1810,32 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
     parser
         .declare()
+        .long("rosegment")
+        .help("Put read-only non-executable sections in their own segment (default)")
+        .execute(|args, _modifier_stack| {
+            args.rosegment = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-rosegment")
+        .help("Don't put read-only non-executable sections in their own segment")
+        .execute(|args, _modifier_stack| {
+            args.rosegment = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
         .long("discard-sframe")
         .help("Discard SFrame section")
         .execute(|args, _modifier_stack| {
             args.discard_sframe = true;
             Ok(())
         });
+
+    super::declare_common_args(&mut parser);
 
     add_silently_ignored_flags(&mut parser);
     add_default_flags(&mut parser);
@@ -1906,16 +1890,16 @@ impl platform::Args for ElfArgs {
         self.verbose_gc_stats
     }
 
+    fn rosegment(&self) -> bool {
+        self.rosegment
+    }
+
     fn common(&self) -> &crate::args::CommonArgs {
         &self.common
     }
 
     fn common_mut(&mut self) -> &mut crate::args::CommonArgs {
         &mut self.common
-    }
-
-    fn output(&self) -> &Arc<Path> {
-        &self.output
     }
 
     // TODO: Some linkers like ld and mold cleanup debug symbols when linking with -r. For now, we
@@ -2086,16 +2070,16 @@ impl platform::Args for ElfArgs {
         self.trace
     }
 
-    fn relocation_model(&self) -> crate::args::RelocationModel {
-        self.relocation_model
-    }
-
     fn should_output_executable(&self) -> bool {
         self.should_output_executable
     }
 
     fn should_output_partial_object(&self) -> bool {
         self.should_output_partial_object
+    }
+
+    fn should_write_gdb_index(&self) -> bool {
+        self.gdb_index && !self.should_strip_debug()
     }
 }
 

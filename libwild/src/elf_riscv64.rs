@@ -49,6 +49,7 @@ macro_rules! rel_info_from_type {
 impl crate::platform::Arch for ElfRiscV64 {
     type Relaxation = Relaxation;
     type Platform = Elf;
+    const DEFAULT_LOAD_ADDRESS: u64 = 0x10000;
 
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_RISCV
@@ -62,6 +63,10 @@ impl crate::platform::Arch for ElfRiscV64 {
                 Self::rel_type_to_string(r_type)
             )
         })
+    }
+
+    fn is_illegal_in_shared_object(r_type: u32) -> bool {
+        matches!(r_type, object::elf::R_RISCV_32)
     }
 
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
@@ -109,6 +114,10 @@ impl crate::platform::Arch for ElfRiscV64 {
         eflags: impl Iterator<Item = object::elf::FileFlags>,
     ) -> Result<object::elf::FileFlags> {
         let eflags = eflags.collect_vec();
+        if eflags.is_empty() {
+            return Ok(object::elf::FileFlags(0));
+        }
+
         let or_eflags = eflags
             .iter()
             .fold(object::elf::FileFlags(0), |acc, x| acc | *x);
@@ -116,8 +125,7 @@ impl crate::platform::Arch for ElfRiscV64 {
             eflags
                 .iter()
                 .map(|flag| flag.riscv_float_abi())
-                .unique()
-                .exactly_one()
+                .all_equal_value()
                 .is_ok(),
             "Float ABI flag mismatch"
         );
@@ -125,8 +133,7 @@ impl crate::platform::Arch for ElfRiscV64 {
             eflags
                 .iter()
                 .map(|flag| flag.contains(EF_RISCV_RVE))
-                .unique()
-                .exactly_one()
+                .all_equal_value()
                 .is_ok(),
             "RVE flag mismatch"
         );
@@ -134,8 +141,7 @@ impl crate::platform::Arch for ElfRiscV64 {
             eflags
                 .iter()
                 .map(|flag| flag.contains(EF_RISCV_RV64ILP32))
-                .unique()
-                .exactly_one()
+                .all_equal_value()
                 .is_ok(),
             "RV64ILP32 flag mismatch"
         );

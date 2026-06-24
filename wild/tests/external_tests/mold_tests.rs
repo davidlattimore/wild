@@ -44,7 +44,7 @@ fn run_mold_test(mold_test: &Path) -> Result<Output> {
         && let Ok(arch) = Architecture::from_str(arch_name)
         && arch != get_host_architecture()
     {
-        Some(format!("{}-linux-gnu", arch))
+        Some(arch.cross_triplet())
     } else {
         None
     };

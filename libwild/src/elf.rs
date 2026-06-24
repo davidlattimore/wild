@@ -13,9 +13,12 @@ use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::expression_eval;
 use crate::file_kind::FileKind;
 use crate::file_writer::copy_section_data;
+use crate::gdb_index::InputDebugIndexSection;
 use crate::grouping::Group;
+use crate::grouping::SequencedLinkerScript;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::layout;
@@ -27,6 +30,7 @@ use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
 use crate::layout::Resolution;
 use crate::layout::SymbolCopyInfo;
+use crate::layout::objects_iter;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
 use crate::layout_rules::SectionRuleOutcome;
@@ -71,7 +75,6 @@ use crate::string_merging::MergedStringsSection;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
-use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::Visibility;
 use crate::timing_phase;
 use crate::value_flags::AtomicPerSymbolFlags;
@@ -82,6 +85,7 @@ use foldhash::HashSet;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
 use itertools::Itertools as _;
+use leb128::write::unsigned_len as uleb128_size;
 use linker_utils::elf::PageMask;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RelocationKind;
@@ -121,7 +125,6 @@ use rayon::Scope;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::borrow::Cow;
-use std::io::Cursor;
 use std::io::Read as _;
 use std::mem::offset_of;
 use std::num::NonZeroU32;
@@ -133,12 +136,6 @@ use std::sync::atomic::Ordering;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
-
-/// Our starting address in memory when linking non-relocatable executables. We can start memory
-/// addresses wherever we like, even from 0. We pick 400k because it's the same as what ld does and
-/// because picking a distinctive non-zero values makes it more obvious what's happening if we mix
-/// up file and memory offsets.
-pub const NON_PIE_START_MEM_ADDRESS: u64 = 0x400_000;
 
 pub(crate) const GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
 
@@ -299,6 +296,8 @@ pub(crate) fn symtab_name_for_strtab(raw_name: &[u8]) -> &[u8] {
 }
 
 impl platform::Platform for Elf {
+    const HAS_NULL_SYMBOL_ENTRY: bool = true;
+
     type File<'data> = File<'data>;
     type FileFlags = object::elf::FileFlags;
     type SymtabEntry = SymtabEntry;
@@ -313,13 +312,16 @@ impl platform::Platform for Elf {
     type DynamicEntry = DynamicEntry;
     type DynamicSymbolDefinitionExt = DynamicSymbolDefinitionExt;
     type RelocationInfo = u32;
-    type LayoutExt = LayoutExt;
+    type FinaliseSizesExt<'data> = LayoutExt;
+    type LayoutExt<'data> = LayoutExt;
     type SymbolVersionIndex = Versym;
     type NonAddressableCounts = NonAddressableCounts;
     type NonAddressableIndexes = NonAddressableIndexes;
     type EpilogueLayoutExt = EpilogueLayoutExt;
     type GroupLayoutExt = GroupLayoutExt;
     type CommonGroupStateExt = CommonGroupStateExt;
+    type StubLibraryLayoutStateExt = ();
+    type StubLibraryLayoutExt = ();
     type PreludeLayoutStateExt = PreludeLayoutStateExt;
     type PreludeLayoutExt = PreludeLayoutExt;
     type ArchIdentifier = object::elf::Machine;
@@ -336,6 +338,7 @@ impl platform::Platform for Elf {
     type Args = ElfArgs;
     type ResolutionExt = ResolutionExt;
     type SymtabShndxEntry = SymtabShndxEntry;
+    type ResolvedObjectExt<'data> = ResolvedObjectExt<'data>;
 
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
@@ -715,7 +718,7 @@ impl platform::Platform for Elf {
                     queue,
                     resources,
                     section_index,
-                    relocations.flat_map(|r| r.ok()),
+                    relocations.filter_map(|r| r.ok()),
                     scope,
                 )?;
             }
@@ -898,6 +901,10 @@ impl platform::Platform for Elf {
             .set_hidden(hidden);
 
         symbols
+            .section_start(output_section_id::BSS, "__bss_start")
+            .set_hidden(hidden);
+
+        symbols
             .section_end(output_section_id::BSS, "end")
             .set_hidden(hidden);
         symbols
@@ -967,21 +974,31 @@ impl platform::Platform for Elf {
                 kind: d.kind,
                 min_alignment: d.min_alignment,
                 location: None,
+                load_location: None,
                 secondary_order: None,
+                phdr_name: None,
+                region_name: None,
             })
             .collect()
     }
 
-    fn create_layout_properties<'data, 'states, 'files, A: Arch<Platform = Self>>(
+    fn create_finalise_sizes_ext<'data, 'states, 'files, A: Arch<Platform = Self>>(
         args: &ElfArgs,
-        objects: impl Iterator<Item = &'files Self::File<'data>>,
-        states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
+        groups: &'files [layout::GroupState<'data, Self>],
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> Result<LayoutExt>
     where
         'data: 'files,
         'data: 'states,
     {
-        LayoutExt::new::<A>(objects, states, args)
+        LayoutExt::new::<A>(groups, args)
+    }
+
+    fn create_layout_ext<'data>(
+        finalise_sizes_ext: Self::FinaliseSizesExt<'data>,
+        _resolutions: &layout::SymbolResolutions<Self>,
+    ) -> Result<Self::LayoutExt<'data>> {
+        Ok(finalise_sizes_ext)
     }
 
     fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Elf>>(
@@ -992,7 +1009,6 @@ impl platform::Platform for Elf {
         queue: &mut crate::layout::LocalWorkQueue,
         scope: &rayon::Scope<'scope>,
     ) -> Result {
-        let file_symbol_id_range = object.symbol_id_range;
         let eh_frame_section = object.object.section(eh_frame_section_index)?;
         let data = object.object.raw_section_data(eh_frame_section)?;
         let frame_index_offset = object.format_specific.exception_frames.len();
@@ -1001,7 +1017,6 @@ impl platform::Platform for Elf {
                 ExceptionFrames::Rela(process_eh_frame_relocations::<A, Rela>(
                     object,
                     common,
-                    file_symbol_id_range,
                     resources,
                     queue,
                     eh_frame_section,
@@ -1016,7 +1031,6 @@ impl platform::Platform for Elf {
                 ExceptionFrames::Crel(process_eh_frame_relocations::<A, Crel>(
                     object,
                     common,
-                    file_symbol_id_range,
                     resources,
                     queue,
                     eh_frame_section,
@@ -1077,10 +1091,11 @@ impl platform::Platform for Elf {
         Ok(())
     }
 
-    fn new_epilogue_layout(
+    fn new_epilogue_layout<'data>(
         args: &ElfArgs,
         output_kind: OutputKind,
-        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_, Self>],
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'data, Self>],
+        _group_states: &[layout::GroupState<'data, Self>],
     ) -> EpilogueLayoutExt {
         let gnu_hash_layout = create_gnu_hash_layout(args, output_kind, dynamic_symbol_definitions);
 
@@ -1190,6 +1205,7 @@ impl platform::Platform for Elf {
             let base_version_name = if symbol_db.args.soname.is_none() {
                 let file_name = symbol_db
                     .args
+                    .common
                     .output
                     .file_name()
                     .expect("File name should be present at this point")
@@ -1670,7 +1686,7 @@ impl platform::Platform for Elf {
             || flags.needs_got_tls_descriptor()
         {
             return Ok(());
-        };
+        }
         if let Some(got_address) = resolution.format_specific.got_address {
             let start_offset = (got_address.get() - got.sh_addr(LittleEndian)) as usize;
             let end_offset = start_offset + size_of::<u64>();
@@ -1717,12 +1733,30 @@ impl platform::Platform for Elf {
                 output_section_id::SFRAME,
             ))
         };
-        let mut rules = Vec::with_capacity(DEFAULT_SECTION_RULES.len() + 1);
-        rules.extend(DEFAULT_SECTION_RULES.iter().cloned());
+
+        let mut rules = Vec::with_capacity(
+            DEFAULT_SECTION_PLACEMENT_RULES.len() + LINKER_MANAGED_SECTION_RULES.len() + 1,
+        );
+
+        if args.gdb_index {
+            rules.push(SectionRule::exact(
+                secnames::DEBUG_GNU_PUBNAMES,
+                SectionRuleOutcome::DebugIndex,
+            ));
+            rules.push(SectionRule::exact(
+                secnames::DEBUG_GNU_PUBTYPES,
+                SectionRuleOutcome::DebugIndex,
+            ));
+        }
+
+        rules.extend(DEFAULT_SECTION_PLACEMENT_RULES.iter().cloned());
+        rules.extend(LINKER_MANAGED_SECTION_RULES.iter().cloned());
+
         rules.push(SectionRule::exact(
             secnames::SFRAME_SECTION_NAME,
             sframe_outcome,
         ));
+
         rules
     }
 
@@ -1735,6 +1769,9 @@ impl platform::Platform for Elf {
             secnames::COMMENT_SECTION_NAME,
             output_section_id::COMMENT,
         ));
+        for rule in LINKER_MANAGED_SECTION_RULES {
+            rule_builder.add_section_rule(rule.clone());
+        }
     }
 
     fn init_section_priority(name: &[u8]) -> Option<u16> {
@@ -1752,11 +1789,13 @@ impl platform::Platform for Elf {
         Ok(())
     }
 
-    fn allocate_header_sizes(
-        prelude: &mut layout::PreludeLayoutState<Self>,
+    fn allocate_header_sizes<'data>(
+        prelude: &mut layout::PreludeLayoutState<'data, Self>,
         sizes: &mut OutputSectionPartMap<u64>,
         header_info: &layout::HeaderInfo,
         output_sections: &OutputSections<Self>,
+        _resources: &layout::FinaliseSizesResources<'data, '_, Self>,
+        _args: &Self::Args,
     ) {
         sizes.increment(part_id::FILE_HEADER, u64::from(elf::FILE_HEADER_SIZE));
         sizes.increment(part_id::PROGRAM_HEADERS, program_headers_size(header_info));
@@ -1830,8 +1869,9 @@ impl platform::Platform for Elf {
         output_kind: OutputKind,
         output_sections: &OutputSections<'data, Self>,
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
-    ) -> (OutputOrder, ProgramSegments<Self::ProgramSegmentDef>) {
-        let mut builder = OutputOrderBuilder::<Self>::new(output_kind, output_sections, secondary);
+    ) -> (OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>) {
+        let mut builder =
+            OutputOrderBuilder::<Self>::new(output_kind, output_sections, secondary, false);
 
         builder.add_section(output_section_id::FILE_HEADER);
         builder.add_section(output_section_id::PROGRAM_HEADERS);
@@ -1882,6 +1922,7 @@ impl platform::Platform for Elf {
         builder.add_sections(&custom.bss);
 
         builder.add_sections(&custom.nonalloc);
+        builder.add_section(output_section_id::GDB_INDEX);
         builder.add_section(output_section_id::COMMENT);
         builder.add_section(output_section_id::RISCV_ATTRIBUTES);
         builder.add_section(output_section_id::SHSTRTAB);
@@ -1890,6 +1931,104 @@ impl platform::Platform for Elf {
         builder.add_section(output_section_id::STRTAB);
 
         builder.build()
+    }
+
+    fn build_custom_output_order_and_program_segments<'data>(
+        custom: &CustomSectionIds,
+        output_kind: OutputKind,
+        output_sections: &OutputSections<'data, Self>,
+        secondary: &OutputSectionMap<Vec<OutputSectionId>>,
+        linker_scripts: &[&SequencedLinkerScript<'data, Self>],
+        phdr_map: &mut hashbrown::HashMap<&[u8], Vec<OutputSectionId>>,
+    ) -> Result<(OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>)> {
+        let mut builder =
+            OutputOrderBuilder::<Self>::new(output_kind, output_sections, secondary, true);
+
+        let mut insert_re = false;
+        let mut insert_rw = false;
+        let mut insert_r = false;
+        let mut first_load = false;
+
+        for script in linker_scripts {
+            for phdr in &script.parsed.program_headers {
+                let ptype = expression_eval::evaluate_const(&phdr.ptype)?;
+                let flags = phdr
+                    .flags
+                    .as_ref()
+                    .map(|f| expression_eval::evaluate_const(f).map(|c| c as u32))
+                    .transpose()?;
+                if let Some(sections) = phdr_map.get_mut(phdr.name) {
+                    let flags = flags
+                        .or_else(|| {
+                            let section_info =
+                                output_sections.section_infos.get(*sections.first()?);
+                            let flags = section_info.section_attributes.flags();
+                            let mut pflags = SegmentFlags(0);
+                            if flags.contains(shf::ALLOC) {
+                                pflags |= pf::READABLE;
+                            }
+                            if flags.contains(shf::WRITE) {
+                                pflags |= pf::WRITABLE;
+                            }
+                            if flags.contains(shf::EXECINSTR) {
+                                pflags |= pf::EXECUTABLE;
+                            }
+                            Some(pflags.0)
+                        })
+                        .unwrap_or(0);
+                    if ptype == 1 && !first_load {
+                        sections.splice(
+                            0..0,
+                            [
+                                output_section_id::FILE_HEADER,
+                                output_section_id::PROGRAM_HEADERS,
+                                output_section_id::SECTION_HEADERS,
+                            ],
+                        );
+                        first_load = true;
+                    }
+                    if ptype == 1 {
+                        let is_write = (flags & 2) != 0;
+                        let is_exec = (flags & 1) != 0;
+
+                        if is_exec && !is_write && !insert_re {
+                            sections.extend(&custom.exec);
+                            insert_re = true;
+                        }
+                        if is_write && !insert_rw {
+                            sections.extend(&custom.tdata);
+                            sections.extend(&custom.tbss);
+                            sections.extend(&custom.data);
+                            sections.extend(&custom.bss);
+                            insert_rw = true;
+                        }
+                        if !is_write && !is_exec && !insert_r {
+                            sections.extend(&custom.ro);
+                            insert_r = true;
+                        }
+                    }
+
+                    builder.add_segment_with_sections(
+                        ptype as u32,
+                        flags,
+                        sections,
+                        output_sections,
+                    );
+                }
+            }
+        }
+
+        for &id in &custom.nonalloc {
+            builder.add_section(id);
+        }
+
+        builder.add_segment_with_sections(
+            pt::RISCV_ATTRIBUTES.0,
+            pf::READABLE.0,
+            &[output_section_id::RISCV_ATTRIBUTES],
+            output_sections,
+        );
+        Ok(builder.build())
     }
 
     fn will_emit_section_symbol_for_partial_objects(
@@ -1929,6 +2068,7 @@ impl platform::Platform for Elf {
     fn lookup_for_partial_link(
         section_name: &[u8],
         section: &Self::SectionHeader,
+        args: &Self::Args,
     ) -> SectionRuleOutcome {
         if section.should_exclude() {
             return SectionRuleOutcome::Discard;
@@ -1953,18 +2093,13 @@ impl platform::Platform for Elf {
                     output_section_id::NOTE_ABI_TAG,
                 ));
             }
+            secnames::DEBUG_GNU_PUBNAMES | secnames::DEBUG_GNU_PUBTYPES if args.gdb_index => {
+                return SectionRuleOutcome::DebugIndex;
+            }
             _ => {}
         }
 
         SectionRuleOutcome::Custom
-    }
-
-    fn start_memory_address(output_kind: OutputKind) -> u64 {
-        if output_kind.is_relocatable() {
-            0
-        } else {
-            crate::elf::NON_PIE_START_MEM_ADDRESS
-        }
     }
 
     fn requires_symtab_shndx(num_sections: usize) -> bool {
@@ -1994,6 +2129,14 @@ impl platform::Platform for Elf {
         total_sizes.merge(&extra_sizes);
     }
 
+    type GdbIndexScanResult<'data> = crate::gdb_index::GdbIndexScanResult<'data>;
+
+    fn compute_gdb_index_size<'data>(
+        groups: &[crate::layout::GroupState<'data, Self>],
+    ) -> crate::error::Result<(u64, Option<Self::GdbIndexScanResult<'data>>)> {
+        crate::gdb_index::compute_gdb_index_size(groups)
+    }
+
     fn align_load_segment_start(
         _segment_def: Self::ProgramSegmentDef,
         segment_alignment: Alignment,
@@ -2005,6 +2148,45 @@ impl platform::Platform for Elf {
 
     fn default_symtab_entry() -> Self::SymtabEntry {
         Default::default()
+    }
+
+    fn get_sizeof_headers(header_info: &layout::HeaderInfo) -> u64 {
+        u64::from(FILE_HEADER_SIZE) + program_headers_size(header_info)
+    }
+
+    fn handle_debug_index_section<'data>(
+        obj: &mut crate::resolution::ResolvedObject<'data, Self>,
+        section_index: object::SectionIndex,
+        input_section: &'data Self::SectionHeader,
+        member: &bumpalo_herd::Member<'data>,
+        loaded_metrics: &LoadedMetrics,
+    ) -> Result {
+        let data = obj
+            .common
+            .object
+            .section_data(input_section, member, loaded_metrics)?;
+
+        obj.format_specific
+            .debug_index_sections
+            .push(InputDebugIndexSection {
+                contents: data,
+                section_index,
+            });
+
+        Ok(())
+    }
+
+    fn new_object_layout_state_ext<'data>(
+        input: Self::ResolvedObjectExt<'data>,
+    ) -> Self::ObjectLayoutStateExt<'data> {
+        ObjectLayoutStateExt {
+            debug_index_sections: input.debug_index_sections,
+            ..Default::default()
+        }
+    }
+
+    fn is_allowed_in_archive(kind: crate::file_kind::FileKind) -> bool {
+        kind == FileKind::ElfObject
     }
 }
 
@@ -2374,7 +2556,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         } else {
             is_default = true;
             version_name = None;
-        };
+        }
 
         Ok(RawSymbolName {
             name: name_bytes,
@@ -2583,7 +2765,6 @@ impl DynamicLayoutStateExt<'_> {
 fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
     object: &mut layout::ObjectLayoutState<'data, Elf>,
     common: &mut layout::CommonGroupState<'data, Elf>,
-    file_symbol_id_range: SymbolIdRange,
     resources: &'scope layout::GraphResources<'data, '_, Elf>,
     queue: &mut layout::LocalWorkQueue,
     eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
@@ -2615,7 +2796,7 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
 
         if prefix.cie_id == 0 {
             // This is a CIE
-            let mut referenced_symbols: SmallVec<[SymbolId; 1]> = Default::default();
+
             // When deduplicating CIEs, we take into consideration the bytes of the CIE and all the
             // symbols it references. If however, it references something other than a symbol, then,
             // because we're not taking that into consideration, we disallow deduplication.
@@ -2641,11 +2822,7 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
                     scope,
                 )?;
 
-                if let Some(local_sym_index) = rel.symbol() {
-                    let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
-                    let definition = resources.symbol_db.definition(local_symbol_id);
-                    referenced_symbols.push(definition);
-                } else {
+                if rel.symbol().is_none() {
                     eligible_for_deduplication = false;
                 }
                 rel_iter.next();
@@ -2656,7 +2833,6 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
                 cie: Cie {
                     bytes: &data[offset..next_offset],
                     eligible_for_deduplication,
-                    referenced_symbols,
                 },
             });
         } else {
@@ -3020,7 +3196,7 @@ fn decompress_into(
             zstd::stream::Decoder::new(input)?.read_exact(out)?;
         }
         c => bail!("Unsupported compression format: {}", c),
-    };
+    }
     Ok(())
 }
 
@@ -3268,7 +3444,6 @@ impl RiscVArch {
             .iter()
             .map(|(arch, (major, minor))| format!("{arch}{major}p{minor}"))
             .join("_")
-            .clone()
     }
 }
 
@@ -3305,6 +3480,8 @@ pub(crate) struct ObjectLayoutStateExt<'data> {
 
     /// Indexed by `FrameIndex`.
     exception_frames: ExceptionFrames<'data>,
+
+    pub(crate) debug_index_sections: Vec<InputDebugIndexSection<'data>>,
 }
 
 #[derive(Debug)]
@@ -3316,13 +3493,13 @@ pub(crate) struct LayoutExt {
 
 impl LayoutExt {
     pub(crate) fn new<'files, 'states, 'data: 'files + 'states, A: Arch<Platform = Elf>>(
-        objects: impl Iterator<Item = &'files File<'data>>,
-        states: impl Iterator<Item = &'states ObjectLayoutStateExt<'data>> + Clone,
+        groups: &'files [layout::GroupState<'data, Elf>],
         args: &ElfArgs,
     ) -> Result<Self> {
+        let states = objects_iter(groups).map(|o| &o.format_specific);
         let gnu_property_notes = merge_gnu_property_notes::<A>(states.clone(), args.z_isa)?;
         let riscv_attributes = merge_riscv_attributes::<A>(states)?;
-        let eflags = merge_eflags::<A>(objects)?;
+        let eflags = merge_eflags::<A>(objects_iter(groups).map(|o| o.object))?;
 
         Ok(Self {
             gnu_property_notes,
@@ -3561,9 +3738,23 @@ pub(crate) fn gnu_property_notes_section_size(gnu_property_notes: &[GnuProperty]
 }
 
 fn riscv_attributes_section_size(riscv_attributes: &[RiscVAttribute]) -> u64 {
-    let size_of_uleb_encoded = |value| {
-        let mut cursor = Cursor::new([0u8; 10]);
-        leb128::write::unsigned(&mut cursor, value).unwrap()
+    let attribute_size = |attr: &RiscVAttribute| match attr {
+        RiscVAttribute::StackAlign(align) => {
+            uleb128_size(TAG_RISCV_STACK_ALIGN) + uleb128_size(*align)
+        }
+        RiscVAttribute::Arch(arch) => {
+            uleb128_size(TAG_RISCV_ARCH) + arch.to_attribute_string().len() + 1
+        }
+        RiscVAttribute::UnalignedAccess(_) => uleb128_size(TAG_RISCV_UNALIGNED_ACCESS) + 1,
+        RiscVAttribute::PrivilegedSpecMajor(version) => {
+            uleb128_size(TAG_RISCV_PRIV_SPEC) + uleb128_size(*version)
+        }
+        RiscVAttribute::PrivilegedSpecMinor(version) => {
+            uleb128_size(TAG_RISCV_PRIV_SPEC_MINOR) + uleb128_size(*version)
+        }
+        RiscVAttribute::PrivilegedSpecRevision(version) => {
+            uleb128_size(TAG_RISCV_PRIV_SPEC_REVISION) + uleb128_size(*version)
+        }
     };
 
     (if riscv_attributes.is_empty() {
@@ -3571,36 +3762,10 @@ fn riscv_attributes_section_size(riscv_attributes: &[RiscVAttribute]) -> u64 {
     } else {
         1 // 'A'
             + 4 // sizeof(u32)
-            + size_of_uleb_encoded(TAG_RISCV_WHOLE_FILE)
+            + uleb128_size(TAG_RISCV_WHOLE_FILE)
             + 4 // sizeof(u32)
             + RISCV_ATTRIBUTE_VENDOR_NAME.len() + 1
-            + riscv_attributes.iter().map(|attr| {
-                match attr {
-                    RiscVAttribute::StackAlign(align) => {
-                                        size_of_uleb_encoded(TAG_RISCV_STACK_ALIGN) +
-                                        size_of_uleb_encoded(*align)
-                                    }
-                    RiscVAttribute::Arch(arch) => {
-                                        size_of_uleb_encoded(TAG_RISCV_ARCH)
-                                        +arch.to_attribute_string().len() + 1
-                                    }
-                    RiscVAttribute::UnalignedAccess(_) => {
-                                        size_of_uleb_encoded(TAG_RISCV_UNALIGNED_ACCESS) + 1
-                                    }
-                    RiscVAttribute::PrivilegedSpecMajor(version) => {
-                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC) +
-                                        size_of_uleb_encoded(*version)
-                    },
-                    RiscVAttribute::PrivilegedSpecMinor(version) => {
-                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC_MINOR) +
-                                        size_of_uleb_encoded(*version)
-                    }
-                    RiscVAttribute::PrivilegedSpecRevision(version) => {
-                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC_REVISION) +
-                                        size_of_uleb_encoded(*version)
-                    }
-                                    }
-            }).sum::<usize>()
+            + riscv_attributes.iter().map(attribute_size).sum::<usize>()
     }) as u64
 }
 
@@ -3654,7 +3819,7 @@ pub(crate) fn process_riscv_attributes(
                             .next()
                             .ok_or_else(|| crate::error!("Cannot parse major"))?
                             .to_string();
-                        let name = String::from_iter(it.rev());
+                        let name = it.rev().collect();
                         Ok((name, (major.parse()?, minor.parse()?)))
                     })
                     .collect::<Result<IndexMap<_, _>>>()?;
@@ -4084,7 +4249,6 @@ fn finalise_gnu_version_size<'data>(
 struct Cie<'data> {
     bytes: &'data [u8],
     eligible_for_deduplication: bool,
-    referenced_symbols: SmallVec<[SymbolId; 1]>,
 }
 
 struct CieAtOffset<'data> {
@@ -4280,6 +4444,10 @@ const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
         segment_flags: pf::READABLE.with(pf::WRITABLE),
     },
     ProgramSegmentDef {
+        segment_type: pt::LOAD,
+        segment_flags: pf::READABLE.with(pf::WRITABLE).with(pf::EXECUTABLE),
+    },
+    ProgramSegmentDef {
         segment_type: pt::TLS,
         segment_flags: pf::READABLE,
     },
@@ -4351,15 +4519,20 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
         self,
         info: &crate::output_section_id::SectionOutputInfo<Elf>,
         section_id: OutputSectionId,
+        rosegment: bool,
     ) -> bool {
         match self.segment_type {
             pt::NOTE => info.section_attributes.ty == sht::NOTE,
             pt::TLS => info.section_attributes.flags.contains(shf::TLS),
             pt::LOAD => {
+                let mut exec = info.section_attributes.flags.contains(shf::EXECINSTR);
+                if !rosegment && !info.section_attributes.flags.contains(shf::WRITE) {
+                    exec = true;
+                }
+
                 info.section_attributes.flags.contains(shf::ALLOC)
                     && info.section_attributes.flags.contains(shf::WRITE) == self.is_writable()
-                    && info.section_attributes.flags.contains(shf::EXECINSTR)
-                        == self.is_executable()
+                    && exec == self.is_executable()
             }
             pt::GNU_RELRO => {
                 info.section_attributes.flags.contains(shf::TLS)
@@ -4376,6 +4549,13 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
 
     fn should_cut_rw_segment_when_ending(self) -> bool {
         self.segment_type == pt::GNU_RELRO
+    }
+
+    fn from_linker_script(ptype: u32, flags: u32) -> Self {
+        Self {
+            segment_type: SegmentType(ptype),
+            segment_flags: SegmentFlags(flags),
+        }
     }
 }
 
@@ -4644,6 +4824,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         kind: SectionKind::Secondary(output_section_id::SYMTAB_SHNDX_LOCAL),
         ..DEFAULT_DEFS
     };
+    defs[output_section_id::GDB_INDEX.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(GDB_INDEX_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        ..DEFAULT_DEFS
+    };
     // Start of regular sections
     defs[output_section_id::RODATA.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(RODATA_SECTION_NAME)),
@@ -4862,6 +5047,13 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
                     .store(true, atomic::Ordering::Relaxed);
             }
         } else if flags_to_add.needs_direct() && flags.is_interposable() {
+            if symbol_db.output_kind.is_shared_object() && A::is_illegal_in_shared_object(r_type) {
+                bail!(
+                    "relocation {} cannot be used when making a shared object; \
+                    recompile with -fPIC",
+                    A::rel_type_to_string(r_type),
+                );
+            }
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             } else if flags.is_function() {
@@ -5105,7 +5297,13 @@ impl Resolution<Elf> {
     }
 }
 
-const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
+#[derive(Debug, Default)]
+pub(crate) struct ResolvedObjectExt<'data> {
+    debug_index_sections: Vec<InputDebugIndexSection<'data>>,
+}
+
+/// Rules that map input sections to built-in output sections when no linker script is in use.
+const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact_section_keep(secnames::INIT_SECTION_NAME, output_section_id::INIT),
     SectionRule::exact_section_keep(secnames::FINI_SECTION_NAME, output_section_id::FINI),
     SectionRule::exact_section_keep(
@@ -5145,6 +5343,11 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
         secnames::GCC_EXCEPT_TABLE_SECTION_NAME,
         output_section_id::GCC_EXCEPT_TABLE,
     ),
+];
+
+/// Rules for input sections that the linker processes itself instead of copying them into an output
+/// section.
+const LINKER_MANAGED_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::prefix(secnames::RELA_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::prefix(secnames::CREL_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(

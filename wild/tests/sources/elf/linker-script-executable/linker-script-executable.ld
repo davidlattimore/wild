@@ -2,9 +2,9 @@ ENTRY(begin_here)
 
 SECTIONS
 {
-    . = 0x600000;
+    . = 0x300000 * 2;
+	start_of_sections = .;
     .text : {
-        start_of_text = .;
         *(.text)
     }
     . = 0x800000;

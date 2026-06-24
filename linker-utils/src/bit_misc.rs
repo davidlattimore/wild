@@ -39,6 +39,7 @@ impl BitExtraction for u64 {
             return self;
         }
         debug_assert!(range.start < range.end);
+        debug_assert!(range.end <= u64::BITS);
         (self >> range.start) & ((1 << range.len()) - 1)
     }
 
@@ -75,7 +76,7 @@ mod tests {
 
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic]
+    #[should_panic = "assertion failed: range.start < range.end"]
     #[allow(clippy::reversed_empty_ranges)]
     fn test_extract_bits_wrong_range() {
         let _ = 0u64.extract_bit_range(2..1);
@@ -83,7 +84,7 @@ mod tests {
 
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic]
+    #[should_panic = "assertion failed: range.end <= u64::BITS"]
     fn test_extract_bits_too_large() {
         let _ = 0u64.extract_bit_range(0..100);
     }

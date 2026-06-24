@@ -1,0 +1,3 @@
+[target.powerpc64le-unknown-linux-gnu]
+linker = "powerpc64le-linux-gnu-gcc"
+rustflags = ["-C", "link-arg=--use-ld=lld"]

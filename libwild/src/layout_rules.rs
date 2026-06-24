@@ -12,8 +12,6 @@ use crate::input_data::InputLinkerScript;
 use crate::input_data::InputRef;
 use crate::linker_script;
 use crate::linker_script::ContentsCommand;
-use crate::linker_script::Expression;
-use crate::linker_script::Location;
 use crate::linker_script::SectionCommand;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
@@ -104,6 +102,7 @@ pub(crate) enum SectionRuleOutcome {
     NoteGnuProperty,
     NoteGnuStack,
     Debug,
+    DebugIndex,
     RiscVAttribute,
     SortedSection(SectionOutputInfo),
     ScriptSortedSection(SectionOutputInfo),
@@ -131,10 +130,10 @@ impl SectionOutputInfo {
     }
 }
 
-fn loc_for_global_expr(
-    expr: &crate::linker_script::Expression<'_>,
+fn loc_for_global_expr<'data>(
+    expr: &crate::linker_script::Expression<'data>,
     section_id: Option<OutputSectionId>,
-) -> SymbolLoc {
+) -> SymbolLoc<'data> {
     let mut loc = SymbolLoc::None;
     expr.visit_expressions(&mut |e| match e {
         crate::linker_script::Expression::SegmentStart(..) => {
@@ -160,8 +159,10 @@ impl<'data> LayoutRulesBuilder<'data> {
         let mut symbol_defs = Vec::new();
         let mut assertions = Vec::new();
         let mut memory_regions = Vec::new();
+        let mut program_headers = Vec::new();
 
         let mut current_section_id = None;
+        let mut loc = SymbolLoc::FirstSection;
 
         for cmd in &input.script.commands {
             if let linker_script::Command::Provide(provide) = cmd {
@@ -219,14 +220,9 @@ impl<'data> LayoutRulesBuilder<'data> {
 
                             // Choose starting location for this output section.
                             let section_location = match &sec.start_address_expression {
-                                Some(Expression::Number(address)) => {
+                                Some(address) => {
                                     location.take();
-                                    Some(Location { address: *address })
-                                }
-                                Some(_) => {
-                                    return Err(crate::error!(
-                                        "Only numeric output section start expressions are currently supported"
-                                    ));
+                                    Some(address.clone())
                                 }
                                 None => location.take(),
                             };
@@ -235,10 +231,15 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 SectionName(sec.output_section_name),
                                 min_alignment,
                                 section_location,
+                                sec.at_address.clone(),
+                                sec.phdr,
+                                sec.region,
                             );
                             current_section_id = Some(primary_section_id);
+                            loc = SymbolLoc::SectionEnd(primary_section_id);
 
                             let mut last_section_id = None;
+                            let mut last_loc = SymbolLoc::SectionStart(primary_section_id);
 
                             for contents_cmd in &sec.commands {
                                 match contents_cmd {
@@ -277,17 +278,13 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         }
 
                                         last_section_id = Some(section_id);
+                                        last_loc = SymbolLoc::SectionEnd(section_id);
                                     }
                                     ContentsCommand::SymbolAssignment(assignment) => {
-                                        let loc = if let Some(id) = last_section_id {
-                                            SymbolLoc::SectionEnd(id)
-                                        } else {
-                                            SymbolLoc::SectionStart(primary_section_id)
-                                        };
                                         let placement = SymbolPlacement::Redirect(Redirect {
                                             kind: RedirectKind::Script,
                                             expression: assignment.expr.clone(),
-                                            loc,
+                                            loc: last_loc.clone(),
                                         });
                                         symbol_defs.push(InternalSymDefInfo::new(
                                             placement,
@@ -296,15 +293,10 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     }
                                     ContentsCommand::Align(a) => extra_min_alignment = *a,
                                     ContentsCommand::Provide(provide) => {
-                                        let loc = if let Some(id) = last_section_id {
-                                            SymbolLoc::SectionEnd(id)
-                                        } else {
-                                            SymbolLoc::SectionStart(primary_section_id)
-                                        };
                                         let placement = SymbolPlacement::Redirect(Redirect {
                                             kind: RedirectKind::Script,
                                             expression: provide.value.clone(),
-                                            loc,
+                                            loc: last_loc.clone(),
                                         });
                                         symbol_defs.push(
                                             InternalSymDefInfo::new(placement, provide.name)
@@ -314,26 +306,42 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 }
                             }
                         }
-                        SectionCommand::SetLocation(new_location) => location = Some(*new_location),
+                        SectionCommand::SetLocation(new_location) => {
+                            let section_id = match loc {
+                                SymbolLoc::Expression(_, section_id) => section_id,
+                                SymbolLoc::SectionStart(section_id)
+                                | SymbolLoc::SectionEnd(section_id) => Some(section_id),
+                                _ => None,
+                            };
+                            loc = SymbolLoc::Expression(new_location.address.clone(), section_id);
+                            if current_section_id.is_none() {
+                                output_sections.set_base_address(new_location.address.clone());
+                                continue;
+                            }
+                            location = Some(new_location.address.clone());
+                        }
                         SectionCommand::Align(a) => extra_min_alignment = *a,
                         SectionCommand::Assert(assert_cmd) => {
                             assertions.push(assert_cmd.clone());
                         }
                         SectionCommand::Provide(provide) => {
-                            let placement = if let Some(id) = current_section_id {
-                                SymbolLoc::SectionEnd(id)
-                            } else {
-                                SymbolLoc::FirstSection
-                            };
                             let placement = SymbolPlacement::Redirect(Redirect {
                                 kind: RedirectKind::Script,
                                 expression: provide.value.clone(),
-                                loc: placement,
+                                loc: loc.clone(),
                             });
                             symbol_defs.push(
                                 InternalSymDefInfo::new(placement, provide.name)
                                     .with_hidden(provide.hidden),
                             );
+                        }
+                        SectionCommand::SymbolAssignment(assignment) => {
+                            let placement = SymbolPlacement::Redirect(Redirect {
+                                kind: RedirectKind::Script,
+                                expression: assignment.expr.clone(),
+                                loc: loc.clone(),
+                            });
+                            symbol_defs.push(InternalSymDefInfo::new(placement, assignment.name));
                         }
                     }
                 }
@@ -341,6 +349,8 @@ impl<'data> LayoutRulesBuilder<'data> {
                 assertions.push(assert_cmd.clone());
             } else if let linker_script::Command::Memory(regions) = cmd {
                 memory_regions = regions.clone();
+            } else if let linker_script::Command::Phdrs(phdrs) = cmd {
+                program_headers = phdrs.clone();
             }
         }
 
@@ -349,10 +359,12 @@ impl<'data> LayoutRulesBuilder<'data> {
             assertions,
             input: InputRef {
                 file: input.input_file,
+                data: input.input_file.data(),
                 entry: None,
             },
             file_bytes: input.script_bytes,
             memory_regions,
+            program_headers,
         })
     }
 
@@ -515,8 +527,7 @@ impl<'data> SectionRules<'data> {
             rules: HashTable::with_capacity(rules.len() * RULE_TABLE_CAPACITY_MULTIPLIER),
         };
         for rule in rules {
-            let hash = section_name_prefix_hash(rule.name_matcher.prefix_bytes())
-                .expect("Prefixes of length less than 4 not yet supported");
+            let hash = section_name_prefix_hash(rule.name_matcher.prefix_bytes()).unwrap_or(0);
 
             map.rules.insert_unique(hash, rule.clone(), |existing| {
                 section_name_prefix_hash(existing.name_matcher.prefix_bytes()).unwrap_or(0)
@@ -553,11 +564,16 @@ impl<'data> SectionRules<'data> {
     }
 }
 
-/// Returns a hash of the first four bytes of the supplied name or `None` if the name is shorter
-/// than 4 bytes.
-#[inline(always)]
+/// Returns a hash of the first four bytes of the supplied name, zero-padding if shorter than 4
+/// bytes. Returns `None` if the name is empty.
 fn section_name_prefix_hash(name: &[u8]) -> Option<u64> {
-    Some(hash_bytes(name.get(..4)?))
+    if name.is_empty() {
+        return None;
+    }
+    let mut buf = [0u8; 4];
+    let len = name.len().min(4);
+    buf[..len].copy_from_slice(&name[..len]);
+    Some(hash_bytes(&buf))
 }
 
 /// Determines, where if anywhere, we should place an input section with no name.

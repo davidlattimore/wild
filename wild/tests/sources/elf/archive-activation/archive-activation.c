@@ -50,6 +50,7 @@
 //#DiffIgnore:section.got
 
 //#Config:lto-clang:lto
+//#SkipArch: ppc64le
 //#Compiler:clang
 //#LinkerDriver:clang
 //#SkipLinker:ld
@@ -60,6 +61,7 @@
 //#Archive:empty.a
 
 //#Config:lto-clang-thin:lto
+//#SkipArch: ppc64le
 //#Compiler:clang
 //#LinkerDriver:clang
 //#SkipLinker:ld

@@ -15,14 +15,15 @@ use linker_utils::elf::SectionFlags;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
-use object::LittleEndian;
+use object::Endianness;
 use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
+use object::Section;
 #[allow(clippy::wildcard_imports)]
 use object::elf::*;
 use object::read::elf::Dyn;
-use object::read::elf::ElfSection64;
+use object::read::macho::MachHeader;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use tabled::Table;
@@ -81,7 +82,7 @@ impl Converter {
                 // Find the first non-empty, section at that address. Only return an empty section
                 // if there is no non-empty sections at that address.
                 let mut empty_section_name = None;
-                for section in obj.elf_file.sections() {
+                for section in obj.file.sections() {
                     let object::SectionFlags::Elf { sh_flags, .. } = section.flags() else {
                         unreachable!();
                     };
@@ -100,7 +101,7 @@ impl Converter {
             }
             Converter::DynStrOffset => {
                 let dynstr = obj
-                    .elf_file
+                    .file
                     .section_by_name(DYNSTR_SECTION_NAME_STR)
                     .context("Missing .dynstr")?;
                 let data = dynstr.data()?;
@@ -124,7 +125,7 @@ impl Converter {
                     .map(ConvertedValue::Single)
             }
             Converter::SectionIndex => Ok(ConvertedValue::Single(
-                obj.elf_file
+                obj.file
                     .section_by_index(object::SectionIndex(value as usize))?
                     .name()?
                     .to_owned(),
@@ -162,7 +163,7 @@ fn symbol_with_address(obj: &Binary, address: u64, allow_empty: bool) -> Option<
     }
 
     for symbol_index in obj.address_index.symbols_at_address(address) {
-        let sym = obj.elf_file.symbol_by_index(*symbol_index).ok()?;
+        let sym = obj.file.symbol_by_index(*symbol_index).ok()?;
 
         if !allow_empty && sym.size() == 0 {
             continue;
@@ -227,33 +228,43 @@ pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Binary]) {
             |object| {
                 let section = section_or_equiv(object, name, &report.config)
                     .ok_or_else(|| anyhow!("Section missing"))?;
+                let e = object.file.endianness();
                 let mut values = FieldValues::default();
-                values.insert("alignment", section.align(), Converter::None, object);
-                let section_header = section.elf_section_header();
-                values.insert(
-                    "link",
-                    section_header.sh_link.get(LittleEndian),
-                    Converter::SectionIndex,
-                    object,
-                );
-                values.insert(
-                    "flags",
-                    section_header.sh_flags.get(LittleEndian).0,
-                    Converter::SectionFlags,
-                    object,
-                );
-                values.insert(
-                    "type",
-                    section_header.sh_type.get(LittleEndian).0,
-                    Converter::None,
-                    object,
-                );
-                values.insert(
-                    "entsize",
-                    section_header.sh_entsize.get(LittleEndian),
-                    Converter::None,
-                    object,
-                );
+
+                match object.file {
+                    object::File::Elf64(elf_file) => {
+                        let section = elf_file.section_by_index(section.index())?;
+
+                        values.insert("alignment", section.align(), Converter::None, object);
+                        let section_header = section.elf_section_header();
+                        values.insert(
+                            "link",
+                            section_header.sh_link.get(e),
+                            Converter::SectionIndex,
+                            object,
+                        );
+                        values.insert(
+                            "flags",
+                            section_header.sh_flags.get(e).0,
+                            Converter::SectionFlags,
+                            object,
+                        );
+                        values.insert(
+                            "type",
+                            section_header.sh_type.get(e).0,
+                            Converter::None,
+                            object,
+                        );
+                        values.insert(
+                            "entsize",
+                            section_header.sh_entsize.get(e),
+                            Converter::None,
+                            object,
+                        );
+                    }
+                    _ => {}
+                }
+
                 Ok(values)
             },
             &table_name,
@@ -266,7 +277,7 @@ fn section_or_equiv<'data, 'file: 'data>(
     object: &'file Binary<'data>,
     name: &[u8],
     config: &Config,
-) -> Option<ElfSection64<'data, 'file, LittleEndian>> {
+) -> Option<Section<'data, 'file>> {
     if let Some(section) = object.section_by_name_bytes(name) {
         return Some(section);
     }
@@ -398,7 +409,7 @@ pub(crate) fn diff_array(
             rows[i].push(value.formatted);
         }
     }
-    rows.insert(0, Vec::from_iter(binaries.iter().map(|b| b.name.clone())));
+    rows.insert(0, binaries.iter().map(|b| b.name.clone()).collect());
 
     let mut table = Table::from_iter(rows);
     table.with(
@@ -473,27 +484,43 @@ impl FieldValues {
 #[allow(clippy::unnecessary_wraps)]
 fn read_file_header_fields(obj: &Binary) -> Result<FieldValues> {
     let mut values = FieldValues::default();
-    let header = obj.elf_file.elf_header();
-    let e = LittleEndian;
-    values.insert_string("ident", format!("{:?}", header.e_ident.magic));
-    values.insert("type", header.e_type.get(e).0, Converter::None, obj);
-    values.insert("machine", header.e_machine.get(e).0, Converter::None, obj);
-    values.insert("version", header.e_version.get(e), Converter::None, obj);
-    values.insert("entry", header.e_entry.get(e), Converter::SymAddress, obj);
-    values.insert("phoff", header.e_phoff.get(e), Converter::None, obj);
-    values.insert("flags", header.e_flags.get(e).0, Converter::None, obj);
-    values.insert("ehsize", header.e_ehsize.get(e), Converter::None, obj);
-    values.insert("phentsize", header.e_phentsize.get(e), Converter::None, obj);
-    values.insert("shentsize", header.e_shentsize.get(e), Converter::None, obj);
-    values.insert(
-        "shstrndx",
-        header.e_shstrndx.get(e).0,
-        Converter::SectionIndex,
-        obj,
-    );
-    // We currently ignore e_shoff, e_phnum and e_shnum, since we don't really expect them the same
-    // number of sections and program segments and the section header offset is also generally going
-    // to be different between different linkers.
+    match &obj.file {
+        object::File::Elf64(elf_file) => {
+            let header = elf_file.elf_header();
+            let e = elf_file.endianness();
+            values.insert_string("ident", format!("{:?}", header.e_ident.magic));
+            values.insert("type", header.e_type.get(e).0, Converter::None, obj);
+            values.insert("machine", header.e_machine.get(e).0, Converter::None, obj);
+            values.insert("version", header.e_version.get(e), Converter::None, obj);
+            values.insert("entry", header.e_entry.get(e), Converter::SymAddress, obj);
+            values.insert("phoff", header.e_phoff.get(e), Converter::None, obj);
+            values.insert("flags", header.e_flags.get(e).0, Converter::None, obj);
+            values.insert("ehsize", header.e_ehsize.get(e), Converter::None, obj);
+            values.insert("phentsize", header.e_phentsize.get(e), Converter::None, obj);
+            values.insert("shentsize", header.e_shentsize.get(e), Converter::None, obj);
+            values.insert(
+                "shstrndx",
+                header.e_shstrndx.get(e).0,
+                Converter::SectionIndex,
+                obj,
+            );
+            // We currently ignore e_shoff, e_phnum and e_shnum, since we don't really expect them
+            // the same number of sections and program segments and the section header
+            // offset is also generally going to be different between different linkers.
+        }
+        object::File::MachO64(file) => {
+            let header = file.macho_header();
+            let e = file.endianness();
+            values.insert("magic", header.magic(), Converter::None, obj);
+            values.insert_string(
+                "cputype",
+                header.cputype(e).name().unwrap_or("none").to_owned(),
+            );
+            values.insert("cpusubtype", header.cpusubtype(e).0, Converter::None, obj);
+            values.insert("filetype", header.filetype(e).0, Converter::None, obj);
+        }
+        _ => {}
+    }
     Ok(values)
 }
 
@@ -503,9 +530,9 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
         .with_context(|| format!("`{obj}` is missing .dynamic"))?;
 
     let mut values = FieldValues::default();
-    let e = LittleEndian;
+    let e = obj.file.endianness();
 
-    let entries: &[object::elf::Dyn64<LittleEndian>] = slice_from_all_bytes(dynamic.data()?);
+    let entries: &[object::elf::Dyn64<Endianness>] = slice_from_all_bytes(dynamic.data()?);
     let mut got_null = false;
 
     // The following relies on the BFD order of the tags, but seems the easiest way how to catch

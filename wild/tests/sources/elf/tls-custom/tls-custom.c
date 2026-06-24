@@ -1,5 +1,6 @@
 // Verifies that we can handle a custom, NOBITS TLS section.
 
+//#SkipArch: ppc64le
 //#LinkerDriver:gcc
 //#Object:tls-custom-1.s
 //#EnableLinker:lld

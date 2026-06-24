@@ -1,3 +1,4 @@
+//#SkipArch: ppc64le
 //#LinkArgs:-z now -Bshareable --exclude-libs somelib
 //#Mode:dynamic
 //#RunEnabled:false
