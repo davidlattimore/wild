@@ -5872,7 +5872,10 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
     }
 
     sections_out.sort_by_key(|a| a.0);
-    sections_out.into_iter().map(|(_, harvested)| harvested).collect()
+    sections_out
+        .into_iter()
+        .map(|(_, harvested)| harvested)
+        .collect()
 }
 // Assigning memory addresses to script sorted sections and returning the finalized registry.
 fn assign_addresses_to_sorted_sections<P: Platform>(

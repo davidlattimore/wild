@@ -1478,8 +1478,11 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
 
         match sec {
             SectionSlot::Loaded(sec) => {
-                let is_harvested = epilogue.script_sorted_sections
-                    .binary_search_by_key(&(object.file_id, section_index.0), |h| (h.file_id, h.section_index.0))
+                let is_harvested = epilogue
+                    .script_sorted_sections
+                    .binary_search_by_key(&(object.file_id, section_index.0), |h| {
+                        (h.file_id, h.section_index.0)
+                    })
                     .is_ok();
 
                 if is_harvested {
