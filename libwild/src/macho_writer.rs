@@ -9,7 +9,6 @@ use crate::file_writer::SizedOutput;
 use crate::file_writer::split_buffers_by_alignment;
 use crate::file_writer::split_output_by_group;
 use crate::file_writer::split_output_into_sections;
-use crate::grouping::SequencedInput;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
 use crate::layout::Layout;
@@ -240,12 +239,9 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
         let command_buffer = load_command_buffer.split_off_mut(..command_size).unwrap();
         let (dylib_command, dylib_path_buffer) =
             from_bytes_mut(command_buffer).map_err(load_cmd_err)?;
-        let SequencedInput::StubLibrary(stub) = layout.symbol_db.file(file_id) else {
-            bail!("Internal error: All imported libraries must be StubLibraries");
-        };
-        let path = stub.defined_symbols.install_name;
+        let path = crate::macho::install_name(file_id, &layout.symbol_db);
 
-        write_dylib_command::<A>(dylib_command, dylib_path_buffer, path.as_bytes());
+        write_dylib_command::<A>(dylib_command, dylib_path_buffer, path);
     }
 
     let (chained_fixups_command, load_command_buffer) =
@@ -675,7 +671,15 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
             symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
             "relocation applied");
 
-    rel_info.write_to_buffer(value, &mut out[offset_in_section as usize..])?;
+    rel_info
+        .write_to_buffer(value, &mut out[offset_in_section as usize..])
+        .with_context(|| {
+            format!(
+                "Failed to apply relocation {} to {}",
+                A::rel_type_to_string(rel.r_type.into()),
+                layout.symbol_debug(local_symbol_id)
+            )
+        })?;
 
     Ok(())
 }
@@ -1011,11 +1015,15 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
             .symbol_db
             .file_id_for_symbol(imported_symbol.symbol_id);
 
-        let FileLayout::StubLibrary(stub) = layout.file_layout(file_id) else {
-            bail!("Internal error: Internal symbol refers to non-stub library");
+        let dynamic = match layout.file_layout(file_id) {
+            FileLayout::StubLibrary(file) => &file.format_specific,
+            FileLayout::Dynamic(file) => &file.format_specific,
+            _ => {
+                bail!("Internal error: Internal symbol refers to non-stub library");
+            }
         };
 
-        let lib_ordinal = stub.format_specific.ordinal.get();
+        let lib_ordinal = dynamic.ordinal.get();
 
         imports[i].set(
             Endianness::Little,

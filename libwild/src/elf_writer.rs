@@ -4352,7 +4352,7 @@ fn write_dynamic_symbol_definitions(table_writer: &mut TableWriter, layout: &Elf
                             copy_symbol_version(
                                 object.object.symbol_versions(),
                                 object.symbol_id_range.id_to_offset(sym_def.symbol_id),
-                                &object.format_specific_layout.version_mapping,
+                                &object.format_specific.version_mapping,
                                 versym,
                             )?;
                         }
@@ -5577,7 +5577,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
                     copy_symbol_version(
                         object.object.symbol_versions(),
                         object.symbol_id_range.id_to_offset(symbol_id),
-                        &object.format_specific_layout.version_mapping,
+                        &object.format_specific.version_mapping,
                         versym,
                     )?;
                 }
@@ -5589,7 +5589,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
         }
     }
 
-    if let Some(verneed_info) = &object.format_specific_layout.verneed_info {
+    if let Some(verneed_info) = &object.format_specific.verneed_info {
         let mut verdefs = verneed_info.defs.clone();
         let e = LittleEndian;
 
@@ -5601,7 +5601,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
 
         let ver_need = table_writer.version_writer.take_verneed()?;
 
-        let next_verneed_offset = if object.format_specific_layout.is_last_verneed {
+        let next_verneed_offset = if object.format_specific.is_last_verneed {
             0
         } else {
             (size_of::<Verneed>() + size_of::<Vernaux>() * verneed_info.version_count as usize)
@@ -5638,7 +5638,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
             }
 
             let output_version = object
-                .format_specific_layout
+                .format_specific
                 .version_mapping
                 .get(usize::from(input_version - object::elf::VER_NDX_GLOBAL))
                 .copied()
@@ -5696,7 +5696,7 @@ fn write_copy_relocations<'data, A: Arch<Platform = Elf>>(
     table_writer: &mut TableWriter,
     layout: &ElfLayout,
 ) -> Result {
-    for &symbol_id in &object.format_specific_layout.copy_relocation_symbols {
+    for &symbol_id in &object.format_specific.copy_relocation_symbols {
         write_copy_relocation_for_symbol::<A>(symbol_id, table_writer, layout).with_context(
             || {
                 format!(

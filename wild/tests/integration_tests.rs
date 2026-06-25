@@ -585,6 +585,12 @@ enum Linker {
     ThirdParty(ThirdPartyLinker),
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum IntermediateKind {
+    Shared,
+    Partial,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ThirdPartyLinker {
     name: &'static str,
@@ -610,7 +616,7 @@ impl Linker {
         so_path: &Path,
         config: &Config,
         cross_arch: Option<Architecture>,
-        is_shared: bool,
+        kind: IntermediateKind,
     ) -> Result<LinkerInput> {
         let mut linker_args = config.linker_args.clone();
 
@@ -618,11 +624,9 @@ impl Linker {
             .args
             .extend(config.linker_so_args.args.iter().cloned());
 
-        linker_args.args.push(if is_shared {
-            "-shared".to_owned()
-        } else {
-            "-r".to_owned()
-        });
+        linker_args
+            .args
+            .push(config.platform.arg_for_intermediate(kind)?.to_owned());
 
         let mut command = LinkCommand::new(
             self,
@@ -2669,14 +2673,14 @@ fn build_linker_input(
         }
         InputType::SharedObject | InputType::Relocatable => {
             let linker = config.so_single_linker.as_ref().unwrap_or(linker);
-            let (obj_ext, is_shared) = if dep.input_type == InputType::SharedObject {
-                (format!("{linker}.so"), true)
+            let kind = if dep.input_type == InputType::SharedObject {
+                IntermediateKind::Shared
             } else {
-                (format!("{linker}.o"), false)
+                IntermediateKind::Partial
             };
-            let obj_path = first_obj_path.with_extension(obj_ext);
-            let out =
-                linker.link_intermediate(&objects, &obj_path, &config, cross_arch, is_shared)?;
+            let ext = config.platform.intermediate_extension(kind)?;
+            let obj_path = first_obj_path.with_extension(format!("{linker}.{ext}"));
+            let out = linker.link_intermediate(&objects, &obj_path, &config, cross_arch, kind)?;
             let assertions = Assertions::default();
             assertions
                 .check_path(&out.path, linker)
@@ -2868,6 +2872,10 @@ fn build_obj(
             command.arg("-MF");
             command.arg(&deps_path);
             command.arg("-MD");
+
+            if config.platform == PlatformKind::MachO {
+                command.arg("-mmacosx-version-min=11.0");
+            }
         }
         CompilerKind::Rust => {
             let wild = wild_path().to_str().context("Need UTF-8 path")?.to_owned();
@@ -3487,7 +3495,7 @@ impl LinkCommand {
                         }
                     }
 
-                    if arch == Architecture::AArch64 {
+                    if config.platform == PlatformKind::Elf && arch == Architecture::AArch64 {
                         // Provide a workaround for ld.lld: error: unknown argument
                         // '--fix-cortex-a53-835769' Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
                         command.arg("-mno-fix-cortex-a53-835769");
@@ -6010,6 +6018,24 @@ impl PlatformKind {
             },
             PlatformKind::Elf | PlatformKind::MachO => ArgumentSet::default_for_compiling(),
         }
+    }
+
+    fn arg_for_intermediate(self, kind: IntermediateKind) -> Result<&'static str> {
+        Ok(match (self, kind) {
+            (PlatformKind::Elf, IntermediateKind::Shared) => "-shared",
+            (PlatformKind::Elf, IntermediateKind::Partial) => "-r",
+            (PlatformKind::MachO, IntermediateKind::Shared) => "-dynamiclib",
+            _ => bail!("Unsupported {self:?}, {kind:?}"),
+        })
+    }
+
+    fn intermediate_extension(&self, kind: IntermediateKind) -> Result<&'static str> {
+        Ok(match (self, kind) {
+            (PlatformKind::Elf, IntermediateKind::Shared) => "so",
+            (PlatformKind::Elf, IntermediateKind::Partial) => "o",
+            (PlatformKind::MachO, IntermediateKind::Shared) => "dylib",
+            _ => bail!("Unsupported {self:?}, {kind:?}"),
+        })
     }
 }
 

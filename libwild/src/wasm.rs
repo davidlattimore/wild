@@ -853,15 +853,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         &[]
     }
 
-    fn dynamic_symbol_used(
-        &self,
-        _symbol_index: object::SymbolIndex,
-        _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
-    ) -> crate::error::Result {
-        // Wasm has no dynamic objects yet.
-        Ok(())
-    }
-
     fn finalise_sizes_dynamic(
         &self,
         _lib_name: &[u8],
@@ -3026,8 +3017,8 @@ impl platform::Platform for Wasm {
         _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
         _resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
-    ) -> crate::error::Result<Self::DynamicLayoutExt<'data>> {
-        Ok(())
+    ) -> crate::error::Result<Option<Self::DynamicLayoutExt<'data>>> {
+        Ok(None)
     }
 
     fn take_dynsym_index(

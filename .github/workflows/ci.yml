@@ -170,6 +170,7 @@ jobs:
     env:
       WILD_TEST_IGNORE_FORMAT: "1" # Checked by other jobs
     steps:
+      - run: brew install lld
       - uses: actions/checkout@v7
         with:
           persist-credentials: false

@@ -517,8 +517,7 @@ impl platform::Platform for Elf {
 
         common.allocate(part_id::DYNSTR, state.lib_name.len() as u64 + 1);
 
-        state.format_specific_state.symbol_versions_needed =
-            vec![false; state.object.verdefnum as usize];
+        state.format_specific.symbol_versions_needed = vec![false; state.object.verdefnum as usize];
     }
 
     fn pre_finalise_sizes_prelude<'scope, 'data>(
@@ -581,10 +580,10 @@ impl platform::Platform for Elf {
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
         resolutions_out: &mut layout::ResolutionWriter<Self>,
-    ) -> Result<Self::DynamicLayoutExt<'data>> {
+    ) -> Result<Option<Self::DynamicLayoutExt<'data>>> {
         let mut is_last_verneed = false;
 
-        if let Some(v) = &state.format_specific_state.verneed_info
+        if let Some(v) = &state.format_specific.verneed_info
             && v.version_count > 0
         {
             memory_offsets.increment(
@@ -602,12 +601,12 @@ impl platform::Platform for Elf {
         }
 
         let version_mapping = compute_version_mapping(
-            &state.format_specific_state.symbol_versions_needed,
-            state.format_specific_state.non_addressable_indexes,
+            &state.format_specific.symbol_versions_needed,
+            state.format_specific.non_addressable_indexes,
         );
 
         let copy_relocation_symbols = state
-            .format_specific_state
+            .format_specific
             .copy_relocations
             .values()
             .map(|info| info.symbol_id)
@@ -661,12 +660,12 @@ impl platform::Platform for Elf {
             resolutions_out.write(Some(resolution))?;
         }
 
-        Ok(DynamicLayoutExt {
+        Ok(Some(DynamicLayoutExt {
             version_mapping,
-            verneed_info: core::mem::take(&mut state.format_specific_state.verneed_info),
+            verneed_info: core::mem::take(&mut state.format_specific.verneed_info),
             is_last_verneed,
             copy_relocation_symbols,
-        })
+        }))
     }
 
     fn compute_object_addresses<'data>(
@@ -1089,6 +1088,13 @@ impl platform::Platform for Elf {
         }
 
         Ok(())
+    }
+
+    fn new_dynamic_layout_state_ext<'data>(
+        _file: &crate::resolution::ResolvedDynamic<'data, Self>,
+        _args: &Self::Args,
+    ) -> Self::DynamicLayoutStateExt<'data> {
+        Default::default()
     }
 
     fn new_epilogue_layout<'data>(
@@ -1829,7 +1835,7 @@ impl platform::Platform for Elf {
         let address = symbol.value();
 
         let info = state
-            .format_specific_state
+            .format_specific
             .copy_relocations
             .entry(address)
             .or_insert_with(|| CopyRelocationInfo {
@@ -2208,7 +2214,7 @@ fn load_glibc_abi_dt_relr_version(
         {
             let symbol_index = state.symbol_id_range.id_to_offset(symbol_id);
             state
-                .format_specific_state
+                .format_specific
                 .mark_version_as_needed(state.object.versym[symbol_index])?;
         }
     }
@@ -2620,10 +2626,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn dynamic_symbol_used(
         &self,
         symbol_index: object::SymbolIndex,
-        state: &mut DynamicLayoutStateExt<'data>,
+        file: &mut layout::DynamicLayoutState<'data, Elf>,
     ) -> Result {
         if let Some(version_index) = self.versym.get(symbol_index.0) {
-            state.mark_version_as_needed(*version_index)?;
+            file.format_specific
+                .mark_version_as_needed(*version_index)?;
         }
 
         Ok(())
@@ -5444,7 +5451,7 @@ fn finalise_copy_relocations<'data>(
         for file in &mut group.files {
             if let layout::FileLayoutState::Dynamic(dynamic) = file {
                 // Skip iterating over our symbol table if we don't have any copy relocations.
-                if dynamic.format_specific_state.copy_relocations.is_empty() {
+                if dynamic.format_specific.copy_relocations.is_empty() {
                     continue;
                 }
 
@@ -5472,11 +5479,7 @@ fn select_copy_relocation_alternatives<'data>(
 ) -> Result {
     for (i, symbol) in state.object.enumerate_symbols() {
         let address = symbol.value();
-        let Some(info) = state
-            .format_specific_state
-            .copy_relocations
-            .get_mut(&address)
-        else {
+        let Some(info) = state.format_specific.copy_relocations.get_mut(&address) else {
             continue;
         };
 
@@ -5507,7 +5510,7 @@ fn allocate_for_copy_relocations<'data>(
     state: &layout::DynamicLayoutState<'data, Elf>,
     common: &mut CommonGroupState<'data, Elf>,
 ) -> Result {
-    for value in state.format_specific_state.copy_relocations.values() {
+    for value in state.format_specific.copy_relocations.values() {
         let symbol_id = value.symbol_id;
 
         let symbol_index = state.symbol_id_range().id_to_input(symbol_id);

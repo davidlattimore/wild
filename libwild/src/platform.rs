@@ -277,7 +277,7 @@ pub(crate) trait Platform:
         Self: 'a;
     type DynamicTagValues<'data>: DynamicTagValues<'data>;
     type RelocationList<'data>: RelocationList<'data>;
-    type DynamicLayoutStateExt<'data>: Default + Send + Sync + 'data;
+    type DynamicLayoutStateExt<'data>: Send + Sync + 'data;
     type DynamicLayoutExt<'data>: std::fmt::Debug + Send + Sync + 'data;
     type LayoutResourcesExt<'data>: std::fmt::Debug + Send + Sync + 'data;
     type PreludeLayoutStateExt: std::fmt::Debug + Default + Send + Sync + 'static;
@@ -431,11 +431,13 @@ pub(crate) trait Platform:
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
         resolutions_out: &mut layout::ResolutionWriter<Self>,
-    ) -> Result<Self::DynamicLayoutExt<'data>>;
+    ) -> Result<Option<Self::DynamicLayoutExt<'data>>>;
 
     fn finalise_layout_stub<'data>(
         _state: layout::StubLibraryLayoutState<'data, Self>,
+        _memory_offsets: &mut OutputSectionPartMap<u64>,
         _resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
+        _resolutions_out: &mut layout::ResolutionWriter<Self>,
     ) -> Result<Option<Self::StubLibraryLayoutExt>> {
         Ok(None)
     }
@@ -656,6 +658,13 @@ pub(crate) trait Platform:
         _stub: &resolution::ResolvedStubLibrary<'data>,
         _args: &Self::Args,
     ) -> Self::StubLibraryLayoutStateExt {
+        unimplemented!()
+    }
+
+    fn new_dynamic_layout_state_ext<'data>(
+        _file: &resolution::ResolvedDynamic<'data, Self>,
+        _args: &Self::Args,
+    ) -> Self::DynamicLayoutStateExt<'data> {
         unimplemented!()
     }
 
@@ -936,9 +945,11 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn dynamic_symbol_used(
         &self,
-        symbol_index: object::SymbolIndex,
-        state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
-    ) -> Result;
+        _symbol_index: object::SymbolIndex,
+        _file: &mut layout::DynamicLayoutState<'data, Self::Platform>,
+    ) -> Result {
+        unimplemented!();
+    }
 
     fn finalise_sizes_dynamic(
         &self,

@@ -13,6 +13,7 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SIZE_4KB;
 use linker_utils::elf::Sign;
+use std::borrow::Cow;
 
 pub(crate) struct MachOAArch64;
 
@@ -171,8 +172,12 @@ impl crate::platform::Arch for MachOAArch64 {
         })
     }
 
-    fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
-        todo!()
+    fn rel_type_to_string(r_type: u32) -> Cow<'static, str> {
+        if let Some(name) = object::macho::NAMES_ARM64_RELOC.name(r_type as u8) {
+            Cow::Borrowed(name)
+        } else {
+            Cow::Owned(format!("Unknown arm64 relocation type 0x{r_type:x}"))
+        }
     }
 
     fn tp_offset_start(layout: &crate::layout::Layout<Self::Platform>) -> u64 {

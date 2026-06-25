@@ -852,7 +852,7 @@ pub(crate) struct EpilogueLayoutState<P: Platform> {
 pub(crate) struct StubLibraryLayoutState<'data, P: Platform> {
     input: InputRef<'data>,
     file_id: FileId,
-    symbol_id_range: SymbolIdRange,
+    pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) format_specific: P::StubLibraryLayoutStateExt,
 }
 
@@ -933,7 +933,7 @@ pub(crate) struct DynamicLayout<'data, P: Platform> {
 
     pub(crate) object: &'data P::File<'data>,
 
-    pub(crate) format_specific_layout: P::DynamicLayoutExt<'data>,
+    pub(crate) format_specific: P::DynamicLayoutExt<'data>,
 }
 
 pub(crate) trait HandlerData {
@@ -1082,8 +1082,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for DynamicLayoutState<'
         _scope: &Scope<'scope>,
     ) -> Result {
         let local_index = object::SymbolIndex(symbol_id.to_offset(self.symbol_id_range()));
-        self.object
-            .dynamic_symbol_used(local_index, &mut self.format_specific_state)?;
+        self.object.dynamic_symbol_used(local_index, self)?;
 
         // Check for arch-specific VARIANT_PCS flags.
         if A::is_symbol_variant_pcs(self.object, local_index) {
@@ -1337,7 +1336,7 @@ pub(crate) struct DynamicLayoutState<'data, P: Platform> {
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) lib_name: &'data [u8],
 
-    pub(crate) format_specific_state: P::DynamicLayoutStateExt<'data>,
+    pub(crate) format_specific: P::DynamicLayoutStateExt<'data>,
 }
 
 #[derive(derive_more::Debug, Clone, Copy)]
@@ -2139,7 +2138,7 @@ fn apply_non_addressable_indexes<'data, P: Platform>(
                     s.object.apply_non_addressable_indexes_dynamic(
                         &mut indexes,
                         &mut counts,
-                        &mut s.format_specific_state,
+                        &mut s.format_specific,
                     )?;
                 }
                 FileLayoutState::Epilogue(s) => {
@@ -2761,11 +2760,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                 resolutions_out,
                 resources,
             )?),
-            Self::Dynamic(s) => FileLayout::Dynamic(s.finalise_layout(
-                memory_offsets,
-                resolutions_out,
-                resources,
-            )?),
+            Self::Dynamic(s) => s.finalise_layout(memory_offsets, resolutions_out, resources)?,
             Self::StubLibrary(s) => {
                 s.finalise_layout(memory_offsets, resolutions_out, resources)?
             }
@@ -3902,6 +3897,7 @@ fn new_object_layout_state<P: Platform>(
 
 fn new_dynamic_object_layout_state<'data, P: Platform>(
     input_state: &resolution::ResolvedDynamic<'data, P>,
+    args: &P::Args,
 ) -> FileLayoutState<'data, P> {
     FileLayoutState::Dynamic(DynamicLayoutState {
         file_id: input_state.common.file_id,
@@ -3909,7 +3905,7 @@ fn new_dynamic_object_layout_state<'data, P: Platform>(
         lib_name: input_state.lib_name(),
         object: input_state.common.object,
         input: input_state.common.input,
-        format_specific_state: Default::default(),
+        format_specific: P::new_dynamic_layout_state_ext(input_state, args),
     })
 }
 
@@ -4626,34 +4622,42 @@ impl<'data, P: Platform> StubLibraryLayoutState<'data, P> {
         resolutions_out: &mut ResolutionWriter<P>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result<FileLayout<'data, P>> {
-        for symbol_id in self.symbol_id_range {
-            let flags: ValueFlags = resources
-                .symbol_db
-                .flags_for_symbol(resources.per_symbol_flags, symbol_id);
-            if flags.has_resolution() && resources.symbol_db.is_canonical(symbol_id) {
-                resolutions_out.write(Some(P::create_resolution(
-                    flags,
-                    0,
-                    None,
-                    memory_offsets,
-                )))?;
-            } else {
-                resolutions_out.write(None)?;
-            }
-        }
-
-        Ok(match P::finalise_layout_stub(self, resources)? {
-            Some(format_specific) => FileLayout::StubLibrary(StubLibraryLayout { format_specific }),
-            None => FileLayout::NotLoaded,
-        })
+        Ok(
+            match P::finalise_layout_stub(self, memory_offsets, resources, resolutions_out)? {
+                Some(format_specific) => {
+                    FileLayout::StubLibrary(StubLibraryLayout { format_specific })
+                }
+                None => FileLayout::NotLoaded,
+            },
+        )
     }
+}
+
+pub(crate) fn default_create_resolutions<'data, P: Platform>(
+    memory_offsets: &mut OutputSectionPartMap<u64>,
+    resolutions_out: &mut ResolutionWriter<'_, '_, P>,
+    resources: &FinaliseLayoutResources<'_, 'data, P>,
+    symbol_id_range: SymbolIdRange,
+) -> Result {
+    for symbol_id in symbol_id_range {
+        let flags: ValueFlags = resources
+            .symbol_db
+            .flags_for_symbol(resources.per_symbol_flags, symbol_id);
+        if flags.has_resolution() && resources.symbol_db.is_canonical(symbol_id) {
+            resolutions_out.write(Some(P::create_resolution(flags, 0, None, memory_offsets)))?;
+        } else {
+            resolutions_out.write(None)?;
+        }
+    }
+
+    Ok(())
 }
 
 impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
     fn create_layout_state(self, args: &P::Args) -> FileLayoutState<'data, P> {
         match self {
             resolution::ResolvedFile::Object(s) => new_object_layout_state(s),
-            resolution::ResolvedFile::Dynamic(s) => new_dynamic_object_layout_state(&s),
+            resolution::ResolvedFile::Dynamic(s) => new_dynamic_object_layout_state(&s, args),
             resolution::ResolvedFile::StubLibrary(s) => {
                 FileLayoutState::StubLibrary(StubLibraryLayoutState::new(&s, args))
             }
@@ -5467,7 +5471,7 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
 
         self.object.finalise_sizes_dynamic(
             self.lib_name,
-            &mut self.format_specific_state,
+            &mut self.format_specific,
             &mut common.mem_sizes,
         )?;
 
@@ -5479,20 +5483,23 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter<P>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
-    ) -> Result<DynamicLayout<'data, P>> {
-        let format_specific_layout =
-            P::finalise_layout_dynamic(&mut self, memory_offsets, resources, resolutions_out)?;
-
+    ) -> Result<FileLayout<'data, P>> {
         let file_id = self.file_id();
 
-        Ok(DynamicLayout {
-            file_id,
-            input: self.input,
-            lib_name: self.lib_name,
-            object: self.object,
-            symbol_id_range: self.symbol_id_range,
-            format_specific_layout,
-        })
+        Ok(
+            match P::finalise_layout_dynamic(&mut self, memory_offsets, resources, resolutions_out)?
+            {
+                Some(format_specific) => FileLayout::Dynamic(DynamicLayout {
+                    file_id,
+                    input: self.input,
+                    lib_name: self.lib_name,
+                    object: self.object,
+                    symbol_id_range: self.symbol_id_range,
+                    format_specific,
+                }),
+                None => FileLayout::NotLoaded,
+            },
+        )
     }
 }
 

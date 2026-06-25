@@ -18,6 +18,7 @@ pub(crate) enum FileKind {
     ElfObject,
     ElfDynamic,
     MachOObject,
+    MachODylib,
     FatMachOObject,
     MachOStubLibrary,
     WasmObject,
@@ -60,21 +61,10 @@ impl FileKind {
                 object::elf::ET_DYN => Ok(FileKind::ElfDynamic),
                 t => bail!("Unsupported ELF kind {t}"),
             }
-        } else if bytes.starts_with(macho::MH_MAGIC_64.as_bytes()) {
-            let header = macho::MachHeader64::<object::Endianness>::parse(bytes, 0)?;
-            ensure!(
-                header.endian()?.is_little_endian(),
-                "Only little endian is currently supported"
-            );
-            ensure!(
-                header.cputype(Endianness::Little) == macho::CPU_TYPE_ARM64,
-                "Only ARM64 is currently supported"
-            );
-            ensure!(
-                header.filetype(Endianness::Little) == macho::MH_OBJECT,
-                "Expected object file"
-            );
-            Ok(FileKind::MachOObject)
+        } else if bytes.starts_with(macho::MH_MAGIC_64.as_bytes())
+            || bytes.starts_with(&macho::MH_MAGIC_64.to_be_bytes())
+        {
+            determine_macho_kind(bytes)
         } else if bytes.starts_with(b"\0asm") {
             // Wasm binary magic number is `\0asm` followed by a 4-byte version.
             ensure!(bytes.len() >= 8, "Invalid Wasm file (too short)");
@@ -98,6 +88,26 @@ impl FileKind {
 
     pub(crate) fn is_compiler_ir(self) -> bool {
         matches!(self, FileKind::LlvmIr | FileKind::GccIr)
+    }
+}
+
+fn determine_macho_kind(bytes: &[u8]) -> Result<FileKind> {
+    let header = macho::MachHeader64::<object::Endianness>::parse(bytes, 0)?;
+
+    ensure!(
+        header.endian()?.is_little_endian(),
+        "Only little endian is currently supported"
+    );
+
+    ensure!(
+        header.cputype(Endianness::Little) == macho::CPU_TYPE_ARM64,
+        "Only ARM64 is currently supported"
+    );
+
+    match header.filetype(Endianness::Little) {
+        macho::MH_OBJECT => Ok(FileKind::MachOObject),
+        macho::MH_DYLIB => Ok(FileKind::MachODylib),
+        other => bail!("Unsupported MachO input file type {other:?}"),
     }
 }
 
@@ -134,6 +144,7 @@ impl std::fmt::Display for FileKind {
             FileKind::ElfObject => "ELF object",
             FileKind::ElfDynamic => "ELF dynamic",
             FileKind::MachOObject => "Mach-O object",
+            FileKind::MachODylib => "Mach-O dylib",
             FileKind::WasmObject => "Wasm object",
             FileKind::FatMachOObject => "Fat Mach-O object",
             FileKind::MachOStubLibrary => "Mach-O TBD library",

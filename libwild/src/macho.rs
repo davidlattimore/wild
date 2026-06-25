@@ -3,10 +3,10 @@ use crate::alignment;
 use crate::alignment::Alignment;
 use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::macho::MachOArgs;
-use crate::bail;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
+use crate::file_kind::FileKind;
 use crate::file_writer::copy_section_data;
 use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
@@ -172,17 +172,28 @@ pub(crate) struct File<'data> {
     #[debug(skip)]
     pub(crate) data: &'data [u8],
     #[debug(skip)]
-    pub(crate) sections: SectionTable<'data>,
-    #[debug(skip)]
     pub(crate) symbols: SymbolTable<'data>,
     #[allow(unused)]
     pub(crate) flags: object::macho::FileFlags,
+    kind: ObjectKind<'data>,
+}
+
+#[derive(Debug)]
+enum ObjectKind<'data> {
+    Regular(RegularObject<'data>),
+    Dylib,
+}
+
+#[derive(derive_more::Debug)]
+struct RegularObject<'data> {
+    #[debug(skip)]
+    pub(crate) sections: SectionTable<'data>,
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
     type Platform = MachO;
 
-    fn parse_bytes(input: &'data [u8], _is_dynamic: bool) -> crate::error::Result<Self> {
+    fn parse_bytes(input: &'data [u8], is_dynamic: bool) -> crate::error::Result<Self> {
         let header = macho::MachHeader64::<object::Endianness>::parse(input, 0)?;
         let mut commands = header.load_commands(LE, input, 0)?;
 
@@ -193,18 +204,28 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             if let Some(symtab_command) = command.symtab()? {
                 ensure!(symbols.is_none(), "At most one symtab command expected");
                 symbols = Some(symtab_command.symbols::<macho::MachHeader64<_>, _>(LE, input)?);
-            } else if let Some((segment_command, segment_data)) = command.segment_64()? {
+            } else if !is_dynamic
+                && let Some((segment_command, segment_data)) = command.segment_64()?
+            {
                 ensure!(sections.is_none(), "At most one segment command expected");
                 let section_list = segment_command.sections(LE, segment_data)?;
                 sections = Some(section_list);
             }
         }
 
+        let kind = if is_dynamic {
+            ObjectKind::Dylib
+        } else {
+            ObjectKind::Regular(RegularObject {
+                sections: sections.ok_or("Missing segment command")?,
+            })
+        };
+
         Ok(File {
             data: input,
             symbols: symbols.ok_or("Missing symbol table")?,
-            sections: sections.ok_or("Missing segment command")?,
             flags: header.flags(LE),
+            kind,
         })
     }
 
@@ -213,12 +234,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         _args: &<Self::Platform as platform::Platform>::Args,
     ) -> crate::error::Result<Self> {
         // TODO
-        Self::parse_bytes(input.data, false)
+        Self::parse_bytes(input.data, input.kind == FileKind::MachODylib)
     }
 
     fn is_dynamic(&self) -> bool {
-        // TODO
-        false
+        matches!(self.kind, ObjectKind::Dylib)
     }
 
     fn num_symbols(&self) -> usize {
@@ -266,11 +286,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn num_sections(&self) -> usize {
-        self.sections.len()
+        self.sections().len()
     }
 
     fn section_iter<'a>(&'a self) -> <Self::Platform as platform::Platform>::SectionIterator<'a> {
-        self.sections.iter()
+        self.sections().iter()
     }
 
     fn enumerate_sections(
@@ -281,7 +301,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             &<Self::Platform as platform::Platform>::SectionHeader,
         ),
     > {
-        self.sections
+        self.sections()
             .iter()
             .enumerate()
             .map(|(i, section)| (object::SectionIndex(i), section))
@@ -291,7 +311,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         &self,
         index: object::SectionIndex,
     ) -> crate::error::Result<&<Self::Platform as platform::Platform>::SectionHeader> {
-        self.sections
+        self.sections()
             .get(index.0)
             .ok_or(error!("section index out of range"))
     }
@@ -325,10 +345,13 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn dynamic_symbol_used(
         &self,
-        _symbol_index: object::SymbolIndex,
-        _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
+        symbol_index: object::SymbolIndex,
+        file: &mut layout::DynamicLayoutState<'data, MachO>,
     ) -> crate::error::Result {
-        todo!()
+        file.format_specific
+            .imported_symbols
+            .push(file.symbol_id_range.input_to_id(symbol_index));
+        Ok(())
     }
 
     fn finalise_sizes_dynamic(
@@ -337,7 +360,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
         _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn apply_non_addressable_indexes_dynamic(
@@ -346,12 +369,12 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         _counts: &mut <Self::Platform as platform::Platform>::NonAddressableCounts,
         _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn section_name(&self, index: object::SectionIndex) -> crate::error::Result<&'data [u8]> {
         let section = self
-            .sections
+            .sections()
             .get(index.0)
             .ok_or(error!("section index out of range"))?;
         Ok(section.name())
@@ -403,7 +426,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     ) -> crate::error::Result<<Self::Platform as platform::Platform>::RelocationList<'data>> {
         Ok(RelocationList {
             relocations: self
-                .sections
+                .sections()
                 .get(index.0)
                 .ok_or(error!("section index out of range"))?
                 .relocations(LE, self.data)?,
@@ -430,22 +453,27 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn dynamic_tag_values(
         &self,
     ) -> Option<<Self::Platform as platform::Platform>::DynamicTagValues<'data>> {
-        None
+        match self.kind {
+            ObjectKind::Regular(_) => None,
+            ObjectKind::Dylib => Some(DynamicTagValues::default()),
+        }
     }
 
     fn get_version_names(
         &self,
     ) -> crate::error::Result<<Self::Platform as platform::Platform>::VersionNames<'data>> {
-        todo!()
+        Ok(())
     }
 
     fn get_symbol_name_and_version(
         &self,
-        _symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
+        symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
         _local_index: usize,
         _version_names: &<Self::Platform as platform::Platform>::VersionNames<'data>,
     ) -> crate::error::Result<<Self::Platform as platform::Platform>::RawSymbolName<'data>> {
-        bail!("Mach-O does not support versioned symbols")
+        Ok(RawSymbolName {
+            name: self.symbol_name(symbol)?,
+        })
     }
 
     fn should_enforce_undefined(
@@ -836,7 +864,7 @@ impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
 
 impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues<'data> {
     fn lib_name(&self, _input: &crate::input_data::InputRef<'data>) -> &'data [u8] {
-        todo!()
+        &[]
     }
 }
 
@@ -902,8 +930,8 @@ impl platform::Platform for MachO {
     type EpilogueLayoutExt = EpilogueLayoutExt;
     type GroupLayoutExt = ();
     type CommonGroupStateExt = ();
-    type StubLibraryLayoutStateExt = StubLibraryLayoutStateExt;
-    type StubLibraryLayoutExt = StubLibraryLayoutExt;
+    type StubLibraryLayoutStateExt = DynamicLayoutStateExt;
+    type StubLibraryLayoutExt = DynamicLayoutExt;
     type ArchIdentifier = ();
     type Args = MachOArgs;
     type ResolutionExt = ResolutionExt;
@@ -915,8 +943,8 @@ impl platform::Platform for MachO {
     type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
     type DynamicTagValues<'data> = DynamicTagValues<'data>;
     type RelocationList<'data> = RelocationList<'data>;
-    type DynamicLayoutStateExt<'data> = ();
-    type DynamicLayoutExt<'data> = ();
+    type DynamicLayoutStateExt<'data> = DynamicLayoutStateExt;
+    type DynamicLayoutExt<'data> = DynamicLayoutExt;
     type LayoutResourcesExt<'data> = ();
     type PreludeLayoutStateExt = PreludeLayoutExt;
     type PreludeLayoutExt = PreludeLayoutExt;
@@ -983,7 +1011,6 @@ impl platform::Platform for MachO {
         _state: &mut crate::layout::DynamicLayoutState<'data, Self>,
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) {
-        todo!()
     }
 
     fn pre_finalise_sizes_prelude<'scope, 'data>(
@@ -997,7 +1024,7 @@ impl platform::Platform for MachO {
         _object: &mut crate::layout::DynamicLayoutState<'data, Self>,
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn finalise_object_sizes<'data>(
@@ -1013,33 +1040,35 @@ impl platform::Platform for MachO {
     }
 
     fn finalise_layout_dynamic<'data>(
-        _state: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        _resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
-        _resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
-    ) -> crate::error::Result<Self::DynamicLayoutExt<'data>> {
-        todo!()
+        state: &mut crate::layout::DynamicLayoutState<'data, Self>,
+        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
+        resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
+    ) -> crate::error::Result<Option<Self::DynamicLayoutExt<'data>>> {
+        layout::default_create_resolutions(
+            memory_offsets,
+            resolutions_out,
+            resources,
+            state.symbol_id_range,
+        )?;
+
+        create_dynamic_layout_ext(state.file_id(), resources)
     }
 
     fn finalise_layout_stub<'data>(
         state: layout::StubLibraryLayoutState<'data, Self>,
-        resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
+        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
+        resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
     ) -> Result<Option<Self::StubLibraryLayoutExt>> {
-        let Some(index) = resources
-            .format_specific
-            .imported_libraries
-            .iter()
-            .position(|file_id| *file_id == state.file_id())
-        else {
-            return Ok(None);
-        };
+        layout::default_create_resolutions(
+            memory_offsets,
+            resolutions_out,
+            resources,
+            state.symbol_id_range,
+        )?;
 
-        Ok(Some(StubLibraryLayoutExt {
-            ordinal: NonZeroU8::new(
-                u8::try_from(index + 1).context("Too many loaded stub libraries")?,
-            )
-            .unwrap(),
-        }))
+        create_dynamic_layout_ext(state.file_id(), resources)
     }
 
     fn take_dynsym_index(
@@ -1149,6 +1178,13 @@ impl platform::Platform for MachO {
                         imported_symbols
                             .extend_from_slice(state.format_specific.imported_symbols.as_slice());
                     }
+                    layout::FileLayoutState::Dynamic(state) => {
+                        if state.format_specific.loaded {
+                            imported_libraries.push(state.file_id());
+                        }
+                        imported_symbols
+                            .extend_from_slice(state.format_specific.imported_symbols.as_slice());
+                    }
                     _ => {}
                 }
             }
@@ -1229,8 +1265,11 @@ impl platform::Platform for MachO {
             .iter()
             .flat_map(|group| {
                 group.files.iter().flat_map(|file| match file {
-                    layout::FileLayoutState::StubLibrary(stub_state) => {
-                        stub_state.format_specific.imported_symbols.as_slice()
+                    layout::FileLayoutState::StubLibrary(file) => {
+                        file.format_specific.imported_symbols.as_slice()
+                    }
+                    layout::FileLayoutState::Dynamic(file) => {
+                        file.format_specific.imported_symbols.as_slice()
                     }
                     _ => &[],
                 })
@@ -1369,12 +1408,7 @@ impl platform::Platform for MachO {
             .format_specific
             .imported_library_file_ids
             .iter()
-            .map(|&file_id| {
-                let SequencedInput::StubLibrary(stub) = resources.symbol_db.file(file_id) else {
-                    panic!("Internal error: Expected StubLibrary");
-                };
-                load_dylib_command_size(stub.defined_symbols.install_name.as_bytes())
-            })
+            .map(|&file_id| load_dylib_command_size(install_name(file_id, resources.symbol_db)))
             .collect();
         let load_dylib_command_sizes = prelude.format_specific.load_dylib_command_sizes.clone();
         for command_size in load_dylib_command_sizes {
@@ -1394,10 +1428,14 @@ impl platform::Platform for MachO {
         _stub: &resolution::ResolvedStubLibrary<'data>,
         args: &Self::Args,
     ) -> Self::StubLibraryLayoutStateExt {
-        StubLibraryLayoutStateExt {
-            imported_symbols: Default::default(),
-            loaded: !args.dead_strip_dylibs,
-        }
+        DynamicLayoutStateExt::new(args)
+    }
+
+    fn new_dynamic_layout_state_ext<'data>(
+        _file: &resolution::ResolvedDynamic<'data, Self>,
+        args: &Self::Args,
+    ) -> Self::DynamicLayoutStateExt<'data> {
+        DynamicLayoutStateExt::new(args)
     }
 
     fn load_stub_library_symbol<'data>(
@@ -1617,6 +1655,38 @@ impl platform::Platform for MachO {
     }
 }
 
+pub(crate) fn install_name<'data>(
+    file_id: FileId,
+    symbol_db: &crate::symbol_db::SymbolDb<'data, MachO>,
+) -> &'data [u8] {
+    match symbol_db.file(file_id) {
+        SequencedInput::StubLibrary(stub) => stub.defined_symbols.install_name.as_bytes(),
+        SequencedInput::Object(obj) => obj.parsed.input.lib_name(),
+        _ => {
+            panic!("Internal error: Expected StubLibrary or Dynamic");
+        }
+    }
+}
+
+fn create_dynamic_layout_ext<'data>(
+    target_file_id: FileId,
+    resources: &layout::FinaliseLayoutResources<'_, 'data, MachO>,
+) -> Result<Option<DynamicLayoutExt>> {
+    let Some(index) = resources
+        .format_specific
+        .imported_libraries
+        .iter()
+        .position(|file_id| *file_id == target_file_id)
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(DynamicLayoutExt {
+        ordinal: NonZeroU8::new(u8::try_from(index + 1).context("Too many loaded stub libraries")?)
+            .unwrap(),
+    }))
+}
+
 const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     let mut defs: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] =
         [DEFAULT_DEFS; NUM_BUILT_IN_SECTIONS];
@@ -1695,13 +1765,13 @@ pub(crate) struct EpilogueLayoutExt {
 }
 
 #[derive(Debug)]
-pub(crate) struct StubLibraryLayoutStateExt {
+pub(crate) struct DynamicLayoutStateExt {
     imported_symbols: Vec<SymbolId>,
     loaded: bool,
 }
 
 #[derive(Debug)]
-pub(crate) struct StubLibraryLayoutExt {
+pub(crate) struct DynamicLayoutExt {
     pub(crate) ordinal: NonZeroU8,
 }
 
@@ -1861,10 +1931,7 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
 
         let relocation = A::relocation_from_raw(rel_info)?;
         let mut flags_to_add = layout::resolution_flags(relocation.kind);
-        if matches!(
-            symbol_db.file(symbol_db.file_id_for_symbol(symbol_id)),
-            SequencedInput::StubLibrary(_)
-        ) {
+        if is_dynamic_library(&symbol_db.file(symbol_db.file_id_for_symbol(symbol_id))) {
             flags_to_add |= ValueFlags::GOT;
             // TODO: classify symbols more reliably, likely by checking whether their section is
             // __text.
@@ -1892,4 +1959,36 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
     }
 
     Ok(())
+}
+
+fn is_dynamic_library(file: &SequencedInput<MachO>) -> bool {
+    match file {
+        SequencedInput::StubLibrary(_) => true,
+        SequencedInput::Object(obj) => obj.is_dynamic(),
+        _ => false,
+    }
+}
+
+impl<'data> File<'data> {
+    fn sections(&self) -> &'data [SectionHeader] {
+        self.kind.sections()
+    }
+}
+
+impl<'data> ObjectKind<'data> {
+    fn sections(&self) -> &'data [SectionHeader] {
+        match self {
+            ObjectKind::Regular(regular_object) => regular_object.sections,
+            ObjectKind::Dylib => &[],
+        }
+    }
+}
+
+impl DynamicLayoutStateExt {
+    fn new(args: &MachOArgs) -> Self {
+        Self {
+            imported_symbols: Default::default(),
+            loaded: !args.dead_strip_dylibs,
+        }
+    }
 }
