@@ -431,7 +431,6 @@ pub(crate) struct WasmDataSegmentLayout<'data> {
 #[derive(Debug, Default)]
 pub(crate) struct WasmObjectDataLayout<'data> {
     pub(crate) file_id: crate::input_data::FileId,
-    pub(crate) symbol_id_range: crate::symbol_db::SymbolIdRange,
     pub(crate) segments: Vec<WasmDataSegmentLayout<'data>>,
 }
 
@@ -1748,7 +1747,6 @@ fn layout_object_data<'data>(
     }
     Ok(WasmObjectDataLayout {
         file_id: input.file_id,
-        symbol_id_range: input.symbol_id_range,
         segments,
     })
 }
@@ -1800,6 +1798,7 @@ pub(crate) struct WasmObjectIndexMap {
     pub(crate) function_indices: Vec<u32>,
     pub(crate) global_indices: Vec<u32>,
     pub(crate) memory_indices: Vec<u32>,
+    pub(crate) data_addresses: Vec<u32>,
 }
 
 impl WasmObjectIndexMap {
@@ -1845,7 +1844,16 @@ impl WasmObjectIndexMap {
             reloc_type::MEMORY_ADDR_LEB
             | reloc_type::MEMORY_ADDR_SLEB
             | reloc_type::MEMORY_ADDR_I32 => {
-                bail!("memory address relocations are not supported yet");
+                ensure!(
+                    sym.kind == WasmSymbolKind::Data,
+                    "R_WASM_MEMORY_ADDR_* references non-data symbol"
+                );
+                self.data_addresses
+                    .get(reloc.index as usize)
+                    .copied()
+                    .ok_or_else(|| {
+                        crate::error!("data address for symbol index {} out of range", reloc.index)
+                    })
             }
             reloc_type::TABLE_INDEX_SLEB | reloc_type::TABLE_INDEX_I32 => {
                 bail!("table index relocations are not supported yet");
@@ -2087,6 +2095,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             ),
             global_indices: Vec::with_capacity(self.global_imports.len() + self.globals.len()),
             memory_indices: Vec::with_capacity(self.memories.len()),
+            data_addresses: Vec::new(),
         };
 
         let mut imports =
@@ -2459,6 +2468,13 @@ where
             &mut section_cursor,
         )?);
     }
+    compute_data_addresses(
+        &mut layout.object_index_maps,
+        &layout.per_object_symbols,
+        &layout.object_data_layouts,
+        &layout_inputs,
+        symbol_db,
+    )?;
     layout.encode_metadata_sections()?;
     Ok(layout)
 }
@@ -2486,7 +2502,7 @@ pub(crate) fn reloc_value_with_addend(base: u32, addend: i64) -> Result<u32> {
     u32::try_from(value).map_err(|_| crate::error!("Wasm relocation value out of range"))
 }
 
-pub(crate) fn data_symbol_memory_address(
+fn data_symbol_memory_address(
     object_data_layouts: &[WasmObjectDataLayout<'_>],
     obj_idx: usize,
     sym: &WasmSymbol,
@@ -2505,6 +2521,54 @@ pub(crate) fn data_symbol_memory_address(
         .output_memory_offset
         .checked_add(sym.offset)
         .ok_or_else(|| crate::error!("Wasm data symbol address overflow"))
+}
+
+fn compute_data_addresses(
+    object_index_maps: &mut [WasmObjectIndexMap],
+    per_object_symbols: &[Vec<WasmSymbol>],
+    object_data_layouts: &[WasmObjectDataLayout<'_>],
+    layout_inputs: &[WasmObjectLayoutInput<'_>],
+    symbol_db: &SymbolDb<'_, Wasm>,
+) -> Result<()> {
+    let file_id_to_index: HashMap<crate::input_data::FileId, usize> = layout_inputs
+        .iter()
+        .enumerate()
+        .map(|(i, input)| (input.file_id, i))
+        .collect();
+
+    for (obj_idx, (index_map, symbols)) in object_index_maps
+        .iter_mut()
+        .zip(per_object_symbols.iter())
+        .enumerate()
+    {
+        let mut data_addresses = vec![0u32; symbols.len()];
+        for (sym_idx, sym) in symbols.iter().enumerate() {
+            if sym.kind != WasmSymbolKind::Data {
+                continue;
+            }
+            let (def_obj_idx, def_sym) = if sym.is_undefined() {
+                let symbol_id = layout_inputs[obj_idx].symbol_id_range.offset_to_id(sym_idx);
+                let def_id = symbol_db.definition(symbol_id);
+                if def_id == symbol_id {
+                    continue;
+                }
+                let def_file_id = symbol_db.file_id_for_symbol(def_id);
+                let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) else {
+                    continue;
+                };
+                let def_input = &layout_inputs[def_obj_idx];
+                let def_sym_offset = def_id.to_offset(def_input.symbol_id_range);
+                (def_obj_idx, per_object_symbols[def_obj_idx][def_sym_offset])
+            } else {
+                (obj_idx, *sym)
+            };
+            data_addresses[sym_idx] =
+                data_symbol_memory_address(object_data_layouts, def_obj_idx, &def_sym)?;
+        }
+        index_map.data_addresses = data_addresses;
+    }
+
+    Ok(())
 }
 
 fn allocate_wasm_object_index_bases(
