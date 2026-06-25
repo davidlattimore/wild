@@ -2,7 +2,7 @@
 //#DiffEnabled:false
 //#Mode:unspecified
 //#LinkArgs:-z now -as-needed
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#Shared:symbol-binding-dyn.c
 //#Object:symbol-binding-1.c
 //#Archive:symbol-binding-2.c

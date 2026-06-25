@@ -22,8 +22,7 @@
 //#MaxThunks:19
 //#Arch:aarch64
 // We only test with lld, since GNU ld doesn't seem to be able to create thunks for ifuncs.
-//#SkipLinker:ld
-//#EnableLinker:lld
+//#ReferenceLinkers:lld
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:section.iplt

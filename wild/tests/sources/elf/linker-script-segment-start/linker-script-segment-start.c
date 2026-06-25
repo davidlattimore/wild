@@ -23,7 +23,6 @@
 // alongside a linker script. lld ignores -T* when a linker script is present,
 // so we skip it here.
 //#Config:with-T-overrides:default
-//#SkipLinker:lld
 //#LinkArgs:-Ttext=0x700000 -Tdata=0x800000 -Tbss=0x900000
 //#Variant:1
 

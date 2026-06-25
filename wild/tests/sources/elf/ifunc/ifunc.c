@@ -17,7 +17,7 @@
 
 //#Config:got-plt-syms:default
 //#LinkArgs:--got-plt-syms
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#TestUpdateInPlace:true
 //#DiffEnabled:false
 //#ExpectSym:compute_value10$got section=".got"

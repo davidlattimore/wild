@@ -1,11 +1,10 @@
 //#Config:default
 //#SkipArch: ppc64le
 //#Object:runtime.c
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#Mode:dynamic
 //#LinkArgs:-z now
 //#Shared:trivial-dynamic-2.c
-//#EnableLinker:lld
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 // We put a GLOB_DAT in .rela.dyn, other linkers use a JUMP_SLOT in .rela.plt.

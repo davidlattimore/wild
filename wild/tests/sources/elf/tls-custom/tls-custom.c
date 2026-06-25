@@ -3,7 +3,7 @@
 //#SkipArch: ppc64le
 //#LinkerDriver:gcc
 //#Object:tls-custom-1.s
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#LinkArgs:-Wl,--gc-sections
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
 // At least some versions of GNU ld for risc-v export these symbols for some reason.

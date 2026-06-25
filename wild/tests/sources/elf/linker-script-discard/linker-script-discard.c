@@ -1,7 +1,6 @@
 //#Mode:dynamic
 //#RunEnabled:false
-//#SkipLinker:ld
-//#EnableLinker:lld
+//#ReferenceLinkers:lld
 //#LinkArgs:-shared -z now -T ./linker-script-discard.ld
 //#DiffIgnore:section.got
 //#DiffIgnore:segment.LOAD.RX.alignment

@@ -9,7 +9,7 @@
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 // TODO: Wild probably should set dynamic linker here
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#RunEnabled:false
 
 // Do not export symbols for static executables: #836
@@ -29,7 +29,7 @@
 //#RunEnabled:false
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 
 //#Config:select-symbols-list
 //#LinkArgs:-z now --export-dynamic-symbol-list ./export-dynamic.def
@@ -41,7 +41,7 @@
 //#RunEnabled:false
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 
 //#Config:dynamic-symbols-list
 //#SkipArch: ppc64le
@@ -55,7 +55,7 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_RELA*
 //#DiffIgnore:file-header.entry
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 
 void foo(void) {};
 void bar(void) {};

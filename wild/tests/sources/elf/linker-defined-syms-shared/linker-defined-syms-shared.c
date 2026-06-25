@@ -21,7 +21,7 @@
 // Wild keeps them in .symtab as LOCAL. GNU ld removes them entirely with --gc-sections, so we only
 // assert this for Wild.
 
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#ExpectSym:etext binding=local
 //#ExpectSym:_etext binding=local
 //#ExpectSym:__etext binding=local

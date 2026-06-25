@@ -1,5 +1,5 @@
 //#Object:runtime.c
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#DriverMode:save-dir-response
 
 #include "../common/runtime.h"

@@ -2,8 +2,7 @@
 //#CompArgs:-g -ggnu-pubnames
 //#Object:runtime.c
 //#Object:gdb-index2.c
-//#SkipLinker:ld
-//#EnableLinker:lld
+//#ReferenceLinkers:lld
 
 //#Config:enabled:default
 //#LinkArgs:--gdb-index

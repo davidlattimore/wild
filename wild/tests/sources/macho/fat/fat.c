@@ -14,12 +14,12 @@
 //#Config:fat-object-64:default
 //#FatObject64:fat-1.c
 // LLD (as of 22.1.6) doesn't seem to support 64 bit fat inputs.
-//#SkipLinker:lld
+//#ReferenceLinkers:
 
 //#Config:fat-archive-64:default
 //#FatArchive64:fat-1.c
 // LLD (as of 22.1.6) doesn't seem to support 64 bit fat inputs.
-//#SkipLinker:lld
+//#ReferenceLinkers:
 
 #include "../common/runtime.h"
 

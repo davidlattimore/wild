@@ -10,8 +10,7 @@
 //#DiffIgnore:.dynamic.DT_RELA*
 
 //#Config:lld:default
-//#EnableLinker:lld
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:.dynamic.DT_RELA*
 

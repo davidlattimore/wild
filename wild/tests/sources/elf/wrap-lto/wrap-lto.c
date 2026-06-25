@@ -2,7 +2,7 @@
 //#RequiresLinkerPlugin:true
 //#Object:runtime.c
 //#Object:wrap-lto-2.c:-fno-lto
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#CompArgs:-flto
 //#LinkArgs:-flto -nostdlib -z now -Wl,-wrap,foo
 
@@ -12,7 +12,7 @@
 //#Config:clang:default
 //#Compiler:clang
 //#LinkerDriver:clang
-//#EnableLinker:lld
+//#ReferenceLinkers:lld
 
 #include "../common/runtime.h"
 

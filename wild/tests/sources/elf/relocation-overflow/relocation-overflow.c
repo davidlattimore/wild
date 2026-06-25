@@ -1,6 +1,6 @@
 //#Config:default
 //#Object:relocation-overflow-b.c
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#Mode:dynamic
 //#Arch:x86_64
 //#ExpectError:Failed to apply relocation of type R_X86_64_PC32

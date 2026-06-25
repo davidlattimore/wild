@@ -1,5 +1,5 @@
 //#RunEnabled:false
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#LinkArgs:-T ./linker-script-unclosed-comment.ld
 //#ExpectError:Unclosed comment
 void _start() {}

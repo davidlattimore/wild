@@ -1,5 +1,5 @@
 //#SkipArch: ppc64le
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#Object:runtime.c
 //#Relocatable:relocatable-1.c,relocatable-2.c
 

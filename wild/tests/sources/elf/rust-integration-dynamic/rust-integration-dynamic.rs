@@ -11,8 +11,7 @@
 //#Config:lto:default
 //#RequiresLinkerPlugin:true
 //#LinkerDriver:clang
-//#SkipLinker:ld
-//#EnableLinker:lld
+//#ReferenceLinkers:lld
 //#CompArgs:-Clinker-plugin-lto -Clink-arg=-flto -Clink-arg=-Wl,-znow
 //#DiffEnabled:false
 

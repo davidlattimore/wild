@@ -8,7 +8,7 @@
 //#Config:non-lto:default
 //#CompArgs:-g
 // GNU ld reports incorrect line numbers.
-//#SkipLinker:ld
+//#ReferenceLinkers:
 
 //#Config:lto:default
 //#RequiresLinkerPlugin:true
@@ -16,7 +16,7 @@
 //#CompArgs:-g -flto -fPIC
 //#LinkArgs:-flto -nostdlib -fPIC
 // GNU ld tries to generate a PLT, then errors
-//#SkipLinker:ld
+//#ReferenceLinkers:
 
 #include "../common/runtime.h"
 

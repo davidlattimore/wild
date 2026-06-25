@@ -1,7 +1,7 @@
 //#SkipArch: ppc64le
 //#Object:global_references.c
 //#Object:runtime.c
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#DiffMatchAny:true
 
 int global_value = 38;

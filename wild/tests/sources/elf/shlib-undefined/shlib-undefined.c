@@ -1,8 +1,7 @@
 //#AbstractConfig:default
 // We match lld's behaviour, not GNU ld's for --allow-shlib-undefined. That is, we only validate
 // shared object undefined symbols when all of the shared object's direct dependencies are loaded.
-//#EnableLinker:lld
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 //#Object:runtime.c
 //#Mode:dynamic
 //#RunEnabled:false

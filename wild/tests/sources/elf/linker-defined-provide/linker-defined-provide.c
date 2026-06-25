@@ -9,7 +9,7 @@
 //#ExpectSym:__init_array_end
 
 //#AbstractConfig:base
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#Config:1:base
 //#DiffEnabled:false
 //#RunEnabled:false

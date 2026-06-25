@@ -3,7 +3,7 @@
 
 //#Object:runtime.c
 //#LinkArgs:-z noexecstack
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#Arch: x86_64
 
 .section        .rodata.x,"aM",@progbits,16

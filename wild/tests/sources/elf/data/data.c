@@ -1,5 +1,5 @@
 //#Object:runtime.c
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#ExpectSym:_start section=".text"
 //#TestUpdateInPlace:true
 //#DiffMatchAny:true

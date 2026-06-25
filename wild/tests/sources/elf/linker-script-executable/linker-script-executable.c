@@ -13,7 +13,7 @@
 //#LinkerScript:linker-script-check-start.ld
 //#Object:runtime.c
 // .text is the first section in ld, so this test wouldn't work with ld.
-//#SkipLinker:ld
+//#ReferenceLinkers:
 
 #include <stddef.h>
 

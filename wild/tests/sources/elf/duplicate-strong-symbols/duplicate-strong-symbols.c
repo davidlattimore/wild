@@ -1,5 +1,5 @@
 //#Config:dup
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#Object:duplicate_strong_symbols2.c
 //#ExpectError:Duplicate symbols
 
@@ -18,7 +18,7 @@
 //#Compiler:clang
 //#LinkerDriver:clang
 //#LinkArgs:-nostdlib -Wl,-znow -flto
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#Object:duplicate_strong_symbols2.c:-flto
 //#ExpectError:Duplicate symbols
 

@@ -3,7 +3,7 @@
 // of tests makes sure we keep the alignment.
 
 //#AbstractConfig:default
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#DiffIgnore:section.relro_padding
 
 // `-no-pie` should override `-shared`, and `-pie --dynamic-linker ..` should result in dynamic PIE.
@@ -35,7 +35,7 @@
 //#Object:runtime.c
 //#Shared:empty.c
 //#Mode:unspecified
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 
 // Setting dynamic linker doesn't change output kind for non-PIE. LLD sets requested interpreter,
 // but GNU ld doesn't. We follow GNU ld this time.
@@ -51,8 +51,7 @@
 //#Config:pie-default-dynamic-linker:default
 //#LinkArgs:-z now -pie
 //#Object:runtime.c
-//#EnableLinker:lld
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 //#Mode:unspecified
 
 #include "../common/runtime.h"

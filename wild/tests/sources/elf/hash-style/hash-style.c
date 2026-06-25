@@ -1,8 +1,7 @@
 //#AbstractConfig:default
 //#Object:runtime.c
 //#Mode:dynamic
-//#EnableLinker:lld
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 //#RunEnabled:false
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT

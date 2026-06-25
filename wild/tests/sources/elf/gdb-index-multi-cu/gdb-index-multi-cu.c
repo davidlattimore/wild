@@ -5,7 +5,7 @@
 //#CompArgs:-g -ggnu-pubnames -ffunction-sections
 //#Object:runtime.c
 //#Relocatable:multi-cu-a.c,multi-cu-b.c
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#LinkArgs:--gdb-index
 //#ExpectSection:.gdb_index
 // 4 CU indices expected: this file, runtime.c, multi-cu-a.c, and multi-cu-b.c.

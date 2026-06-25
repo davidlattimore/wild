@@ -1,7 +1,7 @@
 //#AbstractConfig:default
 //#RunEnabled:false
 //#LinkArgs:-shared
-//#EnableLinker: lld
+//#ReferenceLinkers:bfd,lld
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
 
 //#Config:regions:default
@@ -15,20 +15,20 @@
 
 //#Config:region-redefine:default
 // GNU ld only prints a warning.
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 //#LinkerScript:linker-script-region.ld
 //#LinkerScript:linker-script-region-redefine.ld
 //#ExpectError:region 'ROM' already defined
 
 //#Config:region-missing:default
 // GNU ld only prints a warning.
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 //#LinkerScript:linker-script-region-missing.ld
 //#ExpectError:(?i)memory region 'FLASH' not declared
 
 //#Config:region-overflow:default
 // lld gives a similar error, but with a different message.
-//#SkipLinker:lld
+//#ReferenceLinkers:bfd
 //#LinkerScript:linker-script-region-overflow.ld
 //#ExpectError:(?i)region .FLASH' overflowed by 1 byte
 

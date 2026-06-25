@@ -7,8 +7,7 @@
 //#NoProgramHeader:GNU_RELRO
 //#DoesNotContain:relro
 // ld merges the first two LOAD segments with --nmagic, while wild and LLD do not
-//#SkipLinker:ld
-//#EnableLinker:lld
+//#ReferenceLinkers:lld
 //#RunEnabled:false
 //#ExpectLoadAlignment:0x8 0x20
 

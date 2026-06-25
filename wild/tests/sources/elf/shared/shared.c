@@ -34,16 +34,14 @@
 //#Config:symbolic-non-weak:default
 //#SkipArch: ppc64le
 //#LinkArgs:-shared -z now -Bsymbolic-non-weak
-//#SkipLinker:ld
-//#EnableLinker:lld
+//#ReferenceLinkers:lld
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:section.relro_padding
 
 //#Config:symbolic-non-weak-functions:default
 //#SkipArch: ppc64le
 //#LinkArgs:-shared -z now -Bsymbolic-non-weak-functions
-//#SkipLinker:ld
-//#EnableLinker:lld
+//#ReferenceLinkers:lld
 //#DiffIgnore:section.relro_padding
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:dynsym.baz.section

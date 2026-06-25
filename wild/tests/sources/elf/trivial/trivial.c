@@ -1,7 +1,7 @@
 //#Object:runtime.c
 //#ExpectSym:_start section=".text"
 //#ExpectSym:exit_syscall section=".text"
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#TestUpdateInPlace:true
 
 #include "../common/runtime.h"

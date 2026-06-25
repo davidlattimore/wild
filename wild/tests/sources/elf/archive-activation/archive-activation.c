@@ -1,7 +1,7 @@
 //#AbstractConfig:default
 //#CompArgs:-ffunction-sections
 //#DiffIgnore:section.relro_padding
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 
 //#Config:regular:default
 //#Archive:archive_activation0.c
@@ -17,7 +17,7 @@
 
 //#Config:lib:default
 // GNU ld doesn't yet support --start-lib
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 //#LinkArgs:--start-lib
 //#Object:archive_activation0.c
 //#Object:archive_activation1.c
@@ -26,7 +26,7 @@
 //#DiffIgnore:segment.GNU_STACK.alignment
 
 //#Config:bsd:default
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 //#BsdArchive:archive_activation0.c
 //#BsdArchive:archive_activation1.c
 //#BsdArchive:runtime.c
@@ -41,7 +41,7 @@
 //#Config:lto-gcc:lto
 //#Compiler:gcc
 //#LinkerDriver:gcc
-//#SkipLinker:lld
+//#ReferenceLinkers:bfd
 //#CompArgs:-flto -DNO_GC_UNDEF_CHECK
 //#Archive:archive_activation0.c
 //#Archive:archive_activation1.c
@@ -53,8 +53,7 @@
 //#SkipArch: ppc64le
 //#Compiler:clang
 //#LinkerDriver:clang
-//#SkipLinker:ld
-//#EnableLinker:lld
+//#ReferenceLinkers:lld
 //#Archive:archive_activation0.c
 //#Archive:archive_activation1.c
 //#Archive:runtime.c
@@ -64,8 +63,7 @@
 //#SkipArch: ppc64le
 //#Compiler:clang
 //#LinkerDriver:clang
-//#SkipLinker:ld
-//#EnableLinker:lld
+//#ReferenceLinkers:lld
 //#ThinArchive:archive_activation0.c
 //#ThinArchive:archive_activation1.c
 //#ThinArchive:runtime.c

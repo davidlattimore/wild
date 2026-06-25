@@ -3,7 +3,7 @@
 //#Config:strip-all:default
 //#Object:runtime.c
 //#LinkArgs:--strip-all
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#DiffIgnore:file-header.entry
 
 //#Config:single-threaded:default
@@ -28,8 +28,7 @@
 
 //#Config:no-mmap-output
 //#Object:runtime.c
-//#SkipLinker:ld
-//#EnableLinker:lld
+//#ReferenceLinkers:lld
 //#LinkArgs:--no-mmap-output-file
 
 // The later --strip-all flag should override --strip-debug.
@@ -53,7 +52,7 @@
 //#NoSym:runtime_init
 
 //#Config:sym-info
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#Object:runtime.c
 //#LinkArgs:--sym-info=this_function_is_not_used
 //#ExpectMessage:Global name `this_function_is_not_used` refers to: Some\(sym-[0-9]+\)
@@ -63,7 +62,7 @@
 //#ExpectMessage:#[0-9]+ in File #256 \(1/0\) .* \(LOADED\)
 
 //#Config:write-gc-stats:default
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#CompArgs:-ffunction-sections
 //#Object:runtime.c
 //#LinkArgs:--gc-sections --write-gc-stats=$OUT_DIR/gc-stats.txt

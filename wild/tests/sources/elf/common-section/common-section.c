@@ -2,7 +2,7 @@
 //#Object:common_section0.c
 //#Object:common_section1.c
 //#Object:runtime.c
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#DiffMatchAny:true
 
 #include "../common/runtime.h"

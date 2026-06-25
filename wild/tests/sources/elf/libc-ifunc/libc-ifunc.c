@@ -5,7 +5,7 @@
 //#DiffIgnore:section.rodata
 // GNU ld emits an extra IRELATIVE relocation, while LLD and Wild instead point to the PLT entry. So
 // we need to diff against lld.
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#RequiresGlibc:true
 //#DiffMatchAny:true
 

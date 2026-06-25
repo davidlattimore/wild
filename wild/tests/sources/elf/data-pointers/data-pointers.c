@@ -1,10 +1,9 @@
 //#SkipArch: ppc64le
 //#Shared:runtime.c
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#Mode:dynamic
 //#LinkArgs:-z now
 //#Shared:data-pointers-2.c
-//#EnableLinker:lld
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 // GNU ld emits a .got section for the shared object, despite it not being

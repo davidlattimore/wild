@@ -1,5 +1,5 @@
 //#Config:default
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#CompArgs:-fPIC
 //#RunEnabled:false
 //#ExpectError: Symbol foo has undefined version VERSION_XYZ

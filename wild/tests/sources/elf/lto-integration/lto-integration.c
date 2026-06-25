@@ -2,8 +2,7 @@
 //#SkipArch: ppc64le
 //#RequiresLinkerPlugin:true
 //#LinkerDriver:clang
-//#SkipLinker:ld
-//#EnableLinker:lld
+//#ReferenceLinkers:lld
 //#Compiler:clang
 //#CompArgs:-flto
 //#LinkArgs:-flto -Wl,--as-needed,-znow

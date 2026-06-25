@@ -1,5 +1,5 @@
 //#AbstractConfig:default
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#DiffIgnore:.dynamic.DT_RELA*
 //#DiffIgnore:file-header.entry
 

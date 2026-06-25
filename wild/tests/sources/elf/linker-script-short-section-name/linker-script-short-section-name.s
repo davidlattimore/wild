@@ -2,7 +2,7 @@
 //#LinkerScript:linker-script-short-section-name.ld
 //#Mode:static
 //#RunEnabled:false
-//#SkipLinker:ld
+//#ReferenceLinkers:
 
 .section foo
 .long 0

@@ -3,7 +3,7 @@
 //#Arch: x86_64
 
 //#Config:error:default
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#ExpectError:requires executable stack, but -z execstack is not specified
 
 //#Config:allowed:default

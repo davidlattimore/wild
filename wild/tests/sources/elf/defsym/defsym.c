@@ -7,7 +7,7 @@
 
 //#Config:symbol_alias_lto:symbol_alias
 //#RequiresLinkerPlugin:true
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#LinkerDriver:gcc
 //#CompArgs:-flto
 //#LinkArgs:-flto -nostdlib -Wl,--defsym=bar=foo
@@ -30,7 +30,7 @@
 
 //#Config:not_exist:default
 //#LinkArgs:--defsym=bar=notexist
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#ExpectError:Symbol 'notexist' referenced by --defsym
 
 int foo(void) { return 0; }

@@ -1,6 +1,6 @@
 /*
 //#Arch: riscv64
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#CompArgs:-march=rv64imafc -mabi=lp64
 //#Object:riscv-attr-conflict-1.s:-march=rv64imac_zfinx -mabi=lp64
 //#ExpectError:'f'.*incompatible.*'zfinx'

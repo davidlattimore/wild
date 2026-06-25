@@ -1,5 +1,5 @@
 //#AbstractConfig:default
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#DiffEnabled:false
 //#Mode:dynamic
 //#RunEnabled:false

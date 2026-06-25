@@ -4,7 +4,7 @@
 
 //#Config:lto:default
 //#RequiresLinkerPlugin:true
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#LinkerDriver:gcc
 //#CompArgs:-flto
 //#LinkArgs:-flto -nostdlib -znow

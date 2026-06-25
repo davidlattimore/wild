@@ -22,8 +22,7 @@
 //#ExpectDynamic:DT_RELRSZ
 //#ExpectDynamic:DT_RELRENT
 // GNU ld ignores `-z pack-relative-relocs` on RISC-V.
-//#EnableLinker:lld
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 
 //#Config:pack-dyn-relocs-relr:default
 //#LinkArgs:-pie -z now --pack-dyn-relocs=relr -z nopack-relative-relocs
@@ -31,8 +30,7 @@
 //#ExpectDynamic:DT_RELRSZ
 //#ExpectDynamic:DT_RELRENT
 // GNU ld doesn't support `--pack-dyn-relocs`.
-//#EnableLinker:lld
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 
 //#Config:android-relr:default
 //#LinkArgs:-pie -z now --pack-dyn-relocs=relr --use-android-relr-tags
@@ -44,8 +42,7 @@
 //#NoDynamic:DT_RELRENT
 //#RunEnabled:false
 // GNU ld doesn't support `--use-android-relr-tags`.
-//#EnableLinker:lld
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 
 #include "../common/init.h"
 #include "../common/runtime.h"

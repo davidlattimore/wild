@@ -1,8 +1,7 @@
 //#CompArgs:-fPIC
 //#RunEnabled:false
 // GNU ld discards foo. Wild, like lld doesn't.
-//#EnableLinker:lld
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 //#LinkArgs:--shared -znow ./versioned-script-symbol.map
 //#ExpectSym:mysql_affected_rows@libmysqlclient_18
 //#DiffIgnore:section.got

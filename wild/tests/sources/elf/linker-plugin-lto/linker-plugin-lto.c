@@ -36,7 +36,7 @@
 //#Compiler:clang
 //#CompArgs:-flto
 //#LinkerDriver:gcc
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#LinkArgs:-Wl,-znow -flto -nostdlib
 //#Object:runtime.c
 //#Object:linker-plugin-lto-2.c
@@ -46,7 +46,7 @@
 //#Compiler:gcc
 //#CompArgs:-flto
 //#LinkerDriver:clang
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#LinkArgs:-Wl,-znow -flto -nostdlib
 //#Object:runtime.c
 //#Object:linker-plugin-lto-2.c
@@ -59,7 +59,7 @@
 //#Compiler:clang
 //#CompArgs:-flto
 //#LinkerDriver:clang
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#LinkArgs:-Wl,-znow -nostdlib
 //#Object:runtime.c
 //#Object:linker-plugin-lto-2.c
@@ -71,7 +71,7 @@
 //#Object:runtime.c
 //#Archive:empty.c:-flto
 //#Object:linker-plugin-lto-2.c
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#LinkerDriver:clang
 //#LinkArgs:-flto -nostdlib
 //#DiffEnabled:false
@@ -90,7 +90,7 @@
 //#Object:runtime.c
 //#Object:linker-plugin-lto-2.c
 //#Archive:unclaimed.c:-flto
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#LinkerDriver:gcc
 //#LinkArgs:-flto -nostdlib
 
@@ -98,7 +98,7 @@
 //#Config:clang-format-string:error
 //#Compiler:clang
 //#LinkerDriver:clang
-//#SkipLinker:ld
+//#ReferenceLinkers:
 //#LinkArgs:-Wl,-znow -flto -nostdlib -Wl,-plugin-opt=jobs=foo
 //#Archive:empty.c:-flto
 //#ExpectError:Error from linker plugin: Invalid parallelism level: foo

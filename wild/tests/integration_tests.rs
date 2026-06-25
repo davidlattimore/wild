@@ -101,10 +101,13 @@
 //! function must return an integer to indicate status (status != 42 is an error). Such run is
 //! currently skipped if the shared library is cross compiled.
 //!
-//! SkipLinker:{linker-name} Don't link with the specified linker. Mostly useful if testing a flag
-//! that isn't supported by GNU ld.
+//! ReferenceLinkers:{linker-names} List of reference linkers to run this test with.
 //!
-//! EnableLinker:{linker-name} Enables a linker that isn't enabled by default. e.g. lld.
+//! SkipLinker:{linker-name} Don't link with the specified linker. Mostly useful if testing a flag
+//! that isn't supported by GNU ld. Deprecated - use ReferenceLinkers instead.
+//!
+//! EnableLinker:{linker-name} Enables a linker that isn't enabled by default. e.g. lld. Deprecated
+//! - use ReferenceLinkers instead.
 //!
 //! Cross:{bool} Defaults to true. Set to false to disable cross-compilation testing for this test.
 //!
@@ -837,6 +840,13 @@ impl Linker {
     fn is_lld(&self) -> bool {
         self.name() == "lld"
     }
+
+    fn gcc_name(&self) -> &str {
+        match self {
+            Linker::Wild => "wild",
+            Linker::ThirdParty(third_party_linker) => third_party_linker.gcc_name,
+        }
+    }
 }
 
 fn wild_path() -> &'static Path {
@@ -1095,6 +1105,7 @@ struct Config {
     compiler_args: ArgumentSet,
     compiler_so_args: ArgumentSet,
     diff_ignore: Vec<String>,
+    reference_linkers: Option<Vec<String>>,
     skip_linkers: HashSet<String>,
     enabled_linkers: HashSet<String>,
     cross_enabled: bool,
@@ -1471,6 +1482,14 @@ impl Config {
     }
 
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
+        if let Some(references) = self.reference_linkers.as_ref() {
+            if linker.is_wild() {
+                return true;
+            }
+            return references.iter().any(|n| n == linker.gcc_name());
+        }
+        // TODO: Get rid of skip_linkers and enabled_linkers once we're relatively sure that
+        // in-flight PRs aren't using them.
         if self.skip_linkers.contains(linker.name()) {
             return false;
         }
@@ -1750,6 +1769,7 @@ impl Config {
             compiler_so_args: ArgumentSet::default_for_compiling(),
             wild_extra_linker_args: ArgumentSet::empty(),
             diff_ignore: Default::default(),
+            reference_linkers: None,
             skip_linkers: Default::default(),
             enabled_linkers: Default::default(),
             section_equiv: Default::default(),
@@ -2044,7 +2064,31 @@ fn process_directive(
         "RunDynSym" => {
             config.run_dyn_sym = Some(arg.parse().context("Invalid string for RunDynSym")?)
         }
+        "ReferenceLinkers" => {
+            if !config.skip_linkers.is_empty() || !config.enabled_linkers.is_empty() {
+                bail!("ReferenceLinkers cannot be used together with SkipLinker/EnableLinker");
+            }
+
+            let refs: Vec<String> = arg
+                .split(',')
+                .filter(|n| !n.is_empty())
+                .map(|n| n.to_owned())
+                .collect();
+
+            let available = config.platform.available_linkers()?;
+
+            for r in &refs {
+                if !available.iter().any(|l| l.gcc_name() == r) {
+                    bail!("Unknown linker `{r}`");
+                }
+            }
+
+            config.reference_linkers = Some(refs);
+        }
         "SkipLinker" => {
+            if config.reference_linkers.is_some() {
+                bail!("ReferenceLinkers cannot be used together with SkipLinker/EnableLinker");
+            }
             config.skip_linkers.insert(arg.to_owned());
         }
         "EnableLinker" => {
@@ -5471,6 +5515,7 @@ impl Eq for ErrorMatcher {}
 
 fn available_linkers_for_linux() -> Result<Vec<Linker>> {
     let mut linkers = vec![Linker::ThirdParty(ThirdPartyLinker {
+        // TODO: Rename to "bfd" and get rid of gcc_name.
         name: "ld",
         gcc_name: "bfd",
         path: find_bin(&["ld.bfd", "ld"])?,

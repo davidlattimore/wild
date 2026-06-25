@@ -3,7 +3,7 @@
 
 //#Object:runtime.c
 //#LinkArgs:-z noexecstack
-//#EnableLinker:lld
+//#ReferenceLinkers:bfd,lld
 //#Arch: x86_64
 
 .globl _start

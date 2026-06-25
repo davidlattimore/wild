@@ -22,7 +22,7 @@
 //#CompArgs:-fPIE
 //#LinkArgs:-static-pie -Wl,--gc-sections -Wl,--no-relax
 //#DiffEnabled:false
-//#SkipLinker:ld
+//#ReferenceLinkers:
 // TODO: #874
 //#SkipArch: riscv64,ppc64le
 
@@ -39,7 +39,7 @@
 //#CompArgs:-fPIE
 //#LinkArgs:-static-pie -Wl,--gc-sections -Wl,--no-relax
 //#DiffEnabled:false
-//#SkipLinker:ld
+//#ReferenceLinkers:
 // For some reason, both linkers cannot find: `rcrt1.o`
 //#SkipArch: riscv64,ppc64le
 
