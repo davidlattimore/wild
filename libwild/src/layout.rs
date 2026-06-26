@@ -164,7 +164,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &output_sections,
         &symbol_db.section_part_ids,
     );
-    let num_sorted_sections = script_sorted_sections.len();
 
     group_states.push(GroupState {
         files: vec![FileLayoutState::Epilogue(EpilogueLayoutState::new(
@@ -356,11 +355,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &merged_strings,
     );
 
-    let harvested_sections_registry = assign_addresses_to_sorted_sections(
-        &mut group_states,
-        &starting_mem_offsets_by_group,
-        num_sorted_sections,
-    );
+    let harvested_sections_registry =
+        assign_addresses_to_sorted_sections(&mut group_states, &starting_mem_offsets_by_group);
 
     let mut symbol_resolutions = SymbolResolutions {
         resolutions: Vec::with_capacity(symbol_db.num_symbols()),
@@ -5900,15 +5896,16 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
 fn assign_addresses_to_sorted_sections<P: Platform>(
     group_states: &mut [GroupState<P>],
     starting_mem_offsets_by_group: &[OutputSectionPartMap<u64>],
-    num_sorted_sections: usize,
 ) -> Vec<HarvestedSortedSection> {
-    let mut harvested_sections_registry = Vec::with_capacity(num_sorted_sections);
     let mut epilogue_offsets = starting_mem_offsets_by_group.last().unwrap().clone();
 
     let FileLayoutState::Epilogue(epilogue_state) = &mut group_states.last_mut().unwrap().files[0]
     else {
         unreachable!();
     };
+
+    let mut harvested_sections_registry =
+        Vec::with_capacity(epilogue_state.script_sorted_sections.len());
 
     for sec in &mut epilogue_state.script_sorted_sections {
         let offset = epilogue_offsets.get_mut(sec.part_id);
