@@ -1245,7 +1245,6 @@ fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<SectionPatt
         let name =
             take_while(1.., |b: u8| b != b')' && !b.is_ascii_whitespace()).parse_next(input)?;
         skip_comments_and_whitespace(input)?;
-        // Closing ')'
         ')'.parse_next(input)?;
         skip_comments_and_whitespace(input)?;
 

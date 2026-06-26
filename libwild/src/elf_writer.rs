@@ -4039,7 +4039,7 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
     for harvested in &epilogue.script_sorted_sections {
         let crate::layout::FileLayout::Object(object) = layout.file_layout(harvested.file_id)
         else {
-            continue;
+            unreachable!();
         };
 
         if let SectionSlot::Sorted(sec) = &object.sections[harvested.section_index.0] {

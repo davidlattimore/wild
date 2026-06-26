@@ -356,11 +356,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &merged_strings,
     );
 
-    // At this stage, sections marked for sorting have been harvested but lack concrete memory
-    // addresses. We perform a two-step finalization:
-    // Sort the harvested sections according to the requested criteria.
-    // Linearize them in memory, starting from the base offset of their respective output section
-    // part, and advancing by the size of each section.
     let harvested_sections_registry = assign_addresses_to_sorted_sections(
         &mut group_states,
         &starting_mem_offsets_by_group,
@@ -5836,7 +5831,7 @@ impl<'data, P: Platform> Drop for Layout<'data, P> {
     fn drop(&mut self) {}
 }
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub(crate) struct HarvestedSortedSection {
     pub(crate) file_id: FileId,
     pub(crate) section_index: object::SectionIndex,
@@ -5900,7 +5895,8 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
         .map(|(_, harvested)| harvested)
         .collect()
 }
-// Assigning memory addresses to script sorted sections and returning the finalized registry.
+
+// Assigning memory addresses to script sorted sections and return the finalized registry.
 fn assign_addresses_to_sorted_sections<P: Platform>(
     group_states: &mut [GroupState<P>],
     starting_mem_offsets_by_group: &[OutputSectionPartMap<u64>],
@@ -5909,17 +5905,18 @@ fn assign_addresses_to_sorted_sections<P: Platform>(
     let mut harvested_sections_registry = Vec::with_capacity(num_sorted_sections);
     let mut epilogue_offsets = starting_mem_offsets_by_group.last().unwrap().clone();
 
-    if let FileLayoutState::Epilogue(epilogue_state) =
-        &mut group_states.last_mut().unwrap().files[0]
-    {
-        for sec in &mut epilogue_state.script_sorted_sections {
-            let offset = epilogue_offsets.get_mut(sec.part_id);
-            *offset = sec.alignment.align_up(*offset);
-            sec.mem_offset = *offset;
-            *offset += sec.size;
+    let FileLayoutState::Epilogue(epilogue_state) = &mut group_states.last_mut().unwrap().files[0]
+    else {
+        unreachable!();
+    };
 
-            harvested_sections_registry.push(sec.clone());
-        }
+    for sec in &mut epilogue_state.script_sorted_sections {
+        let offset = epilogue_offsets.get_mut(sec.part_id);
+        *offset = sec.alignment.align_up(*offset);
+        sec.mem_offset = *offset;
+        *offset += sec.size;
+
+        harvested_sections_registry.push(*sec);
     }
 
     harvested_sections_registry.sort_unstable_by_key(|s| (s.file_id, s.section_index.0));

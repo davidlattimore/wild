@@ -12,7 +12,7 @@ SECTIONS
         *(SORT(.text.drop.*))
     }
 
-    /* plz ensure valid alignment for subsequent sections */
+    /* Ensure valid alignment for subsequent sections */
 
     . = 0x410000;
 
