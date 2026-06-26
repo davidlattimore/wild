@@ -597,7 +597,7 @@ fn write_object<'data, A: Arch<Platform = MachO>>(
     for (i, sec) in object.sections.iter().enumerate() {
         match sec {
             SectionSlot::Loaded(sec) => {
-                write_object_section::<A>(object, layout, sec, object::SectionIndex(i), buffers)?;
+                write_object_section::<A>(object, layout, *sec, object::SectionIndex(i), buffers)?;
             }
             _ => (),
         }
@@ -611,7 +611,7 @@ fn write_object<'data, A: Arch<Platform = MachO>>(
 fn write_object_section<'data, A: Arch<Platform = MachO>>(
     object_layout: &ObjectLayout<'data, MachO>,
     layout: &MachOLayout<'data>,
-    section: &Section,
+    section: Section,
     section_index: object::SectionIndex,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
@@ -683,7 +683,7 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
 fn write_section_raw<'out, 'data>(
     object: &ObjectLayout<'data, MachO>,
     layout: &MachOLayout,
-    sec: &Section,
+    sec: Section,
     section_index: object::SectionIndex,
     buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result<&'out mut [u8]> {

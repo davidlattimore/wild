@@ -1345,7 +1345,6 @@ pub(crate) struct Section {
     /// Size in the output. This starts as the input section size, then may be reduced by
     /// relaxation-induced byte deletions during `scan_relaxations`.
     pub(crate) size: u64,
-    pub(crate) flags: ValueFlags,
 }
 
 #[derive(Debug)]
@@ -2919,17 +2918,14 @@ impl Section {
         _part_id: PartId,
     ) -> Result<Section> {
         let size = object_state.object.section_size(header)?;
-        let section = Section {
-            size,
-            flags: ValueFlags::empty(),
-        };
+        let section = Section { size };
         Ok(section)
     }
 
     // How much space we take up. This is our size rounded up to the next multiple of our
     // alignment, unless we're in a packed section, in which case it's just our size.
     pub(crate) fn capacity<P: Platform>(
-        &self,
+        self,
         part_id: PartId,
         output_sections: &OutputSections<P>,
     ) -> u64 {
@@ -4136,9 +4132,9 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         }
         let output_kind = resources.symbol_db.output_kind;
         for slot in &mut self.sections {
-            if let SectionSlot::Loaded(section) = slot {
+            if let SectionSlot::Loaded(_) = slot {
                 P::allocate_resolution(
-                    section.flags,
+                    ValueFlags::empty(),
                     &mut common.mem_sizes,
                     output_kind,
                     resources.symbol_db.args,

@@ -1474,7 +1474,7 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
                 write_object_section::<A>(
                     object,
                     layout,
-                    sec,
+                    *sec,
                     section_index,
                     buffers,
                     table_writer,
@@ -1482,7 +1482,7 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
                 )?;
             }
             SectionSlot::LoadedDebugInfo(sec) => {
-                write_debug_section::<A>(object, layout, sec, section_index, buffers)?;
+                write_debug_section::<A>(object, layout, *sec, section_index, buffers)?;
             }
             SectionSlot::FrameData(section_index) => {
                 write_eh_frame_data::<A>(object, *section_index, layout, table_writer, trace)?;
@@ -1834,7 +1834,7 @@ fn write_rela_sections<'data>(
 fn write_object_section<'data, A: Arch<Platform = Elf>>(
     object: &ObjectLayout<'data, Elf>,
     layout: &ElfLayout<'data>,
-    section: &Section,
+    section: Section,
     section_index: object::SectionIndex,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
@@ -1865,7 +1865,6 @@ fn write_object_section<'data, A: Arch<Platform = Elf>>(
         return write_section_reversed::<A>(
             object,
             layout,
-            section,
             section_index,
             table_writer,
             trace,
@@ -1905,16 +1904,12 @@ fn write_object_section<'data, A: Arch<Platform = Elf>>(
             object.input
         )
     })?;
-    if section.flags.needs_got() || section.flags.needs_plt() {
-        bail!("Section has GOT or PLT");
-    }
     Ok(())
 }
 
 fn write_section_reversed<'data, A: Arch<Platform = Elf>>(
     object: &ObjectLayout<'data, Elf>,
     layout: &ElfLayout<'data>,
-    section: &Section,
     section_index: object::SectionIndex,
     table_writer: &mut TableWriter<'_, '_>,
     trace: &TraceOutput,
@@ -1976,17 +1971,13 @@ fn write_section_reversed<'data, A: Arch<Platform = Elf>>(
         )
     })?;
 
-    if section.flags.needs_got() || section.flags.needs_plt() {
-        bail!("Section has GOT or PLT");
-    }
-
     Ok(())
 }
 
 fn write_debug_section<'data, A: Arch<Platform = Elf>>(
     object: &ObjectLayout<'data, Elf>,
     layout: &ElfLayout<'data>,
-    section: &Section,
+    section: Section,
     section_index: object::SectionIndex,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
@@ -2025,7 +2016,7 @@ fn write_debug_section<'data, A: Arch<Platform = Elf>>(
 fn write_section_raw<'out, 'data>(
     object: &ObjectLayout<'data, Elf>,
     layout: &ElfLayout,
-    sec: &Section,
+    sec: Section,
     section_index: object::SectionIndex,
     buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result<&'out mut [u8]> {
