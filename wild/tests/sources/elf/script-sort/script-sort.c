@@ -11,9 +11,6 @@ extern int func_a();
 extern int func_b();
 extern int func_c();
 
-#if defined(__x86_64__)
-__attribute__((force_align_arg_pointer))
-#endif
 void _start(void) {
   runtime_init();
 
