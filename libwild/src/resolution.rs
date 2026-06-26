@@ -700,7 +700,7 @@ pub(crate) enum SectionSlot {
 
     /// As for `Loaded`, but responsibility for allocating and writing the section is held by the
     /// epilogue due to being part of a sorted section.
-    Sorted(crate::layout::Section),
+    Sorted(crate::layout::SortedSection),
 
     /// The section contains frame data, e.g. .eh_frame or equivalent.
     FrameData(object::SectionIndex),
