@@ -25,6 +25,7 @@ pub struct MachOArgs {
     pub(crate) sysroot: Option<Box<Path>>,
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) plugin_path: Option<String>,
+    pub(crate) dead_strip_dylibs: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +86,7 @@ impl Default for MachOArgs {
             sysroot: None,
             lib_search_path: Vec::new(),
             plugin_path: None,
+            dead_strip_dylibs: false,
         }
     }
 }
@@ -290,6 +292,15 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
             });
             Ok(())
         });
+
+    parser
+        .declare()
+        .long("dead_strip_dylibs")
+        .execute(|args, _modifier_stack| {
+            args.dead_strip_dylibs = true;
+            Ok(())
+        });
+
     // The option declaration cannot be moved to declare_common_args as other platforms
     // use `prefix("o")`.
     parser

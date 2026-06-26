@@ -37,6 +37,7 @@ use crate::part_id;
 use crate::platform;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
+use crate::resolution;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::Visibility;
 use crate::value_flags::ValueFlags;
@@ -1389,6 +1390,16 @@ impl platform::Platform for MachO {
         }
     }
 
+    fn new_stub_library_layout_state_ext<'data>(
+        _stub: &resolution::ResolvedStubLibrary<'data>,
+        args: &Self::Args,
+    ) -> Self::StubLibraryLayoutStateExt {
+        StubLibraryLayoutStateExt {
+            imported_symbols: Default::default(),
+            loaded: !args.dead_strip_dylibs,
+        }
+    }
+
     fn load_stub_library_symbol<'data>(
         state: &mut StubLibraryLayoutState<Self>,
         symbol_id: SymbolId,
@@ -1683,7 +1694,7 @@ pub(crate) struct EpilogueLayoutExt {
     imported_symbols: Vec<SymbolId>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct StubLibraryLayoutStateExt {
     imported_symbols: Vec<SymbolId>,
     loaded: bool,

@@ -31,6 +31,7 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::part_id::PartId;
 use crate::program_segments::ProgramSegments;
+use crate::resolution;
 use crate::resolution::LoadedMetrics;
 use crate::resolution::Resolver;
 use crate::resolution::UnloadedSection;
@@ -256,7 +257,7 @@ pub(crate) trait Platform:
     type EpilogueLayoutExt: Send + Sync + 'static;
     type GroupLayoutExt: std::fmt::Debug + Send + Sync + 'static;
     type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
-    type StubLibraryLayoutStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
+    type StubLibraryLayoutStateExt: std::fmt::Debug + Send + Sync + 'static;
     type StubLibraryLayoutExt: std::fmt::Debug + Send + Sync + 'static;
     type ArchIdentifier: Send + Sync + 'static;
     type Args: Args;
@@ -649,6 +650,13 @@ pub(crate) trait Platform:
         _args: &Self::Args,
     ) -> Result {
         Ok(())
+    }
+
+    fn new_stub_library_layout_state_ext<'data>(
+        _stub: &resolution::ResolvedStubLibrary<'data>,
+        _args: &Self::Args,
+    ) -> Self::StubLibraryLayoutStateExt {
+        unimplemented!()
     }
 
     fn load_stub_library_symbol(

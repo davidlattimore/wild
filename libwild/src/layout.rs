@@ -4553,12 +4553,12 @@ impl<P: Platform> ResolutionWriter<'_, '_, P> {
 }
 
 impl<'data, P: Platform> StubLibraryLayoutState<'data, P> {
-    fn new(stub: &resolution::ResolvedStubLibrary<'data>) -> Self {
+    fn new(stub: &resolution::ResolvedStubLibrary<'data>, args: &P::Args) -> Self {
         Self {
             input: stub.input,
             file_id: stub.file_id,
             symbol_id_range: stub.symbol_id_range,
-            format_specific: Default::default(),
+            format_specific: P::new_stub_library_layout_state_ext(stub, args),
         }
     }
 
@@ -4597,7 +4597,7 @@ impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
             resolution::ResolvedFile::Object(s) => new_object_layout_state(s),
             resolution::ResolvedFile::Dynamic(s) => new_dynamic_object_layout_state(&s),
             resolution::ResolvedFile::StubLibrary(s) => {
-                FileLayoutState::StubLibrary(StubLibraryLayoutState::new(&s))
+                FileLayoutState::StubLibrary(StubLibraryLayoutState::new(&s, args))
             }
             resolution::ResolvedFile::Prelude(s) => {
                 FileLayoutState::Prelude(PreludeLayoutState::new(s, args))
