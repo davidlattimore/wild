@@ -159,7 +159,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
     let mut dynamic_symbol_definitions =
         merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
-    let script_sorted_sections = harvest_and_sort_script_sections(
+
+    let mut script_sorted_sections = harvest_and_sort_script_sections(
         &mut group_states,
         &output_sections,
         &symbol_db.section_part_ids,
@@ -170,7 +171,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
             symbol_db.args,
             symbol_db.output_kind,
             &mut dynamic_symbol_definitions,
-            script_sorted_sections,
             &group_states,
         ))],
         queue: LocalWorkQueue::new(epilogue_file_id.group()),
@@ -186,6 +186,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         symbol_db: &symbol_db,
         merged_strings: &merged_strings,
         format_specific: &finalise_sizes_ext,
+        script_sorted_sections: &script_sorted_sections,
     };
 
     finalise_all_sizes(
@@ -355,7 +356,11 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &merged_strings,
     );
 
-    assign_addresses_to_sorted_sections(&mut group_states, &starting_mem_offsets_by_group);
+    assign_addresses_to_sorted_sections(
+        &mut group_states,
+        &starting_mem_offsets_by_group,
+        &mut script_sorted_sections,
+    );
 
     let mut symbol_resolutions = SymbolResolutions {
         resolutions: Vec::with_capacity(symbol_db.num_symbols()),
@@ -386,6 +391,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         format_specific: &finalise_sizes_ext,
         thunk_blocks: &thunk_blocks,
         thunk_block_addresses: &thunk_block_addresses_out,
+        script_sorted_sections: &script_sorted_sections,
     };
 
     let group_layouts = compute_symbols_and_layouts(
@@ -460,6 +466,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         thunk_block_addresses,
         compressed_debug_sections: OutputSectionMap::with_size(num_sections),
         gdb_index_data,
+        script_sorted_sections,
     };
 
     P::maybe_compress_debug_sections::<A>(&mut layout)?;
@@ -474,6 +481,7 @@ pub(crate) struct FinaliseSizesResources<'data, 'scope, P: Platform> {
     pub(crate) symbol_db: &'scope SymbolDb<'data, P>,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     pub(crate) format_specific: &'scope P::FinaliseSizesExt<'data>,
+    script_sorted_sections: &'scope [InputSortedSection],
 }
 
 /// Update resolutions for symbol redirects.
@@ -721,6 +729,7 @@ pub struct Layout<'data, P: Platform> {
 
     pub(crate) compressed_debug_sections: OutputSectionMap<Option<CompressedSection>>,
     pub(crate) gdb_index_data: Option<P::GdbIndexScanResult<'data>>,
+    pub(crate) script_sorted_sections: Vec<InputSortedSection>,
 }
 
 #[derive(Debug, Default)]
@@ -837,7 +846,6 @@ pub(crate) struct SyntheticSymbolsLayoutState<'data, P: Platform> {
 
 pub(crate) struct EpilogueLayoutState<P: Platform> {
     format_specific: P::EpilogueLayoutExt,
-    pub(crate) script_sorted_sections: Vec<HarvestedSortedSection>,
 }
 
 #[derive(Debug)]
@@ -870,7 +878,6 @@ pub(crate) struct SyntheticSymbolsLayout<'data, P: Platform> {
 pub(crate) struct EpilogueLayout<P: Platform> {
     pub(crate) format_specific: P::EpilogueLayoutExt,
     pub(crate) dynsym_start_index: u32,
-    pub(crate) script_sorted_sections: Vec<HarvestedSortedSection>,
 }
 
 #[derive(Debug)]
@@ -1441,6 +1448,7 @@ pub(crate) struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
     dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data, P>>,
     segment_layouts: &'scope SegmentLayouts,
     program_segments: &'scope ProgramSegments<P::ProgramSegmentDef>,
+    script_sorted_sections: &'scope [InputSortedSection],
     pub(crate) format_specific: &'scope P::FinaliseSizesExt<'data>,
 
     pub(crate) thunk_blocks: &'scope [crate::thunks::ThunkBlock],
@@ -3773,7 +3781,6 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
         args: &P::Args,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'data, P>],
-        script_sorted_sections: Vec<HarvestedSortedSection>,
         group_states: &[GroupState<'data, P>],
     ) -> Self {
         EpilogueLayoutState {
@@ -3783,7 +3790,6 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
                 dynamic_symbol_definitions,
                 group_states,
             ),
-            script_sorted_sections,
         }
     }
 
@@ -3794,7 +3800,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
         let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
-        for sec in &self.script_sorted_sections {
+        for sec in resources.script_sorted_sections {
             extra_sizes.increment(sec.part_id, sec.size);
         }
         P::apply_late_size_adjustments_epilogue(
@@ -3850,7 +3856,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
             dynsym_start_index,
             resources.dynamic_symbol_definitions,
         )?;
-        for sec in &mut self.script_sorted_sections {
+        for sec in resources.script_sorted_sections {
             let offset = memory_offsets.get_mut(sec.part_id);
             *offset = sec.alignment.align_up(*offset);
             *offset += sec.size;
@@ -3858,7 +3864,6 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
         Ok(EpilogueLayout {
             format_specific: self.format_specific,
             dynsym_start_index,
-            script_sorted_sections: self.script_sorted_sections,
         })
     }
 }
@@ -5823,8 +5828,9 @@ impl<'data, P: Platform> Drop for Layout<'data, P> {
     fn drop(&mut self) {}
 }
 
+/// An input section that needs to be sorted due to a SORT_BY_NAME directive or equivalent.
 #[derive(Copy, Clone, Debug)]
-pub(crate) struct HarvestedSortedSection {
+pub(crate) struct InputSortedSection {
     pub(crate) file_id: FileId,
     pub(crate) section_index: object::SectionIndex,
     pub(crate) part_id: PartId,
@@ -5836,7 +5842,7 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
     group_states: &mut [GroupState<'data, P>],
     output_sections: &OutputSections<P>,
     section_part_ids: &[PartId],
-) -> Vec<HarvestedSortedSection> {
+) -> Vec<InputSortedSection> {
     timing_phase!("Harvest and sort script sections");
 
     let has_any_sorting = group_states.iter().any(|g| {
@@ -5865,7 +5871,7 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
                             obj.object
                                 .section_name(sorted_section.index)
                                 .unwrap_or_default(),
-                            HarvestedSortedSection {
+                            InputSortedSection {
                                 file_id: obj.file_id,
                                 section_index: sorted_section.index,
                                 part_id,
@@ -5889,17 +5895,11 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
 fn assign_addresses_to_sorted_sections<P: Platform>(
     group_states: &mut [GroupState<P>],
     starting_mem_offsets_by_group: &[OutputSectionPartMap<u64>],
+    sorted_sections: &mut [InputSortedSection],
 ) {
     let mut epilogue_offsets = starting_mem_offsets_by_group.last().unwrap().clone();
 
-    let FileLayoutState::Epilogue(epilogue_state) = &mut group_states.last_mut().unwrap().files[0]
-    else {
-        unreachable!();
-    };
-
-    let mut sorted_sections = core::mem::take(&mut epilogue_state.script_sorted_sections);
-
-    for sec in &mut sorted_sections {
+    for sec in sorted_sections {
         let offset = epilogue_offsets.get_mut(sec.part_id);
         *offset = sec.alignment.align_up(*offset);
 
@@ -5916,11 +5916,4 @@ fn assign_addresses_to_sorted_sections<P: Platform>(
         slot.address = *offset;
         *offset += sec.size;
     }
-
-    let FileLayoutState::Epilogue(epilogue_state) = &mut group_states.last_mut().unwrap().files[0]
-    else {
-        unreachable!();
-    };
-
-    epilogue_state.script_sorted_sections = sorted_sections;
 }

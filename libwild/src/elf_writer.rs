@@ -4036,18 +4036,18 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
     let build_id_buffer = buffers.get_mut(part_id::NOTE_GNU_BUILD_ID);
     build_id_buffer.fill(0);
 
-    for harvested in &epilogue.script_sorted_sections {
-        let crate::layout::FileLayout::Object(object) = layout.file_layout(harvested.file_id)
+    for sorted_section in &layout.script_sorted_sections {
+        let crate::layout::FileLayout::Object(object) = layout.file_layout(sorted_section.file_id)
         else {
             unreachable!();
         };
 
-        if let SectionSlot::Sorted(sec) = &object.sections[harvested.section_index.0] {
+        if let SectionSlot::Sorted(sec) = &object.sections[sorted_section.section_index.0] {
             write_object_section::<A>(
                 object,
                 layout,
                 sec.section,
-                harvested.section_index,
+                sorted_section.section_index,
                 buffers,
                 table_writer,
                 trace,
