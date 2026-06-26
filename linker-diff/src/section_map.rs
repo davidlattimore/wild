@@ -219,6 +219,16 @@ impl<'data> IndexedLayout<'data> {
         Ok(index)
     }
 
+    fn is_section_tls(&self, section: &SectionInfo) -> Result<bool> {
+        if let object::File::Elf64(elf_file) = &self.files[section.section_id.file_index].file {
+            let elf_section = elf_file.section_by_index(section.section_id.section_index)?;
+            if let object::SectionFlags::Elf { sh_flags, .. } = elf_section.flags() {
+                return Ok(sh_flags.contains(linker_utils::elf::shf::TLS));
+            }
+        }
+        Ok(false)
+    }
+
     fn validate_no_overlaps(&self) -> Result {
         let mut sections = self
             .files
@@ -234,11 +244,14 @@ impl<'data> IndexedLayout<'data> {
             if let Some(last) = last
                 && section.addresses.start < last.addresses.end
             {
-                bail!(
-                    "{} overlaps with {}",
-                    DisplaySection::new(last, &self.files),
-                    DisplaySection::new(section, &self.files)
-                );
+                // Allow TLS sections to overlap non-TLS sections (disallow TLS-TLS overlap though)
+                if self.is_section_tls(last)? == self.is_section_tls(section)? {
+                    bail!(
+                        "{} overlaps with {}",
+                        DisplaySection::new(last, &self.files),
+                        DisplaySection::new(section, &self.files)
+                    );
+                }
             }
             last = Some(section);
         }

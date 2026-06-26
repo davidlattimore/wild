@@ -1947,22 +1947,9 @@ fn compute_segment_layout<'data, P: Platform>(
                         rec.mem_start = rec.mem_start.min(section_layout.mem_offset);
                         rec.lma_start = rec.lma_start.min(section_layout.lma_offset);
 
-                        // `has_data_in_file` reports that .tbss has data in file, since this makes
-                        // address allocation easier - see comment in `has_data_in_file`. However,
-                        // we don't want .tbss to increase the file-size of the program segment even
-                        // though we do actually have zeros in the file. If we ever change the
-                        // behaviour of `has_data_in_file`, then this can likely be cleaned up.
-                        let section_file_size = if program_segments.is_tls_segment(rec.segment_id)
-                            && section_info.section_attributes.is_no_bits()
-                        {
-                            0
-                        } else {
-                            section_layout.file_size
-                        };
-
                         rec.file_end = rec
                             .file_end
-                            .max(section_layout.file_offset + section_file_size);
+                            .max(section_layout.file_offset + section_layout.file_size);
                         rec.mem_end = rec
                             .mem_end
                             .max(section_layout.mem_offset + section_layout.mem_size);
@@ -5196,6 +5183,13 @@ fn compute_layout_sections<'data, P: Platform>(
 
     let mut records_out = output_sections.new_part_map();
 
+    // TLS sections without data (like .tbss) overlap normal sections in memory.
+    // This is possible because every thread copies the TLS segments (see TLS PHDR)
+    // to construct thread local data. However, uninitialized TLS data is assumed to be zero
+    // and therefore no copy happens. It would be wasteful to reserve that address in the TLS
+    // template, so we don't do it.
+    let mut tls_memsave: Option<u64> = None;
+
     for event in output_order {
         match event {
             OrderEvent::SetLocation(expr, loc, idx) => {
@@ -5262,6 +5256,19 @@ fn compute_layout_sections<'data, P: Platform>(
             OrderEvent::Section(section_id) => {
                 let section_info = output_sections.output_info(section_id);
                 let section_offset = pending_location.take();
+
+                let is_tls_nobits = section_info.section_attributes.is_tls()
+                    && section_info.section_attributes.is_no_bits();
+                if is_tls_nobits {
+                    // Save our current mem_offset as we enter our first nobits TLS section
+                    if tls_memsave.is_none() {
+                        tls_memsave = Some(mem_offset);
+                    }
+                } else if let Some(tls_memsave) = tls_memsave.take() {
+                    // Restore offsets when exiting nobits TLS sections
+                    mem_offset = tls_memsave;
+                }
+
                 let part_id_range = section_id.part_id_range();
                 let max_alignment = sizes.max_alignment(part_id_range.clone(), output_sections);
                 let region = section_info

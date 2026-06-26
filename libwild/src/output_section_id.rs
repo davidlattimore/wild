@@ -970,12 +970,8 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     }
 
     pub(crate) fn has_data_in_file(&self, section_id: OutputSectionId) -> bool {
-        // Note, we treat TLS sections (e.g. .tbss) as having data in the file, even if they're
-        // NOBITS. This allows us to more easily place .tbss before other PROGBITS sections.
-        // Effectively .tbss is NOBITS, but we put zero padding of the same size in the file. GNU ld
-        // doesn't do this. It instead puts .tbss and the subsequent section at the same address.
         let attributes = self.output_info(section_id).section_attributes;
-        !attributes.is_no_bits() || attributes.is_tls()
+        !attributes.is_no_bits()
     }
 
     pub(crate) fn output_info(&self, id: OutputSectionId) -> &SectionOutputInfo<'data, P> {

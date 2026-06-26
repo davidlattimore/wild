@@ -17,7 +17,7 @@
 // It is probably best to ignore that difference.
 //#DiffIgnore:rel.R_X86_64_32.R_X86_64_PC32
 //#DiffMatchAny:true
-//#ExpectProgramHeader:TLS memsz=0x1000,filesz=0x800
+//#ExpectProgramHeader:TLS mem-size=0x1000,file-size=0x800
 
 extern __thread char tbss_a[1024];
 extern __thread char tcustom_a[1024];
