@@ -111,6 +111,9 @@ const LINKER_STACK_POINTER: u32 = 66576;
 /// `i32.const` body for [`LINKER_STACK_POINTER`] without the trailing `end` opcode.
 const LINKER_STACK_POINTER_INIT_EXPR: &[u8] = &[0x41, 0x90, 0x88, 0x04];
 
+/// Sentinel in `global_indices` for an absorbed `env.__stack_pointer` import.
+const LINKER_STACK_POINTER_INDEX_PLACEHOLDER: u32 = u32::MAX;
+
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
     #[debug(skip)]
@@ -2170,6 +2173,12 @@ impl<'data> WasmObjectLayoutInput<'data> {
         for (i, import) in self.global_imports.iter().enumerate() {
             match resolutions.global_resolutions[i] {
                 ImportResolution::Unresolved => {
+                    if is_linker_stack_pointer_import(import) {
+                        index_map
+                            .global_indices
+                            .push(LINKER_STACK_POINTER_INDEX_PLACEHOLDER);
+                        continue;
+                    }
                     let output_global_index = index_bases
                         .global_import_base
                         .checked_add(unresolved_global_count)
@@ -2442,6 +2451,29 @@ fn any_object_needs_linker_memory(inputs: &[WasmObjectLayoutInput<'_>]) -> bool 
     inputs.iter().any(object_needs_linker_memory)
 }
 
+fn is_linker_stack_pointer_import(import: &WasmGlobalImport<'_>) -> bool {
+    import.name == "__stack_pointer"
+}
+
+fn object_needs_linker_stack_pointer(input: &WasmObjectLayoutInput<'_>) -> bool {
+    input
+        .global_imports
+        .iter()
+        .any(is_linker_stack_pointer_import)
+}
+
+fn any_object_needs_linker_stack_pointer(inputs: &[WasmObjectLayoutInput<'_>]) -> bool {
+    inputs.iter().any(object_needs_linker_stack_pointer)
+}
+
+fn count_absorbed_stack_pointer_imports(input: &WasmObjectLayoutInput<'_>) -> u32 {
+    input
+        .global_imports
+        .iter()
+        .filter(|import| is_linker_stack_pointer_import(import))
+        .count() as u32
+}
+
 fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>]) -> MemoryType {
     let mut initial = 2u64;
     for input in inputs {
@@ -2480,7 +2512,11 @@ fn prepend_linker_stack_pointer_global<'data>(
     globals.insert(0, linker_stack_pointer_global());
     for index_map in object_index_maps {
         for index in &mut index_map.global_indices {
-            *index = index.saturating_add(1);
+            if *index == LINKER_STACK_POINTER_INDEX_PLACEHOLDER {
+                *index = 0;
+            } else {
+                *index = index.saturating_add(1);
+            }
         }
     }
     for export in exports {
@@ -2595,6 +2631,8 @@ where
         .collect::<Result<Vec<_>>>()?;
 
     let linker_memory = any_object_needs_linker_memory(&layout_inputs);
+    let linker_stack_pointer = any_object_needs_linker_stack_pointer(&layout_inputs);
+    let linker_runtime = linker_memory || linker_stack_pointer;
     let mut layout = WasmLayout::default();
     let mut memory_cursor = if linker_memory {
         LINKER_MEMORY_BASE
@@ -2633,6 +2671,8 @@ where
             .memories
             .push(linker_output_memory_type(&layout_inputs));
         ensure_memory_export(&mut layout.exports);
+    }
+    if linker_runtime {
         prepend_linker_stack_pointer_global(
             &mut layout.globals,
             &mut layout.object_index_maps,
@@ -2777,8 +2817,12 @@ fn allocate_wasm_object_index_bases(
         next_function_import_index = next_function_import_index
             .checked_add(resolutions.unresolved_function_count)
             .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+        // `__stack_pointer` imports are absorbed into a linker-defined global.
+        let unresolved_globals = resolutions
+            .unresolved_global_count
+            .saturating_sub(count_absorbed_stack_pointer_imports(input));
         next_global_import_index = next_global_import_index
-            .checked_add(resolutions.unresolved_global_count)
+            .checked_add(unresolved_globals)
             .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
     }
 
