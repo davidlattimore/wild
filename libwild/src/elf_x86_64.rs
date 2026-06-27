@@ -70,7 +70,13 @@ impl crate::platform::Arch for ElfX86_64 {
     fn is_illegal_in_shared_object(r_type: u32) -> bool {
         matches!(
             r_type,
-            object::elf::R_X86_64_32 | object::elf::R_X86_64_32S | object::elf::R_X86_64_PC32
+            object::elf::R_X86_64_32
+                | object::elf::R_X86_64_32S
+                | object::elf::R_X86_64_PC32
+                | object::elf::R_X86_64_8
+                | object::elf::R_X86_64_16
+                | object::elf::R_X86_64_PC8
+                | object::elf::R_X86_64_PC16
         )
     }
 
