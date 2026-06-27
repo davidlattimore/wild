@@ -1,5 +1,3 @@
-
-
 int value = 42;
 int* ptr = &value;
 
