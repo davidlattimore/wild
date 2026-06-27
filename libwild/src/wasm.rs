@@ -2032,10 +2032,6 @@ impl<'data> WasmObjectLayoutInput<'data> {
         if file.standard_section_index[section_id::START as usize].is_some() {
             unsupported_output.push("start");
         }
-        if file.standard_section_index[section_id::DATA_COUNT as usize].is_some() {
-            unsupported_output.push("data_count");
-        }
-
         let data_segments = file.data_segments()?;
         for segment in &data_segments {
             if let DataKind::Passive = segment.kind {
@@ -2592,14 +2588,17 @@ where
     Ok(layout)
 }
 
-fn is_supported_data_relocation(ty: u8) -> bool {
+fn is_memory_addr_relocation(ty: u8) -> bool {
     matches!(
         ty,
         reloc_type::MEMORY_ADDR_LEB
             | reloc_type::MEMORY_ADDR_SLEB
             | reloc_type::MEMORY_ADDR_I32
-            | reloc_type::FUNCTION_INDEX_I32
     )
+}
+
+fn is_supported_data_relocation(ty: u8) -> bool {
+    is_memory_addr_relocation(ty) || ty == reloc_type::FUNCTION_INDEX_I32
 }
 
 fn data_relocations_are_supported(relocs: &[WasmRelocation]) -> bool {
@@ -2616,16 +2615,14 @@ pub(crate) fn reloc_value_with_addend(base: u32, addend: i64) -> Result<u32> {
 }
 
 fn data_symbol_memory_address(
-    object_data_layouts: &[WasmObjectDataLayout<'_>],
-    obj_idx: usize,
+    object_data_layout: &WasmObjectDataLayout<'_>,
     sym: &WasmSymbol,
 ) -> Result<u32> {
     ensure!(
         sym.kind == WasmSymbolKind::Data,
         "memory address relocation references non-data symbol"
     );
-    let object_layout = &object_data_layouts[obj_idx];
-    let segment = object_layout
+    let segment = object_data_layout
         .segments
         .iter()
         .find(|segment| segment.segment_index == sym.index)
@@ -2676,7 +2673,7 @@ fn compute_data_addresses(
                 (obj_idx, *sym)
             };
             data_addresses[sym_idx] =
-                data_symbol_memory_address(object_data_layouts, def_obj_idx, &def_sym)?;
+                data_symbol_memory_address(&object_data_layouts[def_obj_idx], &def_sym)?;
         }
         index_map.data_addresses = data_addresses;
     }
