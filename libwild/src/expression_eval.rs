@@ -37,6 +37,7 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
     resolutions: &[Option<Resolution<P>>],
     sizeof_headers: u64,
     memory_regions: &HashMap<&[u8], layout::MemoryRegion>,
+    resolved_location_counters: &[(u64, Option<u64>)],
 ) -> Result {
     for group in &symbol_db.groups {
         let Group::LinkerScripts(scripts) = group else {
@@ -54,6 +55,7 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
                     memory_regions,
                     symbol_db,
                     sizeof_headers,
+                    resolved_location_counters,
                     &|name| {
                         let Some(target_symbol_id) =
                             symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
@@ -84,12 +86,13 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
 
 pub(crate) fn evaluate_expression<'data, P: Platform>(
     expr: &Expression<'data>,
-    expr_loc: &SymbolLoc<'data>,
+    expr_loc: &SymbolLoc,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections<'data, P>,
     memory_regions: &HashMap<&[u8], layout::MemoryRegion>,
     symbol_db: &SymbolDb<'data, P>,
     sizeof_headers: u64,
+    resolved_location_counters: &[(u64, Option<u64>)],
     symbol_resolution_callback: &dyn Fn(&[u8]) -> Result<u64>,
 ) -> Result<u64> {
     macro_rules! eval {
@@ -102,6 +105,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
                 memory_regions,
                 symbol_db,
                 sizeof_headers,
+                resolved_location_counters,
                 symbol_resolution_callback,
             )
         };
@@ -117,9 +121,19 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
                 Ok(layout.mem_offset + layout.mem_size)
             }
             SymbolLoc::FirstSection | SymbolLoc::None => Ok(0),
-            SymbolLoc::Expression(expr, _) => eval!(expr),
-            SymbolLoc::RelativeExpression(expr, id) => {
-                eval!(expr).map(|x| x + section_layouts.get(*id).mem_offset)
+            SymbolLoc::LocationCounter(idx, section_id) => {
+                let idx = *idx as usize;
+                let entry = resolved_location_counters.get(idx).ok_or_else(|| {
+                    crate::error!(
+                        "location counter index {idx} out of range (len: {})",
+                        resolved_location_counters.len()
+                    )
+                })?;
+                if section_id.is_none() {
+                    Ok(entry.1.unwrap_or(entry.0))
+                } else {
+                    Ok(entry.0)
+                }
             }
         },
 
@@ -368,6 +382,7 @@ mod tests {
                 &HashMap::new(),
                 symbol_db,
                 0,
+                &[],
                 &|_| Ok(1),
             )
         })
@@ -689,6 +704,7 @@ mod tests {
                 file_bytes: b"",
                 memory_regions: Vec::new(),
                 program_headers: Vec::new(),
+                location_counters: Vec::new(),
             },
             symbol_id_range: SymbolIdRange::empty(),
             file_id: FileId::new(0, 0),
@@ -709,8 +725,16 @@ mod tests {
             }]);
             symbol_db.add_group(group);
             assert!(
-                evaluate_assertions::<Elf>(symbol_db, layouts, sections, &[], 0, &HashMap::new())
-                    .is_ok()
+                evaluate_assertions::<Elf>(
+                    symbol_db,
+                    layouts,
+                    sections,
+                    &[],
+                    0,
+                    &HashMap::new(),
+                    &[]
+                )
+                .is_ok()
             );
         });
     }
@@ -724,9 +748,16 @@ mod tests {
                 remainder: b"",
             }]);
             symbol_db.add_group(group);
-            let err =
-                evaluate_assertions::<Elf>(symbol_db, layouts, sections, &[], 0, &HashMap::new())
-                    .unwrap_err();
+            let err = evaluate_assertions::<Elf>(
+                symbol_db,
+                layouts,
+                sections,
+                &[],
+                0,
+                &HashMap::new(),
+                &[],
+            )
+            .unwrap_err();
             assert!(err.to_string().contains("intentional failure"));
         });
     }
@@ -761,6 +792,7 @@ mod tests {
                     &regions,
                     symbol_db,
                     0,
+                    &[],
                     &|_| Ok(0),
                 )
             };

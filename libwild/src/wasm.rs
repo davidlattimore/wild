@@ -3246,8 +3246,7 @@ impl platform::Platform for Wasm {
                 section_attributes: SectionAttributes::default(),
                 kind: d.kind,
                 min_alignment: crate::alignment::MIN,
-                location: None,
-                load_location: None,
+                location_info: None,
                 secondary_order: None,
                 phdr_name: None,
                 region_name: None,
@@ -3487,6 +3486,7 @@ impl platform::Platform for Wasm {
         secondary: &crate::output_section_map::OutputSectionMap<
             Vec<crate::output_section_id::OutputSectionId>,
         >,
+        _location_counters: &[crate::layout_rules::LocationCounter<'data>],
     ) -> (
         crate::output_section_id::OutputOrder<'data>,
         crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
@@ -3498,6 +3498,7 @@ impl platform::Platform for Wasm {
             output_sections,
             secondary,
             false,
+            &[],
         );
 
         builder.add_section(osid::FILE_HEADER);

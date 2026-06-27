@@ -772,6 +772,7 @@ pub(crate) trait Platform:
         output_kind: OutputKind,
         output_sections: &OutputSections<'data, Self>,
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
+        location_counters: &[crate::layout_rules::LocationCounter<'data>],
     ) -> (OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>);
 
     fn build_custom_output_order_and_program_segments<'data>(
@@ -781,12 +782,14 @@ pub(crate) trait Platform:
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
         _linker_scripts: &[&SequencedLinkerScript<'data, Self>],
         _phdr_map: &mut hashbrown::HashMap<&[u8], Vec<OutputSectionId>>,
+        location_counters: &[crate::layout_rules::LocationCounter<'data>],
     ) -> Result<(OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>)> {
         Ok(Self::build_output_order_and_program_segments(
             custom,
             output_kind,
             output_sections,
             secondary,
+            location_counters,
         ))
     }
 

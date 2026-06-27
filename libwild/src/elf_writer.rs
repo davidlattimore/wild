@@ -4504,9 +4504,7 @@ fn get_defsym_attributes(
         }
     } else {
         let shndx = match redirect.loc {
-            SymbolLoc::SectionStart(os)
-            | SymbolLoc::SectionEnd(os)
-            | SymbolLoc::RelativeExpression(_, os) => {
+            SymbolLoc::SectionStart(os) | SymbolLoc::SectionEnd(os) => {
                 let os = layout.output_sections.primary_output_section(os);
                 layout
                     .output_sections
@@ -4514,8 +4512,7 @@ fn get_defsym_attributes(
                     .unwrap_or(0)
             }
             SymbolLoc::FirstSection => 1,
-            SymbolLoc::None => return Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE)),
-            SymbolLoc::Expression(_, os) => {
+            SymbolLoc::LocationCounter(_, os) => {
                 if let Some(os) = os {
                     let os = layout.output_sections.primary_output_section(os);
                     layout
@@ -4526,6 +4523,7 @@ fn get_defsym_attributes(
                     1
                 }
             }
+            SymbolLoc::None => return Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE)),
         };
         Ok((SymbolSection::Index(shndx), object::elf::STT_NOTYPE))
     }

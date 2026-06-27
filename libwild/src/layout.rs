@@ -215,8 +215,13 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         .flatten()
         .collect();
 
+    let mut location_counters = Vec::new();
+    for script in &linker_scripts {
+        location_counters.extend(script.parsed.location_counters.iter().cloned());
+    }
+
     let (output_order, program_segments) =
-        output_sections.output_order(symbol_db.output_kind, &linker_scripts)?;
+        output_sections.output_order(symbol_db.output_kind, &linker_scripts, &location_counters)?;
 
     tracing::trace!(
         "Output order:\n{}",
@@ -281,15 +286,16 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         unreachable!();
     };
 
-    let (mut section_part_layouts, mut section_layouts) = layout_section::<A::Platform>(
-        &section_part_sizes,
-        &output_sections,
-        &program_segments,
-        &output_order,
-        &symbol_db,
-        &mut memory_regions,
-        sizeof_headers,
-    )?;
+    let (mut section_part_layouts, mut section_layouts, mut resolved_location_counters) =
+        compute_layout_sections::<A::Platform>(
+            &section_part_sizes,
+            &output_sections,
+            &program_segments,
+            &output_order,
+            &symbol_db,
+            &mut memory_regions,
+            sizeof_headers,
+        )?;
 
     if symbol_db.args.should_relax() && A::supports_size_reduction_relaxations() {
         perform_iterative_relaxation::<A>(
@@ -304,6 +310,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
             &per_symbol_flags,
             &mut memory_regions,
             sizeof_headers,
+            &mut resolved_location_counters,
         )?;
     }
 
@@ -419,6 +426,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &section_layouts,
         sizeof_headers,
         &memory_regions,
+        &resolved_location_counters,
     )?;
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, &symbol_db)?;
 
@@ -430,6 +438,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &symbol_resolutions.resolutions,
         sizeof_headers,
         &memory_regions,
+        &resolved_location_counters,
     )?;
 
     let thunk_block_addresses = thunk_block_addresses_out
@@ -492,6 +501,7 @@ fn update_redirect_resolutions<'data, P: Platform>(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     sizeof_headers: u64,
     memory_regions: &HashMap<&[u8], MemoryRegion>,
+    resolved_location_counters: &[(u64, Option<u64>)],
 ) -> Result {
     verbose_timing_phase!("Update symdef resolutions");
 
@@ -510,6 +520,7 @@ fn update_redirect_resolutions<'data, P: Platform>(
                         section_layouts,
                         memory_regions,
                         sizeof_headers,
+                        &[],
                     )?;
                     symbol_id = symbol_id.next();
                 }
@@ -526,6 +537,7 @@ fn update_redirect_resolutions<'data, P: Platform>(
                             section_layouts,
                             memory_regions,
                             sizeof_headers,
+                            resolved_location_counters,
                         )?;
                         symbol_id = symbol_id.next();
                     }
@@ -549,6 +561,7 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     memory_regions: &HashMap<&[u8], MemoryRegion>,
     sizeof_headers: u64,
+    resolved_location_counters: &[(u64, Option<u64>)],
 ) -> Result {
     if let SymbolPlacement::Redirect(redirect) = &def_info.placement {
         let value = crate::expression_eval::evaluate_expression(
@@ -559,6 +572,7 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
             memory_regions,
             symbol_db,
             sizeof_headers,
+            resolved_location_counters,
             &|name| {
                 let Some(target_symbol_id) =
                     symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
@@ -1751,7 +1765,7 @@ pub(crate) fn merge_secondary_parts<P: Platform>(
         if let SectionKind::Secondary(primary_id) = info.kind {
             let secondary_layout = take(section_layouts.get_mut(id));
             let primary = section_layouts.get_mut(primary_id);
-            if info.location.is_some() {
+            if info.location_info.is_some() {
                 let mem_end = secondary_layout.mem_offset + secondary_layout.mem_size;
                 if mem_end > primary.mem_offset + primary.mem_size {
                     primary.mem_size = mem_end - primary.mem_offset;
@@ -1943,7 +1957,9 @@ fn compute_segment_layout<'data, P: Platform>(
                     }
                 }
             }
-            OrderEvent::SetLocation(_) => {}
+            OrderEvent::SetLocation(_)
+            | OrderEvent::SetLocationRelative(_, _)
+            | OrderEvent::SetSectionAddress(_) => {}
         }
     }
 
@@ -3352,7 +3368,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                         active_segments.clear();
                     }
                 }
-                OrderEvent::SetLocation(_) => {}
+                OrderEvent::SetLocation(_)
+                | OrderEvent::SetLocationRelative(_, _)
+                | OrderEvent::SetSectionAddress(_) => {}
             }
         }
 
@@ -5026,6 +5044,7 @@ fn perform_iterative_relaxation<'data, A: Arch>(
     per_symbol_flags: &PerSymbolFlags,
     memory_regions: &mut HashMap<&[u8], MemoryRegion>,
     sizeof_headers: u64,
+    resolved_location_counters: &mut Vec<(u64, Option<u64>)>,
 ) -> Result {
     timing_phase!("Iterative relaxation");
 
@@ -5075,7 +5094,11 @@ fn perform_iterative_relaxation<'data, A: Arch>(
                 .collect(),
         );
 
-        (*section_part_layouts, *section_layouts) = layout_section::<A::Platform>(
+        (
+            *section_part_layouts,
+            *section_layouts,
+            *resolved_location_counters,
+        ) = compute_layout_sections::<A::Platform>(
             section_part_sizes,
             output_sections,
             program_segments,
@@ -5088,7 +5111,8 @@ fn perform_iterative_relaxation<'data, A: Arch>(
     Ok(())
 }
 
-fn layout_section<'data, P: Platform>(
+#[allow(clippy::type_complexity)]
+fn compute_layout_sections<'data, P: Platform>(
     sizes: &OutputSectionPartMap<u64>,
     output_sections: &OutputSections<'data, P>,
     program_segments: &ProgramSegments<P::ProgramSegmentDef>,
@@ -5099,6 +5123,7 @@ fn layout_section<'data, P: Platform>(
 ) -> Result<(
     OutputSectionPartMap<OutputRecordLayout>,
     OutputSectionMap<OutputRecordLayout>,
+    Vec<(u64, Option<u64>)>,
 )> {
     let args = symbol_db.args;
     let segment_alignments = compute_segment_alignments::<P>(
@@ -5111,29 +5136,36 @@ fn layout_section<'data, P: Platform>(
 
     let mut section_layouts = OutputSectionMap::with_size(output_sections.num_sections());
 
-    let expression_eval =
-        |expr: &Expression<'data>,
-         memory_regions: &HashMap<&[u8], MemoryRegion>,
-         section_layouts: &OutputSectionMap<OutputRecordLayout>| {
-            crate::expression_eval::evaluate_expression(
-                expr,
-                &crate::parsing::SymbolLoc::None,
-                section_layouts,
-                output_sections,
-                memory_regions,
-                symbol_db,
-                sizeof_headers,
-                &|_| {
-                    bail!("Symbols with the set location operation are not yet supported.");
-                },
-            )
+    let expression_eval = |expr: &Expression<'data>,
+                           memory_regions: &HashMap<&[u8], MemoryRegion>,
+                           section_layouts: &OutputSectionMap<OutputRecordLayout>,
+                           resolved_lc: &[(u64, Option<u64>)]| {
+        let loc = if resolved_lc.is_empty() {
+            crate::parsing::SymbolLoc::None
+        } else {
+            crate::parsing::SymbolLoc::LocationCounter(resolved_lc.len() - 1, None)
         };
+        crate::expression_eval::evaluate_expression(
+            expr,
+            &loc,
+            section_layouts,
+            output_sections,
+            memory_regions,
+            symbol_db,
+            sizeof_headers,
+            resolved_lc,
+            &|_| {
+                bail!("Symbols with the set location operation are not yet supported.");
+            },
+        )
+    };
 
     let mut file_offset = 0;
     let mut mem_offset = expression_eval(
         &output_sections.base_address,
         memory_regions,
         &section_layouts,
+        &[],
     )?;
     let mut lma_offset = mem_offset;
     let mut nonalloc_mem_offsets: OutputSectionMap<u64> =
@@ -5142,13 +5174,33 @@ fn layout_section<'data, P: Platform>(
         OutputSectionMap::with_size(output_sections.num_sections());
 
     let mut pending_location = None;
+    let mut resolved_lc: Vec<(u64, Option<u64>)> = vec![(mem_offset, None)];
 
     let mut records_out = output_sections.new_part_map();
 
     for event in output_order {
         match event {
             OrderEvent::SetLocation(expr) => {
-                pending_location = Some(expr);
+                let value = expression_eval(&expr, memory_regions, &section_layouts, &resolved_lc)?;
+                if resolved_lc.len() > 1 {
+                    pending_location = Some(value);
+                }
+                resolved_lc.push((value, None));
+            }
+            OrderEvent::SetLocationRelative(expr, section_id) => {
+                let primary_id = output_sections.primary_output_section(section_id);
+                let section_base = section_layouts.get(primary_id).mem_offset;
+                let offset =
+                    expression_eval(&expr, memory_regions, &section_layouts, &resolved_lc)?;
+                let value = section_base + offset;
+                if resolved_lc.len() > 1 {
+                    pending_location = Some(value);
+                }
+                resolved_lc.push((value, Some(offset)));
+            }
+            OrderEvent::SetSectionAddress(expr) => {
+                let value = expression_eval(&expr, memory_regions, &section_layouts, &resolved_lc)?;
+                pending_location = Some(value);
             }
             OrderEvent::SegmentStart(segment_id) => {
                 if program_segments.is_load_segment(segment_id) {
@@ -5156,9 +5208,9 @@ fn layout_section<'data, P: Platform>(
                         .get(&segment_id)
                         .copied()
                         .unwrap_or_else(|| args.loadable_segment_alignment());
-                    if let Some(expr) = pending_location.take() {
+                    if let Some(addr) = pending_location.take() {
                         // The OrderEvent::SetLocation is ELF-specific only.
-                        mem_offset = expression_eval(&expr, memory_regions, &section_layouts)?;
+                        mem_offset = addr;
                         lma_offset = mem_offset;
                         file_offset =
                             segment_alignment.align_modulo(mem_offset, file_offset as u64) as usize;
@@ -5181,11 +5233,17 @@ fn layout_section<'data, P: Platform>(
             }
             OrderEvent::SegmentEnd(_) => {}
             OrderEvent::Section(section_id) => {
-                debug_assert!(
-                    pending_location.is_none(),
-                    "SetLocation, Section without SegmentStart"
-                );
                 let section_info = output_sections.output_info(section_id);
+                let loc_offset = section_info
+                    .location_info
+                    .as_ref()
+                    .and_then(|info| info.location.as_ref())
+                    .map(|expr| {
+                        expression_eval(expr, memory_regions, &section_layouts, &resolved_lc)
+                    })
+                    .transpose()?;
+                let lc_offset = pending_location.take();
+                let section_offset = loc_offset.or(lc_offset);
                 let part_id_range = section_id.part_id_range();
                 let max_alignment = sizes.max_alignment(part_id_range.clone(), output_sections);
                 let region = section_info
@@ -5202,8 +5260,8 @@ fn layout_section<'data, P: Platform>(
                 if let Some(region) = region {
                     mem_offset = region.origin + region.used;
                 }
-                if let Some(ref expr) = section_info.location {
-                    let offset = expression_eval(expr, memory_regions, &section_layouts)?;
+
+                if let Some(offset) = section_offset {
                     if let Some(region) = region
                         && (offset < mem_offset || offset > mem_offset + region.length)
                     {
@@ -5215,7 +5273,14 @@ fn layout_section<'data, P: Platform>(
                     }
                     let merge_target = output_sections.primary_output_section(section_id);
                     let section_flags = output_sections.section_flags(merge_target);
-                    if section_flags.is_alloc() && output_sections.has_data_in_file(merge_target) {
+                    let is_top_level = section_info
+                        .location_info
+                        .as_ref()
+                        .is_some_and(|info| info.is_top_level);
+                    if (section_id == merge_target || !is_top_level)
+                        && section_flags.is_alloc()
+                        && output_sections.has_data_in_file(merge_target)
+                    {
                         let new_offset = offset
                             .checked_sub(mem_offset)
                             .with_context(|| format!("Cannot move location counter backwards (from 0x{mem_offset:x} to 0x{offset:x})"))?;
@@ -5317,8 +5382,17 @@ fn layout_section<'data, P: Platform>(
                             offset == 0,
                         );
 
-                        if let Some(ref expr) = section_info.load_location {
-                            lma_offset = expression_eval(expr, memory_regions, &section_layouts)?;
+                        if let Some(expr) = section_info
+                            .location_info
+                            .as_ref()
+                            .and_then(|info| info.at_location.as_ref())
+                        {
+                            lma_offset = expression_eval(
+                                expr,
+                                memory_regions,
+                                &section_layouts,
+                                &resolved_lc,
+                            )?;
                             part_layout.lma_offset = lma_offset;
                             let section_layout = section_layouts.get_mut(section_id);
                             section_layout.lma_offset = lma_offset;
@@ -5345,7 +5419,7 @@ fn layout_section<'data, P: Platform>(
 
     validate_all_non_empty_sections_emitted(sizes, output_sections, output_order)?;
 
-    Ok((records_out, section_layouts))
+    Ok((records_out, section_layouts, resolved_lc))
 }
 
 /// Checks if we've allocated space to any sections which aren't listed in our output ordering.
@@ -5424,7 +5498,9 @@ fn compute_segment_alignments<'data, P: Platform>(
                         .and_modify(|a| *a = (*a).max(max_alignment));
                 }
             }
-            OrderEvent::SetLocation(_) => {}
+            OrderEvent::SetLocation(_)
+            | OrderEvent::SetLocationRelative(_, _)
+            | OrderEvent::SetSectionAddress(_) => {}
         }
     }
 
@@ -5680,6 +5756,7 @@ fn test_no_disallowed_overlaps() {
                 crate::args::RelocationModel::NonRelocatable,
             ),
             &[],
+            &[],
         )
         .unwrap();
     let mut args = crate::args::elf::ElfArgs::default();
@@ -5715,7 +5792,7 @@ fn test_no_disallowed_overlaps() {
     let symbol_db =
         crate::symbol_db::SymbolDb::<Elf>::new(&args, output_kind, &auxiliary, &herd).unwrap();
 
-    let (_, section_layouts) = layout_section::<Elf>(
+    let (_, section_layouts, _) = compute_layout_sections::<Elf>(
         &section_part_sizes,
         &output_sections,
         &program_segments,
@@ -5827,7 +5904,7 @@ fn verify_consistent_allocation_handling<P: Platform>(
     args: &P::Args,
 ) -> Result {
     let output_sections = OutputSections::with_base_address(0);
-    let (output_order, _program_segments) = output_sections.output_order(output_kind, &[])?;
+    let (output_order, _program_segments) = output_sections.output_order(output_kind, &[], &[])?;
     let mut mem_sizes = output_sections.new_part_map();
     P::allocate_resolution(flags, &mut mem_sizes, output_kind, args);
     let mut memory_offsets = output_sections.new_part_map();

@@ -17,6 +17,7 @@ use crate::Result;
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
 use crate::grouping::SequencedLinkerScript;
+use crate::layout_rules::LocationCounter;
 use crate::layout_rules::SectionKind;
 use crate::linker_script;
 use crate::linker_script::Expression;
@@ -192,6 +193,7 @@ pub(crate) struct OutputOrderBuilder<'scope, 'data, P: Platform> {
     secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
     output_kind: OutputKind,
     has_custom_phdrs: bool,
+    location_counters: &'scope [crate::layout_rules::LocationCounter<'data>],
 }
 
 impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
@@ -200,6 +202,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         output_sections: &'scope OutputSections<'data, P>,
         secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
         has_custom_phdrs: bool,
+        location_counters: &'scope [crate::layout_rules::LocationCounter<'data>],
     ) -> Self {
         Self {
             events: Vec::new(),
@@ -210,6 +213,26 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             secondary,
             output_kind,
             has_custom_phdrs,
+            location_counters,
+        }
+    }
+
+    fn emit_section_locations(&mut self, info: &SectionOutputInfo<'data, P>) {
+        if let Some(ref loc_info) = info.location_info {
+            let (start_idx, end_idx) = loc_info.location_counters;
+
+            for lc in &self.location_counters[start_idx..end_idx] {
+                match lc {
+                    LocationCounter::Absolute(expr) => {
+                        self.events.push(OrderEvent::SetLocation(expr.clone()));
+                    }
+                    LocationCounter::Relative(expr, section_id) => {
+                        let primary_id = self.output_sections.primary_output_section(*section_id);
+                        self.events
+                            .push(OrderEvent::SetLocationRelative(expr.clone(), primary_id));
+                    }
+                }
+            }
         }
     }
 
@@ -232,19 +255,22 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             "Attempted to directly emit secondary section {section_id}"
         );
 
-        // Only emit SetLocation if the section has ALLOC flag, meaning it can be placed
-        // in a segment. Sections without ALLOC (like custom sections before their flags
-        // are propagated) will have their location handled directly in layout_section_parts
-        // via section_info.location.
-        if let Some(location) = &section_info.location
+        // Only emit SetSectionAddress if the section has ALLOC flag, meaning it can be placed in a
+        // segment. Sections without ALLOC (like custom sections before their flags are propagated)
+        // will have their location handled directly in layout_section_parts.
+        if let Some(ref loc_info) = section_info.location_info
+            && let Some(ref location) = loc_info.location
             && section_info.section_attributes.is_alloc()
         {
-            self.events.push(OrderEvent::SetLocation(location.clone()));
+            self.events
+                .push(OrderEvent::SetSectionAddress(location.clone()));
         }
 
         for segment_id in start {
             self.events.push(OrderEvent::SegmentStart(segment_id));
         }
+
+        self.emit_section_locations(section_info);
 
         self.events.push(OrderEvent::Section(section_id));
 
@@ -266,6 +292,8 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         keyed.sort_by_key(|(pri, _sid)| *pri);
 
         for (_pri, sid) in keyed {
+            let sec_info = self.output_sections.output_info(sid);
+            self.emit_section_locations(sec_info);
             self.events.push(OrderEvent::Section(sid));
         }
     }
@@ -326,7 +354,12 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         }
 
         let section_info = self.output_sections.output_info(section_id);
-        if section_info.location.is_some() {
+        if section_info
+            .location_info
+            .as_ref()
+            .and_then(|info| info.location.as_ref())
+            .is_some()
+        {
             // If we're setting the location, then first end all active segments.
             for (id, region) in self
                 .active_segment_kinds
@@ -398,11 +431,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         self.events.push(OrderEvent::SegmentStart(segment_id));
         for section in sections {
             let section_info = output_sections.section_infos.get(*section);
-            if let Some(location) = &section_info.location
-                && section_info.section_attributes.is_alloc()
-            {
-                self.events.push(OrderEvent::SetLocation(location.clone()));
-            }
+            self.emit_section_locations(section_info);
             self.events.push(OrderEvent::Section(*section));
 
             let secondaries: &Vec<OutputSectionId> = self.secondary.get(*section);
@@ -516,8 +545,7 @@ pub(crate) struct SectionOutputInfo<'data, P: Platform> {
     pub(crate) kind: SectionKind<'data>,
     pub(crate) section_attributes: P::SectionAttributes,
     pub(crate) min_alignment: Alignment,
-    pub(crate) location: Option<linker_script::Expression<'data>>,
-    pub(crate) load_location: Option<linker_script::Expression<'data>>,
+    pub(crate) location_info: Option<SectionLocationInfo<'data>>,
     pub(crate) secondary_order: Option<SecondaryOrder>,
     pub(crate) phdr_name: Option<&'data [u8]>,
     pub(crate) region_name: Option<&'data [u8]>,
@@ -618,6 +646,8 @@ pub(crate) enum OrderEvent<'data> {
     SegmentEnd(ProgramSegmentId),
     Section(OutputSectionId),
     SetLocation(linker_script::Expression<'data>),
+    SetLocationRelative(linker_script::Expression<'data>, OutputSectionId),
+    SetSectionAddress(linker_script::Expression<'data>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -658,8 +688,14 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             let location = args
                 .start_address_for_section(custom.name)
                 .map(linker_script::Expression::Number);
+            let location_info = location.map(|loc| SectionLocationInfo {
+                location_counters: (0, 0),
+                location: Some(loc),
+                at_location: None,
+                is_top_level: true,
+            });
             let section_id =
-                self.add_named_section(custom.name, custom.alignment, location, None, None, None);
+                self.add_named_section(custom.name, custom.alignment, None, None, location_info);
 
             section_part_ids[custom.index.0] = section_id.part_id_with_alignment(custom.alignment);
         }
@@ -675,8 +711,17 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             (BSS, SectionName(b".bss")),
         ] {
             if let Some(address) = args.start_address_for_section(name) {
-                self.section_infos.get_mut(section_id).location =
-                    Some(linker_script::Expression::Number(address));
+                let info = self.section_infos.get_mut(section_id);
+                if let Some(ref mut loc_info) = info.location_info {
+                    loc_info.location = Some(linker_script::Expression::Number(address));
+                } else {
+                    info.location_info = Some(SectionLocationInfo {
+                        location_counters: (0, 0),
+                        location: Some(linker_script::Expression::Number(address)),
+                        at_location: None,
+                        is_top_level: true,
+                    });
+                }
             }
         }
     }
@@ -685,10 +730,9 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         &mut self,
         name: SectionName<'data>,
         min_alignment: Alignment,
-        location: Option<linker_script::Expression<'data>>,
-        load_location: Option<linker_script::Expression<'data>>,
         phdr_name: Option<&'data [u8]>,
         region_name: Option<&'data [u8]>,
+        location_info: Option<SectionLocationInfo<'data>>,
     ) -> OutputSectionId {
         *self.custom_by_name.entry(name).or_insert_with(|| {
             self.section_infos.add_new(SectionOutputInfo {
@@ -697,8 +741,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 // that get placed into this output section.
                 section_attributes: Default::default(),
                 min_alignment,
-                location,
-                load_location,
+                location_info,
                 secondary_order: None,
                 phdr_name,
                 region_name,
@@ -711,17 +754,16 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         primary_id: OutputSectionId,
         min_alignment: Alignment,
         secondary_order: Option<SecondaryOrder>,
-        location: Option<linker_script::Expression<'data>>,
+        location_info: Option<SectionLocationInfo<'data>>,
     ) -> OutputSectionId {
         let primary_info = self.section_infos.get(primary_id);
         let section_attributes = primary_info.section_attributes;
-        let load_location = primary_info.load_location.clone();
+        let location_info = location_info.or_else(|| primary_info.location_info.clone());
         self.section_infos.add_new(SectionOutputInfo {
             kind: SectionKind::Secondary(primary_id),
             section_attributes,
             min_alignment,
-            location,
-            load_location,
+            location_info,
             secondary_order,
             phdr_name: None,
             region_name: primary_info.region_name,
@@ -778,6 +820,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         &self,
         output_kind: OutputKind,
         linker_scripts: &[&SequencedLinkerScript<'data, P>],
+        location_counters: &[crate::layout_rules::LocationCounter<'data>],
     ) -> Result<(OutputOrder<'data>, ProgramSegments<P::ProgramSegmentDef>)> {
         timing_phase!("Compute output order");
 
@@ -849,6 +892,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 &secondary,
                 linker_scripts,
                 &mut phdr_map.unwrap(),
+                location_counters,
             )
         } else {
             Ok(P::build_output_order_and_program_segments(
@@ -856,6 +900,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 output_kind,
                 self,
                 &secondary,
+                location_counters,
             ))
         }
     }
@@ -977,7 +1022,6 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 None,
                 None,
                 None,
-                None,
             )
         };
         add_name("ro");
@@ -1045,7 +1089,19 @@ impl<'data, P: Platform> Display for OutputOrderDisplay<'_, 'data, P> {
                 OrderEvent::Section(output_section_id) => {
                     writeln!(f, "  {}", self.sections.display_name(*output_section_id))?;
                 }
-                OrderEvent::SetLocation(expr) => writeln!(f, "SET_LOCATION({expr:?})")?,
+                OrderEvent::SetLocation(expr) => {
+                    writeln!(f, "SET_LOCATION({expr:?})")?;
+                }
+                OrderEvent::SetLocationRelative(expr, section_id) => {
+                    writeln!(
+                        f,
+                        "SET_LOCATION_RELATIVE({expr:?}, {})",
+                        self.sections.display_name(*section_id)
+                    )?;
+                }
+                OrderEvent::SetSectionAddress(expr) => {
+                    writeln!(f, "SET_SECTION_ADDRESS({expr:?})")?;
+                }
             }
         }
 
@@ -1089,4 +1145,12 @@ impl Iterator for PartIdIterator {
             Some(id)
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SectionLocationInfo<'data> {
+    pub(crate) location_counters: (usize, usize),
+    pub(crate) location: Option<Expression<'data>>,
+    pub(crate) at_location: Option<Expression<'data>>,
+    pub(crate) is_top_level: bool,
 }

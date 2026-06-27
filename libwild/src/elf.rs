@@ -972,8 +972,7 @@ impl platform::Platform for Elf {
                 },
                 kind: d.kind,
                 min_alignment: d.min_alignment,
-                location: None,
-                load_location: None,
+                location_info: None,
                 secondary_order: None,
                 phdr_name: None,
                 region_name: None,
@@ -1875,9 +1874,15 @@ impl platform::Platform for Elf {
         output_kind: OutputKind,
         output_sections: &OutputSections<'data, Self>,
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
+        location_counters: &[crate::layout_rules::LocationCounter<'data>],
     ) -> (OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>) {
-        let mut builder =
-            OutputOrderBuilder::<Self>::new(output_kind, output_sections, secondary, false);
+        let mut builder = OutputOrderBuilder::<Self>::new(
+            output_kind,
+            output_sections,
+            secondary,
+            false,
+            location_counters,
+        );
 
         builder.add_section(output_section_id::FILE_HEADER);
         builder.add_section(output_section_id::PROGRAM_HEADERS);
@@ -1946,9 +1951,15 @@ impl platform::Platform for Elf {
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
         linker_scripts: &[&SequencedLinkerScript<'data, Self>],
         phdr_map: &mut hashbrown::HashMap<&[u8], Vec<OutputSectionId>>,
+        location_counters: &[crate::layout_rules::LocationCounter<'data>],
     ) -> Result<(OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>)> {
-        let mut builder =
-            OutputOrderBuilder::<Self>::new(output_kind, output_sections, secondary, true);
+        let mut builder = OutputOrderBuilder::<Self>::new(
+            output_kind,
+            output_sections,
+            secondary,
+            true,
+            location_counters,
+        );
 
         let mut insert_re = false;
         let mut insert_rw = false;
@@ -3913,7 +3924,7 @@ impl platform::SectionAttributes for SectionAttributes {
         info.section_attributes.ty = info.section_attributes.ty.max(self.ty);
 
         if let SectionKind::Secondary(primary_id) = info.kind
-            && info.location.is_some()
+            && info.location_info.is_some()
         {
             self.apply(output_sections, primary_id);
         }

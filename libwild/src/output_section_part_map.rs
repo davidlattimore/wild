@@ -213,6 +213,7 @@ fn test_merge_parts() {
                 crate::args::RelocationModel::NonRelocatable,
             ),
             &[],
+            &[],
         )
         .unwrap();
     let mut expected_sum_of_sums = 0;
@@ -334,6 +335,7 @@ fn test_output_order_map_consistent() {
                 crate::args::RelocationModel::NonRelocatable,
             ),
             &[],
+            &[],
         )
         .unwrap();
     let part_map = output_sections.new_part_map::<u32>();
@@ -390,6 +392,7 @@ fn test_output_order_map() {
             crate::output_kind::OutputKind::StaticExecutable(
                 crate::args::RelocationModel::NonRelocatable,
             ),
+            &[],
             &[],
         )
         .unwrap();
