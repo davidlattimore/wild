@@ -16,4 +16,6 @@
 
 #include "../common/runtime.h"
 
-void begin_here(void) { exit_syscall(42); }
+int ret = 42;
+
+void begin_here(void) { exit_syscall(ret); }
