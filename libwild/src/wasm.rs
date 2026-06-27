@@ -2504,6 +2504,68 @@ fn ensure_memory_export(exports: &mut Vec<OutputExport<'_>>) {
     });
 }
 
+fn export_name_exists(exports: &[OutputExport<'_>], name: &str) -> bool {
+    exports.iter().any(|export| export.name == name)
+}
+
+fn push_function_export<'data>(
+    exports: &mut Vec<OutputExport<'data>>,
+    name: &'data str,
+    index: u32,
+) {
+    if export_name_exists(exports, name) {
+        return;
+    }
+    exports.push(OutputExport {
+        name,
+        kind: wasmparser::ExternalKind::Func,
+        index,
+    });
+}
+
+/// Export the command module (as opposed to `--no-entry` reactor modules) entry symbol (default `_start`).
+fn ensure_entry_export<'data, 'files>(
+    exports: &mut Vec<OutputExport<'data>>,
+    layout_inputs: &[WasmObjectLayoutInput<'data>],
+    groups: &'files [layout::GroupState<'data, Wasm>],
+    object_index_maps: &[WasmObjectIndexMap],
+    entry_name: &str,
+) -> Result
+where
+    'data: 'files,
+{
+    if export_name_exists(exports, entry_name) {
+        return Ok(());
+    }
+
+    let objects: Vec<_> = layout::objects_iter(groups)
+        .map(|state| (state.file_id, &state.object))
+        .collect();
+
+    for (input, index_map) in layout_inputs.iter().zip(object_index_maps) {
+        let Some((_, object)) = objects.iter().find(|(file_id, _)| *file_id == input.file_id)
+        else {
+            continue;
+        };
+
+        for sym in &input.symbols {
+            if sym.is_undefined() || !sym.has_name() || sym.kind != WasmSymbolKind::Func {
+                continue;
+            }
+            let name = core::str::from_utf8(&object.data[sym.name_range()])
+                .context("invalid UTF-8 in Wasm symbol name")?;
+            if name != entry_name {
+                continue;
+            }
+            let index = remap_wasm_index(&index_map.function_indices, sym.index, "function")?;
+            push_function_export(exports, name, index);
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
 fn build_output_module_layout<'data, 'files>(
     groups: &'files [layout::GroupState<'data, Wasm>],
     symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
@@ -2583,6 +2645,15 @@ where
         &layout.object_data_layouts,
         &layout_inputs,
         symbol_db,
+    )?;
+    let entry_name = core::str::from_utf8(symbol_db.entry_symbol_name())
+        .context("invalid UTF-8 in Wasm entry symbol name")?;
+    ensure_entry_export(
+        &mut layout.exports,
+        &layout_inputs,
+        groups,
+        &layout.object_index_maps,
+        entry_name,
     )?;
     layout.encode_metadata_sections()?;
     Ok(layout)
