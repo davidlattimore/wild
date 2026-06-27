@@ -102,6 +102,15 @@ pub(crate) const RELOC_SECTION_PREFIX: &str = "reloc.";
 /// The custom-section name used for the WebAssembly target features.
 pub(crate) const TARGET_FEATURES_SECTION_NAME: &str = "target_features";
 
+/// Default static data base for linker-produced executables.
+const LINKER_MEMORY_BASE: u32 = 1024;
+
+/// Default stack pointer for linker-produced executables.
+const LINKER_STACK_POINTER: u32 = 66576;
+
+/// `i32.const` body for [`LINKER_STACK_POINTER`] without the trailing `end` opcode.
+const LINKER_STACK_POINTER_INIT_EXPR: &[u8] = &[0x41, 0x90, 0x88, 0x04];
+
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
     #[debug(skip)]
@@ -383,6 +392,14 @@ pub(crate) struct WasmGlobalImport<'data> {
     pub(crate) module: &'data str,
     pub(crate) name: &'data str,
     pub(crate) ty: GlobalType,
+}
+
+/// A single imported memory.
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct WasmMemoryImport<'data> {
+    pub(crate) module: &'data str,
+    pub(crate) name: &'data str,
+    pub(crate) ty: MemoryType,
 }
 
 /// A function defined inside the module (not imported). Stored as the index into the `type`
@@ -1884,6 +1901,7 @@ struct WasmObjectLayoutInput<'data> {
     types: Vec<wasmparser::FuncType>,
     function_imports: Vec<WasmFunctionImport<'data>>,
     global_imports: Vec<WasmGlobalImport<'data>>,
+    memory_imports: Vec<WasmMemoryImport<'data>>,
     module_functions: Vec<WasmModuleFunction>,
     globals: Vec<OutputGlobal<'data>>,
     exports: Vec<OutputExport<'data>>,
@@ -1941,6 +1959,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
 
         let mut function_imports = Vec::new();
         let mut global_imports = Vec::new();
+        let mut memory_imports = Vec::new();
         if let Some(imports) = file.import_section_reader()? {
             for import in imports.into_imports() {
                 let import = import?;
@@ -1960,7 +1979,13 @@ impl<'data> WasmObjectLayoutInput<'data> {
                         });
                     }
                     TypeRef::Table(_) => bail!("Wasm table imports are not emitted"),
-                    TypeRef::Memory(_) => bail!("Wasm memory imports are not emitted"),
+                    TypeRef::Memory(memory) => {
+                        memory_imports.push(WasmMemoryImport {
+                            module: import.module,
+                            name: import.name,
+                            ty: memory,
+                        });
+                    }
                     TypeRef::Tag(_) => bail!("Wasm tag imports are not emitted"),
                 }
             }
@@ -2058,6 +2083,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             types,
             function_imports,
             global_imports,
+            memory_imports,
             module_functions,
             globals,
             exports,
@@ -2094,7 +2120,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
                 self.function_imports.len() + self.module_functions.len(),
             ),
             global_indices: Vec::with_capacity(self.global_imports.len() + self.globals.len()),
-            memory_indices: Vec::with_capacity(self.memories.len()),
+            memory_indices: Vec::with_capacity(self.memory_imports.len() + self.memories.len()),
             data_addresses: Vec::new(),
         };
 
@@ -2204,8 +2230,9 @@ impl<'data> WasmObjectLayoutInput<'data> {
             index_map.global_indices.push(output_global_index);
         }
 
-        index_map.memory_indices =
-            wasm_index_range(index_bases.memory_base, self.memories.len(), "memories")?;
+        // Imported and defined memories are merged into a single output memory.
+        let memory_slot_count = self.memory_imports.len() + self.memories.len();
+        index_map.memory_indices = vec![0; memory_slot_count];
 
         let exports = self
             .exports
@@ -2411,6 +2438,47 @@ fn resolve_one_import<'data>(
     }
 }
 
+fn object_needs_linker_memory(input: &WasmObjectLayoutInput<'_>) -> bool {
+    !input.memory_imports.is_empty() || !input.memories.is_empty()
+}
+
+fn any_object_needs_linker_memory(inputs: &[WasmObjectLayoutInput<'_>]) -> bool {
+    inputs.iter().any(object_needs_linker_memory)
+}
+
+fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>]) -> MemoryType {
+    let mut initial = 2u64;
+    for input in inputs {
+        for import in &input.memory_imports {
+            initial = initial.max(import.ty.initial);
+        }
+        for memory in &input.memories {
+            initial = initial.max(memory.initial);
+        }
+    }
+    MemoryType {
+        memory64: false,
+        shared: false,
+        initial,
+        maximum: None,
+        page_size_log2: None,
+    }
+}
+
+fn ensure_memory_export(exports: &mut Vec<OutputExport<'_>>) {
+    if exports
+        .iter()
+        .any(|export| matches!(export.kind, wasmparser::ExternalKind::Memory))
+    {
+        return;
+    }
+    exports.push(OutputExport {
+        name: "memory",
+        kind: wasmparser::ExternalKind::Memory,
+        index: 0,
+    });
+}
+
 fn build_output_module_layout<'data, 'files>(
     groups: &'files [layout::GroupState<'data, Wasm>],
     symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
@@ -2467,6 +2535,12 @@ where
             &mut memory_cursor,
             &mut section_cursor,
         )?);
+    }
+    if any_object_needs_linker_memory(&layout_inputs) && layout.memories.is_empty() {
+        layout
+            .memories
+            .push(linker_output_memory_type(&layout_inputs));
+        ensure_memory_export(&mut layout.exports);
     }
     compute_data_addresses(
         &mut layout.object_index_maps,
@@ -2579,7 +2653,6 @@ fn allocate_wasm_object_index_bases(
     let mut next_type_index = 0u32;
     let mut next_function_import_index = 0u32;
     let mut next_global_import_index = 0u32;
-    let mut next_memory_index = 0u32;
 
     for (input, resolutions) in layout_inputs.iter().zip(import_resolutions) {
         index_bases.push(WasmObjectIndexBases {
@@ -2588,7 +2661,8 @@ fn allocate_wasm_object_index_bases(
             defined_function_base: 0,
             global_import_base: next_global_import_index,
             defined_global_base: 0,
-            memory_base: next_memory_index,
+            // Imported and defined memories are merged into a single output memory at index 0.
+            memory_base: 0,
         });
         next_type_index = next_type_index
             .checked_add(u32::try_from(input.types.len()).context("too many Wasm types")?)
@@ -2599,9 +2673,6 @@ fn allocate_wasm_object_index_bases(
         next_global_import_index = next_global_import_index
             .checked_add(resolutions.unresolved_global_count)
             .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-        next_memory_index = next_memory_index
-            .checked_add(u32::try_from(input.memories.len()).context("too many Wasm memories")?)
-            .ok_or_else(|| crate::error!("Wasm memory index overflow"))?;
     }
 
     let mut next_defined_function_index = next_function_import_index;
