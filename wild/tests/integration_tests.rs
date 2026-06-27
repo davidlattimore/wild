@@ -467,7 +467,8 @@ fn collect_wasm_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
 
     for_each_test_dir(platform_name, |test_name, path| {
         let wat_file = path.join(format!("{test_name}.wat"));
-        if !wat_file.exists() {
+        let c_file = path.join(format!("{test_name}.c"));
+        if !wat_file.exists() && !c_file.exists() {
             return Ok(());
         }
 
@@ -475,11 +476,151 @@ fn collect_wasm_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
         if filter.excludes(&full_name) {
             return Ok(());
         }
-        tests.push(libtest_mimic::Trial::test(full_name, move || {
-            run_wasm_test(&wat_file).map_err(|e| libtest_mimic::Failed::from(e.to_string()))
-        }));
+        if c_file.exists() {
+            tests.push(libtest_mimic::Trial::test(full_name, move || {
+                run_wasm_clang_test(&c_file).map_err(|e| libtest_mimic::Failed::from(e.to_string()))
+            }));
+        } else {
+            tests.push(libtest_mimic::Trial::test(full_name, move || {
+                run_wasm_test(&wat_file).map_err(|e| libtest_mimic::Failed::from(e.to_string()))
+            }));
+        }
         Ok(())
     })
+}
+
+fn run_wasm_clang_test(c_file: &Path) -> Result {
+    let test_name = c_file
+        .parent()
+        .and_then(|p| p.file_name())
+        .context("Bad test path")?
+        .to_str()
+        .context("Non-UTF-8 path")?;
+
+    let build_dir = build_dir().join("wasm").join("wasm32").join(test_name);
+    std::fs::create_dir_all(&build_dir)?;
+
+    let source = std::fs::read_to_string(c_file)?;
+    let mut expect_error = false;
+    let mut should_run = true;
+    let mut expected_sections = Vec::new();
+    let mut extra_objects = Vec::new();
+    let mut link_args = ArgumentSet::empty();
+    let mut wild_extra_link_args = ArgumentSet::empty();
+    for line in source.lines() {
+        if let Some(rest) = line.trim().strip_prefix("//#") {
+            if let Some(obj_name) = rest.strip_prefix("Object:") {
+                extra_objects.push(obj_name.trim().to_owned());
+            } else if rest.starts_with("ExpectError") {
+                expect_error = true;
+            } else if let Some(val) = rest.strip_prefix("RunEnabled:") {
+                should_run = val.trim().parse().context("Invalid bool for RunEnabled")?;
+            } else if let Some(args) = rest.strip_prefix("LinkArgs:") {
+                let args = args
+                    .trim()
+                    .replace("$OUT_DIR", &build_dir.display().to_string());
+                link_args = ArgumentSet::parse(&args)?;
+            } else if let Some(args) = rest.strip_prefix("WildExtraLinkArgs:") {
+                wild_extra_link_args = ArgumentSet::parse(args.trim())?;
+            } else if let Some(section) = rest.strip_prefix("ExpectSection:") {
+                expected_sections.push(section.trim().to_owned());
+            }
+        }
+    }
+
+    let obj_file = build_dir.join(format!("{test_name}.o"));
+    let status = Command::new("clang")
+        .arg("--target=wasm32")
+        .arg("-c")
+        .arg("-nostdlib")
+        .arg("-o")
+        .arg(&obj_file)
+        .arg(c_file)
+        .status()
+        .context("Failed to run clang")?;
+    ensure!(status.success(), "clang failed for {}", c_file.display());
+
+    let mut all_objects = vec![obj_file];
+    for extra in &extra_objects {
+        let extra_c = c_file.parent().unwrap().join(extra);
+        let extra_obj = build_dir.join(Path::new(extra).with_extension("o"));
+        let status = Command::new("clang")
+            .arg("--target=wasm32")
+            .arg("-c")
+            .arg("-nostdlib")
+            .arg("-o")
+            .arg(&extra_obj)
+            .arg(&extra_c)
+            .status()
+            .with_context(|| format!("Failed to run clang for {}", extra_c.display()))?;
+        ensure!(status.success(), "clang failed for {}", extra_c.display());
+        all_objects.push(extra_obj);
+    }
+
+    let wasm_ld_output = build_dir.join(format!("{test_name}.wasm-ld.wasm"));
+    let wasm_wild_output = build_dir.join(format!("{test_name}.wild.wasm"));
+
+    let mut wasm_ld_cmd = Command::new("wasm-ld");
+    for obj in &all_objects {
+        wasm_ld_cmd.arg(obj);
+    }
+    wasm_ld_cmd
+        .arg("-o")
+        .arg(&wasm_ld_output)
+        .args(&link_args.args);
+
+    let wasm_ld_result = wasm_ld_cmd.output().context("Failed to run wasm-ld")?;
+
+    if !expect_error {
+        ensure!(
+            wasm_ld_result.status.success(),
+            "wasm-ld linking failed:\n{}",
+            String::from_utf8_lossy(&wasm_ld_result.stderr)
+        );
+        validate_wasm(&wasm_ld_output, "wasm-ld")?;
+        if should_run {
+            run_wasm_with_wasmtime(&wasm_ld_output, "wasm-ld")?;
+        }
+    }
+
+    let mut link_cmd = Command::new(wild_path());
+    link_cmd.arg("-flavor").arg("wasm");
+    for obj in &all_objects {
+        link_cmd.arg(obj);
+    }
+    link_cmd
+        .arg("-o")
+        .arg(&wasm_wild_output)
+        .args(&wild_extra_link_args.args);
+
+    let link_result = link_cmd.output().context("Failed to run wild")?;
+
+    if expect_error {
+        ensure!(
+            !link_result.status.success(),
+            "Expected link error but wild succeeded"
+        );
+        return Ok(());
+    }
+
+    ensure!(
+        link_result.status.success(),
+        "wild linking failed:\n{}",
+        String::from_utf8_lossy(&link_result.stderr)
+    );
+
+    validate_wasm(&wasm_wild_output, "wild")?;
+    if !expected_sections.is_empty() {
+        ensure_wasm_sections_for_linkers(
+            &expected_sections,
+            &[(&wasm_ld_output, "wasm-ld"), (&wasm_wild_output, "wild")],
+        )?;
+    }
+    if should_run {
+        run_wasm_with_wasmtime(&wasm_wild_output, "wild")?;
+    }
+
+    Ok(())
 }
 
 fn run_wasm_test(wat_file: &Path) -> Result {
@@ -512,7 +653,7 @@ fn run_wasm_test(wat_file: &Path) -> Result {
             } else if let Some(args) = rest.strip_prefix("LinkArgs:") {
                 let args = args
                     .trim()
-                    .replace("$OUT_DIR", &build_dir.display().to_string());
+                    .replace("$OUT_DIR").to_string());
                 link_args = ArgumentSet::parse(&args)?;
             } else if let Some(args) = rest.strip_prefix("WildExtraLinkArgs:") {
                 wild_extra_link_args = ArgumentSet::parse(args.trim())?;
@@ -702,19 +843,28 @@ fn validate_wasm(wasm_file: &Path, linker_name: &str) -> Result {
 }
 
 fn run_wasm_with_wasmtime(wasm_file: &Path, linker_name: &str) -> Result {
-    let output = Command::new("wasmtime")
-        .arg("run")
-        .arg(wasm_file)
-        .output()
-        .context("Failed to run wasmtime")?;
-    ensure!(
-        output.status.success(),
-        "wasmtime execution of {} output failed (exit={:?}):\nstdout: {}\nstderr: {}",
-        linker_name,
-        output.status.code(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::from_file(&engine, wasm_file).with_context(|| {
+        format!(
+            "Failed to load Wasm module from {} ({linker_name})",
+            wasm_file.display()
+        )
+    })?;
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[])
+        .with_context(|| format!("Failed to instantiate Wasm module from {linker_name} output"))?;
+
+    let start = instance
+        .get_typed_func::<(), ()>(&mut store, "_start")
+        .with_context(|| {
+            format!(
+                "Wasm export `_start` not found or has wrong type in {linker_name} output"
+            )
+        })?;
+    start
+        .call(&mut store, ())
+        .with_context(|| format!("Wasm `_start` trapped in {linker_name} output"))?;
+
     Ok(())
 }
 
@@ -1377,7 +1527,7 @@ int main(void) {
         let sysroot = arch.get_cross_sysroot_path();
         (cross_compiler, Some(sysroot))
     } else {
-        ("gcc".to_string(), None)
+        ("gcc".to_string())
     };
 
     let mut compile_cmd = std::process::Command::new(&compiler);
