@@ -28,7 +28,6 @@ use crate::platform::SectionHeader;
 use glob::Pattern;
 use hashbrown::HashTable;
 use std::borrow::Cow;
-use std::mem::replace;
 
 pub(crate) struct LayoutRules<'data> {
     pub(crate) section_rules: SectionRules<'data>,
@@ -197,15 +196,6 @@ impl<'data> LayoutRulesBuilder<'data> {
                 let mut location = None;
                 let mut section_start_lc_idx = last_lc_idx;
 
-                // "Extra alignment" is what we call it when a linker script sets alignment via a
-                // command like `. = ALIGN(8)`. We attach that to the subsequent section by
-                // adjusting its alignment. This doesn't exactly match what GNU ld does, since what
-                // we do can cause the alignment of the section in the section headers to increase,
-                // whereas GNU ld leaves the section header alignment alone in this case. For now,
-                // though, it doesn't seem worthwhile having two separate alignment properties on a
-                // section, one of which doesn't affect the header value.
-                let mut extra_min_alignment = alignment::MIN;
-
                 for sec_cmd in &sections.commands {
                     match sec_cmd {
                         SectionCommand::Section(sec) => {
@@ -225,10 +215,8 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     }
                                 }
                             }
-                            let min_alignment = sec
-                                .alignment
-                                .unwrap_or(alignment::MIN)
-                                .max(replace(&mut extra_min_alignment, alignment::MIN));
+                            let min_alignment =
+                                sec.alignment.unwrap_or(alignment::MIN).max(alignment::MIN);
 
                             // Choose starting location for this output section.
                             let section_location = match &sec.start_address_expression {
@@ -282,7 +270,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             inner_lc_start_idx = inner_lc_idx;
                                             output_sections.add_secondary_section(
                                                 primary_section_id,
-                                                replace(&mut extra_min_alignment, alignment::MIN),
+                                                alignment::MIN,
                                                 None,
                                                 Some(sec_location_info),
                                             )
@@ -321,7 +309,6 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             assignment.name,
                                         ));
                                     }
-                                    ContentsCommand::Align(a) => extra_min_alignment = *a,
                                     ContentsCommand::Provide(provide) => {
                                         let placement = SymbolPlacement::Redirect(Redirect {
                                             kind: RedirectKind::Script,
@@ -374,7 +361,6 @@ impl<'data> LayoutRulesBuilder<'data> {
                             }
                             location = Some(new_location.address.clone());
                         }
-                        SectionCommand::Align(a) => extra_min_alignment = *a,
                         SectionCommand::Assert(assert_cmd) => {
                             assertions.push(assert_cmd.clone());
                         }

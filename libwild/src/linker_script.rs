@@ -87,7 +87,6 @@ pub(crate) struct Sections<'a> {
 pub(crate) enum SectionCommand<'a> {
     Section(Section<'a>),
     SetLocation(Location<'a>),
-    Align(Alignment),
     Assert(AssertCommand<'a>),
     Provide(ProvideSymbolDefinition<'a>),
     SymbolAssignment(SymbolAssignment<'a>),
@@ -120,7 +119,6 @@ pub(crate) struct MemoryRegion<'a> {
 pub(crate) enum ContentsCommand<'a> {
     Matcher(Matcher<'a>),
     SymbolAssignment(SymbolAssignment<'a>),
-    Align(Alignment),
     Provide(ProvideSymbolDefinition<'a>),
     SetLocation(Location<'a>),
 }
@@ -1065,17 +1063,13 @@ fn parse_section_command<'input>(
     if opt("=").parse_next(input)?.is_some() {
         skip_comments_and_whitespace(input)?;
         if name == b"." {
-            let cmd = if input.starts_with(b"ALIGN") {
-                SectionCommand::Align(parse_alignment(input)?)
-            } else {
-                SectionCommand::SetLocation(parse_location.parse_next(input)?)
-            };
+            let location = parse_location.parse_next(input)?;
 
             skip_comments_and_whitespace(input)?;
             ';'.parse_next(input)?;
             skip_comments_and_whitespace(input)?;
 
-            return Ok(cmd);
+            return Ok(SectionCommand::SetLocation(location));
         }
         let expr = parse_expression.parse_next(input)?;
         skip_comments_and_whitespace(input)?;
@@ -1192,19 +1186,7 @@ fn parse_assignment<'input>(input: &mut &'input BStr) -> winnow::Result<Contents
     let expr = parse_expression.parse_next(input)?;
 
     let cmd = if name == b"." {
-        // `. = ALIGN(n)` inside section bodies
-        if let Expression::Align(alignment_expr) = &expr {
-            if let Expression::Number(n) = alignment_expr.as_ref() {
-                let alignment = Alignment::new(*n).map_err(|_| {
-                    ContextError::from_external_error(input, LinkerScriptError::InvalidAlignment)
-                })?;
-                ContentsCommand::Align(alignment)
-            } else {
-                return Err(ContextError::default());
-            }
-        } else {
-            ContentsCommand::SetLocation(Location { address: (expr) })
-        }
+        ContentsCommand::SetLocation(Location { address: (expr) })
     } else {
         ContentsCommand::SymbolAssignment(SymbolAssignment { name, expr })
     };
@@ -1571,7 +1553,9 @@ mod tests {
                             SectionCommand::SetLocation(Location {
                                 address: Expression::Number(0x1000000),
                             }),
-                            SectionCommand::Align(Alignment::new(16).unwrap()),
+                            SectionCommand::SetLocation(Location {
+                                address: Expression::Align(Box::new(Expression::Number(16))),
+                            }),
                             SectionCommand::Section(Section {
                                 output_section_name: b".foo",
                                 commands: vec![
@@ -1587,7 +1571,11 @@ mod tests {
                                             sorted: false,
                                         }],
                                     }),
-                                    ContentsCommand::Align(Alignment::new(32).unwrap()),
+                                    ContentsCommand::SetLocation(Location {
+                                        address: Expression::Align(Box::new(Expression::Number(
+                                            32,
+                                        ))),
+                                    }),
                                     ContentsCommand::SymbolAssignment(SymbolAssignment {
                                         name: b"end_foo",
                                         expr: Expression::LocationCounter,

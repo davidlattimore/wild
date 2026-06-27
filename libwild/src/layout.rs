@@ -5208,7 +5208,7 @@ fn compute_layout_sections<'data, P: Platform>(
                         .get(&segment_id)
                         .copied()
                         .unwrap_or_else(|| args.loadable_segment_alignment());
-                    if let Some(addr) = pending_location.take() {
+                    if let Some(addr) = pending_location {
                         // The OrderEvent::SetLocation is ELF-specific only.
                         mem_offset = addr;
                         lma_offset = mem_offset;
@@ -5234,16 +5234,7 @@ fn compute_layout_sections<'data, P: Platform>(
             OrderEvent::SegmentEnd(_) => {}
             OrderEvent::Section(section_id) => {
                 let section_info = output_sections.output_info(section_id);
-                let loc_offset = section_info
-                    .location_info
-                    .as_ref()
-                    .and_then(|info| info.location.as_ref())
-                    .map(|expr| {
-                        expression_eval(expr, memory_regions, &section_layouts, &resolved_lc)
-                    })
-                    .transpose()?;
-                let lc_offset = pending_location.take();
-                let section_offset = loc_offset.or(lc_offset);
+                let section_offset = pending_location.take();
                 let part_id_range = section_id.part_id_range();
                 let max_alignment = sizes.max_alignment(part_id_range.clone(), output_sections);
                 let region = section_info

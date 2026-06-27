@@ -84,6 +84,34 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
     Ok(())
 }
 
+pub(crate) fn evaluate_location(
+    expr_loc: &SymbolLoc,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    resolved_location_counters: &[(u64, Option<u64>)],
+) -> Result<u64> {
+    match expr_loc {
+        SymbolLoc::SectionStart(id) => Ok(section_layouts.get(*id).mem_offset),
+        SymbolLoc::SectionEnd(id) => {
+            let layout = section_layouts.get(*id);
+            Ok(layout.mem_offset + layout.mem_size)
+        }
+        SymbolLoc::FirstSection | SymbolLoc::None => Ok(0),
+        SymbolLoc::LocationCounter(idx, section_id) => {
+            let entry = resolved_location_counters.get(*idx).ok_or_else(|| {
+                crate::error!(
+                    "location counter index {idx} out of range (len: {})",
+                    resolved_location_counters.len()
+                )
+            })?;
+            if section_id.is_none() {
+                Ok(entry.1.unwrap_or(entry.0))
+            } else {
+                Ok(entry.0)
+            }
+        }
+    }
+}
+
 pub(crate) fn evaluate_expression<'data, P: Platform>(
     expr: &Expression<'data>,
     expr_loc: &SymbolLoc,
@@ -114,28 +142,9 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
     match expr {
         Expression::Number(n) => Ok(*n),
 
-        Expression::LocationCounter => match expr_loc {
-            SymbolLoc::SectionStart(id) => Ok(section_layouts.get(*id).mem_offset),
-            SymbolLoc::SectionEnd(id) => {
-                let layout = section_layouts.get(*id);
-                Ok(layout.mem_offset + layout.mem_size)
-            }
-            SymbolLoc::FirstSection | SymbolLoc::None => Ok(0),
-            SymbolLoc::LocationCounter(idx, section_id) => {
-                let idx = *idx as usize;
-                let entry = resolved_location_counters.get(idx).ok_or_else(|| {
-                    crate::error!(
-                        "location counter index {idx} out of range (len: {})",
-                        resolved_location_counters.len()
-                    )
-                })?;
-                if section_id.is_none() {
-                    Ok(entry.1.unwrap_or(entry.0))
-                } else {
-                    Ok(entry.0)
-                }
-            }
-        },
+        Expression::LocationCounter => {
+            evaluate_location(expr_loc, section_layouts, resolved_location_counters)
+        }
 
         Expression::Symbol(name) => symbol_resolution_callback(name),
 
@@ -171,13 +180,9 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
             if align == 0 {
                 bail!("ALIGN(0) is invalid");
             }
-            // NOTE: ALIGN(n) in a full linker script context means "align the current address
-            // to n". Here we always align 0 because the location counter is not threaded through
-            // expression evaluation. This gives correct results when used as a standalone value
-            // (e.g. ASSERT(ALIGN(4096) == 0, ...)) but not when combined with the location
-            // counter (e.g. ASSERT(. + ALIGN(4096) > x, ...)). Full support requires passing
-            // the current address into evaluate_expression.
-            Ok(0u64.wrapping_add(align - 1) & !(align - 1))
+            let location =
+                evaluate_location(expr_loc, section_layouts, resolved_location_counters)?;
+            Ok(location.wrapping_add(align - 1) & !(align - 1))
         }
 
         Expression::Min(l, r) => Ok(eval!(l)?.min(eval!(r)?)),

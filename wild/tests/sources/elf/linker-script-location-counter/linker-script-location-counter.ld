@@ -13,8 +13,10 @@ SECTIONS
         . = 0x1000;
         text2 = .;
     }
-    . = 0x400000;
+    . = 0x3fffff;
     . = . * 2;
+    start_of_unaligned_data = .;
+    . = ALIGN(8);
     start_of_data = .;
     .data : {
         *(.data)
@@ -26,6 +28,7 @@ SECTIONS
 }
 
 ASSERT(start_of_sections == 0x600000, "start_of_sections should be 0x600000");
+ASSERT(start_of_unaligned_data == 0x7ffffe, "start_of_unaligned_data should be 0x7ffffe");
 ASSERT(start_of_data == 0x800000, "start_of_data should be 0x800000");
 ASSERT(SIZEOF(.text) == 0x1000, "text section should be 0x1000 bytes");
 ASSERT(text1 == start_of_text + 0x10, "text1 should be 0x10 bytes after start_of_sections");
