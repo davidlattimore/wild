@@ -2559,7 +2559,8 @@ fn push_function_export<'data>(
     });
 }
 
-/// Export the command module (as opposed to `--no-entry` reactor modules) entry symbol (default `_start`).
+/// Export the command module (as opposed to `--no-entry` reactor modules) entry symbol (default
+/// `_start`).
 fn ensure_entry_export<'data, 'files>(
     exports: &mut Vec<OutputExport<'data>>,
     layout_inputs: &[WasmObjectLayoutInput<'data>],
@@ -2579,7 +2580,9 @@ where
         .collect();
 
     for (input, index_map) in layout_inputs.iter().zip(object_index_maps) {
-        let Some((_, object)) = objects.iter().find(|(file_id, _)| *file_id == input.file_id)
+        let Some((_, object)) = objects
+            .iter()
+            .find(|(file_id, _)| *file_id == input.file_id)
         else {
             continue;
         };
@@ -2634,11 +2637,7 @@ where
     let linker_stack_pointer = any_object_needs_linker_stack_pointer(&layout_inputs);
     let linker_runtime = linker_memory || linker_stack_pointer;
     let mut layout = WasmLayout::default();
-    let mut memory_cursor = if linker_memory {
-        LINKER_MEMORY_BASE
-    } else {
-        0
-    };
+    let mut memory_cursor = if linker_memory { LINKER_MEMORY_BASE } else { 0 };
     let mut section_cursor = 0u32;
     for (obj_idx, (input, object_layout)) in layout_inputs.iter().zip(object_layouts).enumerate() {
         layout.output_types.extend(object_layout.types);
@@ -2702,9 +2701,7 @@ where
 fn is_memory_addr_relocation(ty: u8) -> bool {
     matches!(
         ty,
-        reloc_type::MEMORY_ADDR_LEB
-            | reloc_type::MEMORY_ADDR_SLEB
-            | reloc_type::MEMORY_ADDR_I32
+        reloc_type::MEMORY_ADDR_LEB | reloc_type::MEMORY_ADDR_SLEB | reloc_type::MEMORY_ADDR_I32
     )
 }
 

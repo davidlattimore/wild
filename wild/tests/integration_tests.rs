@@ -653,7 +653,7 @@ fn run_wasm_test(wat_file: &Path) -> Result {
             } else if let Some(args) = rest.strip_prefix("LinkArgs:") {
                 let args = args
                     .trim()
-                    .replace("$OUT_DIR").to_string());
+                    .replace("$OUT_DIR", &build_dir.display().to_string());
                 link_args = ArgumentSet::parse(&args)?;
             } else if let Some(args) = rest.strip_prefix("WildExtraLinkArgs:") {
                 wild_extra_link_args = ArgumentSet::parse(args.trim())?;
@@ -857,9 +857,7 @@ fn run_wasm_with_wasmtime(wasm_file: &Path, linker_name: &str) -> Result {
     let start = instance
         .get_typed_func::<(), ()>(&mut store, "_start")
         .with_context(|| {
-            format!(
-                "Wasm export `_start` not found or has wrong type in {linker_name} output"
-            )
+            format!("Wasm export `_start` not found or has wrong type in {linker_name} output")
         })?;
     start
         .call(&mut store, ())
@@ -1527,7 +1525,7 @@ int main(void) {
         let sysroot = arch.get_cross_sysroot_path();
         (cross_compiler, Some(sysroot))
     } else {
-        ("gcc".to_string())
+        ("gcc".to_string(), None)
     };
 
     let mut compile_cmd = std::process::Command::new(&compiler);
