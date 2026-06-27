@@ -2465,6 +2465,35 @@ fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>]) -> MemoryType
     }
 }
 
+fn linker_stack_pointer_global<'data>() -> OutputGlobal<'data> {
+    OutputGlobal {
+        ty: GlobalType {
+            content_type: wasmparser::ValType::I32,
+            mutable: true,
+            shared: false,
+        },
+        init_expr_body: LINKER_STACK_POINTER_INIT_EXPR,
+    }
+}
+
+fn prepend_linker_stack_pointer_global<'data>(
+    globals: &mut Vec<OutputGlobal<'data>>,
+    object_index_maps: &mut [WasmObjectIndexMap],
+    exports: &mut Vec<OutputExport<'data>>,
+) {
+    globals.insert(0, linker_stack_pointer_global());
+    for index_map in object_index_maps {
+        for index in &mut index_map.global_indices {
+            *index = index.saturating_add(1);
+        }
+    }
+    for export in exports {
+        if matches!(export.kind, wasmparser::ExternalKind::Global) {
+            export.index = export.index.saturating_add(1);
+        }
+    }
+}
+
 fn ensure_memory_export(exports: &mut Vec<OutputExport<'_>>) {
     if exports
         .iter()
@@ -2507,8 +2536,13 @@ where
         })
         .collect::<Result<Vec<_>>>()?;
 
+    let linker_memory = any_object_needs_linker_memory(&layout_inputs);
     let mut layout = WasmLayout::default();
-    let mut memory_cursor = 0u32;
+    let mut memory_cursor = if linker_memory {
+        LINKER_MEMORY_BASE
+    } else {
+        0
+    };
     let mut section_cursor = 0u32;
     for (obj_idx, (input, object_layout)) in layout_inputs.iter().zip(object_layouts).enumerate() {
         layout.output_types.extend(object_layout.types);
@@ -2536,11 +2570,16 @@ where
             &mut section_cursor,
         )?);
     }
-    if any_object_needs_linker_memory(&layout_inputs) && layout.memories.is_empty() {
+    if linker_memory && layout.memories.is_empty() {
         layout
             .memories
             .push(linker_output_memory_type(&layout_inputs));
         ensure_memory_export(&mut layout.exports);
+        prepend_linker_stack_pointer_global(
+            &mut layout.globals,
+            &mut layout.object_index_maps,
+            &mut layout.exports,
+        );
     }
     compute_data_addresses(
         &mut layout.object_index_maps,
