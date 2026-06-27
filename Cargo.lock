@@ -668,8 +668,9 @@ checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "gimli"
-version = "0.33.1"
-source = "git+https://github.com/gimli-rs/gimli.git?rev=9dcce498dd3d90a98a16eb27c5229bba02603050#9dcce498dd3d90a98a16eb27c5229bba02603050"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1033caf0b349c518623b5396bfb2cf0bddf44f0306d543a250e5743297aafd10"
 dependencies = [
  "fnv",
  "hashbrown 0.17.1",
@@ -913,7 +914,7 @@ dependencies = [
  "derive_more",
  "flate2",
  "foldhash 0.2.0",
- "gimli 0.33.1",
+ "gimli 0.34.0",
  "glob",
  "hashbrown 0.17.1",
  "hex",
@@ -960,7 +961,7 @@ dependencies = [
  "anstyle",
  "anyhow",
  "clap",
- "gimli 0.33.1",
+ "gimli 0.34.0",
  "hashbrown 0.17.1",
  "iced-x86",
  "itertools 0.15.0",
@@ -1935,7 +1936,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.1",
  "once_cell",
  "rustix",
  "windows-sys",
@@ -2324,7 +2325,7 @@ dependencies = [
  "dhat",
  "diff",
  "foldhash 0.2.0",
- "gimli 0.33.1",
+ "gimli 0.34.0",
  "hex",
  "itertools 0.15.0",
  "libloading",
