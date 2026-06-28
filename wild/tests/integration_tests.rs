@@ -843,26 +843,19 @@ fn validate_wasm(wasm_file: &Path, linker_name: &str) -> Result {
 }
 
 fn run_wasm_with_wasmtime(wasm_file: &Path, linker_name: &str) -> Result {
-    let engine = wasmtime::Engine::default();
-    let module = wasmtime::Module::from_file(&engine, wasm_file).with_context(|| {
-        format!(
-            "Failed to load Wasm module from {} ({linker_name})",
-            wasm_file.display()
-        )
-    })?;
-    let mut store = wasmtime::Store::new(&engine, ());
-    let instance = wasmtime::Instance::new(&mut store, &module, &[])
-        .with_context(|| format!("Failed to instantiate Wasm module from {linker_name} output"))?;
-
-    let start = instance
-        .get_typed_func::<(), ()>(&mut store, "_start")
-        .with_context(|| {
-            format!("Wasm export `_start` not found or has wrong type in {linker_name} output")
-        })?;
-    start
-        .call(&mut store, ())
-        .with_context(|| format!("Wasm `_start` trapped in {linker_name} output"))?;
-
+    let output = Command::new("wasmtime")
+        .arg("run")
+        .arg(wasm_file)
+        .output()
+        .context("Failed to run wasmtime")?;
+    ensure!(
+        output.status.success(),
+        "wasmtime execution of {} output failed (exit={:?}):\nstdout: {}\nstderr: {}",
+        linker_name,
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     Ok(())
 }
 
