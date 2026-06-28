@@ -11,6 +11,7 @@ use crate::layout;
 use crate::layout_rules::SectionKind;
 use crate::output_section_id::SectionName;
 use crate::platform;
+use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::wasm_writer::OutputExport;
 use crate::wasm_writer::OutputGlobal;
@@ -2561,47 +2562,49 @@ fn push_function_export<'data>(
 
 /// Export the command module (as opposed to `--no-entry` reactor modules) entry symbol (default
 /// `_start`).
-fn ensure_entry_export<'data, 'files>(
+fn ensure_entry_export<'data>(
     exports: &mut Vec<OutputExport<'data>>,
     layout_inputs: &[WasmObjectLayoutInput<'data>],
-    groups: &'files [layout::GroupState<'data, Wasm>],
     object_index_maps: &[WasmObjectIndexMap],
-    entry_name: &str,
-) -> Result
-where
-    'data: 'files,
-{
-    if export_name_exists(exports, entry_name) {
+    symbol_db: &SymbolDb<'data, Wasm>,
+) -> Result {
+    let entry_name_bytes = symbol_db.entry_symbol_name();
+    if export_name_exists(
+        exports,
+        core::str::from_utf8(entry_name_bytes)
+            .context("invalid UTF-8 in Wasm entry symbol name")?,
+    ) {
         return Ok(());
     }
 
-    let objects: Vec<_> = layout::objects_iter(groups)
-        .map(|state| (state.file_id, &state.object))
-        .collect();
+    let Some(symbol_id) =
+        symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(entry_name_bytes))
+    else {
+        // No symbol with the entry name.
+        return Ok(());
+    };
+    let def_id = symbol_db.definition(symbol_id);
+    let def_file_id = symbol_db.file_id_for_symbol(def_id);
 
-    for (input, index_map) in layout_inputs.iter().zip(object_index_maps) {
-        let Some((_, object)) = objects
-            .iter()
-            .find(|(file_id, _)| *file_id == input.file_id)
-        else {
-            continue;
-        };
-
-        for sym in &input.symbols {
-            if sym.is_undefined() || !sym.has_name() || sym.kind != WasmSymbolKind::Func {
-                continue;
-            }
-            let name = core::str::from_utf8(&object.data[sym.name_range()])
-                .context("invalid UTF-8 in Wasm symbol name")?;
-            if name != entry_name {
-                continue;
-            }
-            let index = remap_wasm_index(&index_map.function_indices, sym.index, "function")?;
-            push_function_export(exports, name, index);
-            return Ok(());
-        }
+    let Some(def_obj_idx) = layout_inputs
+        .iter()
+        .position(|input| input.file_id == def_file_id)
+    else {
+        return Ok(());
+    };
+    let def_input = &layout_inputs[def_obj_idx];
+    let def_sym = &def_input.symbols[def_input.symbol_id_range.id_to_offset(def_id)];
+    if def_sym.is_undefined() || def_sym.kind != WasmSymbolKind::Func {
+        return Ok(());
     }
 
+    let index_map = object_index_maps
+        .get(def_obj_idx)
+        .context("missing Wasm object index map for entry symbol definition")?;
+    let index = remap_wasm_index(&index_map.function_indices, def_sym.index, "function")?;
+    let export_name = core::str::from_utf8(symbol_db.symbol_name(def_id)?.bytes())
+        .context("invalid UTF-8 in Wasm entry symbol name")?;
+    push_function_export(exports, export_name, index);
     Ok(())
 }
 
@@ -2685,14 +2688,11 @@ where
         &layout_inputs,
         symbol_db,
     )?;
-    let entry_name = core::str::from_utf8(symbol_db.entry_symbol_name())
-        .context("invalid UTF-8 in Wasm entry symbol name")?;
     ensure_entry_export(
         &mut layout.exports,
         &layout_inputs,
-        groups,
         &layout.object_index_maps,
-        entry_name,
+        symbol_db,
     )?;
     layout.encode_metadata_sections()?;
     Ok(layout)
