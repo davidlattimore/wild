@@ -5704,6 +5704,12 @@ fn run_integration_test(
         return Ok(libtest_mimic::Completion::ignored_with(error.to_string()));
     }
 
+    if !cfg!(debug_assertions) && config.active_malfunction.is_some() {
+        return Ok(libtest_mimic::Completion::ignored_with(
+            "Malfunction tests are allowed only in Debug profile",
+        ));
+    }
+
     std::fs::create_dir_all(config.build_dir()).with_context(|| {
         format!(
             "Failed to create directory `{}`",
