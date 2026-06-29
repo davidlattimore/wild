@@ -3,7 +3,7 @@
 //!
 //! The test files can contain directives that affect compilation and linking as well as assertions
 //! that are tested by examining the resulting binaries. Directives have the format '//#Directive:
-//! Args'.
+//! Args'. For WebAssembly Text (`.wat`), the alternate prefix `;;#Directive: Args` is accepted.
 //!
 //! Config:{name}[:{inherits}] Starts a new configuration with the specified name. Optionally
 //! inherits from configuration with name in the second argument.
@@ -347,15 +347,17 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
 
     let host_arch = get_host_architecture();
 
-    collect_wasm_tests(tests, filter)?;
-
-    for platform in [PlatformKind::Elf, PlatformKind::MachO] {
+    for platform in [PlatformKind::Elf, PlatformKind::MachO, PlatformKind::Wasm] {
         // Right now, the Mach-O provided Clang and the ld linker do not support the ELF format.
         if platform == PlatformKind::Elf && cfg!(target_os = "macos") {
             continue;
         }
 
         if platform == PlatformKind::MachO && !cfg!(feature = "macho") {
+            continue;
+        }
+
+        if platform == PlatformKind::Wasm && !cfg!(feature = "wasm") {
             continue;
         }
 
@@ -410,7 +412,12 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
                     // criteria for ignoring tests, but the biggest one is that the architecture
                     // isn't enabled. So we just filter for that and only when running under
                     // nextest. For the normal test runner, it doesn't matter much.
-                    if is_nextest && arch != host_arch && !test_config.qemu_arch.contains(&arch) {
+                    // Wasm is never the host architecture but is always runnable via wasmtime.
+                    if is_nextest
+                        && arch != host_arch
+                        && platform != PlatformKind::Wasm
+                        && !test_config.qemu_arch.contains(&arch)
+                    {
                         continue;
                     }
 
@@ -455,329 +462,6 @@ fn for_each_test_dir(platform_name: &str, mut cb: impl FnMut(&str, PathBuf) -> R
         cb(&name, path)?;
     }
 
-    Ok(())
-}
-
-fn collect_wasm_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
-    if !cfg!(feature = "wasm") {
-        return Ok(());
-    }
-
-    let platform_name = "wasm";
-    if filter.excludes(platform_name) {
-        return Ok(());
-    }
-
-    for_each_test_dir(platform_name, |test_name, path| {
-        let wat_file = path.join(format!("{test_name}.wat"));
-        let c_file = path.join(format!("{test_name}.c"));
-        if !wat_file.exists() && !c_file.exists() {
-            return Ok(());
-        }
-
-        let full_name = format!("{platform_name}/wasm32/{test_name}/default");
-        if filter.excludes(&full_name) {
-            return Ok(());
-        }
-        if c_file.exists() {
-            tests.push(libtest_mimic::Trial::test(full_name, move || {
-                run_wasm_clang_test(&c_file).map_err(|e| libtest_mimic::Failed::from(e.to_string()))
-            }));
-        } else {
-            tests.push(libtest_mimic::Trial::test(full_name, move || {
-                run_wasm_test(&wat_file).map_err(|e| libtest_mimic::Failed::from(e.to_string()))
-            }));
-        }
-        Ok(())
-    })
-}
-
-/// Directives shared by Wasm `.wat` (`;;#…`) and `.c` (`//#…`) integration tests.
-struct WasmTestDirectives {
-    expect_error: bool,
-    should_run: bool,
-    expected_sections: Vec<String>,
-    extra_objects: Vec<String>,
-    link_args: ArgumentSet,
-    wild_extra_link_args: ArgumentSet,
-}
-
-fn parse_wasm_test_directives(
-    source: &str,
-    line_prefix: &str,
-    build_dir: &Path,
-) -> Result<WasmTestDirectives> {
-    let mut expect_error = false;
-    let mut should_run = true;
-    let mut expected_sections = Vec::new();
-    let mut extra_objects = Vec::new();
-    let mut link_args = ArgumentSet::empty();
-    let mut wild_extra_link_args = ArgumentSet::empty();
-    let out_dir = build_dir.display().to_string();
-
-    for line in source.lines() {
-        let Some(rest) = line.trim().strip_prefix(line_prefix) else {
-            continue;
-        };
-        if let Some(obj_name) = rest.strip_prefix("Object:") {
-            extra_objects.push(obj_name.trim().to_owned());
-        } else if rest.starts_with("ExpectError") {
-            expect_error = true;
-        } else if let Some(val) = rest.strip_prefix("RunEnabled:") {
-            should_run = val.trim().parse().context("Invalid bool for RunEnabled")?;
-        } else if let Some(args) = rest.strip_prefix("LinkArgs:") {
-            let args = args.trim().replace("$OUT_DIR", &out_dir);
-            link_args = ArgumentSet::parse(&args)?;
-        } else if let Some(args) = rest.strip_prefix("WildExtraLinkArgs:") {
-            wild_extra_link_args = ArgumentSet::parse(args.trim())?;
-        } else if let Some(section) = rest.strip_prefix("ExpectSection:") {
-            expected_sections.push(section.trim().to_owned());
-        }
-    }
-
-    Ok(WasmTestDirectives {
-        expect_error,
-        should_run,
-        expected_sections,
-        extra_objects,
-        link_args,
-        wild_extra_link_args,
-    })
-}
-
-fn run_wasm_clang_test(c_file: &Path) -> Result {
-    let test_name = c_file
-        .parent()
-        .and_then(|p| p.file_name())
-        .context("Bad test path")?
-        .to_str()
-        .context("Non-UTF-8 path")?;
-
-    let build_dir = build_dir().join("wasm").join("wasm32").join(test_name);
-    std::fs::create_dir_all(&build_dir)?;
-
-    let source = std::fs::read_to_string(c_file)?;
-    let directives = parse_wasm_test_directives(&source, "//#", &build_dir)?;
-
-    let obj_file = build_dir.join(format!("{test_name}.o"));
-    let status = Command::new("clang")
-        .arg("--target=wasm32")
-        .arg("-c")
-        .arg("-nostdlib")
-        .arg("-o")
-        .arg(&obj_file)
-        .arg(c_file)
-        .status()
-        .context("Failed to run clang")?;
-    ensure!(status.success(), "clang failed for {}", c_file.display());
-
-    let mut all_objects = vec![obj_file];
-    for extra in &directives.extra_objects {
-        let extra_c = c_file.parent().unwrap().join(extra);
-        let extra_obj = build_dir.join(Path::new(extra).with_extension("o"));
-        let status = Command::new("clang")
-            .arg("--target=wasm32")
-            .arg("-c")
-            .arg("-nostdlib")
-            .arg("-o")
-            .arg(&extra_obj)
-            .arg(&extra_c)
-            .status()
-            .with_context(|| format!("Failed to run clang for {}", extra_c.display()))?;
-        ensure!(status.success(), "clang failed for {}", extra_c.display());
-        all_objects.push(extra_obj);
-    }
-
-    let wasm_ld_output = build_dir.join(format!("{test_name}.wasm-ld.wasm"));
-    let wasm_wild_output = build_dir.join(format!("{test_name}.wild.wasm"));
-
-    let mut wasm_ld_cmd = Command::new("wasm-ld");
-    for obj in &all_objects {
-        wasm_ld_cmd.arg(obj);
-    }
-    wasm_ld_cmd
-        .arg("-o")
-        .arg(&wasm_ld_output)
-        .args(&directives.link_args.args);
-
-    let wasm_ld_result = wasm_ld_cmd.output().context("Failed to run wasm-ld")?;
-
-    if !directives.expect_error {
-        ensure!(
-            wasm_ld_result.status.success(),
-            "wasm-ld linking failed:\n{}",
-            String::from_utf8_lossy(&wasm_ld_result.stderr)
-        );
-        validate_wasm(&wasm_ld_output, "wasm-ld")?;
-        if directives.should_run {
-            run_wasm_with_wasmtime(&wasm_ld_output, "wasm-ld")?;
-        }
-    }
-
-    let mut link_cmd = Command::new(wild_path());
-    link_cmd.arg("-flavor").arg("wasm");
-    for obj in &all_objects {
-        link_cmd.arg(obj);
-    }
-    link_cmd
-        .arg("-o")
-        .arg(&wasm_wild_output)
-        .args(&directives.wild_extra_link_args.args);
-
-    let link_result = link_cmd.output().context("Failed to run wild")?;
-
-    if directives.expect_error {
-        ensure!(
-            !link_result.status.success(),
-            "Expected link error but wild succeeded"
-        );
-        return Ok(());
-    }
-
-    ensure!(
-        link_result.status.success(),
-        "wild linking failed:\n{}",
-        String::from_utf8_lossy(&link_result.stderr)
-    );
-
-    validate_wasm(&wasm_wild_output, "wild")?;
-    if !directives.expected_sections.is_empty() {
-        ensure_wasm_sections_for_linkers(
-            &directives.expected_sections,
-            &[(&wasm_ld_output, "wasm-ld"), (&wasm_wild_output, "wild")],
-        )?;
-    }
-    if directives.should_run {
-        run_wasm_with_wasmtime(&wasm_wild_output, "wild")?;
-    }
-
-    Ok(())
-}
-
-fn run_wasm_test(wat_file: &Path) -> Result {
-    let test_name = wat_file
-        .parent()
-        .and_then(|p| p.file_name())
-        .context("Bad test path")?
-        .to_str()
-        .context("Non-UTF-8 path")?;
-
-    let build_dir = build_dir().join("wasm").join("wasm32").join(test_name);
-    std::fs::create_dir_all(&build_dir)?;
-
-    let source = std::fs::read_to_string(wat_file)?;
-    let directives = parse_wasm_test_directives(&source, ";;#", &build_dir)?;
-
-    let obj_file = build_dir.join(format!("{test_name}.o"));
-    let status = Command::new("wat2wasm")
-        .arg(wat_file)
-        .arg("--relocatable")
-        .arg("-o")
-        .arg(&obj_file)
-        .status()
-        .context("Failed to run wat2wasm")?;
-    ensure!(
-        status.success(),
-        "wat2wasm failed for {}",
-        wat_file.display()
-    );
-
-    // Compile any extra .wat objects
-    let mut all_objects = vec![obj_file];
-    for extra in &directives.extra_objects {
-        let extra_wat = wat_file.parent().unwrap().join(extra);
-        let extra_obj = build_dir.join(extra.replace(".wat", ".o"));
-        let status = Command::new("wat2wasm")
-            .arg(&extra_wat)
-            .arg("--relocatable")
-            .arg("-o")
-            .arg(&extra_obj)
-            .status()
-            .with_context(|| format!("Failed to run wat2wasm for {}", extra_wat.display()))?;
-        ensure!(
-            status.success(),
-            "wat2wasm failed for {}",
-            extra_wat.display()
-        );
-        all_objects.push(extra_obj);
-    }
-
-    let wasm_ld_output = build_dir.join(format!("{test_name}.wasm-ld.wasm"));
-    let wasm_wild_output = build_dir.join(format!("{test_name}.wild.wasm"));
-    let mut wasm_ld_cmd = Command::new("wasm-ld");
-    for obj in &all_objects {
-        wasm_ld_cmd.arg(obj);
-    }
-    wasm_ld_cmd
-        .arg("-o")
-        .arg(&wasm_ld_output)
-        .arg("--no-entry")
-        .arg("--export-all")
-        .arg("--no-check-features")
-        .args(&directives.link_args.args);
-
-    let wasm_ld_result = wasm_ld_cmd.output().context("Failed to run wasm-ld")?;
-
-    if !directives.expect_error {
-        ensure!(
-            wasm_ld_result.status.success(),
-            "wasm-ld linking failed:\n{}",
-            String::from_utf8_lossy(&wasm_ld_result.stderr)
-        );
-        validate_wasm(&wasm_ld_output, "wasm-ld")?;
-        if directives.should_run {
-            run_wasm_with_wasmtime(&wasm_ld_output, "wasm-ld")?;
-        }
-    }
-
-    // Link with wild and verify the result.
-    let mut link_cmd = Command::new(wild_path());
-    link_cmd.arg("-flavor").arg("wasm");
-    for obj in &all_objects {
-        link_cmd.arg(obj);
-    }
-    link_cmd
-        .arg("-o")
-        .arg(&wasm_wild_output)
-        .args(&directives.wild_extra_link_args.args);
-
-    let link_result = link_cmd.output().context("Failed to run wild")?;
-
-    if directives.expect_error {
-        ensure!(
-            !link_result.status.success(),
-            "Expected link error but wild succeeded"
-        );
-        return Ok(());
-    }
-
-    ensure!(
-        link_result.status.success(),
-        "wild linking failed:\n{}",
-        String::from_utf8_lossy(&link_result.stderr)
-    );
-
-    validate_wasm(&wasm_wild_output, "wild")?;
-    if !directives.expected_sections.is_empty() {
-        ensure_wasm_sections_for_linkers(
-            &directives.expected_sections,
-            &[(&wasm_ld_output, "wasm-ld"), (&wasm_wild_output, "wild")],
-        )?;
-    }
-    if directives.should_run {
-        run_wasm_with_wasmtime(&wasm_wild_output, "wild")?;
-    }
-
-    Ok(())
-}
-
-fn ensure_wasm_sections_for_linkers(
-    section_names: &[String],
-    outputs: &[(&Path, &str)],
-) -> Result<()> {
-    for (wasm_file, linker_name) in outputs {
-        ensure_wasm_sections(wasm_file, section_names, linker_name)?;
-    }
     Ok(())
 }
 
@@ -1041,6 +725,8 @@ enum Architecture {
     LoongArch64,
     #[strum(serialize = "ppc64le")]
     Ppc64,
+    #[strum(serialize = "wasm32")]
+    Wasm32,
 }
 
 const ALL_ARCHITECTURES: &[Architecture] = &[
@@ -1059,6 +745,7 @@ impl Architecture {
             Architecture::RiscV64 => "elf64lriscv",
             Architecture::LoongArch64 => "elf64loongarch",
             Architecture::Ppc64 => "elf64lppc",
+            Architecture::Wasm32 => panic!("Wasm has no ELF emulation name"),
         }
     }
 
@@ -1088,6 +775,7 @@ impl Architecture {
                 }
             }
             PlatformKind::MachO => format!("{}-apple-darwin", self.darwin_arch_name()),
+            PlatformKind::Wasm => "wasm32".to_owned(),
         }
     }
 
@@ -1151,6 +839,7 @@ fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
         Some(Architecture::RiscV64) => "/lib/ld-linux-riscv64-lp64d.so.1",
         Some(Architecture::LoongArch64) => "/lib/ld-linux-loongarch-lp64d.so.1",
         Some(Architecture::Ppc64) => "/lib64/ld64.so.2",
+        Some(Architecture::Wasm32) => panic!("Wasm has no dynamic linker"),
     }
 }
 
@@ -1342,6 +1031,7 @@ enum Mode {
 enum PlatformKind {
     Elf,
     MachO,
+    Wasm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1908,8 +1598,8 @@ impl Config {
             linker_driver: LinkerDriver::Direct(DirectConfig::default()),
             linker_args: platform.default_args_for_linking(),
             linker_so_args: platform.default_args_for_linking(),
-            compiler_args: ArgumentSet::default_for_compiling(),
-            compiler_so_args: ArgumentSet::default_for_compiling(),
+            compiler_args: platform.default_compiler_args(),
+            compiler_so_args: platform.default_compiler_args(),
             wild_extra_linker_args: ArgumentSet::empty(),
             diff_ignore: Default::default(),
             reference_linkers: None,
@@ -1929,7 +1619,7 @@ impl Config {
             expect_stdout: Default::default(),
             active_malfunction: None,
             cross_enabled: true,
-            support_architectures: ALL_ARCHITECTURES.to_owned(),
+            support_architectures: platform.supported_architectures().to_owned(),
             requires_glibc: false,
             requires_glibc_version: None,
             requires_sframe_backtrace: false,
@@ -1970,13 +1660,21 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
     let source = std::fs::read_to_string(src_filename)
         .with_context(|| format!("Failed to read {}", src_filename.display()))?;
     let is_rust = src_filename.extension().is_some_and(|ext| ext == "rs");
+    let is_wat = src_filename.extension().is_some_and(|ext| ext == "wat");
 
     let mut configs = Vec::new();
     let mut config_name_to_index = HashMap::new();
     let mut config = default_config.clone();
 
     for (i, line) in source.lines().enumerate() {
-        if let Some(rest) = line.trim().strip_prefix("//#") {
+        let line = line.trim();
+        let rest = if is_wat {
+            line.strip_prefix(";;#")
+        } else {
+            line.strip_prefix("//#")
+        };
+
+        if let Some(rest) = rest {
             process_directive(
                 rest,
                 &mut config,
@@ -2665,6 +2363,13 @@ const EXIT_SUCCESS: i32 = 42;
 
 impl Program<'_> {
     fn run(&self, cross_arch: Option<Architecture>) -> Result {
+        if self.link_output.command.config.platform == PlatformKind::Wasm {
+            return run_wasm_with_wasmtime(
+                &self.link_output.binary,
+                self.link_output.linker_used.name(),
+            );
+        }
+
         let mut command = if let Some(arch) = cross_arch {
             let mut c = Command::new(format!("qemu-{arch}"));
             c.arg("-L");
@@ -3095,6 +2800,10 @@ fn build_obj(
         .map(|dep| build_linker_input(dep, &config, linker, cross_arch))
         .try_collect()?;
 
+    if src_path.extension().is_some_and(|ext| ext == "wat") {
+        return build_wat_obj(&src_path, &config, inputs);
+    }
+
     let Some((compiler, compiler_kind)) = compiler_for_file(&src_path, cross_arch, &config)? else {
         return Ok(BuiltObject {
             path: src_path,
@@ -3376,6 +3085,53 @@ impl RustcChannel {
     }
 }
 
+/// Compiles a `.wat` file to a relocatable Wasm object with `wat2wasm`.
+fn build_wat_obj(
+    src_path: &Path,
+    config: &Config,
+    inputs: Vec<LinkerInput>,
+) -> Result<BuiltObject> {
+    let output_path = add_to_path(
+        &config.build_dir().join(src_path.file_name().unwrap()),
+        ".o",
+    );
+
+    let mut command = Command::new("wat2wasm");
+    command
+        .arg(src_path)
+        .arg("--relocatable")
+        .arg("-o")
+        .arg(&output_path);
+
+    verify_path_unique_for_args(&output_path, &command)?;
+
+    if command_line_unchanged(&command, &output_path)
+        && is_newer(&output_path, std::iter::once(src_path))
+    {
+        return Ok(BuiltObject {
+            path: output_path,
+            inputs,
+        });
+    }
+
+    let output = command
+        .output()
+        .with_context(|| format!("Failed to run wat2wasm for {}", src_path.display()))?;
+    ensure!(
+        output.status.success(),
+        "wat2wasm failed for {}:\n{}",
+        src_path.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    write_cmd_file(&command, &output_path)?;
+
+    Ok(BuiltObject {
+        path: output_path,
+        inputs,
+    })
+}
+
 /// Determines which compiler to use to for the supplied file. Returns None if the file is an object
 /// file and doesn't need compiling.
 fn compiler_for_file(
@@ -3403,7 +3159,7 @@ fn compiler_for_file(
             CompilerKind::C,
         ),
         "rs" => ("rustc".to_string(), CompilerKind::Rust),
-        "o" => {
+        "o" | "wat" => {
             return Ok(None);
         }
         _ => bail!("Don't know how to compile {extension} files"),
@@ -3775,6 +3531,18 @@ impl LinkCommand {
                                 command.arg("macos");
                                 command.arg("11.0");
                                 command.arg("11.0");
+                            }
+                        }
+                        PlatformKind::Wasm => {
+                            // TODO(wasm): Drop once Wild accepts the same flags as wasm-ld.
+                            let primary_wat = config
+                                .test_src_dir
+                                .join(format!("{}.wat", config.test_name));
+                            if !linker.is_wild() && primary_wat.exists() {
+                                command
+                                    .arg("--no-entry")
+                                    .arg("--export-all")
+                                    .arg("--no-check-features");
                             }
                         }
                     }
@@ -4239,6 +4007,12 @@ impl Assertions {
     fn check_path(&self, path: &PathBuf, linker_used: &Linker) -> Result {
         let bytes =
             std::fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
+
+        // For Wasm modules.
+        if bytes.starts_with(b"\0asm") {
+            return self.check_wasm_path(path, linker_used);
+        }
+
         let obj = object::File::parse(bytes.as_slice())?;
 
         self.verify_file_kind(&obj)?;
@@ -4298,6 +4072,40 @@ impl Assertions {
         if linker_used.is_wild() {
             self.verify_max_thunks(path)?;
         }
+        Ok(())
+    }
+
+    fn check_wasm_path(&self, path: &Path, linker_used: &Linker) -> Result {
+        // Allowlist of assertion fields implemented for Wasm.
+        let supported = Assertions {
+            expected_sections: self.expected_sections.clone(),
+            absent_sections: self.absent_sections.clone(),
+            does_not_contain: self.does_not_contain.clone(),
+            contains_strings: self.contains_strings.clone(),
+            output_file_matches: self.output_file_matches.clone(),
+            ..Default::default()
+        };
+        ensure!(
+            *self == supported,
+            "One or more assertions are not supported for Wasm"
+        );
+
+        validate_wasm(path, linker_used.name())?;
+        ensure_wasm_sections(path, &self.expected_sections, linker_used.name())?;
+
+        let sections = wasm_standard_sections(path)?;
+        for name in &self.absent_sections {
+            ensure!(
+                !sections.contains(name),
+                "Section `{name}` should not exist but was found in {} output ({})",
+                linker_used.name(),
+                path.display()
+            );
+        }
+
+        let bytes =
+            std::fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
+        self.verify_strings(&bytes)?;
         Ok(())
     }
 
@@ -5720,6 +5528,24 @@ fn available_linkers_for_mac() -> Result<Vec<Linker>> {
     Ok(linkers)
 }
 
+fn available_linkers_for_wasm() -> Result<Vec<Linker>> {
+    let mut linkers = Vec::new();
+
+    if let Ok(path) = find_bin(&["wasm-ld"]) {
+        linkers.push(Linker::ThirdParty(ThirdPartyLinker {
+            name: "wasm-ld",
+            gcc_name: "wasm-ld",
+            path,
+            cross_paths: HashMap::new(),
+            enabled_by_default: true,
+        }));
+    }
+
+    linkers.push(Linker::Wild);
+
+    Ok(linkers)
+}
+
 fn run_with_config(
     program_inputs: &ProgramInputs,
     config: &Config,
@@ -5834,7 +5660,10 @@ fn run_integration_test(
 
     let host_arch = get_host_architecture();
 
-    if arch != host_arch && !test_config.qemu_arch.contains(&arch) {
+    if arch != host_arch
+        && config.platform != PlatformKind::Wasm
+        && !test_config.qemu_arch.contains(&arch)
+    {
         return Ok(libtest_mimic::Completion::ignored_with(
             "Architecture disabled",
         ));
@@ -5887,7 +5716,7 @@ fn run_integration_test(
 
 /// Determine the name of the primary source file for a test source directory.
 fn identify_primary_source(test_src_dir: &Path, test_name: &str) -> Result<PathBuf> {
-    let extensions = &["rs", "c", "cc", "s"];
+    let extensions = &["rs", "c", "cc", "s", "wat"];
 
     for ext in extensions {
         let path = test_src_dir.join(format!("{test_name}.{ext}"));
@@ -6112,6 +5941,7 @@ impl PlatformKind {
         match self {
             PlatformKind::Elf => "elf",
             PlatformKind::MachO => "macho",
+            PlatformKind::Wasm => "wasm",
         }
     }
 
@@ -6119,6 +5949,7 @@ impl PlatformKind {
         match self {
             PlatformKind::Elf => "gnu",
             PlatformKind::MachO => "darwin",
+            PlatformKind::Wasm => "wasm",
         }
     }
 
@@ -6127,7 +5958,7 @@ impl PlatformKind {
     }
 
     fn can_execute_on_host(self) -> bool {
-        self.is_host()
+        self.is_host() || self == PlatformKind::Wasm
     }
 
     fn diff_supported(self) -> bool {
@@ -6138,6 +5969,7 @@ impl PlatformKind {
         match self {
             PlatformKind::Elf => available_linkers_for_linux(),
             PlatformKind::MachO => available_linkers_for_mac(),
+            PlatformKind::Wasm => available_linkers_for_wasm(),
         }
     }
 
@@ -6145,6 +5977,7 @@ impl PlatformKind {
         match self {
             PlatformKind::Elf => ALL_ARCHITECTURES,
             PlatformKind::MachO => &[Architecture::AArch64],
+            PlatformKind::Wasm => &[Architecture::Wasm32],
         }
     }
 
@@ -6154,14 +5987,26 @@ impl PlatformKind {
                 // Wild linker uses -znow by default!
                 args: vec!["-z".to_owned(), "now".to_owned()],
             },
-            PlatformKind::MachO => ArgumentSet::empty(),
+            PlatformKind::MachO | PlatformKind::Wasm => ArgumentSet::empty(),
         }
     }
 
     fn default_c_compiler(self) -> &'static str {
         match self {
             PlatformKind::Elf => "gcc",
-            PlatformKind::MachO => "clang",
+            PlatformKind::MachO | PlatformKind::Wasm => "clang",
+        }
+    }
+
+    /// TODO(wasm): Remove the Wasm special case (and possibly this helper) once tests can rely on a
+    /// normal toolchain / WASI crt like ELF, and set freestanding flags via `CompArgs` only where
+    /// needed.
+    fn default_compiler_args(self) -> ArgumentSet {
+        match self {
+            PlatformKind::Wasm => ArgumentSet {
+                args: vec!["-nostdlib".to_owned()],
+            },
+            PlatformKind::Elf | PlatformKind::MachO => ArgumentSet::default_for_compiling(),
         }
     }
 }
