@@ -413,10 +413,12 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
                     // isn't enabled. So we just filter for that and only when running under
                     // nextest. For the normal test runner, it doesn't matter much.
                     // Wasm is never the host architecture but is always runnable via wasmtime.
+                    // Cross-architecture execution via qemu only makes sense for ELF. For other
+                    // platforms (e.g. Mach-O), a non-host architecture can't be run on this host.
                     if is_nextest
                         && arch != host_arch
                         && platform != PlatformKind::Wasm
-                        && !test_config.qemu_arch.contains(&arch)
+                        && !(platform == PlatformKind::Elf && test_config.qemu_arch.contains(&arch))
                     {
                         continue;
                     }
