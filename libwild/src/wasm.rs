@@ -3374,6 +3374,10 @@ impl platform::Platform for Wasm {
     fn default_symtab_entry() -> Self::SymtabEntry {
         WasmSymbol::default()
     }
+
+    fn is_allowed_in_archive(kind: crate::file_kind::FileKind) -> bool {
+        kind == crate::file_kind::FileKind::WasmObject
+    }
 }
 
 fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
