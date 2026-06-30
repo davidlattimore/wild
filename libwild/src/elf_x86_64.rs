@@ -358,7 +358,9 @@ impl crate::platform::Arch for ElfX86_64 {
             }
             object::elf::R_X86_64_TLSGD if !interposable && output_kind.is_executable() => {
                 let kind = match TlsGdForm::identify(section_bytes, offset)? {
-                    TlsGdForm::Regular => RelaxationKind::TlsGdToLocalExec,
+                    TlsGdForm::Regular | TlsGdForm::RegularNoPlt => {
+                        RelaxationKind::TlsGdToLocalExec
+                    }
                     TlsGdForm::Large => RelaxationKind::TlsGdToLocalExecLarge,
                 };
                 return Some(Relaxation {
@@ -370,7 +372,7 @@ impl crate::platform::Arch for ElfX86_64 {
             object::elf::R_X86_64_TLSGD if output_kind.is_executable() => {
                 let kind = match TlsGdForm::identify(section_bytes, offset)? {
                     TlsGdForm::Regular => RelaxationKind::TlsGdToInitialExec,
-                    TlsGdForm::Large => {
+                    TlsGdForm::RegularNoPlt | TlsGdForm::Large => {
                         // TODO
                         return None;
                     }
@@ -514,6 +516,7 @@ impl crate::platform::Relaxation for Relaxation {
 enum TlsGdForm {
     Regular,
     Large,
+    RegularNoPlt,
 }
 
 impl TlsGdForm {
@@ -524,6 +527,14 @@ impl TlsGdForm {
             && bytes.get(offset + 4..offset + 8) == Some(&[0x66, 0x66, 0x48, 0xe8])
         {
             return Some(Self::Regular);
+        }
+
+        // data16 lea 0x0(%rip),%rdi
+        // data16 rex.W call *__tls_get_addr@GOTPCREL(%rip)
+        if bytes.get(offset - 4..offset) == Some(&[0x66, 0x48, 0x8d, 0x3d])
+            && bytes.get(offset + 4..offset + 8) == Some(&[0x66, 0x48, 0xff, 0x15])
+        {
+            return Some(Self::RegularNoPlt);
         }
 
         // lea 0x0(%rip),%rdi
