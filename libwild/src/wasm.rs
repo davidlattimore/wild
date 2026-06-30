@@ -18,6 +18,7 @@ use crate::wasm_writer::OutputGlobal;
 use crate::wasm_writer::OutputImport;
 use crate::wasm_writer::OutputImportEntity;
 use hashbrown::HashMap;
+use hashbrown::HashSet;
 use leb128::write::unsigned_len as uleb128_size;
 use linker_utils::utils::u32_from_slice;
 use rayon::prelude::*;
@@ -404,6 +405,14 @@ pub(crate) struct WasmMemoryImport<'data> {
     pub(crate) module: &'data str,
     pub(crate) name: &'data str,
     pub(crate) ty: MemoryType,
+}
+
+/// A single imported table (typically `env.__indirect_function_table`).
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct WasmTableImport<'data> {
+    pub(crate) module: &'data str,
+    pub(crate) name: &'data str,
+    pub(crate) ty: wasmparser::TableType,
 }
 
 /// A function defined inside the module (not imported). Stored as the index into the `type`
@@ -1517,6 +1526,9 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) exports: Vec<OutputExport<'data>>,
     pub(crate) function_bodies: Vec<WasmFunctionBody<'data>>,
     pub(crate) memories: Vec<MemoryType>,
+    pub(crate) tables: Vec<wasmparser::TableType>,
+    pub(crate) element_functions: Vec<u32>,
+    pub(crate) function_table_slots: Vec<u32>,
     pub(crate) unsupported_output: Vec<&'static str>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
     pub(crate) object_data_layouts: Vec<WasmObjectDataLayout<'data>>,
@@ -1534,6 +1546,8 @@ pub(crate) struct WasmEncodedSections {
     pub(crate) global: Option<Vec<u8>>,
     pub(crate) export: Option<Vec<u8>>,
     pub(crate) memory: Option<Vec<u8>>,
+    pub(crate) table: Option<Vec<u8>>,
+    pub(crate) element: Option<Vec<u8>>,
 }
 
 impl WasmEncodedSections {
@@ -1541,9 +1555,11 @@ impl WasmEncodedSections {
         add_encoded_section_size(sizes, crate::part_id::WASM_TYPE, self.ty.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_IMPORT, self.import.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_FUNCTION, self.function.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_TABLE, self.table.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_MEMORY, self.memory.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_GLOBAL, self.global.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_EXPORT, self.export.as_ref());
-        add_encoded_section_size(sizes, crate::part_id::WASM_MEMORY, self.memory.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_ELEMENT, self.element.as_ref());
     }
 }
 
@@ -1594,6 +1610,17 @@ impl<'data> WasmLayout<'data> {
         let memory_section = crate::wasm_writer::build_memory_section(&self.memories);
         if !memory_section.is_empty() {
             self.encoded_sections.memory = Some(encode_wasm_section(&memory_section));
+        }
+
+        if !self.tables.is_empty() {
+            let table_section = crate::wasm_writer::build_table_section(&self.tables)?;
+            self.encoded_sections.table = Some(encode_wasm_section(&table_section));
+        }
+
+        if !self.element_functions.is_empty() {
+            let element_section =
+                crate::wasm_writer::build_element_section(&self.element_functions);
+            self.encoded_sections.element = Some(encode_wasm_section(&element_section));
         }
 
         self.code_section_size = compute_code_section_size(&self.function_bodies);
@@ -1819,15 +1846,18 @@ pub(crate) struct WasmObjectIndexMap {
     pub(crate) function_indices: Vec<u32>,
     pub(crate) global_indices: Vec<u32>,
     pub(crate) memory_indices: Vec<u32>,
+    pub(crate) table_indices: Vec<u32>,
     pub(crate) data_addresses: Vec<u32>,
 }
 
 impl WasmObjectIndexMap {
-    /// Resolve a code relocation to its output value using the symbol table from the same object.
+    /// Resolve a code/data relocation to its output value using the symbol table from the same
+    /// object.
     pub(crate) fn resolve_reloc(
         &self,
         reloc: &WasmRelocation,
         symbols: &[WasmSymbol],
+        function_table_slots: &[u32],
     ) -> Result<u32> {
         if reloc.ty == R_WASM_TYPE_INDEX_LEB {
             return self
@@ -1860,7 +1890,7 @@ impl WasmObjectIndexMap {
                     sym.kind == WasmSymbolKind::Table,
                     "R_WASM_TABLE_NUMBER_LEB references non-table symbol"
                 );
-                bail!("table relocations are not supported yet");
+                remap_wasm_index(&self.table_indices, sym.index, "table")
             }
             reloc_type::MEMORY_ADDR_LEB
             | reloc_type::MEMORY_ADDR_SLEB
@@ -1877,7 +1907,20 @@ impl WasmObjectIndexMap {
                     })
             }
             reloc_type::TABLE_INDEX_SLEB | reloc_type::TABLE_INDEX_I32 => {
-                bail!("table index relocations are not supported yet");
+                ensure!(
+                    sym.kind == WasmSymbolKind::Func,
+                    "R_WASM_TABLE_INDEX_* references non-function symbol"
+                );
+                let func_out = remap_wasm_index(&self.function_indices, sym.index, "function")?;
+                let slot = function_table_slots
+                    .get(func_out as usize)
+                    .copied()
+                    .unwrap_or(u32::MAX);
+                ensure!(
+                    slot != u32::MAX,
+                    "function {func_out} has no indirect table slot"
+                );
+                Ok(slot)
             }
             reloc_type::EVENT_INDEX_LEB => {
                 bail!("event index relocations are not supported yet");
@@ -1906,6 +1949,7 @@ struct WasmObjectLayoutInput<'data> {
     function_imports: Vec<WasmFunctionImport<'data>>,
     global_imports: Vec<WasmGlobalImport<'data>>,
     memory_imports: Vec<WasmMemoryImport<'data>>,
+    table_imports: Vec<WasmTableImport<'data>>,
     module_functions: Vec<WasmModuleFunction>,
     globals: Vec<OutputGlobal<'data>>,
     exports: Vec<OutputExport<'data>>,
@@ -1964,6 +2008,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
         let mut function_imports = Vec::new();
         let mut global_imports = Vec::new();
         let mut memory_imports = Vec::new();
+        let mut table_imports = Vec::new();
         if let Some(imports) = file.import_section_reader()? {
             for import in imports.into_imports() {
                 let import = import?;
@@ -1982,7 +2027,13 @@ impl<'data> WasmObjectLayoutInput<'data> {
                             ty,
                         });
                     }
-                    TypeRef::Table(_) => bail!("Wasm table imports are not emitted"),
+                    TypeRef::Table(ty) => {
+                        table_imports.push(WasmTableImport {
+                            module: import.module,
+                            name: import.name,
+                            ty,
+                        });
+                    }
                     TypeRef::Memory(memory) => {
                         memory_imports.push(WasmMemoryImport {
                             module: import.module,
@@ -2028,10 +2079,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             unsupported_output.push("data relocation");
         }
         if file.standard_section_index[section_id::TABLE as usize].is_some() {
-            unsupported_output.push("table");
-        }
-        if file.standard_section_index[section_id::ELEMENT as usize].is_some() {
-            unsupported_output.push("element");
+            unsupported_output.push("table definition");
         }
         if file.standard_section_index[section_id::START as usize].is_some() {
             unsupported_output.push("start");
@@ -2084,6 +2132,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             function_imports,
             global_imports,
             memory_imports,
+            table_imports,
             module_functions,
             globals,
             exports,
@@ -2121,6 +2170,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             ),
             global_indices: Vec::with_capacity(self.global_imports.len() + self.globals.len()),
             memory_indices: Vec::with_capacity(self.memory_imports.len() + self.memories.len()),
+            table_indices: vec![0; self.table_imports.len()],
             data_addresses: Vec::new(),
         };
 
@@ -2254,7 +2304,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
                     wasmparser::ExternalKind::Memory => {
                         remap_wasm_index(&index_map.memory_indices, export.index, "memory")?
                     }
-                    wasmparser::ExternalKind::Table => bail!("Wasm table exports are not emitted"),
+                    wasmparser::ExternalKind::Table => 0, // single output table
                     wasmparser::ExternalKind::Tag => bail!("Wasm tag exports are not emitted"),
                 };
                 Ok(OutputExport { index, ..*export })
@@ -2694,8 +2744,111 @@ where
         &layout.object_index_maps,
         symbol_db,
     )?;
+    finalize_indirect_function_table(&mut layout, &layout_inputs)?;
     layout.encode_metadata_sections()?;
     Ok(layout)
+}
+
+fn is_table_index_relocation(ty: u8) -> bool {
+    matches!(
+        ty,
+        reloc_type::TABLE_INDEX_SLEB | reloc_type::TABLE_INDEX_I32
+    )
+}
+
+fn is_table_number_relocation(ty: u8) -> bool {
+    ty == reloc_type::TABLE_NUMBER_LEB
+}
+
+/// Assign indirect-call table slots and synthesize `table` / `element` sections.
+fn finalize_indirect_function_table(
+    layout: &mut WasmLayout<'_>,
+    layout_inputs: &[WasmObjectLayoutInput<'_>],
+) -> Result {
+    // Collect output function indices that must appear in the table.
+    let mut needed: Vec<u32> = Vec::new();
+    let mut seen = HashSet::new();
+    let mut needs_table = layout_inputs
+        .iter()
+        .any(|input| !input.table_imports.is_empty());
+
+    for (obj_idx, input) in layout_inputs.iter().enumerate() {
+        let index_map = &layout.object_index_maps[obj_idx];
+        let symbols = &input.symbols;
+        for reloc in input
+            .code_relocations
+            .iter()
+            .chain(input.data_relocations.iter())
+        {
+            if is_table_number_relocation(reloc.ty) {
+                needs_table = true;
+                continue;
+            }
+            if !is_table_index_relocation(reloc.ty) {
+                continue;
+            }
+            needs_table = true;
+            let sym = symbols.get(reloc.index as usize).ok_or_else(|| {
+                crate::error!("table index relocation symbol {} out of range", reloc.index)
+            })?;
+            ensure!(
+                sym.kind == WasmSymbolKind::Func,
+                "R_WASM_TABLE_INDEX_* references non-function symbol"
+            );
+            let func_out = remap_wasm_index(&index_map.function_indices, sym.index, "function")?;
+            if seen.insert(func_out) {
+                needed.push(func_out);
+            }
+        }
+    }
+
+    if !needs_table {
+        return Ok(());
+    }
+
+    // Slot 0 is unused and first function at slot 1. This matches common clang/wasm-ld layout.
+    let max_func = layout
+        .object_index_maps
+        .iter()
+        .flat_map(|m| m.function_indices.iter().copied())
+        .max()
+        .unwrap_or(0);
+    let mut slots_by_func = vec![u32::MAX; max_func as usize + 1];
+
+    let mut element_functions = Vec::with_capacity(needed.len());
+    for (i, &func_out) in needed.iter().enumerate() {
+        let slot = i as u32 + 1;
+        ensure!(
+            (func_out as usize) < slots_by_func.len(),
+            "output function index {func_out} out of range for table slots"
+        );
+        slots_by_func[func_out as usize] = slot;
+        element_functions.push(func_out);
+    }
+
+    let mut initial = element_functions.len() as u64 + 1;
+    for input in layout_inputs {
+        for imp in &input.table_imports {
+            initial = initial.max(imp.ty.initial);
+            ensure!(
+                imp.ty.element_type.is_func_ref(),
+                "only funcref table imports are supported (got {:?})",
+                imp.ty.element_type
+            );
+        }
+    }
+
+    layout.tables = vec![wasmparser::TableType {
+        element_type: wasmparser::RefType::FUNCREF,
+        initial,
+        maximum: Some(initial),
+        shared: false,
+        table64: false,
+    }];
+    layout.element_functions = element_functions;
+    layout.function_table_slots = slots_by_func;
+
+    Ok(())
 }
 
 fn is_memory_addr_relocation(ty: u8) -> bool {

@@ -9,10 +9,7 @@ use crate::platform::Arch;
 use crate::wasm::WASM_MAGIC;
 use crate::wasm::WASM_VERSION;
 use crate::wasm::Wasm;
-use crate::wasm::WasmFunctionBody;
 use crate::wasm::WasmLayout;
-use crate::wasm::WasmObjectIndexMap;
-use crate::wasm::WasmSymbol;
 use crate::wasm::apply_relocation;
 use crate::wasm::reloc_value_with_addend;
 use crate::wasm::section_id;
@@ -20,12 +17,15 @@ use crate::wasm::write_uleb128;
 use leb128::write::unsigned_len as uleb128_size;
 use wasm_encoder::ConstExpr;
 use wasm_encoder::DataSection;
+use wasm_encoder::ElementSection;
+use wasm_encoder::Elements;
 use wasm_encoder::ExportSection;
 use wasm_encoder::FunctionSection;
 use wasm_encoder::GlobalSection;
 use wasm_encoder::ImportSection;
 use wasm_encoder::MemorySection;
 use wasm_encoder::Section;
+use wasm_encoder::TableSection;
 use wasm_encoder::TypeSection;
 
 pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
@@ -49,9 +49,7 @@ pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
 
     copy_metadata_sections(&layout.format_specific, &mut section_buffers)?;
     write_code_section(
-        &layout.format_specific.function_bodies,
-        &layout.format_specific.object_index_maps,
-        &layout.format_specific.per_object_symbols,
+        &layout.format_specific,
         section_buffers.get_mut(crate::output_section_id::WASM_CODE),
     )?;
     write_data_section(
@@ -80,6 +78,14 @@ fn copy_metadata_sections(
         section_buffers.get_mut(crate::output_section_id::WASM_FUNCTION),
     )?;
     copy_encoded_section(
+        encoded.table.as_ref(),
+        section_buffers.get_mut(crate::output_section_id::WASM_TABLE),
+    )?;
+    copy_encoded_section(
+        encoded.memory.as_ref(),
+        section_buffers.get_mut(crate::output_section_id::WASM_MEMORY),
+    )?;
+    copy_encoded_section(
         encoded.global.as_ref(),
         section_buffers.get_mut(crate::output_section_id::WASM_GLOBAL),
     )?;
@@ -88,8 +94,8 @@ fn copy_metadata_sections(
         section_buffers.get_mut(crate::output_section_id::WASM_EXPORT),
     )?;
     copy_encoded_section(
-        encoded.memory.as_ref(),
-        section_buffers.get_mut(crate::output_section_id::WASM_MEMORY),
+        encoded.element.as_ref(),
+        section_buffers.get_mut(crate::output_section_id::WASM_ELEMENT),
     )?;
     Ok(())
 }
@@ -118,12 +124,12 @@ fn copy_encoded_section(encoded: Option<&Vec<u8>>, out: &mut [u8]) -> Result<()>
 
 // Each `WasmFunctionBody.bytes` is the raw body content (locals + operators) without a size prefix.
 // This function writes the LEB128 size prefix for each body, then resolves and applies relocations.
-fn write_code_section(
-    bodies: &[WasmFunctionBody<'_>],
-    object_index_maps: &[WasmObjectIndexMap],
-    per_object_symbols: &[Vec<WasmSymbol>],
-    out: &mut [u8],
-) -> Result<()> {
+fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()> {
+    let bodies = &wasm_layout.function_bodies;
+    let object_index_maps = &wasm_layout.object_index_maps;
+    let per_object_symbols = &wasm_layout.per_object_symbols;
+    let function_table_slots = &wasm_layout.function_table_slots;
+
     if bodies.is_empty() {
         ensure!(
             out.is_empty(),
@@ -165,7 +171,7 @@ fn write_code_section(
         let index_map = &object_index_maps[body.object_index];
         let symbols = &per_object_symbols[body.object_index];
         for reloc in &body.relocations {
-            let base = index_map.resolve_reloc(reloc, symbols)?;
+            let base = index_map.resolve_reloc(reloc, symbols, function_table_slots)?;
             let value = reloc_value_with_addend(base, reloc.addend)?;
             apply_relocation(&mut out[body_start..body_start + len], reloc, value)?;
         }
@@ -278,7 +284,8 @@ pub(crate) fn build_data_section(wasm_layout: &WasmLayout<'_>) -> Result<DataSec
         for segment in &object_layout.segments {
             let mut payload = segment.data.to_vec();
             for reloc in &segment.relocations {
-                let base = index_map.resolve_reloc(reloc, symbols)?;
+                let base =
+                    index_map.resolve_reloc(reloc, symbols, &wasm_layout.function_table_slots)?;
                 let value = reloc_value_with_addend(base, reloc.addend)?;
                 apply_relocation(&mut payload, reloc, value)?;
             }
@@ -298,6 +305,40 @@ pub(crate) fn build_data_section(wasm_layout: &WasmLayout<'_>) -> Result<DataSec
         }
     }
     Ok(section)
+}
+
+pub(crate) fn build_table_section(tables: &[wasmparser::TableType]) -> Result<TableSection> {
+    let mut section = TableSection::new();
+    for &table in tables {
+        ensure!(
+            table.element_type.is_func_ref(),
+            "only funcref tables are supported (got {:?})",
+            table.element_type
+        );
+        section.table(wasm_encoder::TableType {
+            element_type: wasm_encoder::RefType::FUNCREF,
+            minimum: table.initial,
+            maximum: table.maximum,
+            table64: table.table64,
+            shared: table.shared,
+        });
+    }
+    Ok(section)
+}
+
+/// One active element segment on table 0 at offset 1 (functions occupy slots 1..).
+pub(crate) fn build_element_section(element_functions: &[u32]) -> ElementSection {
+    let mut section = ElementSection::new();
+    if element_functions.is_empty() {
+        return section;
+    }
+    let offset = ConstExpr::i32_const(1);
+    section.active(
+        Some(0),
+        &offset,
+        Elements::Functions(std::borrow::Cow::Borrowed(element_functions)),
+    );
+    section
 }
 
 pub(crate) fn build_memory_section(memories: &[wasmparser::MemoryType]) -> MemorySection {
