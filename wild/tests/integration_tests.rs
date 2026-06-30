@@ -224,6 +224,12 @@
 //! FatObject64:{source-filename}[:extra-compilation-args] Builds the specified filename as a fat-64
 //! object and adds it to the link.
 //!
+//! FatDylib:{source-filename}[:extra-compilation-args] Builds the specified filename as a fat dylib
+//! and adds it to the link.
+//!
+//! FatDylib64:{source-filename}[:extra-compilation-args] Builds the specified filename as a fat-64
+//! dylib and adds it to the link.
+//!
 //! Shared:{source-filename}[:extra-compilation-args] Builds the specified filename as a shared
 //! object and adds it to the link.
 //!
@@ -1553,6 +1559,8 @@ enum InputType {
     FatArchive64,
     FatObject,
     FatObject64,
+    FatDylib,
+    FatDylib64,
     #[strum(serialize = "Shared")]
     SharedObject,
     LinkerScript,
@@ -1988,6 +1996,8 @@ fn process_directive(
         | "FatArchive64"
         | "FatObject"
         | "FatObject64"
+        | "FatDylib"
+        | "FatDylib64"
         | "Shared"
         | "LinkerScript"
         | "AugmentLinkerScript") => {
@@ -2625,10 +2635,12 @@ fn build_linker_input(
                     FatKind::Bit32 => make_macho_fat_file::<object::read::macho::FatArch32>(
                         &fat_archive_path,
                         &archive_path,
+                        MACHO_REGULAR_OBJECT_ALIGNMENT,
                     )?,
                     FatKind::Bit64 => make_macho_fat_file::<object::read::macho::FatArch64>(
                         &fat_archive_path,
                         &archive_path,
+                        MACHO_REGULAR_OBJECT_ALIGNMENT,
                     )?,
                 }
 
@@ -2658,12 +2670,16 @@ fn build_linker_input(
                     .with_extension("fat.o");
 
                 match fat_kind {
-                    FatKind::Bit32 => {
-                        make_macho_fat_file::<object::read::macho::FatArch32>(&fat_path, &path)?
-                    }
-                    FatKind::Bit64 => {
-                        make_macho_fat_file::<object::read::macho::FatArch64>(&fat_path, &path)?
-                    }
+                    FatKind::Bit32 => make_macho_fat_file::<object::read::macho::FatArch32>(
+                        &fat_path,
+                        &path,
+                        MACHO_REGULAR_OBJECT_ALIGNMENT,
+                    )?,
+                    FatKind::Bit64 => make_macho_fat_file::<object::read::macho::FatArch64>(
+                        &fat_path,
+                        &path,
+                        MACHO_REGULAR_OBJECT_ALIGNMENT,
+                    )?,
                 }
 
                 path = fat_path;
@@ -2671,20 +2687,47 @@ fn build_linker_input(
 
             LinkerInput::new(path)
         }
-        InputType::SharedObject | InputType::Relocatable => {
+        InputType::SharedObject
+        | InputType::Relocatable
+        | InputType::FatDylib
+        | InputType::FatDylib64 => {
             let linker = config.so_single_linker.as_ref().unwrap_or(linker);
-            let kind = if dep.input_type == InputType::SharedObject {
-                IntermediateKind::Shared
-            } else {
+            let kind = if dep.input_type == InputType::Relocatable {
                 IntermediateKind::Partial
+            } else {
+                IntermediateKind::Shared
             };
             let ext = config.platform.intermediate_extension(kind)?;
             let obj_path = first_obj_path.with_extension(format!("{linker}.{ext}"));
-            let out = linker.link_intermediate(&objects, &obj_path, &config, cross_arch, kind)?;
+            let mut out =
+                linker.link_intermediate(&objects, &obj_path, &config, cross_arch, kind)?;
             let assertions = Assertions::default();
             assertions
                 .check_path(&out.path, linker)
                 .with_context(|| format!("Assertions failed for `{}`", out.path.display()))?;
+
+            if let Some(fat_kind) = dep.input_type.fat_kind() {
+                let fat_path = config
+                    .build_dir()
+                    .join(archive_basename)
+                    .with_extension("fat.dylib");
+
+                match fat_kind {
+                    FatKind::Bit32 => make_macho_fat_file::<object::read::macho::FatArch32>(
+                        &fat_path,
+                        &obj_path,
+                        MACHO_DYLIB_ALIGNMENT,
+                    )?,
+                    FatKind::Bit64 => make_macho_fat_file::<object::read::macho::FatArch64>(
+                        &fat_path,
+                        &obj_path,
+                        MACHO_DYLIB_ALIGNMENT,
+                    )?,
+                }
+
+                out = LinkerInput::new(fat_path);
+            }
+
             out
         }
         InputType::LinkerScript => LinkerInput::new_prefixed(first_obj_path.to_owned(), "-T"),
@@ -2696,15 +2739,21 @@ fn build_linker_input(
     Ok(linker_input)
 }
 
+const MACHO_REGULAR_OBJECT_ALIGNMENT: usize = 8;
+const MACHO_DYLIB_ALIGNMENT: usize = 16384;
+
 /// Reads `contents_path` and puts it into a MachO fat object (`output_path`) containing just that
 /// one file.
-fn make_macho_fat_file<A: FatArch>(output_path: &Path, contents_path: &Path) -> Result {
+fn make_macho_fat_file<A: FatArch>(
+    output_path: &Path,
+    contents_path: &Path,
+    alignment: usize,
+) -> Result {
     let input = std::fs::read(contents_path)
         .with_context(|| format!("Failed to read {}", contents_path.display()))?;
 
     let mut output = Vec::new();
 
-    let alignment = 8;
     let header_end = size_of::<object::macho::FatHeader>() + size_of::<A>();
     let offset = header_end.next_multiple_of(alignment);
 
@@ -5115,6 +5164,8 @@ impl Display for InputType {
             InputType::FatArchive64 => write!(f, "fat archive 64"),
             InputType::FatObject => write!(f, "fat object"),
             InputType::FatObject64 => write!(f, "fat object 64"),
+            InputType::FatDylib => write!(f, "fat dylib"),
+            InputType::FatDylib64 => write!(f, "fat dylib 64"),
         }
     }
 }
@@ -6109,8 +6160,12 @@ impl InputType {
 
     fn fat_kind(self) -> Option<FatKind> {
         match self {
-            InputType::FatArchive | InputType::FatObject => Some(FatKind::Bit32),
-            InputType::FatArchive64 | InputType::FatObject64 => Some(FatKind::Bit64),
+            InputType::FatArchive | InputType::FatObject | InputType::FatDylib => {
+                Some(FatKind::Bit32)
+            }
+            InputType::FatArchive64 | InputType::FatObject64 | InputType::FatDylib64 => {
+                Some(FatKind::Bit64)
+            }
             _ => None,
         }
     }

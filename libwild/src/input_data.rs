@@ -614,7 +614,7 @@ fn process_fat_macho_object<'data, P: Platform>(
 
     match kind {
         FileKind::Archive => process_archive(&input_ref, file, state),
-        FileKind::MachOObject => {
+        FileKind::MachOObject | FileKind::MachODylib => {
             let parsed = state.process_input(input_ref, file, kind)?;
             Ok(LoadedFileState::Loaded(input_ref.file, parsed))
         }
