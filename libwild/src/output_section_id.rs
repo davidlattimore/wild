@@ -172,6 +172,7 @@ pub(crate) struct OutputSections<'data, P: Platform> {
 #[derive(Debug)]
 pub(crate) struct OutputOrder<'data> {
     events: Vec<OrderEvent<'data>>,
+    num_location_counters: usize,
 }
 
 pub(crate) struct OutputOrderDisplay<'a, 'data, P: Platform> {
@@ -221,15 +222,19 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         if let Some(ref loc_info) = info.location_info {
             let (start_idx, end_idx) = loc_info.location_counters;
 
-            for lc in &self.location_counters[start_idx..end_idx] {
+            for idx in start_idx..end_idx {
+                let lc = &self.location_counters[idx];
                 match lc {
                     LocationCounter::Absolute(expr) => {
-                        self.events.push(OrderEvent::SetLocation(expr.clone()));
+                        self.events.push(OrderEvent::SetLocation(expr.clone(), idx));
                     }
                     LocationCounter::Relative(expr, section_id) => {
                         let primary_id = self.output_sections.primary_output_section(*section_id);
-                        self.events
-                            .push(OrderEvent::SetLocationRelative(expr.clone(), primary_id));
+                        self.events.push(OrderEvent::SetLocationRelative(
+                            expr.clone(),
+                            primary_id,
+                            idx,
+                        ));
                     }
                 }
             }
@@ -465,6 +470,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         (
             OutputOrder {
                 events: self.events,
+                num_location_counters: self.location_counters.len(),
             },
             self.program_segments,
         )
@@ -645,8 +651,8 @@ pub(crate) enum OrderEvent<'data> {
     SegmentStart(ProgramSegmentId),
     SegmentEnd(ProgramSegmentId),
     Section(OutputSectionId),
-    SetLocation(linker_script::Expression<'data>),
-    SetLocationRelative(linker_script::Expression<'data>, OutputSectionId),
+    SetLocation(linker_script::Expression<'data>, usize),
+    SetLocationRelative(linker_script::Expression<'data>, OutputSectionId, usize),
     SetSectionAddress(linker_script::Expression<'data>),
 }
 
@@ -1055,6 +1061,10 @@ impl<'data, 'a> IntoIterator for &'a OutputOrder<'data> {
 }
 
 impl<'data> OutputOrder<'data> {
+    pub(crate) fn num_location_counters(&self) -> usize {
+        self.num_location_counters
+    }
+
     pub(crate) fn display<'a, P: Platform>(
         &'a self,
         sections: &'a OutputSections<'data, P>,
@@ -1089,10 +1099,10 @@ impl<'data, P: Platform> Display for OutputOrderDisplay<'_, 'data, P> {
                 OrderEvent::Section(output_section_id) => {
                     writeln!(f, "  {}", self.sections.display_name(*output_section_id))?;
                 }
-                OrderEvent::SetLocation(expr) => {
+                OrderEvent::SetLocation(expr, _) => {
                     writeln!(f, "SET_LOCATION({expr:?})")?;
                 }
-                OrderEvent::SetLocationRelative(expr, section_id) => {
+                OrderEvent::SetLocationRelative(expr, section_id, _) => {
                     writeln!(
                         f,
                         "SET_LOCATION_RELATIVE({expr:?}, {})",

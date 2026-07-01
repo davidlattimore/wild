@@ -36,6 +36,7 @@ pub(crate) struct LayoutRules<'data> {
 #[derive(Default)]
 pub(crate) struct LayoutRulesBuilder<'data> {
     rules: Vec<SectionRule<'data>>,
+    num_location_counters: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,7 +173,7 @@ impl<'data> LayoutRulesBuilder<'data> {
 
         let mut current_section_id = None;
         let mut loc = SymbolLoc::FirstSection;
-        let mut last_lc_idx = 0;
+        let mut last_lc_idx = self.num_location_counters;
 
         for cmd in &input.script.commands {
             if let linker_script::Command::Provide(provide) = cmd {
@@ -193,7 +194,6 @@ impl<'data> LayoutRulesBuilder<'data> {
                 });
                 symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
             } else if let linker_script::Command::Sections(sections) = cmd {
-                let mut location = None;
                 let mut section_start_lc_idx = last_lc_idx;
 
                 for sec_cmd in &sections.commands {
@@ -218,19 +218,9 @@ impl<'data> LayoutRulesBuilder<'data> {
                             let min_alignment =
                                 sec.alignment.unwrap_or(alignment::MIN).max(alignment::MIN);
 
-                            // Choose starting location for this output section.
-                            let section_location = match &sec.start_address_expression {
-                                Some(address) => {
-                                    location.take();
-                                    Some(address.clone())
-                                }
-                                None => location.take(),
-                            };
-
-                            let section_lc_start = section_start_lc_idx;
                             let location_info = SectionLocationInfo {
-                                location_counters: (section_lc_start, last_lc_idx),
-                                location: section_location.clone(),
+                                location_counters: (section_start_lc_idx, last_lc_idx),
+                                location: sec.start_address_expression.clone(),
                                 at_location: sec.at_address.clone(),
                                 is_top_level: true,
                             };
@@ -327,7 +317,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         ));
                                         inner_lc_idx = location_counters.len();
                                         last_symbol_loc = SymbolLoc::LocationCounter(
-                                            inner_lc_idx,
+                                            inner_lc_idx - 1,
                                             Some(primary_section_id),
                                         );
                                     }
@@ -354,12 +344,11 @@ impl<'data> LayoutRulesBuilder<'data> {
                             location_counters
                                 .push(LocationCounter::Absolute(new_location.address.clone()));
                             last_lc_idx = location_counters.len();
-                            loc = SymbolLoc::LocationCounter(last_lc_idx, current_section_id);
+                            loc = SymbolLoc::LocationCounter(last_lc_idx - 1, current_section_id);
                             if current_section_id.is_none() {
                                 output_sections.set_base_address(new_location.address.clone());
-                                continue;
+                                section_start_lc_idx = location_counters.len();
                             }
-                            location = Some(new_location.address.clone());
                         }
                         SectionCommand::Assert(assert_cmd) => {
                             assertions.push(assert_cmd.clone());
@@ -393,6 +382,8 @@ impl<'data> LayoutRulesBuilder<'data> {
                 program_headers = phdrs.clone();
             }
         }
+
+        self.num_location_counters += location_counters.len();
 
         Ok(ProcessedLinkerScript {
             symbol_defs,

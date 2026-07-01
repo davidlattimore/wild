@@ -1957,8 +1957,8 @@ fn compute_segment_layout<'data, P: Platform>(
                     }
                 }
             }
-            OrderEvent::SetLocation(_)
-            | OrderEvent::SetLocationRelative(_, _)
+            OrderEvent::SetLocation(_, _)
+            | OrderEvent::SetLocationRelative(_, _, _)
             | OrderEvent::SetSectionAddress(_) => {}
         }
     }
@@ -3368,8 +3368,8 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                         active_segments.clear();
                     }
                 }
-                OrderEvent::SetLocation(_)
-                | OrderEvent::SetLocationRelative(_, _)
+                OrderEvent::SetLocation(_, _)
+                | OrderEvent::SetLocationRelative(_, _, _)
                 | OrderEvent::SetSectionAddress(_) => {}
             }
         }
@@ -5139,12 +5139,11 @@ fn compute_layout_sections<'data, P: Platform>(
     let expression_eval = |expr: &Expression<'data>,
                            memory_regions: &HashMap<&[u8], MemoryRegion>,
                            section_layouts: &OutputSectionMap<OutputRecordLayout>,
-                           resolved_lc: &[(u64, Option<u64>)]| {
-        let loc = if resolved_lc.is_empty() {
-            crate::parsing::SymbolLoc::None
-        } else {
-            crate::parsing::SymbolLoc::LocationCounter(resolved_lc.len() - 1, None)
-        };
+                           resolved_lc: &[(u64, Option<u64>)],
+                           last_resolved_lc: Option<usize>| {
+        let loc = last_resolved_lc.map_or(crate::parsing::SymbolLoc::None, |idx| {
+            crate::parsing::SymbolLoc::LocationCounter(idx, None)
+        });
         crate::expression_eval::evaluate_expression(
             expr,
             &loc,
@@ -5166,6 +5165,7 @@ fn compute_layout_sections<'data, P: Platform>(
         memory_regions,
         &section_layouts,
         &[],
+        None,
     )?;
     let mut lma_offset = mem_offset;
     let mut nonalloc_mem_offsets: OutputSectionMap<u64> =
@@ -5174,32 +5174,55 @@ fn compute_layout_sections<'data, P: Platform>(
         OutputSectionMap::with_size(output_sections.num_sections());
 
     let mut pending_location = None;
-    let mut resolved_lc: Vec<(u64, Option<u64>)> = vec![(mem_offset, None)];
+    let mut resolved_lc = vec![Default::default(); output_order.num_location_counters()];
+    if !resolved_lc.is_empty() {
+        resolved_lc[0] = (mem_offset, None);
+    }
+    let mut last_resolved_lc = None;
 
     let mut records_out = output_sections.new_part_map();
 
     for event in output_order {
         match event {
-            OrderEvent::SetLocation(expr) => {
-                let value = expression_eval(&expr, memory_regions, &section_layouts, &resolved_lc)?;
+            OrderEvent::SetLocation(expr, idx) => {
+                let value = expression_eval(
+                    &expr,
+                    memory_regions,
+                    &section_layouts,
+                    &resolved_lc,
+                    last_resolved_lc,
+                )?;
+                last_resolved_lc = Some(idx);
                 if resolved_lc.len() > 1 {
                     pending_location = Some(value);
                 }
-                resolved_lc.push((value, None));
+                resolved_lc[idx] = (value, None);
             }
-            OrderEvent::SetLocationRelative(expr, section_id) => {
+            OrderEvent::SetLocationRelative(expr, section_id, idx) => {
                 let primary_id = output_sections.primary_output_section(section_id);
                 let section_base = section_layouts.get(primary_id).mem_offset;
-                let offset =
-                    expression_eval(&expr, memory_regions, &section_layouts, &resolved_lc)?;
+                let offset = expression_eval(
+                    &expr,
+                    memory_regions,
+                    &section_layouts,
+                    &resolved_lc,
+                    last_resolved_lc,
+                )?;
+                last_resolved_lc = Some(idx);
                 let value = section_base + offset;
                 if resolved_lc.len() > 1 {
                     pending_location = Some(value);
                 }
-                resolved_lc.push((value, Some(offset)));
+                resolved_lc[idx] = (value, Some(offset));
             }
             OrderEvent::SetSectionAddress(expr) => {
-                let value = expression_eval(&expr, memory_regions, &section_layouts, &resolved_lc)?;
+                let value = expression_eval(
+                    &expr,
+                    memory_regions,
+                    &section_layouts,
+                    &resolved_lc,
+                    last_resolved_lc,
+                )?;
                 pending_location = Some(value);
             }
             OrderEvent::SegmentStart(segment_id) => {
@@ -5383,6 +5406,7 @@ fn compute_layout_sections<'data, P: Platform>(
                                 memory_regions,
                                 &section_layouts,
                                 &resolved_lc,
+                                last_resolved_lc,
                             )?;
                             part_layout.lma_offset = lma_offset;
                             let section_layout = section_layouts.get_mut(section_id);
@@ -5489,8 +5513,8 @@ fn compute_segment_alignments<'data, P: Platform>(
                         .and_modify(|a| *a = (*a).max(max_alignment));
                 }
             }
-            OrderEvent::SetLocation(_)
-            | OrderEvent::SetLocationRelative(_, _)
+            OrderEvent::SetLocation(_, _)
+            | OrderEvent::SetLocationRelative(_, _, _)
             | OrderEvent::SetSectionAddress(_) => {}
         }
     }
