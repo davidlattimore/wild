@@ -262,7 +262,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
 
         // Only emit SetSectionAddress if the section has ALLOC flag, meaning it can be placed in a
         // segment. Sections without ALLOC (like custom sections before their flags are propagated)
-        // will have their location handled directly in layout_section_parts.
+        // will have their location handled directly in compute_layout_sections.
         if let Some(ref loc_info) = section_info.location_info
             && let Some(ref location) = loc_info.location
             && section_info.section_attributes.is_alloc()
