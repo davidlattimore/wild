@@ -371,8 +371,10 @@ impl crate::platform::Arch for ElfX86_64 {
             }
             object::elf::R_X86_64_TLSGD if output_kind.is_executable() => {
                 let kind = match TlsGdForm::identify(section_bytes, offset)? {
-                    TlsGdForm::Regular => RelaxationKind::TlsGdToInitialExec,
-                    TlsGdForm::RegularNoPlt | TlsGdForm::Large => {
+                    TlsGdForm::Regular | TlsGdForm::RegularNoPlt => {
+                        RelaxationKind::TlsGdToInitialExec
+                    }
+                    TlsGdForm::Large => {
                         // TODO
                         return None;
                     }
