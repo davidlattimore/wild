@@ -5343,7 +5343,46 @@ fn layout_section<'data, P: Platform>(
         }
     }
 
+    validate_all_non_empty_sections_emitted(sizes, output_sections, output_order)?;
+
     Ok((records_out, section_layouts))
+}
+
+/// Checks if we've allocated space to any sections which aren't listed in our output ordering.
+/// Without this check, we'll fail in the write phase, but the failure message there is less
+/// helpful. No-op if debug assertions are off.
+fn validate_all_non_empty_sections_emitted<P: Platform>(
+    sizes: &OutputSectionPartMap<u64>,
+    output_sections: &OutputSections<P>,
+    output_order: &OutputOrder,
+) -> Result {
+    if !cfg!(debug_assertions) {
+        return Ok(());
+    }
+
+    let mut emitted_sections: OutputSectionMap<bool> =
+        OutputSectionMap::with_size(output_sections.num_sections());
+
+    for event in output_order {
+        if let OrderEvent::Section(output_section_id) = event {
+            *emitted_sections.get_mut(output_section_id) = true;
+        }
+    }
+
+    let mut error = None;
+    sizes.map(|part_id, &size| {
+        if size > 0 && !emitted_sections.get(part_id.output_section_id()) {
+            error = Some(error!(
+                "Internal error: Section {section} has non-zero allocation, \
+                but isn't in output order",
+                section = output_sections.section_debug(part_id.output_section_id()),
+            ));
+        }
+    });
+    if let Some(error) = error {
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// Computes the maximum alignment for each LOAD segment by examining the alignments of all sections
@@ -5647,7 +5686,25 @@ fn test_no_disallowed_overlaps() {
     if args.arch == crate::arch::Architecture::Unsupported {
         args.arch = crate::arch::Architecture::X86_64;
     }
-    let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
+
+    let sections_to_output: hashbrown::HashSet<OutputSectionId> = output_order
+        .into_iter()
+        .filter_map(|event| {
+            if let OrderEvent::Section(output_section_id) = event {
+                Some(output_section_id)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let section_part_sizes = output_sections.new_part_map::<u64>().map(|part_id, _| {
+        if sections_to_output.contains(&part_id.output_section_id()) {
+            7
+        } else {
+            0
+        }
+    });
 
     let output_kind = crate::output_kind::OutputKind::StaticExecutable(
         crate::args::RelocationModel::NonRelocatable,
