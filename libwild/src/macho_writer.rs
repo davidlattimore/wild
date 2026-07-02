@@ -179,8 +179,8 @@ fn write_file<'data, A: Arch<Platform = MachO>>(
         FileLayout::Object(s) => {
             write_object::<A>(s, buffers, layout, symbol_writer)?;
         }
-        FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, layout)?,
-        FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, layout)?,
+        FileLayout::Prelude(s) => write_prelude(s, buffers, layout)?,
+        FileLayout::Epilogue(s) => write_epilogue(s, buffers, layout)?,
         _ => {
             // TODO
         }
@@ -188,7 +188,7 @@ fn write_file<'data, A: Arch<Platform = MachO>>(
     Ok(())
 }
 
-fn write_prelude<'data, A: Arch<Platform = MachO>>(
+fn write_prelude<'data>(
     prelude: &PreludeLayout<MachO>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &MachOLayout<'data>,
@@ -202,24 +202,24 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
     let header = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
         .map_err(|_| error!("Invalid file header allocation"))?
         .0;
-    populate_file_header::<A>(layout, prelude, header)?;
+    populate_file_header(layout, prelude, header)?;
 
     let load_cmd_err = |()| error!("Invalid LOAD_COMMANDS allocation");
     let mut load_command_buffer = slice_from_all_bytes_mut(buffers.get_mut(part_id::LOAD_COMMANDS));
-    write_segment_commands::<A>(layout, &mut load_command_buffer)?;
+    write_segment_commands(layout, &mut load_command_buffer)?;
 
     let (entry_point_command, load_command_buffer) =
         from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
-    write_entry_point_command::<A>(layout, entry_point_command)?;
+    write_entry_point_command(layout, entry_point_command)?;
 
     let (uuid_command, mut load_command_buffer) =
         from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
-    write_uuid_command::<A>(uuid_command);
+    write_uuid_command(uuid_command);
 
     if layout.args().platform_version.is_some() {
         let (build_version_command, rest) =
             from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
-        write_build_version_command::<A>(layout, build_version_command)?;
+        write_build_version_command(layout, build_version_command)?;
         load_command_buffer = rest;
     }
 
@@ -228,7 +228,7 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
     let command_buffer = load_command_buffer.split_off_mut(..command_size).unwrap();
     let (dylinker_command, dylinker_path_buffer) =
         from_bytes_mut(command_buffer).map_err(|_| error!("Invalid INTERP command allocation"))?;
-    write_dylinker_command::<A>(dylinker_command, dylinker_path_buffer);
+    write_dylinker_command(dylinker_command, dylinker_path_buffer);
 
     for (&file_id, &command_size) in prelude
         .format_specific
@@ -241,20 +241,20 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
             from_bytes_mut(command_buffer).map_err(load_cmd_err)?;
         let path = crate::macho::install_name(file_id, &layout.symbol_db);
 
-        write_dylib_command::<A>(dylib_command, dylib_path_buffer, path);
+        write_dylib_command(dylib_command, dylib_path_buffer, path);
     }
 
     let (chained_fixups_command, load_command_buffer) =
         from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
-    write_dyld_chained_fixups_command::<A>(layout, chained_fixups_command);
+    write_dyld_chained_fixups_command(layout, chained_fixups_command);
 
     let (symtab_command, load_command_buffer) =
         from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
-    write_symtab_command::<A>(layout, symtab_command);
+    write_symtab_command(layout, symtab_command);
 
     let (code_signature_command, load_command_buffer) =
         from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
-    write_code_signature_command::<A>(layout, code_signature_command);
+    write_code_signature_command(layout, code_signature_command);
     ensure!(
         load_command_buffer.is_empty(),
         "Trailing bytes in LOAD_COMMANDS allocation"
@@ -266,13 +266,13 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
     Ok(())
 }
 
-fn write_epilogue<A: Arch<Platform = MachO>>(
+fn write_epilogue(
     _epilogue: &EpilogueLayout<MachO>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &MachOLayout<'_>,
 ) -> Result {
     verbose_timing_phase!("Write epilogue");
-    write_chained_fixup_table::<A>(layout, buffers.get_mut(part_id::CHAINED_FIXUP_TABLE))?;
+    write_chained_fixup_table(layout, buffers.get_mut(part_id::CHAINED_FIXUP_TABLE))?;
 
     Ok(())
 }
@@ -337,7 +337,7 @@ fn write_plt_entries<A: Arch<Platform = MachO>>(
     Ok(())
 }
 
-fn populate_file_header<A: Arch<Platform = MachO>>(
+fn populate_file_header(
     layout: &MachOLayout,
     prelude: &PreludeLayout<MachO>,
     header: &mut FileHeader,
@@ -378,10 +378,7 @@ fn split_segment_command_buffer(
     Ok((command, sections))
 }
 
-fn write_segment_commands<A: Arch<Platform = MachO>>(
-    layout: &MachOLayout,
-    load_commands: &mut &mut [u8],
-) -> Result {
+fn write_segment_commands(layout: &MachOLayout, load_commands: &mut &mut [u8]) -> Result {
     let load_cmd_err = |()| error!("Invalid LOAD_COMMANDS allocation");
     let pagezero_segment = from_bytes_mut(
         load_commands
@@ -751,10 +748,7 @@ fn get_resolution<'data>(
     Ok((resolution, symbol_index, local_symbol_id))
 }
 
-fn write_entry_point_command<A: Arch<Platform = MachO>>(
-    layout: &MachOLayout,
-    command: &mut EntryPointCommand,
-) -> Result {
+fn write_entry_point_command(layout: &MachOLayout, command: &mut EntryPointCommand) -> Result {
     let SegmentSectionsInfo { segment_size, .. } =
         get_segment_sections(layout, SegmentType::TextSections)
             .ok_or_else(|| error!("TextSections segment is mandatory"))?;
@@ -768,10 +762,7 @@ fn write_entry_point_command<A: Arch<Platform = MachO>>(
     Ok(())
 }
 
-fn write_build_version_command<A: Arch<Platform = MachO>>(
-    layout: &MachOLayout,
-    command: &mut BuildVersionCommand,
-) -> Result {
+fn write_build_version_command(layout: &MachOLayout, command: &mut BuildVersionCommand) -> Result {
     let platform_version = layout
         .args()
         .platform_version
@@ -793,17 +784,14 @@ fn write_build_version_command<A: Arch<Platform = MachO>>(
     Ok(())
 }
 
-fn write_uuid_command<A: Arch<Platform = MachO>>(command: &mut UuidCommand) {
+fn write_uuid_command(command: &mut UuidCommand) {
     command.cmd.set(LE, LC_UUID);
     command.cmdsize.set(LE, size_of::<UuidCommand>() as u32);
     // TODO: write a proper UUID
     command.uuid.zero();
 }
 
-fn write_dylinker_command<A: Arch<Platform = MachO>>(
-    command: &mut DylinkerCommand,
-    path_buffer: &mut [u8],
-) {
+fn write_dylinker_command(command: &mut DylinkerCommand, path_buffer: &mut [u8]) {
     command.cmd.set(LE, LC_LOAD_DYLINKER);
     command.cmdsize.set(
         LE,
@@ -819,11 +807,7 @@ fn write_dylinker_command<A: Arch<Platform = MachO>>(
     path_buffer[DYLINKER_PATH.len()..].zero();
 }
 
-fn write_dylib_command<A: Arch<Platform = MachO>>(
-    command: &mut DylibCommand,
-    path_buffer: &mut [u8],
-    path: &[u8],
-) {
+fn write_dylib_command(command: &mut DylibCommand, path_buffer: &mut [u8], path: &[u8]) {
     command.cmd.set(LE, LC_LOAD_DYLIB);
     command
         .cmdsize
@@ -849,10 +833,7 @@ fn write_dylib_command<A: Arch<Platform = MachO>>(
     path_buffer[path.len()..].zero();
 }
 
-fn write_dyld_chained_fixups_command<A: Arch<Platform = MachO>>(
-    layout: &MachOLayout,
-    command: &mut DyldChainedFixupsCommand,
-) {
+fn write_dyld_chained_fixups_command(layout: &MachOLayout, command: &mut DyldChainedFixupsCommand) {
     let chained_fixup_table = layout
         .section_layouts
         .get(output_section_id::CHAINED_FIXUP_TABLE);
@@ -869,10 +850,7 @@ fn write_dyld_chained_fixups_command<A: Arch<Platform = MachO>>(
         .set(LE, chained_fixup_table.file_size as u32);
 }
 
-fn write_symtab_command<A: Arch<Platform = MachO>>(
-    layout: &MachOLayout,
-    command: &mut SymtabCommand,
-) {
+fn write_symtab_command(layout: &MachOLayout, command: &mut SymtabCommand) {
     let symtab = layout.section_layouts.get(output_section_id::SYMTAB_GLOBAL);
     let strtab = layout.section_layouts.get(output_section_id::STRTAB);
 
@@ -886,10 +864,7 @@ fn write_symtab_command<A: Arch<Platform = MachO>>(
     command.strsize.set(LE, strtab.file_size as u32);
 }
 
-fn write_code_signature_command<A: Arch<Platform = MachO>>(
-    layout: &MachOLayout,
-    command: &mut CodeSignatureCommand,
-) {
+fn write_code_signature_command(layout: &MachOLayout, command: &mut CodeSignatureCommand) {
     let code_signature = layout
         .section_layouts
         .get(output_section_id::CODE_SIGNATURE);
@@ -902,10 +877,7 @@ fn write_code_signature_command<A: Arch<Platform = MachO>>(
     command.datasize.set(LE, code_signature.file_size as u32);
 }
 
-fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
-    layout: &MachOLayout,
-    chained_fixup_table: &mut [u8],
-) -> Result {
+fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8]) -> Result {
     let symbols = &layout.format_specific.imported_symbols;
 
     let active_segments = PROGRAM_SEGMENT_DEFS
