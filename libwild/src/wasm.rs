@@ -9,6 +9,8 @@ use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout;
 use crate::layout_rules::SectionKind;
+use crate::layout_rules::SectionRule;
+use crate::layout_rules::SectionRuleOutcome;
 use crate::output_section_id::SectionName;
 use crate::platform;
 use crate::symbol::UnversionedSymbolName;
@@ -834,27 +836,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn symbol_section(
         &self,
-        symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
+        _symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
         _index: object::SymbolIndex,
     ) -> crate::error::Result<Option<object::SectionIndex>> {
-        if symbol.is_undefined() {
-            return Ok(None);
-        }
-        // Map each symbol kind to the wasm section that holds its definition.
-        let std_id: u8 = match symbol.kind {
-            WasmSymbolKind::Func => section_id::CODE,
-            WasmSymbolKind::Data => section_id::DATA,
-            WasmSymbolKind::Global => section_id::GLOBAL,
-            WasmSymbolKind::Table => section_id::TABLE,
-            WasmSymbolKind::Event | WasmSymbolKind::Null => return Ok(None),
-            WasmSymbolKind::Section => {
-                return Ok(self
-                    .sections
-                    .get(symbol.index as usize)
-                    .map(|_| object::SectionIndex(symbol.index as usize)));
-            }
-        };
-        Ok(self.standard_section_index[std_id as usize].map(|i| object::SectionIndex(i as usize)))
+        Ok(None)
     }
 
     fn symbol_versions(&self) -> &[<Self::Platform as platform::Platform>::SymbolVersionIndex] {
@@ -1444,6 +1429,23 @@ const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
     ProgramSegmentDef {
         segment_type: SegmentType::Unused,
     },
+];
+
+const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
+    SectionRule::exact(b"type", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"import", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"function", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"table", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"memory", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"global", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"export", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"start", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"element", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"data_count", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"code", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"data", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"linking", SectionRuleOutcome::Discard),
+    SectionRule::prefix(b"reloc.", SectionRuleOutcome::Discard),
 ];
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -3465,8 +3467,8 @@ impl platform::Platform for Wasm {
         RawSymbolName { name: name_bytes }
     }
 
-    fn default_layout_rules(_args: &Self::Args) -> Vec<crate::layout_rules::SectionRule<'static>> {
-        Vec::new()
+    fn default_layout_rules(_args: &Self::Args) -> Vec<SectionRule<'static>> {
+        DEFAULT_SECTION_RULES.to_vec()
     }
 
     fn align_load_segment_start(
