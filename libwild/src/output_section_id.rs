@@ -195,6 +195,7 @@ pub(crate) struct OutputOrderBuilder<'scope, 'data, P: Platform> {
     output_kind: OutputKind,
     has_custom_phdrs: bool,
     location_counters: &'scope [crate::layout_rules::LocationCounter<'data>],
+    last_location_counter: Option<LocationCounterIndex>,
 }
 
 impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
@@ -215,30 +216,32 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             output_kind,
             has_custom_phdrs,
             location_counters,
+            last_location_counter: location_counters.last().map(|_| 0),
         }
     }
 
-    fn emit_section_locations(&mut self, info: &SectionOutputInfo<'data, P>) {
-        if let Some(ref loc_info) = info.location_info {
-            let (start_idx, end_idx) = loc_info.location_counters;
-
-            for idx in start_idx..end_idx {
-                let lc = &self.location_counters[idx];
-                match lc {
-                    LocationCounter::Absolute(expr) => {
-                        self.events.push(OrderEvent::SetLocation(expr.clone(), idx));
-                    }
-                    LocationCounter::Relative(expr, section_id) => {
-                        let primary_id = self.output_sections.primary_output_section(*section_id);
-                        self.events.push(OrderEvent::SetLocationRelative(
-                            expr.clone(),
-                            primary_id,
-                            idx,
-                        ));
-                    }
+    fn emit_location_counters(
+        &mut self,
+        lc_start: LocationCounterIndex,
+        lc_end: LocationCounterIndex,
+    ) {
+        for idx in lc_start..lc_end {
+            let lc = &self.location_counters[idx];
+            match lc {
+                LocationCounter::Absolute(expr) => {
+                    self.events.push(OrderEvent::SetLocation(expr.clone(), idx));
+                }
+                LocationCounter::Relative(expr, section_id) => {
+                    let primary_id = self.output_sections.primary_output_section(*section_id);
+                    self.events.push(OrderEvent::SetLocationRelative(
+                        expr.clone(),
+                        primary_id,
+                        idx,
+                    ));
                 }
             }
         }
+        self.last_location_counter = self.last_location_counter.map(|l| l.max(lc_end));
     }
 
     pub(crate) fn add_section(&mut self, section_id: OutputSectionId) {
@@ -275,7 +278,10 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             self.events.push(OrderEvent::SegmentStart(segment_id));
         }
 
-        self.emit_section_locations(section_info);
+        if let Some(ref loc_info) = section_info.location_info {
+            let (lc_start, lc_stop) = loc_info.location_counters;
+            self.emit_location_counters(lc_start, lc_stop);
+        }
 
         self.events.push(OrderEvent::Section(section_id));
 
@@ -298,7 +304,10 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
 
         for (_pri, sid) in keyed {
             let sec_info = self.output_sections.output_info(sid);
-            self.emit_section_locations(sec_info);
+            if let Some(ref loc_info) = sec_info.location_info {
+                let (lc_start, lc_stop) = loc_info.location_counters;
+                self.emit_location_counters(lc_start, lc_stop);
+            }
             self.events.push(OrderEvent::Section(sid));
         }
     }
@@ -436,7 +445,10 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         self.events.push(OrderEvent::SegmentStart(segment_id));
         for section in sections {
             let section_info = output_sections.section_infos.get(*section);
-            self.emit_section_locations(section_info);
+            if let Some(ref loc_info) = section_info.location_info {
+                let (lc_start, lc_stop) = loc_info.location_counters;
+                self.emit_location_counters(lc_start, lc_stop);
+            }
             self.events.push(OrderEvent::Section(*section));
 
             let secondaries: &Vec<OutputSectionId> = self.secondary.get(*section);
@@ -455,6 +467,10 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
     }
 
     pub(crate) fn build(mut self) -> (OutputOrder<'data>, ProgramSegments<P::ProgramSegmentDef>) {
+        if let Some(lc) = self.last_location_counter {
+            self.emit_location_counters(lc, self.location_counters.len());
+        }
+
         for segment_id in self.active_segment_kinds.into_iter().flatten() {
             self.events.push(OrderEvent::SegmentEnd(segment_id));
         }
@@ -651,8 +667,12 @@ pub(crate) enum OrderEvent<'data> {
     SegmentStart(ProgramSegmentId),
     SegmentEnd(ProgramSegmentId),
     Section(OutputSectionId),
-    SetLocation(linker_script::Expression<'data>, usize),
-    SetLocationRelative(linker_script::Expression<'data>, OutputSectionId, usize),
+    SetLocation(linker_script::Expression<'data>, LocationCounterIndex),
+    SetLocationRelative(
+        linker_script::Expression<'data>,
+        OutputSectionId,
+        LocationCounterIndex,
+    ),
     SetSectionAddress(linker_script::Expression<'data>),
 }
 
@@ -1157,9 +1177,12 @@ impl Iterator for PartIdIterator {
     }
 }
 
+pub(crate) type LocationCounterIndex = usize;
+
 #[derive(Debug, Clone)]
 pub(crate) struct SectionLocationInfo<'data> {
-    pub(crate) location_counters: (usize, usize),
+    /// End is exclusive
+    pub(crate) location_counters: (LocationCounterIndex, LocationCounterIndex),
     pub(crate) location: Option<Expression<'data>>,
     pub(crate) at_location: Option<Expression<'data>>,
     pub(crate) is_top_level: bool,

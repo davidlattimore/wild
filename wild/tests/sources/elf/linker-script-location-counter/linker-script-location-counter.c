@@ -1,5 +1,7 @@
 //#Config:default
 //#LinkerScript:linker-script-location-counter.ld
+//#LinkerScript:linker-script-location-counter-2.ld
+//#LinkerScript:linker-script-location-counter-3.ld
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64,ppc64le

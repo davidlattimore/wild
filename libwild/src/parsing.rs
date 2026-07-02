@@ -10,6 +10,7 @@ use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::layout_rules::LocationCounter;
 use crate::linker_script::Expression;
+use crate::output_section_id::LocationCounterIndex;
 use crate::output_section_id::OutputSectionId;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
@@ -104,7 +105,7 @@ pub(crate) enum SymbolLoc {
     SectionStart(OutputSectionId),
     SectionEnd(OutputSectionId),
     FirstSection,
-    LocationCounter(usize, Option<OutputSectionId>),
+    LocationCounter(LocationCounterIndex, Option<OutputSectionId>),
     None,
 }
 

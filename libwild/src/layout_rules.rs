@@ -315,11 +315,11 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             location.address.clone(),
                                             primary_section_id,
                                         ));
-                                        inner_lc_idx = location_counters.len();
                                         last_symbol_loc = SymbolLoc::LocationCounter(
-                                            inner_lc_idx - 1,
+                                            inner_lc_idx,
                                             Some(primary_section_id),
                                         );
+                                        inner_lc_idx += 1;
                                     }
                                 }
                             }
@@ -343,12 +343,12 @@ impl<'data> LayoutRulesBuilder<'data> {
                         SectionCommand::SetLocation(new_location) => {
                             location_counters
                                 .push(LocationCounter::Absolute(new_location.address.clone()));
-                            last_lc_idx = location_counters.len();
-                            loc = SymbolLoc::LocationCounter(last_lc_idx - 1, current_section_id);
-                            if current_section_id.is_none() {
+                            loc = SymbolLoc::LocationCounter(last_lc_idx, current_section_id);
+                            if current_section_id.is_none() && self.num_location_counters == 0 {
                                 output_sections.set_base_address(new_location.address.clone());
                                 section_start_lc_idx = location_counters.len();
                             }
+                            last_lc_idx += 1;
                         }
                         SectionCommand::Assert(assert_cmd) => {
                             assertions.push(assert_cmd.clone());
