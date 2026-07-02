@@ -10,11 +10,15 @@ use crate::wasm::WASM_MAGIC;
 use crate::wasm::WASM_VERSION;
 use crate::wasm::Wasm;
 use crate::wasm::WasmLayout;
+use crate::wasm::WasmObjectIndexMap;
+use crate::wasm::WasmRelocation;
+use crate::wasm::WasmSymbol;
 use crate::wasm::apply_relocation;
-use crate::wasm::reloc_value_with_addend;
+use crate::wasm::finalize_reloc_value;
 use crate::wasm::section_id;
 use crate::wasm::write_uleb128;
 use leb128::write::unsigned_len as uleb128_size;
+use std::borrow::Cow;
 use wasm_encoder::ConstExpr;
 use wasm_encoder::DataSection;
 use wasm_encoder::ElementSection;
@@ -27,6 +31,18 @@ use wasm_encoder::MemorySection;
 use wasm_encoder::Section;
 use wasm_encoder::TableSection;
 use wasm_encoder::TypeSection;
+
+fn apply_resolved_reloc(
+    index_map: &WasmObjectIndexMap,
+    reloc: &WasmRelocation,
+    symbols: &[WasmSymbol],
+    function_table_slots: &[u32],
+    memory_base: u32,
+    buf: &mut [u8],
+) -> Result<()> {
+    let base = index_map.resolve_reloc(reloc, symbols, function_table_slots, memory_base)?;
+    apply_relocation(buf, reloc, finalize_reloc_value(reloc, base)?)
+}
 
 pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
     sized_output: &mut SizedOutput,
@@ -171,9 +187,14 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
         let index_map = &object_index_maps[body.object_index];
         let symbols = &per_object_symbols[body.object_index];
         for reloc in &body.relocations {
-            let base = index_map.resolve_reloc(reloc, symbols, function_table_slots)?;
-            let value = reloc_value_with_addend(base, reloc.addend)?;
-            apply_relocation(&mut out[body_start..body_start + len], reloc, value)?;
+            apply_resolved_reloc(
+                index_map,
+                reloc,
+                symbols,
+                function_table_slots,
+                wasm_layout.memory_base,
+                &mut out[body_start..body_start + len],
+            )?;
         }
         pos += len;
     }
@@ -284,10 +305,14 @@ pub(crate) fn build_data_section(wasm_layout: &WasmLayout<'_>) -> Result<DataSec
         for segment in &object_layout.segments {
             let mut payload = segment.data.to_vec();
             for reloc in &segment.relocations {
-                let base =
-                    index_map.resolve_reloc(reloc, symbols, &wasm_layout.function_table_slots)?;
-                let value = reloc_value_with_addend(base, reloc.addend)?;
-                apply_relocation(&mut payload, reloc, value)?;
+                apply_resolved_reloc(
+                    index_map,
+                    reloc,
+                    symbols,
+                    &wasm_layout.function_table_slots,
+                    wasm_layout.memory_base,
+                    &mut payload,
+                )?;
             }
             let offset = ConstExpr::i32_const(
                 i32::try_from(segment.output_memory_offset).with_context(|| {
@@ -371,11 +396,11 @@ pub(crate) enum OutputImportEntity {
     Global(wasmparser::GlobalType),
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct OutputGlobal<'a> {
     pub(crate) ty: wasmparser::GlobalType,
     /// Const-expression body without the trailing `end` opcode.
-    pub(crate) init_expr_body: &'a [u8],
+    pub(crate) init_expr_body: Cow<'a, [u8]>,
 }
 
 #[derive(Debug, Copy, Clone)]

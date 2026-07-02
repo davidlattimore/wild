@@ -24,6 +24,7 @@ use hashbrown::HashSet;
 use leb128::write::unsigned_len as uleb128_size;
 use linker_utils::utils::u32_from_slice;
 use rayon::prelude::*;
+use std::borrow::Cow;
 use std::ops::Range;
 use wasmparser::BinaryReader;
 use wasmparser::CodeSectionReader;
@@ -88,6 +89,7 @@ pub(crate) mod reloc_type {
     pub(crate) const FUNCTION_OFFSET_I32: u8 = 8;
     pub(crate) const SECTION_OFFSET_I32: u8 = 9;
     pub(crate) const EVENT_INDEX_LEB: u8 = 10;
+    pub(crate) const MEMORY_ADDR_REL_SLEB: u8 = 11;
     pub(crate) const GLOBAL_INDEX_I32: u8 = 13;
     pub(crate) const TABLE_NUMBER_LEB: u8 = 20;
     pub(crate) const FUNCTION_INDEX_I32: u8 = 26;
@@ -109,14 +111,14 @@ pub(crate) const TARGET_FEATURES_SECTION_NAME: &str = "target_features";
 /// Default static data base for linker-produced executables.
 const LINKER_MEMORY_BASE: u32 = 1024;
 
-/// Default stack pointer for linker-produced executables.
-const LINKER_STACK_POINTER: u32 = 66576;
+/// Default stack size reserved above `__data_end` for the main stack.
+const LINKER_STACK_SIZE: u32 = 64 * 1024;
 
-/// `i32.const` body for [`LINKER_STACK_POINTER`] without the trailing `end` opcode.
-const LINKER_STACK_POINTER_INIT_EXPR: &[u8] = &[0x41, 0x90, 0x88, 0x04];
+/// Empty function body: zero locals + `end`.
+const EMPTY_FUNCTION_BODY: &[u8] = &[0x00, 0x0b];
 
-/// Sentinel in `global_indices` for an absorbed `env.__stack_pointer` import.
-const LINKER_STACK_POINTER_INDEX_PLACEHOLDER: u32 = u32::MAX;
+/// `i32.const` body for `LINKER_MEMORY_BASE`.
+const LINKER_MEMORY_BASE_INIT_EXPR: &[u8] = &[0x41, 0x80, 0x08];
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -300,6 +302,7 @@ impl WasmRelocation {
             | reloc_type::TABLE_INDEX_SLEB
             | reloc_type::MEMORY_ADDR_LEB
             | reloc_type::MEMORY_ADDR_SLEB
+            | reloc_type::MEMORY_ADDR_REL_SLEB
             | reloc_type::TYPE_INDEX_LEB
             | reloc_type::GLOBAL_INDEX_LEB
             | reloc_type::EVENT_INDEX_LEB
@@ -367,7 +370,9 @@ pub(crate) fn apply_relocation(
             let buf: &mut [u8; 5] = slot.try_into().expect("slot_size returned 5");
             write_uleb128_5(buf, value);
         }
-        reloc_type::TABLE_INDEX_SLEB | reloc_type::MEMORY_ADDR_SLEB => {
+        reloc_type::TABLE_INDEX_SLEB
+        | reloc_type::MEMORY_ADDR_SLEB
+        | reloc_type::MEMORY_ADDR_REL_SLEB => {
             let buf: &mut [u8; 5] = slot.try_into().expect("slot_size returned 5");
             write_sleb128_5(buf, value as i32);
         }
@@ -1522,6 +1527,8 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) tables: Vec<wasmparser::TableType>,
     pub(crate) element_functions: Vec<u32>,
     pub(crate) function_table_slots: Vec<u32>,
+    pub(crate) memory_base: u32,
+    pub(crate) data_end: u32,
     pub(crate) unsupported_output: Vec<&'static str>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
     pub(crate) object_data_layouts: Vec<WasmObjectDataLayout<'data>>,
@@ -1851,6 +1858,7 @@ impl WasmObjectIndexMap {
         reloc: &WasmRelocation,
         symbols: &[WasmSymbol],
         function_table_slots: &[u32],
+        memory_base: u32,
     ) -> Result<u32> {
         if reloc.ty == R_WASM_TYPE_INDEX_LEB {
             return self
@@ -1887,17 +1895,27 @@ impl WasmObjectIndexMap {
             }
             reloc_type::MEMORY_ADDR_LEB
             | reloc_type::MEMORY_ADDR_SLEB
-            | reloc_type::MEMORY_ADDR_I32 => {
+            | reloc_type::MEMORY_ADDR_I32
+            | reloc_type::MEMORY_ADDR_REL_SLEB => {
                 ensure!(
                     sym.kind == WasmSymbolKind::Data,
                     "R_WASM_MEMORY_ADDR_* references non-data symbol"
                 );
-                self.data_addresses
+                let addr = self
+                    .data_addresses
                     .get(reloc.index as usize)
                     .copied()
                     .ok_or_else(|| {
                         crate::error!("data address for symbol index {} out of range", reloc.index)
-                    })
+                    })?;
+                if reloc.ty == reloc_type::MEMORY_ADDR_REL_SLEB {
+                    let relative = i64::from(addr) - i64::from(memory_base) + reloc.addend;
+                    let relative = i32::try_from(relative)
+                        .map_err(|_| crate::error!("Wasm REL_SLEB relocation out of range"))?;
+                    Ok(relative as u32)
+                } else {
+                    Ok(addr)
+                }
             }
             reloc_type::TABLE_INDEX_SLEB | reloc_type::TABLE_INDEX_I32 => {
                 ensure!(
@@ -2103,7 +2121,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
                     })?;
                 Ok(OutputGlobal {
                     ty: global.ty,
-                    init_expr_body,
+                    init_expr_body: Cow::Borrowed(init_expr_body),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -2146,6 +2164,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
         index_bases: WasmObjectIndexBases,
         resolutions: &ObjectImportResolutions,
         all_index_bases: &[WasmObjectIndexBases],
+        indices: &LinkerDefinedIndices,
     ) -> Result<WasmObjectOutputLayout<'data>> {
         ensure!(
             resolutions.function_resolutions.len() == self.function_imports.len(),
@@ -2173,6 +2192,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
         for (i, import) in self.function_imports.iter().enumerate() {
             match resolutions.function_resolutions[i] {
                 ImportResolution::Unresolved => {
+                    if let Some(index) = indices.function_index(import.name) {
+                        index_map.function_indices.push(index);
+                        continue;
+                    }
                     let output_type_index = index_bases
                         .type_index_base
                         .checked_add(import.type_index)
@@ -2217,10 +2240,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
         for (i, import) in self.global_imports.iter().enumerate() {
             match resolutions.global_resolutions[i] {
                 ImportResolution::Unresolved => {
-                    if is_linker_stack_pointer_import(import) {
-                        index_map
-                            .global_indices
-                            .push(LINKER_STACK_POINTER_INDEX_PLACEHOLDER);
+                    if let Some(index) = indices.global_index(import.name) {
+                        index_map.global_indices.push(index);
                         continue;
                     }
                     let output_global_index = index_bases
@@ -2495,27 +2516,259 @@ fn any_object_needs_linker_memory(inputs: &[WasmObjectLayoutInput<'_>]) -> bool 
     inputs.iter().any(object_needs_linker_memory)
 }
 
-fn is_linker_stack_pointer_import(import: &WasmGlobalImport<'_>) -> bool {
-    import.name == "__stack_pointer"
+/// Reserved Wasm index-space slots for linker-defined globals/functions.
+#[derive(Debug, Clone, Copy, Default)]
+struct LinkerDefinedIndices {
+    memory_base_global: Option<u32>,
+    stack_pointer_global: Option<u32>,
+    call_ctors_func: Option<u32>,
+    call_dtors_func: Option<u32>,
+    num_defined_globals: u32,
+    num_defined_functions: u32,
 }
 
-fn object_needs_linker_stack_pointer(input: &WasmObjectLayoutInput<'_>) -> bool {
-    input
-        .global_imports
+impl LinkerDefinedIndices {
+    fn compute(
+        inputs: &[WasmObjectLayoutInput<'_>],
+        import_resolutions: &[ObjectImportResolutions],
+    ) -> Result<Self> {
+        let mut needs_memory_base = false;
+        let mut needs_stack_pointer = false;
+        let mut needs_ctors = false;
+        let mut needs_dtors = false;
+        let mut function_import_count = 0u32;
+        let mut global_import_count = 0u32;
+
+        for (input, resolutions) in inputs.iter().zip(import_resolutions) {
+            let mut absorbed_functions = 0u32;
+            for (i, import) in input.function_imports.iter().enumerate() {
+                let unresolved = matches!(
+                    resolutions.function_resolutions.get(i),
+                    Some(ImportResolution::Unresolved)
+                );
+                if !unresolved {
+                    continue;
+                }
+                match import.name {
+                    "__wasm_call_ctors" => {
+                        needs_ctors = true;
+                        absorbed_functions += 1;
+                    }
+                    "__wasm_call_dtors" => {
+                        needs_dtors = true;
+                        absorbed_functions += 1;
+                    }
+                    _ => {}
+                }
+            }
+            function_import_count = function_import_count
+                .checked_add(
+                    resolutions
+                        .unresolved_function_count
+                        .saturating_sub(absorbed_functions),
+                )
+                .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+
+            let mut absorbed_globals = 0u32;
+            for (i, import) in input.global_imports.iter().enumerate() {
+                let unresolved = matches!(
+                    resolutions.global_resolutions.get(i),
+                    Some(ImportResolution::Unresolved)
+                );
+                if !unresolved {
+                    continue;
+                }
+                match import.name {
+                    "__memory_base" => {
+                        needs_memory_base = true;
+                        absorbed_globals += 1;
+                    }
+                    "__stack_pointer" => {
+                        needs_stack_pointer = true;
+                        absorbed_globals += 1;
+                    }
+                    _ => {}
+                }
+            }
+            global_import_count = global_import_count
+                .checked_add(
+                    resolutions
+                        .unresolved_global_count
+                        .saturating_sub(absorbed_globals),
+                )
+                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+
+            if !needs_memory_base
+                && input
+                    .code_relocations
+                    .iter()
+                    .chain(input.data_relocations.iter())
+                    .any(|reloc| reloc.ty == reloc_type::MEMORY_ADDR_REL_SLEB)
+            {
+                needs_memory_base = true;
+            }
+        }
+
+        let mut next_global = global_import_count;
+        let memory_base_global = needs_memory_base.then(|| {
+            let idx = next_global;
+            next_global += 1;
+            idx
+        });
+        let stack_pointer_global = needs_stack_pointer.then(|| {
+            let idx = next_global;
+            next_global += 1;
+            idx
+        });
+        let num_defined_globals = next_global - global_import_count;
+
+        let mut next_func = function_import_count;
+        let call_ctors_func = needs_ctors.then(|| {
+            let idx = next_func;
+            next_func += 1;
+            idx
+        });
+        let call_dtors_func = needs_dtors.then(|| {
+            let idx = next_func;
+            next_func += 1;
+            idx
+        });
+        let num_defined_functions = next_func - function_import_count;
+
+        Ok(Self {
+            memory_base_global,
+            stack_pointer_global,
+            call_ctors_func,
+            call_dtors_func,
+            num_defined_globals,
+            num_defined_functions,
+        })
+    }
+
+    fn global_index(&self, name: &str) -> Option<u32> {
+        match name {
+            "__memory_base" => self.memory_base_global,
+            "__stack_pointer" => self.stack_pointer_global,
+            _ => None,
+        }
+    }
+
+    fn function_index(&self, name: &str) -> Option<u32> {
+        match name {
+            "__wasm_call_ctors" => self.call_ctors_func,
+            "__wasm_call_dtors" => self.call_dtors_func,
+            _ => None,
+        }
+    }
+}
+
+fn encode_i32_const_body(value: i32) -> Vec<u8> {
+    let mut bytes = vec![0x41];
+    leb128::write::signed(&mut bytes, i64::from(value)).unwrap();
+    bytes
+}
+
+fn ensure_void_void_type(types: &mut Vec<wasmparser::FuncType>) -> u32 {
+    if let Some((idx, _)) = types
         .iter()
-        .any(is_linker_stack_pointer_import)
+        .enumerate()
+        .find(|(_, ty)| ty.params().is_empty() && ty.results().is_empty())
+    {
+        return idx as u32;
+    }
+    types.push(wasmparser::FuncType::new([], []));
+    (types.len() - 1) as u32
 }
 
-fn any_object_needs_linker_stack_pointer(inputs: &[WasmObjectLayoutInput<'_>]) -> bool {
-    inputs.iter().any(object_needs_linker_stack_pointer)
+fn empty_linker_function_body() -> WasmFunctionBody<'static> {
+    WasmFunctionBody {
+        bytes: EMPTY_FUNCTION_BODY,
+        code_offset: 0,
+        relocations: Vec::new(),
+        object_index: 0,
+    }
 }
 
-fn count_absorbed_stack_pointer_imports(input: &WasmObjectLayoutInput<'_>) -> u32 {
-    input
-        .global_imports
-        .iter()
-        .filter(|import| is_linker_stack_pointer_import(import))
-        .count() as u32
+fn emit_reserved_linker_definitions(layout: &mut WasmLayout<'_>, indices: &LinkerDefinedIndices) {
+    let mut linker_globals = Vec::with_capacity(indices.num_defined_globals as usize);
+    if indices.memory_base_global.is_some() {
+        layout.memory_base = LINKER_MEMORY_BASE;
+        linker_globals.push(OutputGlobal {
+            ty: GlobalType {
+                content_type: wasmparser::ValType::I32,
+                mutable: false,
+                shared: false,
+            },
+            init_expr_body: Cow::Borrowed(LINKER_MEMORY_BASE_INIT_EXPR),
+        });
+    }
+    if indices.stack_pointer_global.is_some() {
+        linker_globals.push(OutputGlobal {
+            ty: GlobalType {
+                content_type: wasmparser::ValType::I32,
+                mutable: true,
+                shared: false,
+            },
+            init_expr_body: Cow::Borrowed(LINKER_MEMORY_BASE_INIT_EXPR),
+        });
+    }
+    if !linker_globals.is_empty() {
+        let mut rest = std::mem::take(&mut layout.globals);
+        linker_globals.append(&mut rest);
+        layout.globals = linker_globals;
+    }
+
+    if indices.num_defined_functions > 0 {
+        let void_ty = ensure_void_void_type(&mut layout.output_types);
+        let mut type_indices = Vec::with_capacity(indices.num_defined_functions as usize);
+        let mut bodies = Vec::with_capacity(indices.num_defined_functions as usize);
+        if indices.call_ctors_func.is_some() {
+            type_indices.push(void_ty);
+            bodies.push(empty_linker_function_body());
+        }
+        if indices.call_dtors_func.is_some() {
+            type_indices.push(void_ty);
+            bodies.push(empty_linker_function_body());
+        }
+        type_indices.append(&mut layout.function_type_indices);
+
+        let mut object_bodies = std::mem::take(&mut layout.function_bodies);
+        bodies.append(&mut object_bodies);
+        layout.function_type_indices = type_indices;
+        layout.function_bodies = bodies;
+    }
+}
+
+/// Write stack-pointer init and memory page sizes after static data layout.
+fn fill_linker_defined_values(
+    layout: &mut WasmLayout<'_>,
+    indices: &LinkerDefinedIndices,
+) -> Result {
+    if indices.stack_pointer_global.is_some() {
+        let sp = layout
+            .data_end
+            .checked_add(LINKER_STACK_SIZE)
+            .ok_or_else(|| crate::error!("Wasm stack pointer overflow"))?;
+        let local_idx = usize::from(indices.memory_base_global.is_some());
+        let global = layout
+            .globals
+            .get_mut(local_idx)
+            .ok_or_else(|| crate::error!("Wasm stack pointer global missing"))?;
+        global.init_expr_body = Cow::Owned(encode_i32_const_body(sp as i32));
+    }
+
+    let mut bytes_needed = u64::from(layout.data_end.max(layout.memory_base));
+    if indices.stack_pointer_global.is_some() {
+        bytes_needed =
+            bytes_needed.max(u64::from(layout.data_end.saturating_add(LINKER_STACK_SIZE)));
+    }
+    if bytes_needed > 0 && !layout.memories.is_empty() {
+        let pages_needed = bytes_needed.div_ceil(65536).max(1);
+        for memory in &mut layout.memories {
+            memory.initial = memory.initial.max(pages_needed);
+        }
+    }
+    Ok(())
 }
 
 fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>]) -> MemoryType {
@@ -2534,39 +2787,6 @@ fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>]) -> MemoryType
         initial,
         maximum: None,
         page_size_log2: None,
-    }
-}
-
-fn linker_stack_pointer_global<'data>() -> OutputGlobal<'data> {
-    OutputGlobal {
-        ty: GlobalType {
-            content_type: wasmparser::ValType::I32,
-            mutable: true,
-            shared: false,
-        },
-        init_expr_body: LINKER_STACK_POINTER_INIT_EXPR,
-    }
-}
-
-fn prepend_linker_stack_pointer_global<'data>(
-    globals: &mut Vec<OutputGlobal<'data>>,
-    object_index_maps: &mut [WasmObjectIndexMap],
-    exports: &mut Vec<OutputExport<'data>>,
-) {
-    globals.insert(0, linker_stack_pointer_global());
-    for index_map in object_index_maps {
-        for index in &mut index_map.global_indices {
-            if *index == LINKER_STACK_POINTER_INDEX_PLACEHOLDER {
-                *index = 0;
-            } else {
-                *index = index.saturating_add(1);
-            }
-        }
-    }
-    for export in exports {
-        if matches!(export.kind, wasmparser::ExternalKind::Global) {
-            export.index = export.index.saturating_add(1);
-        }
     }
 }
 
@@ -2669,21 +2889,33 @@ where
         .collect::<Result<Vec<_>>>()?;
 
     let import_resolutions = resolve_cross_object_imports(&layout_inputs, symbol_db)?;
-    let index_bases = allocate_wasm_object_index_bases(&layout_inputs, &import_resolutions)?;
+    let indices = LinkerDefinedIndices::compute(&layout_inputs, &import_resolutions)?;
+    let index_bases =
+        allocate_wasm_object_index_bases(&layout_inputs, &import_resolutions, &indices)?;
     let object_layouts = layout_inputs
         .par_iter()
         .zip(import_resolutions.par_iter())
         .enumerate()
         .map(|(obj_idx, (input, resolutions))| {
-            input.build_object_output_layout(index_bases[obj_idx], resolutions, &index_bases)
+            input.build_object_output_layout(
+                index_bases[obj_idx],
+                resolutions,
+                &index_bases,
+                &indices,
+            )
         })
         .collect::<Result<Vec<_>>>()?;
 
     let linker_memory = any_object_needs_linker_memory(&layout_inputs);
-    let linker_stack_pointer = any_object_needs_linker_stack_pointer(&layout_inputs);
-    let linker_runtime = linker_memory || linker_stack_pointer;
-    let mut layout = WasmLayout::default();
-    let mut memory_cursor = if linker_memory { LINKER_MEMORY_BASE } else { 0 };
+    let mut layout = WasmLayout {
+        memory_base: if linker_memory || indices.memory_base_global.is_some() {
+            LINKER_MEMORY_BASE
+        } else {
+            0
+        },
+        ..WasmLayout::default()
+    };
+    let mut memory_cursor = layout.memory_base;
     let mut section_cursor = 0u32;
     for (obj_idx, (input, object_layout)) in layout_inputs.iter().zip(object_layouts).enumerate() {
         layout.output_types.extend(object_layout.types);
@@ -2711,19 +2943,16 @@ where
             &mut section_cursor,
         )?);
     }
+
+    emit_reserved_linker_definitions(&mut layout, &indices);
+
     if linker_memory && layout.memories.is_empty() {
         layout
             .memories
             .push(linker_output_memory_type(&layout_inputs));
         ensure_memory_export(&mut layout.exports);
     }
-    if linker_runtime {
-        prepend_linker_stack_pointer_global(
-            &mut layout.globals,
-            &mut layout.object_index_maps,
-            &mut layout.exports,
-        );
-    }
+    layout.data_end = memory_cursor;
     compute_data_addresses(
         &mut layout.object_index_maps,
         &layout.per_object_symbols,
@@ -2731,6 +2960,7 @@ where
         &layout_inputs,
         symbol_db,
     )?;
+    fill_linker_defined_values(&mut layout, &indices)?;
     ensure_entry_export(
         &mut layout.exports,
         &layout_inputs,
@@ -2847,7 +3077,10 @@ fn finalize_indirect_function_table(
 fn is_memory_addr_relocation(ty: u8) -> bool {
     matches!(
         ty,
-        reloc_type::MEMORY_ADDR_LEB | reloc_type::MEMORY_ADDR_SLEB | reloc_type::MEMORY_ADDR_I32
+        reloc_type::MEMORY_ADDR_LEB
+            | reloc_type::MEMORY_ADDR_SLEB
+            | reloc_type::MEMORY_ADDR_I32
+            | reloc_type::MEMORY_ADDR_REL_SLEB
     )
 }
 
@@ -2866,6 +3099,15 @@ pub(crate) fn reloc_value_with_addend(base: u32, addend: i64) -> Result<u32> {
         .checked_add(addend)
         .ok_or_else(|| crate::error!("Wasm relocation value overflow"))?;
     u32::try_from(value).map_err(|_| crate::error!("Wasm relocation value out of range"))
+}
+
+/// Apply addend policy. `R_WASM_MEMORY_ADDR_REL_SLEB` bases already include the addend.
+pub(crate) fn finalize_reloc_value(reloc: &WasmRelocation, base: u32) -> Result<u32> {
+    if reloc.ty == reloc_type::MEMORY_ADDR_REL_SLEB {
+        Ok(base)
+    } else {
+        reloc_value_with_addend(base, reloc.addend)
+    }
 }
 
 fn data_symbol_memory_address(
@@ -2938,6 +3180,7 @@ fn compute_data_addresses(
 fn allocate_wasm_object_index_bases(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     import_resolutions: &[ObjectImportResolutions],
+    indices: &LinkerDefinedIndices,
 ) -> Result<Vec<WasmObjectIndexBases>> {
     let mut index_bases = Vec::with_capacity(layout_inputs.len());
     let mut next_type_index = 0u32;
@@ -2957,20 +3200,48 @@ fn allocate_wasm_object_index_bases(
         next_type_index = next_type_index
             .checked_add(u32::try_from(input.types.len()).context("too many Wasm types")?)
             .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+
+        let mut absorbed_functions = 0u32;
+        for (i, import) in input.function_imports.iter().enumerate() {
+            if matches!(
+                resolutions.function_resolutions.get(i),
+                Some(ImportResolution::Unresolved)
+            ) && indices.function_index(import.name).is_some()
+            {
+                absorbed_functions += 1;
+            }
+        }
         next_function_import_index = next_function_import_index
-            .checked_add(resolutions.unresolved_function_count)
+            .checked_add(
+                resolutions
+                    .unresolved_function_count
+                    .saturating_sub(absorbed_functions),
+            )
             .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
-        // `__stack_pointer` imports are absorbed into a linker-defined global.
-        let unresolved_globals = resolutions
-            .unresolved_global_count
-            .saturating_sub(count_absorbed_stack_pointer_imports(input));
+
+        let mut absorbed_globals = 0u32;
+        for (i, import) in input.global_imports.iter().enumerate() {
+            if matches!(
+                resolutions.global_resolutions.get(i),
+                Some(ImportResolution::Unresolved)
+            ) && indices.global_index(import.name).is_some()
+            {
+                absorbed_globals += 1;
+            }
+        }
         next_global_import_index = next_global_import_index
-            .checked_add(unresolved_globals)
+            .checked_add(
+                resolutions
+                    .unresolved_global_count
+                    .saturating_sub(absorbed_globals),
+            )
             .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
     }
 
-    let mut next_defined_function_index = next_function_import_index;
-    let mut next_defined_global_index = next_global_import_index;
+    // Object-defined entities start after imports and any reserved linker-defined entities.
+    let mut next_defined_function_index =
+        next_function_import_index + indices.num_defined_functions;
+    let mut next_defined_global_index = next_global_import_index + indices.num_defined_globals;
     for (input, index_base) in layout_inputs.iter().zip(index_bases.iter_mut()) {
         index_base.defined_function_base = next_defined_function_index;
         index_base.defined_global_base = next_defined_global_index;
@@ -3231,11 +3502,10 @@ impl platform::Platform for Wasm {
     }
 
     fn create_linker_defined_symbols(
-        symbols: &mut crate::parsing::InternalSymbolsBuilder<Self>,
-        output_kind: crate::output_kind::OutputKind,
-        args: &Self::Args,
+        _symbols: &mut crate::parsing::InternalSymbolsBuilder<Self>,
+        _output_kind: crate::output_kind::OutputKind,
+        _args: &Self::Args,
     ) {
-        // TODO: emit `__heap_base`, `__data_end`, `__stack_pointer`, etc.
     }
 
     fn built_in_section_infos<'data>()
