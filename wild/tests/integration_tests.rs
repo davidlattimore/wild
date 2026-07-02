@@ -2374,7 +2374,7 @@ impl Debug for SectionDiff {
 /// milliseconds, however when running lots of testing parallel there can be quite a bit of load on
 /// the system, which can mean that the test binaries take longer to start, so we need to be
 /// somewhat generous here to avoid flakes.
-const TEST_BINARY_TIMEOUT: Duration = std::time::Duration::from_millis(2000);
+const TEST_BINARY_TIMEOUT: Duration = std::time::Duration::from_secs(10);
 const EXIT_SUCCESS: i32 = 42;
 
 impl Program<'_> {
