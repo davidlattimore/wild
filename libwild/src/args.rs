@@ -1343,6 +1343,7 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
             args.common_mut().write_layout = true;
             Ok(())
         });
+
     parser
         .declare()
         .long("write-trace")
@@ -1350,6 +1351,7 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
             args.common_mut().write_trace = true;
             Ok(())
         });
+
     parser
         .declare_with_param()
         .long("sym-info")
@@ -1358,6 +1360,7 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
             args.common_mut().sym_info = Some(value.to_owned());
             Ok(())
         });
+
     parser
         .declare()
         .long("validate-output")
@@ -1365,6 +1368,7 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
             args.common_mut().validate_output = true;
             Ok(())
         });
+
     parser
         .declare()
         .long("update-in-place")
@@ -1373,6 +1377,7 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
             args.common_mut().file_replacement_mode = Some(FileReplacementMode::UpdateInPlace);
             Ok(())
         });
+
     parser
         .declare_with_optional_param()
         .long("time")
@@ -1382,6 +1387,50 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
                 Some(v) => Some(parse_time_phase_options(v)?),
                 None => Some(Vec::new()),
             };
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("mmap-output-file")
+        .help("Write output file using mmap (default)")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().file_write_mode = Some(FileWriteMode::Mmap);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-mmap-output-file")
+        .help("Write output file without mmap")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().file_write_mode = Some(FileWriteMode::BufferThenWrite);
+            Ok(())
+        });
+
+    parser
+        .declare_with_optional_param()
+        .long("threads")
+        .help("Use multiple threads for linking")
+        .execute(|args, _modifier_stack, value| {
+            match value {
+                Some(v) => {
+                    args.common_mut().num_threads =
+                        Some(NonZeroUsize::try_from(v.parse::<usize>()?)?);
+                }
+                None => {
+                    args.common_mut().num_threads = None; // Default behaviour
+                }
+            }
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-threads")
+        .help("Use a single thread")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().num_threads = Some(NonZeroUsize::new(1).unwrap());
             Ok(())
         });
 }

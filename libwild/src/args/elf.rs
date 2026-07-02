@@ -18,7 +18,6 @@ use crate::args::VersionMode;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
-use crate::file_writer::FileWriteMode;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::output_kind::OutputKind;
 use crate::output_section_id::SectionName;
@@ -940,56 +939,12 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         });
 
     parser
-        .declare()
-        .long("mmap-output-file")
-        .help("Write output file using mmap (default)")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().file_write_mode = Some(FileWriteMode::Mmap);
-            Ok(())
-        });
-
-    parser
-        .declare()
-        .long("no-mmap-output-file")
-        .help("Write output file without mmap")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().file_write_mode = Some(FileWriteMode::BufferThenWrite);
-            Ok(())
-        });
-
-    parser
         .declare_with_param()
         .long("entry")
         .short("e")
         .help("Set the entry point")
         .execute(|args, _modifier_stack, value| {
             args.entry = Some(value.to_owned());
-            Ok(())
-        });
-
-    parser
-        .declare_with_optional_param()
-        .long("threads")
-        .help("Use multiple threads for linking")
-        .execute(|args, _modifier_stack, value| {
-            match value {
-                Some(v) => {
-                    args.common_mut().num_threads =
-                        Some(NonZeroUsize::try_from(v.parse::<usize>()?)?);
-                }
-                None => {
-                    args.common_mut().num_threads = None; // Default behaviour
-                }
-            }
-            Ok(())
-        });
-
-    parser
-        .declare()
-        .long("no-threads")
-        .help("Use a single thread")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().num_threads = Some(NonZeroUsize::new(1).unwrap());
             Ok(())
         });
 
