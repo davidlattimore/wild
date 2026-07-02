@@ -107,9 +107,6 @@ impl crate::platform::Arch for ElfRiscV64 {
         None
     }
 
-    // Allow the lint for `exactly_one`.
-    // Tracking issue available at: https://github.com/rust-lang/rust/issues/149266
-    #[allow(unstable_name_collisions)]
     fn merge_eflags(
         eflags: impl Iterator<Item = object::elf::FileFlags>,
     ) -> Result<object::elf::FileFlags> {
@@ -184,7 +181,6 @@ impl crate::platform::Arch for ElfRiscV64 {
             .is_ok_and(|sym| sym.st_other.contains(object::elf::STO_RISCV_VARIANT_CC))
     }
 
-    #[allow(unused_variables)]
     #[inline(always)]
     fn new_relaxation(
         relocation_kind: u32,

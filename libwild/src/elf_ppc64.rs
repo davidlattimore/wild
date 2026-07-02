@@ -117,7 +117,6 @@ impl crate::platform::Arch for ElfPpc64 {
 
 // Relaxations are not yet implemented for ppc64, so `new_relaxation` always returns `None` and
 // this type is never constructed.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct Relaxation {
     kind: RelaxationKind,

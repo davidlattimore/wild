@@ -1000,7 +1000,6 @@ struct PrefixOptionHandler<T> {
 type OptionalParamHandler<T> = fn(&mut T, &mut Vec<Modifiers>, Option<&str>) -> Result<()>;
 type ThreeParamHandler<T> = fn(&mut T, &mut Vec<Modifiers>, &str, &str, &str) -> Result<()>;
 
-#[allow(clippy::enum_variant_names)]
 enum OptionHandlerFn<T> {
     NoParam(fn(&mut T, &mut Vec<Modifiers>) -> Result<()>),
     WithParam(fn(&mut T, &mut Vec<Modifiers>, &str) -> Result<()>),

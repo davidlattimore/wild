@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 /// Make the the supplied file executable by adding execute permissions for all users that have read
 /// permissions. On non-Unix platforms, this is a no-op.
-#[allow(clippy::unnecessary_wraps)]
 pub fn make_executable(_file: &File) -> Result {
     #[cfg(unix)]
     {
