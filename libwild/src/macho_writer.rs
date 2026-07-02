@@ -188,6 +188,16 @@ fn write_file<'data, A: Arch<Platform = MachO>>(
     Ok(())
 }
 
+/// Takes enough bytes from `bytes` for a T, returning those bytes as an `&mut T`.
+fn take_mut<'out, T: object::Pod>(bytes: &mut &'out mut [u8]) -> Result<&'out mut T> {
+    let bytes = bytes
+        .split_off_mut(..size_of::<T>())
+        .context("Insufficient allocation")?;
+    from_bytes_mut::<T>(bytes)
+        .map_err(|()| error!("Unaligned write"))
+        .map(|(a, _)| a)
+}
+
 fn write_prelude<'data>(
     prelude: &PreludeLayout<MachO>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
@@ -199,36 +209,27 @@ fn write_prelude<'data>(
         prelude.format_specific.load_dylib_command_sizes.len()
     );
 
-    let header = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
-        .map_err(|_| error!("Invalid file header allocation"))?
-        .0;
-    populate_file_header(layout, prelude, header)?;
+    let header_buffer = buffers.get_mut(part_id::FILE_HEADER);
+    populate_file_header(layout, prelude, take_mut(header_buffer)?)?;
+    ensure!(header_buffer.is_empty(), "Excess FILE_HEADER allocation");
 
-    let load_cmd_err = |()| error!("Invalid LOAD_COMMANDS allocation");
     let mut load_command_buffer = slice_from_all_bytes_mut(buffers.get_mut(part_id::LOAD_COMMANDS));
     write_segment_commands(layout, &mut load_command_buffer)?;
 
-    let (entry_point_command, load_command_buffer) =
-        from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
-    write_entry_point_command(layout, entry_point_command)?;
+    write_entry_point_command(layout, take_mut(&mut load_command_buffer)?)?;
 
-    let (uuid_command, mut load_command_buffer) =
-        from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
-    write_uuid_command(uuid_command);
+    write_uuid_command(take_mut(&mut load_command_buffer)?);
 
     if layout.args().platform_version.is_some() {
-        let (build_version_command, rest) =
-            from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
+        let build_version_command = take_mut(&mut load_command_buffer)?;
         write_build_version_command(layout, build_version_command)?;
-        load_command_buffer = rest;
     }
 
     let command_size = (size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
         .next_multiple_of(MACHO_COMMAND_ALIGNMENT);
-    let command_buffer = load_command_buffer.split_off_mut(..command_size).unwrap();
-    let (dylinker_command, dylinker_path_buffer) =
-        from_bytes_mut(command_buffer).map_err(|_| error!("Invalid INTERP command allocation"))?;
-    write_dylinker_command(dylinker_command, dylinker_path_buffer);
+    let mut command_buffer = load_command_buffer.split_off_mut(..command_size).unwrap();
+    let dylinker_command = take_mut(&mut command_buffer)?;
+    write_dylinker_command(dylinker_command, command_buffer);
 
     for (&file_id, &command_size) in prelude
         .format_specific
@@ -236,28 +237,22 @@ fn write_prelude<'data>(
         .iter()
         .zip(&prelude.format_specific.load_dylib_command_sizes)
     {
-        let command_buffer = load_command_buffer.split_off_mut(..command_size).unwrap();
-        let (dylib_command, dylib_path_buffer) =
-            from_bytes_mut(command_buffer).map_err(load_cmd_err)?;
+        let mut command_buffer = load_command_buffer.split_off_mut(..command_size).unwrap();
+        let dylib_command = take_mut(&mut command_buffer)?;
         let path = crate::macho::install_name(file_id, &layout.symbol_db);
 
-        write_dylib_command(dylib_command, dylib_path_buffer, path);
+        write_dylib_command(dylib_command, command_buffer, path);
     }
 
-    let (chained_fixups_command, load_command_buffer) =
-        from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
-    write_dyld_chained_fixups_command(layout, chained_fixups_command);
+    write_dyld_chained_fixups_command(layout, take_mut(&mut load_command_buffer)?);
 
-    let (symtab_command, load_command_buffer) =
-        from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
-    write_symtab_command(layout, symtab_command);
+    write_symtab_command(layout, take_mut(&mut load_command_buffer)?);
 
-    let (code_signature_command, load_command_buffer) =
-        from_bytes_mut(load_command_buffer).map_err(load_cmd_err)?;
-    write_code_signature_command(layout, code_signature_command);
+    write_code_signature_command(layout, take_mut(&mut load_command_buffer)?);
+
     ensure!(
         load_command_buffer.is_empty(),
-        "Trailing bytes in LOAD_COMMANDS allocation"
+        "Excess LOAD_COMMANDS allocation"
     );
 
     // Fill up one extra character as n_strx == 0 is treated as unnamed.
@@ -364,12 +359,11 @@ fn populate_file_header(
 }
 
 fn split_segment_command_buffer(
-    bytes: &mut [u8],
+    mut bytes: &mut [u8],
     section_count: usize,
 ) -> Result<(&mut SegmentCommand, &mut [SectionEntry])> {
-    let (command, rest) =
-        from_bytes_mut(bytes).map_err(|_| error!("Invalid segment command allocation"))?;
-    let (sections, rest) = slice_from_bytes_mut(rest, section_count)
+    let command = take_mut(&mut bytes)?;
+    let (sections, rest) = slice_from_bytes_mut(bytes, section_count)
         .map_err(|_| error!("Invalid segment section allocation"))?;
     ensure!(
         rest.is_empty(),
@@ -380,13 +374,7 @@ fn split_segment_command_buffer(
 
 fn write_segment_commands(layout: &MachOLayout, load_commands: &mut &mut [u8]) -> Result {
     let load_cmd_err = |()| error!("Invalid LOAD_COMMANDS allocation");
-    let pagezero_segment = from_bytes_mut(
-        load_commands
-            .split_off_mut(..size_of::<SegmentCommand>())
-            .unwrap(),
-    )
-    .map_err(load_cmd_err)?
-    .0;
+    let pagezero_segment = take_mut(load_commands)?;
     write_segment(
         SEG_PAGEZERO,
         macho::VmProt(0),
