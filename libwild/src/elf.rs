@@ -2827,6 +2827,7 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
                     queue,
                     false,
                     scope,
+                    &mut RelrRunState::default(), // eh_frame relocations are never RELR-eligible
                 )?;
 
                 if rel.symbol().is_none() {
@@ -2929,6 +2930,7 @@ fn process_section_exception_frames<'data, 'scope, A: Arch<Platform = Elf>, R: R
                 queue,
                 true,
                 scope,
+                &mut RelrRunState::default(), // eh_frame relocations are never RELR-eligible
             )?;
         }
         common.format_specific.exception_frame_relocations +=
@@ -3380,6 +3382,26 @@ impl<'data> DynamicTagValues<'data> {
 impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues<'data> {
     fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8] {
         self.soname.unwrap_or_else(|| input.lib_name())
+    }
+}
+
+/// Tracks consecutive RELR-eligible relocations within a single input section
+/// for bitmap packing during the layout phase.
+/// Only pack within a single input section — gives ~90% of savings and avoids
+/// cross-section address ordering issues in Wild's parallel layout phase.
+struct RelrRunState {
+    /// Offset of the last RELR-eligible relocation seen in the current run.
+    last_offset: Option<u64>,
+    /// Whether a bitmap entry has already been allocated for the current run.
+    bitmap_allocated: bool,
+}
+
+impl Default for RelrRunState {
+    fn default() -> Self {
+        Self {
+            last_offset: None,
+            bitmap_allocated: false,
+        }
     }
 }
 
@@ -4964,6 +4986,7 @@ fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocatio
     scope: &Scope<'scope>,
 ) -> Result {
     let mut modifier = RelocationModifier::Normal;
+    let mut relr_run = RelrRunState::default();
     for rel in relocations {
         if modifier == RelocationModifier::SkipNextRelocation {
             modifier = RelocationModifier::Normal;
@@ -4982,6 +5005,7 @@ fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocatio
             queue,
             false,
             scope,
+            &mut relr_run,
         )
         .with_context(|| {
             format!(
@@ -5005,6 +5029,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
     queue: &mut layout::LocalWorkQueue,
     is_debug_section: bool,
     scope: &Scope<'scope>,
+    relr_run: &mut RelrRunState,
 ) -> Result<RelocationModifier> {
     let args = resources.symbol_db.args;
     let mut next_modifier = RelocationModifier::Normal;
@@ -5101,9 +5126,25 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             && flags.is_address()
         {
             if section_is_writable {
-                // Odd offsets mean bitmaps in RELR, so we need to fall back to RELA for them.
+                // Odd offsets can't be encoded as RELR address entries (LSB used as
+                // bitmap marker), so fall back to RELA for them.
                 if resources.symbol_db.args.is_relr_enabled() && rel.offset().is_multiple_of(2) {
-                    common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                    let offset = rel.offset();
+                    if relr_run.last_offset == Some(offset.wrapping_sub(8)) {
+                        // Continues current run — consecutive 8-byte-aligned relocation.
+                        if !relr_run.bitmap_allocated {
+                            // Second member of run: allocate one bitmap entry.
+                            common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                            relr_run.bitmap_allocated = true;
+                        }
+                        // Third+ members fit into existing bitmap — no new entry needed.
+                    } else {
+                        // New run: allocate address entry, reset bitmap state.
+                        common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                        relr_run.last_offset = Some(offset);
+                        relr_run.bitmap_allocated = false;
+                    }
+                    relr_run.last_offset = Some(offset);
                 } else {
                     common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
                 }
