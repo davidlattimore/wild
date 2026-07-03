@@ -5859,12 +5859,19 @@ fn verify_linker_plugin_requirements(
 
     match compiler_kind {
         CompilerKind::Rust => {
+            let verifier_path = src_path("framework/lto-verifier.rs");
+            assert!(
+                verifier_path.exists(),
+                "{} doesn't exist",
+                verifier_path.display()
+            );
+
             // Check that rustc can use linker-plugin-lto with the installed clang. This eliminates
             // platforms where the LLVM version used by clang doesn't match the version used by
             // rustc.
             let mut command = Command::new(&compiler);
             command.args(config.rustc_channel.as_arg());
-            command.arg(src_path("lto-verifier.rs"));
+            command.arg(verifier_path);
             command.args([
                 "-Clinker=clang",
                 "-Clinker-plugin-lto",
