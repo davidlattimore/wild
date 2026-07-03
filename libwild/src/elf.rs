@@ -1457,6 +1457,10 @@ impl platform::Platform for Elf {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             } else if flags.is_address() && output_kind.is_relocatable() {
                 if args.is_relr_enabled() {
+                    // TODO: Implement bitmap packing for GOT-based RELR entries.
+                    // Currently counts flat (one entry per GOT slot) to match the
+                    // writer's write_relr_entry_flat. Bitmap packing requires splitting
+                    // the GOT so relative relocations are contiguous.
                     mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
                 } else {
                     mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -3385,24 +3389,18 @@ impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues<'data> {
     }
 }
 
-/// Tracks consecutive RELR-eligible relocations within a single input section
-/// for bitmap packing during the layout phase.
-/// Only pack within a single input section — gives ~90% of savings and avoids
-/// cross-section address ordering issues in Wild's parallel layout phase.
-struct RelrRunState {
-    /// Offset of the last RELR-eligible relocation seen in the current run.
-    last_offset: Option<u64>,
-    /// Whether a bitmap entry has already been allocated for the current run.
-    bitmap_allocated: bool,
-}
-
-impl Default for RelrRunState {
-    fn default() -> Self {
-        Self {
-            last_offset: None,
-            bitmap_allocated: false,
-        }
-    }
+/// Tracks RELR bitmap packing state within a single input section during layout.
+/// Only packs within input sections — avoids cross-section address ordering
+/// issues in Wild's parallel layout phase.
+#[derive(Default)]
+enum RelrRunState {
+    /// No run in progress.
+    #[default]
+    NoRun,
+    /// In a run. `bitmap_base` is the start of the current bitmap window
+    /// (addr+8 initially, advances by 63*8 per emitted bitmap).
+    /// `has_bitmap` tracks whether a bitmap entry is allocated for this window.
+    InRun { bitmap_base: u64, has_bitmap: bool },
 }
 
 struct SymDebug<'data>(pub(crate) &'data crate::elf::SymtabEntry);
@@ -5130,21 +5128,65 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
                 // bitmap marker), so fall back to RELA for them.
                 if resources.symbol_db.args.is_relr_enabled() && rel.offset().is_multiple_of(2) {
                     let offset = rel.offset();
-                    if relr_run.last_offset == Some(offset.wrapping_sub(8)) {
-                        // Continues current run — consecutive 8-byte-aligned relocation.
-                        if !relr_run.bitmap_allocated {
-                            // Second member of run: allocate one bitmap entry.
+                    const BITMAP_SLOTS: u64 = 63;
+                    const WORD_SIZE: u64 = 8;
+                    *relr_run = match *relr_run {
+                        RelrRunState::NoRun => {
+                            // No run — start one with an address entry.
                             common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                            relr_run.bitmap_allocated = true;
+                            RelrRunState::InRun {
+                                bitmap_base: offset + WORD_SIZE,
+                                has_bitmap: false,
+                            }
                         }
-                        // Third+ members fit into existing bitmap — no new entry needed.
-                    } else {
-                        // New run: allocate address entry, reset bitmap state.
-                        common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                        relr_run.last_offset = Some(offset);
-                        relr_run.bitmap_allocated = false;
-                    }
-                    relr_run.last_offset = Some(offset);
+                        RelrRunState::InRun {
+                            mut bitmap_base,
+                            has_bitmap,
+                        } => {
+                            let d = offset.wrapping_sub(bitmap_base);
+                            if d % WORD_SIZE == 0 && d < BITMAP_SLOTS * WORD_SIZE {
+                                // Fits in current bitmap window.
+                                if !has_bitmap {
+                                    // First member in this window: allocate bitmap entry.
+                                    common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                                }
+                                RelrRunState::InRun {
+                                    bitmap_base,
+                                    has_bitmap: true,
+                                }
+                            } else if has_bitmap && d % WORD_SIZE == 0 {
+                                // Current window has bits — try next window.
+                                // lld only advances to a new bitmap if the current one is
+                                // non-empty (breaks on empty bitmap). Same rule here.
+                                let next_base = bitmap_base + BITMAP_SLOTS * WORD_SIZE;
+                                let d2 = offset.wrapping_sub(next_base);
+                                if d2.is_multiple_of(WORD_SIZE) && d2 < BITMAP_SLOTS * WORD_SIZE {
+                                    // Fits in next window — new bitmap entry, advance window.
+                                    common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                                    bitmap_base = next_base;
+                                    RelrRunState::InRun {
+                                        bitmap_base,
+                                        has_bitmap: true,
+                                    }
+                                } else {
+                                    // Gap too large — start new address entry.
+                                    common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                                    RelrRunState::InRun {
+                                        bitmap_base: offset + WORD_SIZE,
+                                        has_bitmap: false,
+                                    }
+                                }
+                            } else {
+                                // Unaligned, or current window empty and out of range.
+                                // lld breaks on empty bitmap — start new address entry.
+                                common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                                RelrRunState::InRun {
+                                    bitmap_base: offset + WORD_SIZE,
+                                    has_bitmap: false,
+                                }
+                            }
+                        }
+                    };
                 } else {
                     common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
                 }
