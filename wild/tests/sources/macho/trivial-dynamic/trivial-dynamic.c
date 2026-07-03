@@ -5,6 +5,7 @@
 //#DiffIgnore:section.__const
 
 //#Config:dylib:default
+//#TestUpdateInPlace:true
 //#Shared:foo.c
 
 //#Config:fat-dylib:default

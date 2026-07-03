@@ -1353,7 +1353,8 @@ impl Config {
     }
 
     fn can_use_wild_in_process(&self) -> bool {
-        self.expect_stderr.is_empty()
+        !self.test_update_in_place
+            && self.expect_stderr.is_empty()
             && self.expect_stdout.is_empty()
             && self.active_malfunction.is_none()
     }
@@ -2150,10 +2151,14 @@ impl ProgramInputs {
             )
             .collect::<Result<Vec<_>>>()?;
 
+        if config.test_update_in_place && linker.is_wild() {
+            let _ = std::fs::remove_file(linker.output_path(self.name(), config));
+        }
+
         let link_output = linker.link(self.name(), &inputs, config, cross_arch)?;
 
         if config.test_update_in_place && matches!(linker, Linker::Wild) {
-            self.run_update_in_place_test(&inputs, config, cross_arch)?;
+            self.run_update_in_place_test(&inputs, config, cross_arch, &link_output)?;
         }
 
         let shared_objects = inputs
@@ -2181,92 +2186,62 @@ impl ProgramInputs {
         inputs: &[LinkerInput],
         config: &Config,
         cross_arch: Option<Architecture>,
-    ) -> Result<()> {
-        // Link normally, using unlink-and-replace
-        let link_output_1 = Linker::Wild.link(self.name(), inputs, config, cross_arch)?;
-        let original_content = std::fs::read(&link_output_1.binary).with_context(|| {
-            format!(
-                "Failed to read first build output: {}",
-                link_output_1.binary.display()
-            )
-        })?;
+        reference_output: &LinkOutput,
+    ) -> Result {
+        let original_content = std::fs::read(&reference_output.binary)
+            .with_context(|| format!("Failed to read: {}", reference_output.binary.display()))?;
 
-        // Overwrite the file with random data with a different length
-        let random_data = (0..original_content.len() + 1024)
-            .map(|i| (i % 256) as u8)
+        // Create initial file with random data and a different length.
+        let random_data = rand::random_iter()
+            .take(original_content.len() + 1024)
             .collect_vec();
-        std::fs::write(&link_output_1.binary, &random_data).with_context(|| {
-            format!(
-                "Failed to overwrite file with random data: {}",
-                link_output_1.binary.display()
-            )
-        })?;
 
-        // Link again with --update-in-place
+        // Force-enable --update-in-place and specify an odd number of threads, which serves to
+        // validate that we don't produce different output based on number of threads.
         let mut config_update_in_place = config.clone();
-        let arg = match config.linker_driver {
-            LinkerDriver::Compiler(_) => "-Wl,--update-in-place",
-            LinkerDriver::Direct(_) => "--update-in-place",
+        let args: &[&str] = match config.linker_driver {
+            LinkerDriver::Compiler(_) => &["-Wl,--update-in-place,--threads=3"],
+            LinkerDriver::Direct(_) => &["--update-in-place", "--threads=3"],
         };
         config_update_in_place
             .wild_extra_linker_args
             .args
-            .push(arg.to_string());
+            .extend(args.iter().map(|a| a.to_string()));
 
-        let link_output_2 =
+        let path = &reference_output.binary;
+
+        std::fs::write(path, &random_data)
+            .with_context(|| format!("Failed to write: {}", path.display()))?;
+
+        let updated_link_output =
             Linker::Wild.link(self.name(), inputs, &config_update_in_place, cross_arch)?;
 
         // Verify the content matches the first build
-        let final_content = std::fs::read(&link_output_2.binary).with_context(|| {
+        let final_content = std::fs::read(&updated_link_output.binary).with_context(|| {
             format!(
                 "Failed to read second build output: {}",
-                link_output_2.binary.display()
+                updated_link_output.binary.display()
             )
         })?;
 
         if original_content != final_content {
             let diffs = sections_with_diffs(&original_content, &final_content)?;
 
-            let mut original = link_output_1.binary.clone();
-            let mut updated = link_output_2.binary.clone();
-
-            fn make_variant(path: &mut std::path::PathBuf, suffix: &str) {
-                let stem = path.file_stem().unwrap_or_default();
-                let ext = path.extension();
-                let mut filename = std::ffi::OsString::from(stem);
-                filename.push(suffix);
-                if let Some(ext) = ext {
-                    filename.push(".");
-                    filename.push(ext);
-                }
-                path.set_file_name(filename);
-            }
-
-            make_variant(&mut original, "-original");
-            make_variant(&mut updated, "-updated");
-
-            std::fs::write(&original, &original_content).with_context(|| {
-                format!("Failed to write original file: {}", original.display())
-            })?;
-            std::fs::rename(&link_output_2.binary, &updated).with_context(|| {
-                format!(
-                    "Failed to rename {} to {}",
-                    link_output_2.binary.display(),
-                    updated.display()
-                )
-            })?;
+            let original_path = add_to_path(path, ".original");
+            std::fs::write(&original_path, &original_content)
+                .with_context(|| format!("Failed to write {}", original_path.display()))?;
 
             bail!(
-                "Update-in-place test failed for {file}: content of {original} differs \
-                from {updated} after update-in-place linking. Original size: {original_len}, \
+                "Update-in-place test failed for {file}: content of {path} differs \
+                from {original} after update-in-place linking. Original size: {original_len}, \
                 Final size: {final_len}. Diffs:\n{diffs:#?}\n\
                 Rerun with:\n{cmd}",
                 file = self.name(),
-                original = original.display(),
-                updated = updated.display(),
+                path = path.display(),
+                original = original_path.display(),
                 original_len = original_content.len(),
                 final_len = final_content.len(),
-                cmd = link_output_2.command,
+                cmd = updated_link_output.command,
             );
         }
 
@@ -2315,22 +2290,30 @@ fn sections_with_diffs(bytes_a: &[u8], bytes_b: &[u8]) -> Result<Vec<SectionDiff
 
         let offset = offset as u64;
 
-        for section in file.sections() {
-            let Some(start_and_len) = section.file_range() else {
-                continue;
-            };
+        let section_with_diff = file.sections().find(|section| {
+            section.file_range().is_some_and(|start_and_len| {
+                (start_and_len.0..start_and_len.0 + start_and_len.1).contains(&offset)
+            })
+        });
 
-            if (start_and_len.0..start_and_len.0 + start_and_len.1).contains(&offset) {
-                let name_bytes = section.name_bytes()?;
-                let info = sections.entry(name_bytes).or_insert_with(|| SectionDiff {
-                    name: String::from_utf8_lossy(name_bytes).into_owned(),
-                    section_start: start_and_len.0,
-                    section_size: start_and_len.1,
-                    offsets_with_diff: Vec::new(),
-                });
-                info.offsets_with_diff.push(offset);
-            }
-        }
+        let (section_start, section_size) = section_with_diff
+            .as_ref()
+            .and_then(|s| s.file_range())
+            .unwrap_or((0, 0));
+
+        let name_bytes = section_with_diff
+            .map(|s| s.name_bytes())
+            .transpose()?
+            .unwrap_or(b"Section not found");
+
+        let info = sections.entry(name_bytes).or_insert_with(|| SectionDiff {
+            name: String::from_utf8_lossy(name_bytes).into_owned(),
+            section_start,
+            section_size,
+            offsets_with_diff: Vec::new(),
+        });
+
+        info.offsets_with_diff.push(offset);
     }
 
     let mut sections = sections.into_values().collect_vec();
