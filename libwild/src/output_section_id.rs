@@ -24,6 +24,7 @@ use crate::linker_script::Expression;
 use crate::output_kind::OutputKind;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::parsing::SymbolLoc;
 use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
@@ -228,14 +229,16 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         for idx in lc_start..lc_end {
             let lc = &self.location_counters[idx];
             match lc {
-                LocationCounter::Absolute(expr) => {
-                    self.events.push(OrderEvent::SetLocation(expr.clone(), idx));
+                LocationCounter::Absolute(expr, loc) => {
+                    self.events
+                        .push(OrderEvent::SetLocation(expr.clone(), loc.clone(), idx));
                 }
-                LocationCounter::Relative(expr, section_id) => {
+                LocationCounter::Relative(expr, loc, section_id) => {
                     let primary_id = self.output_sections.primary_output_section(*section_id);
                     self.events.push(OrderEvent::SetLocationRelative(
                         expr.clone(),
                         primary_id,
+                        loc.clone(),
                         idx,
                     ));
                 }
@@ -667,10 +670,15 @@ pub(crate) enum OrderEvent<'data> {
     SegmentStart(ProgramSegmentId),
     SegmentEnd(ProgramSegmentId),
     Section(OutputSectionId),
-    SetLocation(linker_script::Expression<'data>, LocationCounterIndex),
+    SetLocation(
+        linker_script::Expression<'data>,
+        SymbolLoc,
+        LocationCounterIndex,
+    ),
     SetLocationRelative(
         linker_script::Expression<'data>,
         OutputSectionId,
+        SymbolLoc,
         LocationCounterIndex,
     ),
     SetSectionAddress(linker_script::Expression<'data>),
@@ -1119,10 +1127,10 @@ impl<'data, P: Platform> Display for OutputOrderDisplay<'_, 'data, P> {
                 OrderEvent::Section(output_section_id) => {
                     writeln!(f, "  {}", self.sections.display_name(*output_section_id))?;
                 }
-                OrderEvent::SetLocation(expr, _) => {
+                OrderEvent::SetLocation(expr, ..) => {
                     writeln!(f, "SET_LOCATION({expr:?})")?;
                 }
-                OrderEvent::SetLocationRelative(expr, section_id, _) => {
+                OrderEvent::SetLocationRelative(expr, section_id, ..) => {
                     writeln!(
                         f,
                         "SET_LOCATION_RELATIVE({expr:?}, {})",

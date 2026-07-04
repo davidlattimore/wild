@@ -135,8 +135,8 @@ impl SectionOutputInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LocationCounter<'data> {
-    Absolute(linker_script::Expression<'data>),
-    Relative(linker_script::Expression<'data>, OutputSectionId),
+    Absolute(linker_script::Expression<'data>, SymbolLoc),
+    Relative(linker_script::Expression<'data>, SymbolLoc, OutputSectionId),
 }
 
 fn loc_for_global_expr<'data>(
@@ -236,7 +236,8 @@ impl<'data> LayoutRulesBuilder<'data> {
                             loc = SymbolLoc::SectionEnd(primary_section_id);
 
                             let mut last_section_id = None;
-                            let mut last_symbol_loc = SymbolLoc::SectionStart(primary_section_id);
+                            let mut last_symbol_loc =
+                                SymbolLoc::SectionStartRelative(primary_section_id);
                             let mut inner_lc_idx = last_lc_idx;
                             let mut inner_lc_start_idx = last_lc_idx;
 
@@ -286,7 +287,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         }
 
                                         last_section_id = Some(section_id);
-                                        last_symbol_loc = SymbolLoc::SectionEnd(section_id);
+                                        last_symbol_loc = SymbolLoc::SectionEndRelative(section_id);
                                     }
                                     ContentsCommand::SymbolAssignment(assignment) => {
                                         let placement = SymbolPlacement::Redirect(Redirect {
@@ -313,6 +314,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     ContentsCommand::SetLocation(location) => {
                                         location_counters.push(LocationCounter::Relative(
                                             location.address.clone(),
+                                            last_symbol_loc,
                                             primary_section_id,
                                         ));
                                         last_symbol_loc = SymbolLoc::LocationCounter(
@@ -342,8 +344,8 @@ impl<'data> LayoutRulesBuilder<'data> {
                         }
                         SectionCommand::SetLocation(new_location) => {
                             location_counters
-                                .push(LocationCounter::Absolute(new_location.address.clone()));
-                            loc = SymbolLoc::LocationCounter(last_lc_idx, current_section_id);
+                                .push(LocationCounter::Absolute(new_location.address.clone(), loc));
+                            loc = SymbolLoc::LocationCounter(last_lc_idx, None);
                             if current_section_id.is_none() && self.num_location_counters == 0 {
                                 output_sections.set_base_address(new_location.address.clone());
                                 section_start_lc_idx = location_counters.len();

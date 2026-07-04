@@ -102,7 +102,8 @@ pub(crate) enum SymbolPlacement<'data> {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum SymbolLoc {
-    SectionStart(OutputSectionId),
+    SectionStartRelative(OutputSectionId),
+    SectionEndRelative(OutputSectionId),
     SectionEnd(OutputSectionId),
     FirstSection,
     LocationCounter(LocationCounterIndex, Option<OutputSectionId>),

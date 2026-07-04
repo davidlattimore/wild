@@ -2087,7 +2087,10 @@ impl<P: Platform> InternalSymDefInfo<'_, P> {
     pub(crate) fn section_id(&self) -> Option<OutputSectionId> {
         match self.placement {
             SymbolPlacement::Redirect(Redirect {
-                loc: SymbolLoc::SectionEnd(i) | SymbolLoc::SectionStart(i),
+                loc:
+                    SymbolLoc::SectionEnd(i)
+                    | SymbolLoc::SectionStartRelative(i)
+                    | SymbolLoc::SectionEndRelative(i),
                 ..
             }) => Some(i),
             SymbolPlacement::Undefined

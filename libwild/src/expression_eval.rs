@@ -84,13 +84,21 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
     Ok(())
 }
 
-pub(crate) fn evaluate_location(
+fn evaluate_location<'data, P: Platform>(
     expr_loc: &SymbolLoc,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    output_sections: &OutputSections<'data, P>,
     resolved_location_counters: &[(u64, Option<u64>)],
 ) -> Result<u64> {
     match expr_loc {
-        SymbolLoc::SectionStart(id) => Ok(section_layouts.get(*id).mem_offset),
+        SymbolLoc::SectionStartRelative(_) => Ok(0),
+        SymbolLoc::SectionEndRelative(id) => {
+            let primary_id = output_sections.primary_output_section(*id);
+            let primary_start = section_layouts.get(primary_id).mem_offset;
+            let id_layout = section_layouts.get(*id);
+            let id_end = id_layout.mem_offset + id_layout.mem_size;
+            Ok(id_end - primary_start)
+        }
         SymbolLoc::SectionEnd(id) => {
             let layout = section_layouts.get(*id);
             Ok(layout.mem_offset + layout.mem_size)
@@ -104,9 +112,9 @@ pub(crate) fn evaluate_location(
                 )
             })?;
             if section_id.is_none() {
-                Ok(entry.1.unwrap_or(entry.0))
-            } else {
                 Ok(entry.0)
+            } else {
+                Ok(entry.1.unwrap_or(0))
             }
         }
     }
@@ -123,9 +131,56 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
     resolved_location_counters: &[(u64, Option<u64>)],
     symbol_resolution_callback: &dyn Fn(&[u8]) -> Result<u64>,
 ) -> Result<u64> {
+    let mut has_section_relative_offset = true;
+    let value = evaluate_expression_value(
+        expr,
+        expr_loc,
+        section_layouts,
+        output_sections,
+        memory_regions,
+        symbol_db,
+        sizeof_headers,
+        resolved_location_counters,
+        &mut has_section_relative_offset,
+        symbol_resolution_callback,
+    )?;
+
+    let offset = if has_section_relative_offset {
+        match expr_loc {
+            SymbolLoc::SectionStartRelative(id) | SymbolLoc::SectionEndRelative(id) => {
+                let primary_id = output_sections.primary_output_section(*id);
+                let section_layout = section_layouts.get(primary_id);
+                section_layout.mem_offset
+            }
+            SymbolLoc::LocationCounter(_, Some(id)) => {
+                let primary_id = output_sections.primary_output_section(*id);
+                let section_layout = section_layouts.get(primary_id);
+                section_layout.mem_offset
+            }
+            _ => 0,
+        }
+    } else {
+        0
+    };
+
+    Ok(value + offset)
+}
+
+fn evaluate_expression_value<'data, P: Platform>(
+    expr: &Expression<'data>,
+    expr_loc: &SymbolLoc,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    output_sections: &OutputSections<'data, P>,
+    memory_regions: &HashMap<&[u8], layout::MemoryRegion>,
+    symbol_db: &SymbolDb<'data, P>,
+    sizeof_headers: u64,
+    resolved_location_counters: &[(u64, Option<u64>)],
+    has_section_relative_offset: &mut bool,
+    symbol_resolution_callback: &dyn Fn(&[u8]) -> Result<u64>,
+) -> Result<u64> {
     macro_rules! eval {
         ($e:expr) => {
-            evaluate_expression(
+            evaluate_expression_value(
                 $e,
                 expr_loc,
                 section_layouts,
@@ -134,6 +189,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
                 symbol_db,
                 sizeof_headers,
                 resolved_location_counters,
+                has_section_relative_offset,
                 symbol_resolution_callback,
             )
         };
@@ -142,9 +198,12 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
     match expr {
         Expression::Number(n) => Ok(*n),
 
-        Expression::LocationCounter => {
-            evaluate_location(expr_loc, section_layouts, resolved_location_counters)
-        }
+        Expression::LocationCounter => evaluate_location(
+            expr_loc,
+            section_layouts,
+            output_sections,
+            resolved_location_counters,
+        ),
 
         Expression::Symbol(name) => symbol_resolution_callback(name),
 
@@ -180,8 +239,12 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
             if align == 0 {
                 bail!("ALIGN(0) is invalid");
             }
-            let location =
-                evaluate_location(expr_loc, section_layouts, resolved_location_counters)?;
+            let location = evaluate_location(
+                expr_loc,
+                section_layouts,
+                output_sections,
+                resolved_location_counters,
+            )?;
             Ok(location.wrapping_add(align - 1) & !(align - 1))
         }
 
@@ -217,6 +280,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
             Ok(region.length)
         }
         Expression::SegmentStart(name, default_expr) => {
+            *has_section_relative_offset = false;
             if let Some(val) = symbol_db.args.segment_start_override(*name) {
                 Ok(val)
             } else {

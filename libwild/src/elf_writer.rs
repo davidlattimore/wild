@@ -4504,7 +4504,9 @@ fn get_defsym_attributes(
         }
     } else {
         let shndx = match redirect.loc {
-            SymbolLoc::SectionStart(os) | SymbolLoc::SectionEnd(os) => {
+            SymbolLoc::SectionStartRelative(os)
+            | SymbolLoc::SectionEndRelative(os)
+            | SymbolLoc::SectionEnd(os) => {
                 let os = layout.output_sections.primary_output_section(os);
                 layout
                     .output_sections
