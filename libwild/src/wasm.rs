@@ -2516,6 +2516,72 @@ fn any_object_needs_linker_memory(inputs: &[WasmObjectLayoutInput<'_>]) -> bool 
     inputs.iter().any(object_needs_linker_memory)
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct LinkerImportAbsorption {
+    absorbed_functions: u32,
+    absorbed_globals: u32,
+    needs_memory_base: bool,
+    needs_stack_pointer: bool,
+    needs_ctors: bool,
+    needs_dtors: bool,
+}
+
+impl LinkerImportAbsorption {
+    fn for_object(
+        input: &WasmObjectLayoutInput<'_>,
+        resolutions: &ObjectImportResolutions,
+    ) -> Self {
+        let mut absorption = Self::default();
+        for (i, import) in input.function_imports.iter().enumerate() {
+            if !matches!(
+                resolutions.function_resolutions.get(i),
+                Some(ImportResolution::Unresolved)
+            ) {
+                continue;
+            }
+            match import.name {
+                "__wasm_call_ctors" => {
+                    absorption.needs_ctors = true;
+                    absorption.absorbed_functions += 1;
+                }
+                "__wasm_call_dtors" => {
+                    absorption.needs_dtors = true;
+                    absorption.absorbed_functions += 1;
+                }
+                _ => {}
+            }
+        }
+        for (i, import) in input.global_imports.iter().enumerate() {
+            if !matches!(
+                resolutions.global_resolutions.get(i),
+                Some(ImportResolution::Unresolved)
+            ) {
+                continue;
+            }
+            match import.name {
+                "__memory_base" => {
+                    absorption.needs_memory_base = true;
+                    absorption.absorbed_globals += 1;
+                }
+                "__stack_pointer" => {
+                    absorption.needs_stack_pointer = true;
+                    absorption.absorbed_globals += 1;
+                }
+                _ => {}
+            }
+        }
+        absorption
+    }
+}
+
+fn remaining_unresolved_imports(unresolved: u32, absorbed: u32) -> Result<u32> {
+    unresolved.checked_sub(absorbed).ok_or_else(|| {
+        crate::error!(
+            "Wasm linker absorption count ({absorbed}) exceeds unresolved imports ({unresolved})"
+        )
+    })
+}
+
 /// Reserved Wasm index-space slots for linker-defined globals/functions.
 #[derive(Debug, Clone, Copy, Default)]
 struct LinkerDefinedIndices {
@@ -2540,62 +2606,24 @@ impl LinkerDefinedIndices {
         let mut global_import_count = 0u32;
 
         for (input, resolutions) in inputs.iter().zip(import_resolutions) {
-            let mut absorbed_functions = 0u32;
-            for (i, import) in input.function_imports.iter().enumerate() {
-                let unresolved = matches!(
-                    resolutions.function_resolutions.get(i),
-                    Some(ImportResolution::Unresolved)
-                );
-                if !unresolved {
-                    continue;
-                }
-                match import.name {
-                    "__wasm_call_ctors" => {
-                        needs_ctors = true;
-                        absorbed_functions += 1;
-                    }
-                    "__wasm_call_dtors" => {
-                        needs_dtors = true;
-                        absorbed_functions += 1;
-                    }
-                    _ => {}
-                }
-            }
+            let absorption = LinkerImportAbsorption::for_object(input, resolutions);
+            needs_ctors |= absorption.needs_ctors;
+            needs_dtors |= absorption.needs_dtors;
+            needs_memory_base |= absorption.needs_memory_base;
+            needs_stack_pointer |= absorption.needs_stack_pointer;
+
             function_import_count = function_import_count
-                .checked_add(
-                    resolutions
-                        .unresolved_function_count
-                        .saturating_sub(absorbed_functions),
-                )
+                .checked_add(remaining_unresolved_imports(
+                    resolutions.unresolved_function_count,
+                    absorption.absorbed_functions,
+                )?)
                 .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
 
-            let mut absorbed_globals = 0u32;
-            for (i, import) in input.global_imports.iter().enumerate() {
-                let unresolved = matches!(
-                    resolutions.global_resolutions.get(i),
-                    Some(ImportResolution::Unresolved)
-                );
-                if !unresolved {
-                    continue;
-                }
-                match import.name {
-                    "__memory_base" => {
-                        needs_memory_base = true;
-                        absorbed_globals += 1;
-                    }
-                    "__stack_pointer" => {
-                        needs_stack_pointer = true;
-                        absorbed_globals += 1;
-                    }
-                    _ => {}
-                }
-            }
             global_import_count = global_import_count
-                .checked_add(
-                    resolutions
-                        .unresolved_global_count
-                        .saturating_sub(absorbed_globals),
-                )
+                .checked_add(remaining_unresolved_imports(
+                    resolutions.unresolved_global_count,
+                    absorption.absorbed_globals,
+                )?)
                 .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
 
             if !needs_memory_base
@@ -3201,47 +3229,28 @@ fn allocate_wasm_object_index_bases(
             .checked_add(u32::try_from(input.types.len()).context("too many Wasm types")?)
             .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
 
-        let mut absorbed_functions = 0u32;
-        for (i, import) in input.function_imports.iter().enumerate() {
-            if matches!(
-                resolutions.function_resolutions.get(i),
-                Some(ImportResolution::Unresolved)
-            ) && indices.function_index(import.name).is_some()
-            {
-                absorbed_functions += 1;
-            }
-        }
+        let absorption = LinkerImportAbsorption::for_object(input, resolutions);
         next_function_import_index = next_function_import_index
-            .checked_add(
-                resolutions
-                    .unresolved_function_count
-                    .saturating_sub(absorbed_functions),
-            )
+            .checked_add(remaining_unresolved_imports(
+                resolutions.unresolved_function_count,
+                absorption.absorbed_functions,
+            )?)
             .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
-
-        let mut absorbed_globals = 0u32;
-        for (i, import) in input.global_imports.iter().enumerate() {
-            if matches!(
-                resolutions.global_resolutions.get(i),
-                Some(ImportResolution::Unresolved)
-            ) && indices.global_index(import.name).is_some()
-            {
-                absorbed_globals += 1;
-            }
-        }
         next_global_import_index = next_global_import_index
-            .checked_add(
-                resolutions
-                    .unresolved_global_count
-                    .saturating_sub(absorbed_globals),
-            )
+            .checked_add(remaining_unresolved_imports(
+                resolutions.unresolved_global_count,
+                absorption.absorbed_globals,
+            )?)
             .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
     }
 
     // Object-defined entities start after imports and any reserved linker-defined entities.
-    let mut next_defined_function_index =
-        next_function_import_index + indices.num_defined_functions;
-    let mut next_defined_global_index = next_global_import_index + indices.num_defined_globals;
+    let mut next_defined_function_index = next_function_import_index
+        .checked_add(indices.num_defined_functions)
+        .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+    let mut next_defined_global_index = next_global_import_index
+        .checked_add(indices.num_defined_globals)
+        .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
     for (input, index_base) in layout_inputs.iter().zip(index_bases.iter_mut()) {
         index_base.defined_function_base = next_defined_function_index;
         index_base.defined_global_base = next_defined_global_index;
