@@ -37,7 +37,7 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
     resolutions: &[Option<Resolution<P>>],
     sizeof_headers: u64,
     memory_regions: &HashMap<&[u8], layout::MemoryRegion>,
-    resolved_location_counters: &[(u64, Option<u64>)],
+    resolved_location_counters: &[ResolvedLocationCounter],
 ) -> Result {
     for group in &symbol_db.groups {
         let Group::LinkerScripts(scripts) = group else {
@@ -84,11 +84,17 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
     Ok(())
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct ResolvedLocationCounter {
+    pub(crate) value: u64,
+    pub(crate) section_offset: Option<u64>,
+}
+
 fn evaluate_location<'data, P: Platform>(
     expr_loc: &SymbolLoc,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections<'data, P>,
-    resolved_location_counters: &[(u64, Option<u64>)],
+    resolved_location_counters: &[ResolvedLocationCounter],
 ) -> Result<u64> {
     match expr_loc {
         SymbolLoc::SectionStartRelative(_) => Ok(0),
@@ -112,9 +118,9 @@ fn evaluate_location<'data, P: Platform>(
                 )
             })?;
             if section_id.is_none() {
-                Ok(entry.0)
+                Ok(entry.value)
             } else {
-                Ok(entry.1.unwrap_or(0))
+                Ok(entry.section_offset.unwrap_or(0))
             }
         }
     }
@@ -128,7 +134,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
     memory_regions: &HashMap<&[u8], layout::MemoryRegion>,
     symbol_db: &SymbolDb<'data, P>,
     sizeof_headers: u64,
-    resolved_location_counters: &[(u64, Option<u64>)],
+    resolved_location_counters: &[ResolvedLocationCounter],
     symbol_resolution_callback: &dyn Fn(&[u8]) -> Result<u64>,
 ) -> Result<u64> {
     let mut has_section_relative_offset = true;
@@ -174,7 +180,7 @@ fn evaluate_expression_value<'data, P: Platform>(
     memory_regions: &HashMap<&[u8], layout::MemoryRegion>,
     symbol_db: &SymbolDb<'data, P>,
     sizeof_headers: u64,
-    resolved_location_counters: &[(u64, Option<u64>)],
+    resolved_location_counters: &[ResolvedLocationCounter],
     has_section_relative_offset: &mut bool,
     symbol_resolution_callback: &dyn Fn(&[u8]) -> Result<u64>,
 ) -> Result<u64> {

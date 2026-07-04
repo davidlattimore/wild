@@ -14,6 +14,7 @@ use crate::error;
 use crate::error::Context;
 use crate::error::Error;
 use crate::error::Result;
+use crate::expression_eval::ResolvedLocationCounter;
 use crate::expression_eval::evaluate_const;
 use crate::file_writer;
 use crate::grouping::Group;
@@ -502,7 +503,7 @@ fn update_redirect_resolutions<'data, P: Platform>(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     sizeof_headers: u64,
     memory_regions: &HashMap<&[u8], MemoryRegion>,
-    resolved_location_counters: &[(u64, Option<u64>)],
+    resolved_location_counters: &[ResolvedLocationCounter],
 ) -> Result {
     verbose_timing_phase!("Update symdef resolutions");
 
@@ -562,7 +563,7 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     memory_regions: &HashMap<&[u8], MemoryRegion>,
     sizeof_headers: u64,
-    resolved_location_counters: &[(u64, Option<u64>)],
+    resolved_location_counters: &[ResolvedLocationCounter],
 ) -> Result {
     if let SymbolPlacement::Redirect(redirect) = &def_info.placement {
         let value = crate::expression_eval::evaluate_expression(
@@ -5045,7 +5046,7 @@ fn perform_iterative_relaxation<'data, A: Arch>(
     per_symbol_flags: &PerSymbolFlags,
     memory_regions: &mut HashMap<&[u8], MemoryRegion>,
     sizeof_headers: u64,
-    resolved_location_counters: &mut Vec<(u64, Option<u64>)>,
+    resolved_location_counters: &mut Vec<ResolvedLocationCounter>,
 ) -> Result {
     timing_phase!("Iterative relaxation");
 
@@ -5124,7 +5125,7 @@ fn compute_layout_sections<'data, P: Platform>(
 ) -> Result<(
     OutputSectionPartMap<OutputRecordLayout>,
     OutputSectionMap<OutputRecordLayout>,
-    Vec<(u64, Option<u64>)>,
+    Vec<ResolvedLocationCounter>,
 )> {
     let args = symbol_db.args;
     let segment_alignments = compute_segment_alignments::<P>(
@@ -5141,7 +5142,7 @@ fn compute_layout_sections<'data, P: Platform>(
                            loc: &SymbolLoc,
                            memory_regions: &HashMap<&[u8], MemoryRegion>,
                            section_layouts: &OutputSectionMap<OutputRecordLayout>,
-                           resolved_lc: &[(u64, Option<u64>)]| {
+                           resolved_lc: &[ResolvedLocationCounter]| {
         crate::expression_eval::evaluate_expression(
             expr,
             &loc,
@@ -5174,7 +5175,10 @@ fn compute_layout_sections<'data, P: Platform>(
     let mut pending_location = None;
     let mut resolved_lc = vec![Default::default(); output_order.num_location_counters()];
     if !resolved_lc.is_empty() {
-        resolved_lc[0] = (mem_offset, None);
+        resolved_lc[0] = ResolvedLocationCounter {
+            value: mem_offset,
+            section_offset: None,
+        };
     }
 
     let mut records_out = output_sections.new_part_map();
@@ -5187,7 +5191,10 @@ fn compute_layout_sections<'data, P: Platform>(
                 if resolved_lc.len() > 1 {
                     pending_location = Some(value);
                 }
-                resolved_lc[idx] = (value, None);
+                resolved_lc[idx] = ResolvedLocationCounter {
+                    value,
+                    section_offset: None,
+                };
             }
             OrderEvent::SetLocationRelative(expr, section_id, loc, idx) => {
                 let primary_id = output_sections.primary_output_section(section_id);
@@ -5198,7 +5205,10 @@ fn compute_layout_sections<'data, P: Platform>(
                 if resolved_lc.len() > 1 {
                     pending_location = Some(value);
                 }
-                resolved_lc[idx] = (value, Some(offset));
+                resolved_lc[idx] = ResolvedLocationCounter {
+                    value,
+                    section_offset: Some(offset),
+                };
             }
             OrderEvent::SetSectionAddress(expr) => {
                 let value = expression_eval(
