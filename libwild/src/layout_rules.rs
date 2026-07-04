@@ -317,6 +317,10 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             primary_section_id,
                                         );
                                     }
+                                    // The CONSTRUCTORS command is used in legacy file formats only.
+                                    // On ELF it is a nop.
+                                    // (https://sourceware.org/binutils/docs/ld/Output-Section-Keywords.html#index-CONSTRUCTORS)
+                                    ContentsCommand::Constructors => (),
                                 }
                             }
                             if let Some(location) = last_location.take() {

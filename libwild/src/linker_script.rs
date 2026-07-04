@@ -123,6 +123,7 @@ pub(crate) enum ContentsCommand<'a> {
     Align(Alignment),
     Provide(ProvideSymbolDefinition<'a>),
     SetLocation(Location<'a>),
+    Constructors,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1171,7 +1172,7 @@ fn parse_at_address<'input>(input: &mut &'input BStr) -> winnow::Result<Expressi
 fn parse_contents_command<'input>(
     input: &mut &'input BStr,
 ) -> winnow::Result<ContentsCommand<'input>> {
-    alt((parse_contents_provide, parse_matcher, parse_assignment)).parse_next(input)
+    alt((parse_contents_provide, parse_matcher, parse_assignment, parse_constructors)).parse_next(input)
 }
 
 fn parse_contents_provide<'input>(
@@ -1213,6 +1214,12 @@ fn parse_assignment<'input>(input: &mut &'input BStr) -> winnow::Result<Contents
     skip_comments_and_whitespace(input)?;
 
     Ok(cmd)
+}
+
+fn parse_constructors<'input>(input: &mut &'input BStr) -> winnow::Result<ContentsCommand<'input>> {
+    "CONSTRUCTORS".parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    Ok(ContentsCommand::Constructors)
 }
 
 fn parse_matcher<'input>(input: &mut &'input BStr) -> winnow::Result<ContentsCommand<'input>> {
