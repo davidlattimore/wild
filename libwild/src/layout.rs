@@ -5113,7 +5113,6 @@ fn perform_iterative_relaxation<'data, A: Arch>(
     Ok(())
 }
 
-#[expect(clippy::type_complexity)]
 fn compute_layout_sections<'data, P: Platform>(
     sizes: &OutputSectionPartMap<u64>,
     output_sections: &OutputSections<'data, P>,
@@ -5145,7 +5144,7 @@ fn compute_layout_sections<'data, P: Platform>(
                            resolved_lc: &[ResolvedLocationCounter]| {
         crate::expression_eval::evaluate_expression(
             expr,
-            &loc,
+            loc,
             section_layouts,
             output_sections,
             memory_regions,
