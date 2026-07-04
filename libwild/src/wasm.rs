@@ -2587,6 +2587,9 @@ fn remaining_unresolved_imports(unresolved: u32, absorbed: u32) -> Result<u32> {
 struct LinkerDefinedIndices {
     memory_base_global: Option<u32>,
     stack_pointer_global: Option<u32>,
+    /// Index of `__stack_pointer` among the defined globals prepended by
+    /// `emit_reserved_linker_definitions` (not the Wasm module global index).
+    stack_pointer_defined_slot: Option<u32>,
     call_ctors_func: Option<u32>,
     call_dtors_func: Option<u32>,
     num_defined_globals: u32,
@@ -2638,14 +2641,18 @@ impl LinkerDefinedIndices {
         }
 
         let mut next_global = global_import_count;
+        let mut next_defined_global_slot = 0u32;
         let memory_base_global = needs_memory_base.then(|| {
             let idx = next_global;
             next_global += 1;
+            next_defined_global_slot += 1;
             idx
         });
+        let stack_pointer_defined_slot = needs_stack_pointer.then_some(next_defined_global_slot);
         let stack_pointer_global = needs_stack_pointer.then(|| {
             let idx = next_global;
             next_global += 1;
+            next_defined_global_slot += 1;
             idx
         });
         let num_defined_globals = next_global - global_import_count;
@@ -2666,6 +2673,7 @@ impl LinkerDefinedIndices {
         Ok(Self {
             memory_base_global,
             stack_pointer_global,
+            stack_pointer_defined_slot,
             call_ctors_func,
             call_dtors_func,
             num_defined_globals,
@@ -2772,21 +2780,24 @@ fn fill_linker_defined_values(
     layout: &mut WasmLayout<'_>,
     indices: &LinkerDefinedIndices,
 ) -> Result {
-    if indices.stack_pointer_global.is_some() {
+    if let Some(defined_slot) = indices.stack_pointer_defined_slot {
         let sp = layout
             .data_end
             .checked_add(LINKER_STACK_SIZE)
             .ok_or_else(|| crate::error!("Wasm stack pointer overflow"))?;
-        let local_idx = usize::from(indices.memory_base_global.is_some());
         let global = layout
             .globals
-            .get_mut(local_idx)
+            .get_mut(defined_slot as usize)
             .ok_or_else(|| crate::error!("Wasm stack pointer global missing"))?;
+        ensure!(
+            global.ty.mutable && global.ty.content_type == wasmparser::ValType::I32,
+            "Wasm stack pointer global has unexpected type"
+        );
         global.init_expr_body = Cow::Owned(encode_i32_const_body(sp as i32));
     }
 
     let mut bytes_needed = u64::from(layout.data_end.max(layout.memory_base));
-    if indices.stack_pointer_global.is_some() {
+    if indices.stack_pointer_defined_slot.is_some() {
         bytes_needed =
             bytes_needed.max(u64::from(layout.data_end.saturating_add(LINKER_STACK_SIZE)));
     }
