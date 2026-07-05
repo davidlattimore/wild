@@ -108,7 +108,7 @@ pub(crate) struct Section<'a> {
     pub(crate) commands: Vec<ContentsCommand<'a>>,
     pub(crate) alignment: Option<Alignment>,
     pub(crate) start_address_expression: Option<Expression<'a>>,
-    pub(crate) phdr: Option<&'a [u8]>,
+    pub(crate) phdrs: Vec<&'a [u8]>,
     pub(crate) at_address: Option<Expression<'a>>,
     pub(crate) region: Option<&'a [u8]>,
     pub(crate) fill: Option<Fill<'a>>,
@@ -1125,13 +1125,13 @@ fn parse_section_command<'input>(
 
     skip_comments_and_whitespace(input)?;
 
-    let mut phdr = None;
+    let mut phdrs = vec![];
     let mut region = None;
     let mut fill = None;
     while let Some(prefix) = opt(alt((b":", b">", b"="))).parse_next(input)? {
         skip_comments_and_whitespace(input)?;
         match prefix {
-            b":" => phdr = Some(parse_token(input)?),
+            b":" => phdrs.push(parse_token(input)?),
             b">" => region = Some(parse_token(input)?),
             b"=" => fill = Some(parse_fill(input)?),
             _ => unreachable!(),
@@ -1139,7 +1139,6 @@ fn parse_section_command<'input>(
         skip_comments_and_whitespace(input)?;
     }
 
-    skip_comments_and_whitespace(input)?;
     opt(',').parse_next(input)?;
     skip_comments_and_whitespace(input)?;
 
@@ -1148,7 +1147,7 @@ fn parse_section_command<'input>(
         commands,
         alignment,
         start_address_expression,
-        phdr,
+        phdrs,
         at_address,
         region,
         fill,
@@ -1530,7 +1529,7 @@ mod tests {
                 ],
                 alignment: None,
                 start_address_expression: None,
-                phdr: None,
+                phdrs: vec![],
                 at_address: None,
                 region: None,
                 fill: None,
@@ -1554,7 +1553,7 @@ mod tests {
                 })],
                 alignment: Some(Alignment::new(8).unwrap()),
                 start_address_expression: Some(Expression::Number(0)),
-                phdr: None,
+                phdrs: vec![],
                 at_address: None,
                 region: None,
                 fill: None,
@@ -1622,7 +1621,7 @@ mod tests {
                                 ],
                                 alignment: Some(Alignment::new(8).unwrap()),
                                 start_address_expression: None,
-                                phdr: None,
+                                phdrs: vec![],
                                 at_address: None,
                                 region: None,
                                 fill: None,
@@ -1774,7 +1773,7 @@ mod tests {
                 ],
                 alignment: None,
                 start_address_expression: None,
-                phdr: None,
+                phdrs: vec![],
                 at_address: None,
                 region: None,
                 fill: None,
@@ -1798,7 +1797,7 @@ mod tests {
                 })],
                 alignment: None,
                 start_address_expression: None,
-                phdr: None,
+                phdrs: vec![],
                 at_address: None,
                 region: None,
                 fill: None,
@@ -1822,7 +1821,7 @@ mod tests {
                 })],
                 alignment: None,
                 start_address_expression: None,
-                phdr: None,
+                phdrs: vec![],
                 at_address: None,
                 region: None,
                 fill: None,
@@ -1854,7 +1853,7 @@ mod tests {
                             })],
                             alignment: None,
                             start_address_expression: None,
-                            phdr: None,
+                            phdrs: vec![],
                             at_address: None,
                             region: None,
                             fill: None,
@@ -1897,7 +1896,7 @@ mod tests {
                             })],
                             alignment: None,
                             start_address_expression: None,
-                            phdr: None,
+                            phdrs: vec![],
                             at_address: None,
                             region: None,
                             fill: None,

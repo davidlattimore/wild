@@ -4436,9 +4436,9 @@ impl platform::Platform for Wasm {
                 min_alignment: crate::alignment::MIN,
                 location_info: None,
                 secondary_order: None,
-                phdr_name: None,
                 region_name: None,
                 fill: None,
+                phdrs: Vec::new(),
             })
             .collect()
     }

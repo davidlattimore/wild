@@ -1,5 +1,6 @@
 PHDRS {
     text PT_LOAD;
+    dynamic PT_DYNAMIC;
     data PT_LOAD FLAGS(6);   /* R + W */
     rodata PT_LOAD FLAGS(4); /* R */
 }
@@ -17,12 +18,16 @@ SECTIONS {
 
     .bss : {
         *(.bss*)
-    } :data
+    }
+
+    .dynamic : {
+        *(.dynamic)
+    } :rodata :dynamic
 
     .rodata : {
         *(.rodata*)
     } :rodata
 }
 
-ASSERT(start_of_sections == 0x40 + ((3 + is_riscv) * 0x38), "Wrong start of sections");
-ASSERT(SIZEOF_HEADERS == 0x40 + ((3 + is_riscv) * 0x38), "Wrong size of headers");
+ASSERT(start_of_sections == 0x40 + ((4 + is_riscv) * 0x38), "Wrong start of sections");
+ASSERT(SIZEOF_HEADERS == 0x40 + ((4 + is_riscv) * 0x38), "Wrong size of headers");

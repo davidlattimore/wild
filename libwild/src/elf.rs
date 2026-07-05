@@ -38,6 +38,7 @@ use crate::output_kind::OutputKind;
 use crate::output_section_id;
 use crate::output_section_id::CustomSectionIds;
 use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
+use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputOrderBuilder;
 use crate::output_section_id::OutputSectionId;
@@ -68,7 +69,9 @@ use crate::platform::SectionType as _;
 use crate::platform::Symbol as _;
 use crate::platform::ThunkConfig;
 use crate::platform::VerneedTable as _;
+use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
+use crate::program_segments::SegmentEntry;
 use crate::resolution::LoadedMetrics;
 use crate::string_merging::MergedStringStartAddresses;
 use crate::string_merging::MergedStringsSection;
@@ -840,6 +843,20 @@ impl platform::Platform for Elf {
         &[STACK_SEGMENT_DEF]
     }
 
+    fn get_segment_flags_for_section(section_flags: &Self::SectionFlags) -> u32 {
+        let mut flags = 0;
+        if section_flags.contains(shf::ALLOC) {
+            flags |= pf::READABLE.0;
+        }
+        if section_flags.contains(shf::WRITE) {
+            flags |= pf::WRITABLE.0;
+        }
+        if section_flags.contains(shf::EXECINSTR) {
+            flags |= pf::EXECUTABLE.0;
+        }
+        flags
+    }
+
     fn create_linker_defined_symbols(
         symbols: &mut crate::parsing::InternalSymbolsBuilder<Elf>,
         output_kind: OutputKind,
@@ -976,9 +993,9 @@ impl platform::Platform for Elf {
                 min_alignment: d.min_alignment,
                 location_info: None,
                 secondary_order: None,
-                phdr_name: None,
                 region_name: None,
                 fill: None,
+                phdrs: Vec::new(),
             })
             .collect()
     }
@@ -2006,7 +2023,6 @@ impl platform::Platform for Elf {
         output_sections: &OutputSections<'data, Self>,
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
         linker_scripts: &[&SequencedLinkerScript<'data, Self>],
-        phdr_map: &mut hashbrown::HashMap<&[u8], Vec<OutputSectionId>>,
         location_counters: &[crate::layout_rules::LocationCounter<'data>],
     ) -> Result<(OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>)> {
         let mut builder = OutputOrderBuilder::<Self>::new(
@@ -2017,90 +2033,148 @@ impl platform::Platform for Elf {
             location_counters,
         );
 
-        let mut insert_re = false;
-        let mut insert_rw = false;
-        let mut insert_r = false;
-        let mut first_load = false;
+        let mut segments_map = HashMap::new();
+        let mut ordered_sections = Vec::new();
+
+        let mut num_phdrs = 0;
 
         for script in linker_scripts {
+            num_phdrs += script.parsed.program_headers.len();
             for phdr in &script.parsed.program_headers {
-                let ptype = expression_eval::evaluate_const(&phdr.ptype)?;
+                let ptype = expression_eval::evaluate_const(&phdr.ptype)? as u32;
                 let flags = phdr
                     .flags
                     .as_ref()
                     .map(|f| expression_eval::evaluate_const(f).map(|c| c as u32))
-                    .transpose()?;
-                if let Some(sections) = phdr_map.get_mut(phdr.name) {
-                    let flags = flags
-                        .or_else(|| {
-                            let section_info =
-                                output_sections.section_infos.get(*sections.first()?);
-                            let flags = section_info.section_attributes.flags();
-                            let mut pflags = SegmentFlags(0);
-                            if flags.contains(shf::ALLOC) {
-                                pflags |= pf::READABLE;
-                            }
-                            if flags.contains(shf::WRITE) {
-                                pflags |= pf::WRITABLE;
-                            }
-                            if flags.contains(shf::EXECINSTR) {
-                                pflags |= pf::EXECUTABLE;
-                            }
-                            Some(pflags.0)
-                        })
-                        .unwrap_or(0);
-                    if ptype == 1 && !first_load {
-                        sections.splice(
-                            0..0,
-                            [
-                                output_section_id::FILE_HEADER,
-                                output_section_id::PROGRAM_HEADERS,
-                                output_section_id::SECTION_HEADERS,
-                            ],
-                        );
-                        first_load = true;
-                    }
-                    if ptype == 1 {
-                        let is_write = (flags & 2) != 0;
-                        let is_exec = (flags & 1) != 0;
+                    .transpose()?
+                    .unwrap_or(0);
 
-                        if is_exec && !is_write && !insert_re {
-                            sections.extend(&custom.exec);
-                            insert_re = true;
-                        }
-                        if is_write && !insert_rw {
-                            sections.extend(&custom.tdata);
-                            sections.extend(&custom.tbss);
-                            sections.extend(&custom.data);
-                            sections.extend(&custom.bss);
-                            insert_rw = true;
-                        }
-                        if !is_write && !is_exec && !insert_r {
-                            sections.extend(&custom.ro);
-                            insert_r = true;
-                        }
-                    }
-
-                    builder.add_segment_with_sections(
-                        ptype as u32,
+                let id = builder.add_custom_segment(
+                    <ProgramSegmentDef as platform::ProgramSegmentDef>::from_linker_script(
+                        ptype, flags,
+                    ),
+                );
+                segments_map.insert(
+                    phdr.name,
+                    SegmentEntry {
+                        id,
+                        ptype,
                         flags,
-                        sections,
-                        output_sections,
-                    );
+                        has_explicit_flags: phdr.flags.is_some(),
+                    },
+                );
+            }
+
+            for id in &script.parsed.ordered_sections {
+                let info = output_sections.section_infos.get(*id);
+                for phdr in &info.phdrs {
+                    let segment = segments_map.get_mut(phdr).with_context(|| {
+                        format!(
+                            "Section {} assigned to non-existent phdr `{}`",
+                            output_sections.display_name(*id),
+                            String::from_utf8_lossy(phdr)
+                        )
+                    })?;
+                    if segment.has_explicit_flags {
+                        continue;
+                    }
+                    segment.flags |=
+                        Self::get_segment_flags_for_section(&info.section_attributes.flags);
+                    builder.get_segment_mut(segment.id).segment_flags |=
+                        SegmentFlags(segment.flags);
+                }
+                ordered_sections.push(*id);
+            }
+        }
+
+        let mut first_load_idx = None;
+        let mut starts = vec![None; num_phdrs];
+        let mut ends = vec![None; num_phdrs];
+        let mut first_exec: Option<ProgramSegmentId> = None;
+        let mut first_rw: Option<ProgramSegmentId> = None;
+        let mut first_ro: Option<ProgramSegmentId> = None;
+
+        for (pos, id) in ordered_sections.iter().enumerate() {
+            let phdrs = &output_sections.section_infos.get(*id).phdrs;
+            for &phdr_name in phdrs {
+                let Some(entry) = segments_map.get(phdr_name) else {
+                    continue;
+                };
+                let seg_idx = entry.id.as_usize();
+                if entry.ptype == pt::LOAD.0 && first_load_idx.is_none() {
+                    first_load_idx = Some(pos);
+                }
+                if ends[seg_idx].is_none() {
+                    starts[seg_idx] = Some(pos);
+                }
+                ends[seg_idx] = Some(pos);
+                if entry.ptype == pt::LOAD.0 {
+                    if (entry.flags & pf::EXECUTABLE.0) != 0 {
+                        first_exec = Some(entry.id);
+                    } else if (entry.flags & pf::WRITABLE.0) != 0 {
+                        first_rw = Some(entry.id);
+                    } else {
+                        first_ro = Some(entry.id);
+                    }
+                }
+            }
+        }
+
+        if first_load_idx.is_some() {
+            for &hdr_id in &[
+                output_section_id::FILE_HEADER,
+                output_section_id::PROGRAM_HEADERS,
+                output_section_id::SECTION_HEADERS,
+            ] {
+                builder.push_event(OrderEvent::Section(hdr_id));
+            }
+        }
+
+        for (pos, section_id) in ordered_sections.iter().enumerate() {
+            let section_id = *section_id;
+
+            for (seg_idx, segment) in starts.iter().enumerate().take(num_phdrs) {
+                if *segment == Some(pos) {
+                    builder.push_event(OrderEvent::SegmentStart(ProgramSegmentId::new(seg_idx)));
+                }
+            }
+
+            builder.add_section(section_id);
+
+            for (seg_idx, segment) in ends.iter().enumerate().take(num_phdrs) {
+                if *segment == Some(pos) {
+                    let seg_id = ProgramSegmentId::new(seg_idx);
+                    if Some(seg_id) == first_exec {
+                        builder.add_sections(&custom.exec);
+                    } else if Some(seg_id) == first_rw {
+                        builder.add_sections(&custom.tdata);
+                        builder.add_sections(&custom.tbss);
+                        builder.add_sections(&custom.data);
+                        builder.add_sections(&custom.bss);
+                    } else if Some(seg_id) == first_ro {
+                        builder.add_sections(&custom.ro);
+                    }
+                    builder.push_event(OrderEvent::SegmentEnd(seg_id));
                 }
             }
         }
 
         for &id in &custom.nonalloc {
-            builder.add_section(id);
+            if id != output_section_id::RISCV_ATTRIBUTES {
+                builder.add_section(id);
+            }
         }
 
-        builder.add_segment_with_sections(
-            pt::RISCV_ATTRIBUTES.0,
-            pf::READABLE.0,
-            &[output_section_id::RISCV_ATTRIBUTES],
-            output_sections,
+        let riscv_segment = builder.add_custom_segment(
+            <ProgramSegmentDef as platform::ProgramSegmentDef>::from_linker_script(
+                pt::RISCV_ATTRIBUTES.0,
+                pf::READABLE.0,
+            ),
         );
+        builder.push_event(OrderEvent::SegmentStart(riscv_segment));
+        builder.add_section(output_section_id::RISCV_ATTRIBUTES);
+        builder.push_event(OrderEvent::SegmentEnd(riscv_segment));
+
         Ok(builder.build())
     }
 

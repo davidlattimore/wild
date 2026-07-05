@@ -24,6 +24,10 @@ impl<T: platform::ProgramSegmentDef> ProgramSegments<T> {
         &self.program_segment_details[segment_id.as_usize()]
     }
 
+    pub(crate) fn segment_def_mut(&mut self, segment_id: ProgramSegmentId) -> &mut T {
+        &mut self.program_segment_details[segment_id.as_usize()]
+    }
+
     pub(crate) fn add_segment(&mut self, segment_def: T) -> ProgramSegmentId {
         let id = ProgramSegmentId::new(self.program_segment_details.len());
         self.program_segment_details.push(segment_def);
@@ -84,4 +88,12 @@ impl<'a, T: platform::ProgramSegmentDef> IntoIterator for &'a ProgramSegments<T>
     fn into_iter(self) -> Self::IntoIter {
         self.program_segment_details.iter()
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SegmentEntry {
+    pub(crate) id: crate::program_segments::ProgramSegmentId,
+    pub(crate) ptype: u32,
+    pub(crate) flags: u32,
+    pub(crate) has_explicit_flags: bool,
 }

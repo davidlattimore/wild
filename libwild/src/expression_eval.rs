@@ -783,6 +783,7 @@ mod tests {
                 memory_regions: Vec::new(),
                 program_headers: Vec::new(),
                 location_counters: Vec::new(),
+                ordered_sections: Vec::new(),
             },
             symbol_id_range: SymbolIdRange::empty(),
             file_id: FileId::new(0, 0),

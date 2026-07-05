@@ -5,9 +5,9 @@
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs.ld --defsym=is_riscv=0
 //#DiffIgnore:section.got
 //#ExpectProgramHeader:LOAD flags=RX,sections=[.text]
+//#ExpectProgramHeader:DYNAMIC flags=RW,sections=[.dynamic,*]
 //#ExpectProgramHeader:LOAD flags=RW,sections=[*]
-//#ExpectProgramHeader:LOAD flags=R,sections=[.rodata,*]
-//#NoProgramHeader:DYNAMIC
+//#ExpectProgramHeader:LOAD flags=R,sections=[.rodata,.dynamic,*]
 //#NoProgramHeader:PHDR
 //#NoProgramHeader:NOTE
 //#NoProgramHeader:GNU_STACK

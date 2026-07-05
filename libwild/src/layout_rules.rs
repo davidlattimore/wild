@@ -109,6 +109,20 @@ pub(crate) enum SectionRuleOutcome {
     SortedSection(SectionOutputInfo),
 }
 
+impl SectionRuleOutcome {
+    pub(crate) fn section_rule_from_id(
+        section_id: OutputSectionId,
+        output_info: SectionOutputInfo,
+    ) -> SectionRuleOutcome {
+        match section_id {
+            output_section_id::EH_FRAME => SectionRuleOutcome::EhFrame,
+            output_section_id::NOTE_GNU_PROPERTY => SectionRuleOutcome::NoteGnuProperty,
+            output_section_id::RISCV_ATTRIBUTES => SectionRuleOutcome::RiscVAttribute,
+            _ => crate::layout_rules::SectionRuleOutcome::Section(output_info),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SectionOutputInfo {
     pub(crate) section_id: OutputSectionId,
@@ -171,6 +185,7 @@ impl<'data> LayoutRulesBuilder<'data> {
         let mut memory_regions = Vec::new();
         let mut program_headers = Vec::new();
         let mut location_counters = Vec::new();
+        let mut ordered_sections = Vec::new();
 
         let mut current_section_id = None;
         let mut loc = SymbolLoc::FirstSection;
@@ -196,7 +211,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                 symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
             } else if let linker_script::Command::Sections(sections) = cmd {
                 let mut section_start_lc_idx = last_lc_idx;
-
+                let mut prev_phdrs = Vec::new();
                 for sec_cmd in &sections.commands {
                     match sec_cmd {
                         SectionCommand::Section(sec) => {
@@ -241,14 +256,18 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 })
                                 .transpose()?;
 
+                            if !sec.phdrs.is_empty() {
+                                prev_phdrs = sec.phdrs.clone();
+                            }
                             let primary_section_id = output_sections.add_named_section(
                                 SectionName(sec.output_section_name),
                                 min_alignment,
-                                sec.phdr,
                                 sec.region,
-                                Some(location_info),
+                                Some(&location_info),
                                 fill_value,
+                                prev_phdrs.clone(),
                             );
+                            ordered_sections.push(primary_section_id);
                             current_section_id = Some(primary_section_id);
                             loc = SymbolLoc::SectionEnd(primary_section_id);
 
@@ -291,10 +310,10 @@ impl<'data> LayoutRulesBuilder<'data> {
                                                 sorted: pattern.sorted,
                                             };
 
-                                            let outcome =
-                                                crate::layout_rules::SectionRuleOutcome::Section(
-                                                    output_info,
-                                                );
+                                            let outcome = SectionRuleOutcome::section_rule_from_id(
+                                                primary_section_id,
+                                                output_info,
+                                            );
 
                                             self.add_section_rule(SectionRule::new(
                                                 pattern.name,
@@ -420,6 +439,7 @@ impl<'data> LayoutRulesBuilder<'data> {
             memory_regions,
             program_headers,
             location_counters,
+            ordered_sections,
         })
     }
 

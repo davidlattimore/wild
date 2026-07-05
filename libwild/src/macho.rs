@@ -1151,9 +1151,9 @@ impl platform::Platform for MachO {
                 min_alignment: d.min_alignment,
                 location_info: None,
                 secondary_order: None,
-                phdr_name: None,
                 region_name: None,
                 fill: None,
+                phdrs: Vec::new(),
             })
             .collect()
     }

@@ -1937,7 +1937,16 @@ fn compute_segment_layout<'data, P: Platform>(
                 let section_flags = output_sections.section_flags(merge_target);
                 let section_info = output_sections.output_info(section_id);
 
-                if active_segments.iter().all(|s| s.is_none()) {
+                let is_header_section = matches!(
+                    section_id,
+                    output_section_id::FILE_HEADER
+                        | output_section_id::PROGRAM_HEADERS
+                        | output_section_id::SECTION_HEADERS
+                );
+
+                if active_segments.iter().all(|s| s.is_none())
+                    && !(is_header_section && output_order.has_custom_phdrs())
+                {
                     ensure!(
                         section_layout.mem_offset == 0,
                         "Expected zero address for section {} not present in any program segment.",
@@ -2023,7 +2032,11 @@ fn compute_segment_layout<'data, P: Platform>(
         })
         .collect_vec();
 
-    segments.sort_by_key(|s| program_segments.order_key(s.id, s.sizes.mem_offset));
+    if output_order.has_custom_phdrs() {
+        segments.sort_by_key(|s| s.id);
+    } else {
+        segments.sort_by_key(|s| program_segments.order_key(s.id, s.sizes.mem_offset));
+    }
 
     Ok(SegmentLayouts {
         segments,
@@ -5838,16 +5851,12 @@ fn test_no_disallowed_overlaps() {
     use crate::elf::Elf;
     use crate::output_section_id::OrderEvent;
 
-    let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000);
-    let (output_order, program_segments) = output_sections
-        .output_order(
-            crate::output_kind::OutputKind::StaticExecutable(
-                crate::args::RelocationModel::NonRelocatable,
-            ),
-            &[],
-            &[],
-        )
-        .unwrap();
+    let output_kind = crate::output_kind::OutputKind::StaticExecutable(
+        crate::args::RelocationModel::NonRelocatable,
+    );
+    let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000, output_kind);
+    let (output_order, program_segments) =
+        output_sections.output_order(output_kind, &[], &[]).unwrap();
     let mut args = crate::args::elf::ElfArgs::default();
     if args.arch == crate::arch::Architecture::Unsupported {
         args.arch = crate::arch::Architecture::X86_64;
@@ -5992,7 +6001,7 @@ fn verify_consistent_allocation_handling<P: Platform>(
     output_kind: OutputKind,
     args: &P::Args,
 ) -> Result {
-    let output_sections = OutputSections::with_base_address(0);
+    let output_sections = OutputSections::with_base_address(0, output_kind);
     let (output_order, _program_segments) = output_sections.output_order(output_kind, &[], &[])?;
     let mut mem_sizes = output_sections.new_part_map();
     P::allocate_resolution(flags, &mut mem_sizes, output_kind, args);

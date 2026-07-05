@@ -798,7 +798,6 @@ pub(crate) trait Platform:
         output_sections: &OutputSections<'data, Self>,
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
         _linker_scripts: &[&SequencedLinkerScript<'data, Self>],
-        _phdr_map: &mut hashbrown::HashMap<&[u8], Vec<OutputSectionId>>,
         location_counters: &[crate::layout_rules::LocationCounter<'data>],
     ) -> Result<(OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>)> {
         Ok(Self::build_output_order_and_program_segments(
@@ -878,6 +877,10 @@ pub(crate) trait Platform:
         _input: Self::ResolvedObjectExt<'data>,
     ) -> Self::ObjectLayoutStateExt<'data> {
         Default::default()
+    }
+
+    fn get_segment_flags_for_section(_section_flags: &Self::SectionFlags) -> u32 {
+        0
     }
 }
 
