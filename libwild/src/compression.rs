@@ -49,6 +49,7 @@ const MIN_CHUNK_SIZE: usize = 64 * 1024;
 const MAX_CHUNKS: usize = 128;
 
 const ZLIB_COMPRESSION_LEVEL: i32 = 1;
+#[cfg(feature = "zstd")]
 const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 
 /// zlib `windowBits`.
@@ -170,16 +171,25 @@ struct ZstdCompressor;
 
 impl SectionCompressor for ZstdCompressor {
     fn compress_section(uncompressed: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let shard_size = shard_size(uncompressed.len());
-        let shards: Vec<&[u8]> = uncompressed.chunks(shard_size).collect();
+        #[cfg(not(feature = "zstd"))]
+        {
+            let _ = uncompressed;
+            bail!("wild was compiled without zstd support");
+        }
 
-        shards
-            .par_iter()
-            .map(|shard| -> Result<Vec<u8>> {
-                verbose_timing_phase!("Compress zstd shard");
-                zstd::encode_all(*shard, ZSTD_COMPRESSION_LEVEL).map_err(Into::into)
-            })
-            .collect()
+        #[cfg(feature = "zstd")]
+        {
+            let shard_size = shard_size(uncompressed.len());
+            let shards: Vec<&[u8]> = uncompressed.chunks(shard_size).collect();
+
+            shards
+                .par_iter()
+                .map(|shard| -> Result<Vec<u8>> {
+                    verbose_timing_phase!("Compress zstd shard");
+                    zstd::encode_all(*shard, ZSTD_COMPRESSION_LEVEL).map_err(Into::into)
+                })
+                .collect()
+        }
     }
 
     fn kind() -> CompressionType {

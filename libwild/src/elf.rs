@@ -125,7 +125,6 @@ use rayon::Scope;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::borrow::Cow;
-use std::io::Read as _;
 use std::mem::offset_of;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
@@ -3247,7 +3246,15 @@ fn decompress_into(
         // With the official library, the linking time of Clang binary (contains 1GB of debug info
         // sections) shrinks by 30%!
         object::elf::ELFCOMPRESS_ZSTD => {
-            zstd::stream::Decoder::new(input)?.read_exact(out)?;
+            #[cfg(feature = "zstd")]
+            {
+                use std::io::Read as _;
+                zstd::stream::Decoder::new(input)?.read_exact(out)?;
+            }
+            #[cfg(not(feature = "zstd"))]
+            {
+                bail!("wild was compiled without zstd support");
+            }
         }
         c => bail!("Unsupported compression format: {}", c),
     }

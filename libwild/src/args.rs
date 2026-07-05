@@ -425,6 +425,7 @@ impl CommonArgs {
 
         let files_per_group = std::env::var(FILES_PER_GROUP_ENV)
             .ok()
+            .filter(|s| !s.is_empty())
             .map(|s| s.parse())
             .transpose()?;
 
@@ -441,7 +442,7 @@ impl CommonArgs {
             ..Default::default()
         };
 
-        if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
+        if std::env::var(REFERENCE_LINKER_ENV).is_ok_and(|val| !val.is_empty()) {
             common.write_layout = true;
             common.write_trace = true;
         }

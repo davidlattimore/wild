@@ -55,8 +55,8 @@ wasm-encoder.workspace = true
 wasmparser.workspace = true
 winnow.workspace = true
 zerocopy.workspace = true
-zstd.workspace = true
 zlib-rs.workspace = true
+zstd = { workspace = true, optional = true }
 
 [target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 perf-event.workspace = true
@@ -72,6 +72,8 @@ ar.workspace = true
 tempfile.workspace = true
 
 [features]
+default = ["zstd"]
+
 # Support for running the linker as a subprocess.
 fork = []
 
@@ -89,6 +91,9 @@ wasm = []
 
 # Experimental support for linking Mach-O. Currently incomplete.
 macho = []
+
+# Support for zstd compression and decompression of sections.
+zstd = ["dep:zstd"]
 
 [lints]
 workspace = true

@@ -75,7 +75,9 @@ impl SaveDir {
 }
 
 fn save_dir_from_env() -> Result<Option<PathBuf>> {
-    if let Ok(d) = std::env::var(SAVE_DIR_ENV) {
+    if let Ok(d) = std::env::var(SAVE_DIR_ENV)
+        && !d.is_empty()
+    {
         let dir = PathBuf::from(d);
 
         if dir.exists() {
@@ -99,7 +101,9 @@ fn save_dir_from_env() -> Result<Option<PathBuf>> {
         return Ok(Some(dir));
     }
 
-    if let Ok(d) = std::env::var(SAVE_BASE_ENV) {
+    if let Ok(d) = std::env::var(SAVE_BASE_ENV)
+        && !d.is_empty()
+    {
         let base = PathBuf::from(d);
         std::fs::create_dir_all(&base).with_context(|| {
             format!(
