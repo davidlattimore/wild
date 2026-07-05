@@ -119,7 +119,7 @@ see at a glance what remains before Wild can link the kernel.
 | `>region` and `AT>region` memory region placement | 📅 | |
 | `SORT_BY_NAME(...)`, `SORT_BY_ALIGNMENT(...)`, `SORT_BY_INIT_PRIORITY(...)` | 📅 | |
 | `EXCLUDE_FILE(...)` inside input section matchers | 📅 | |
-| `CONSTRUCTORS` command | 📅 | |
+| `CONSTRUCTORS` command | ✅ | Parsed and ignored, it is a nop for ELF.  |
 | `PHDRS` command for explicit program header definition | 🧪 | The FILEHDR and PHDRS keywords aren't yet supported. |
 | Ternary operator (`condition ? a : b`) | ✅ | |
 | `DEFINED(sym)` function | 📅 | |
