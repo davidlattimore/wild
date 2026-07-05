@@ -67,7 +67,13 @@
 //!
 //! Contains:{string} Checks that the output binary does contain the specified string.
 //!
-//! ExpectSection:{section_name} Checks that the specified section exists in the output binary.
+//! ExpectSection:{section_name} [properties] Checks that the specified section exists in the
+//! output binary. Optional properties:
+//!   max_entries=N: Asserts the section has at most N entries (uses the section's sh_entsize,
+//!   or 1 if sh_entsize is 0).
+//!
+//! RelrCount:N Checks that .relr.dyn encodes at least N total relocations (counting both address
+//! entries and bitmap-encoded relocations).
 //!
 //! NoSection:{section_name} Checks that the specified section does not exist in the output binary.
 //!
@@ -1446,8 +1452,10 @@ struct Assertions {
     expected_dynamic_entries: Vec<String>,
     absent_dynamic_entries: Vec<String>,
     expected_sections: Vec<String>,
+    expected_sections_with_assertions: Vec<ExpectedSection>,
     absent_sections: Vec<String>,
     expected_section_bytes: Vec<ExpectedSectionBytes>,
+    relr_count: Option<u64>,
     expected_gdb_index_cu_count: Option<usize>,
     expected_gdb_index_symbols: Vec<String>,
     expected_gdb_index_distinct_addr_cus: Option<usize>,
@@ -1461,6 +1469,18 @@ struct Assertions {
 struct ExpectedSectionBytes {
     section_name: String,
     expected_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedSection {
+    section_name: String,
+    assertions: SectionAssertions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct SectionAssertions {
+    max_entries: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -1821,10 +1841,28 @@ fn process_directive(
         }
         "DoesNotContain" => config.assertions.does_not_contain.push(arg.to_owned()),
         "Contains" => config.assertions.contains_strings.push(arg.to_owned()),
-        "ExpectSection" => config
-            .assertions
-            .expected_sections
-            .push(arg.trim().to_owned()),
+        "ExpectSection" => {
+            let arg = arg.trim();
+            if let Some((name, props)) = arg.split_once(' ') {
+                let assertions = serde_keyvalue::from_key_values(props.trim())?;
+                config
+                    .assertions
+                    .expected_sections_with_assertions
+                    .push(ExpectedSection {
+                        section_name: name.to_owned(),
+                        assertions,
+                    });
+            } else {
+                config.assertions.expected_sections.push(arg.to_owned());
+            }
+        }
+        "RelrCount" => {
+            config.assertions.relr_count = Some(
+                arg.trim()
+                    .parse::<u64>()
+                    .with_context(|| format!("Invalid RelrCount: {arg}"))?,
+            );
+        }
         "NoSection" => config
             .assertions
             .absent_sections
@@ -4069,6 +4107,7 @@ impl Assertions {
         self.verify_expected_sections(&obj)?;
         self.verify_absent_sections(&obj)?;
         self.verify_section_bytes(&obj)?;
+        self.verify_relr_count(&obj)?;
         self.verify_gdb_index_cu_count(&obj)?;
         self.verify_gdb_index_symbols(&obj)?;
         self.verify_gdb_index_distinct_addr_cus(&obj)?;
@@ -4084,6 +4123,7 @@ impl Assertions {
                 self.verify_symbols_absent(&self.no_sym, elf_obj.dynamic_symbols(), "dynsym")?;
                 self.verify_symbols_absent(&self.no_dynsym, elf_obj.dynamic_symbols(), "dynsym")?;
                 self.verify_program_headers(&elf_obj)?;
+                self.verify_expected_sections_with_assertions(&elf_obj)?;
             }
             object::File::MachO64(_) => {
                 if !self.expected_comments.is_empty() {
@@ -4274,6 +4314,62 @@ impl Assertions {
                 expected.expected_bytes,
                 data,
             );
+        }
+        Ok(())
+    }
+
+    fn verify_relr_count(&self, obj: &object::File) -> Result {
+        let Some(expected_count) = self.relr_count else {
+            return Ok(());
+        };
+        let Some(section) = obj.section_by_name(".relr.dyn") else {
+            bail!("RelrCount: section `.relr.dyn` not found");
+        };
+        let data = section.data()?;
+        let mut count: u64 = 0;
+        let mut i = 0;
+        while i + 8 <= data.len() {
+            let val = u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+            if val & 1 == 0 {
+                // Address entry — encodes 1 relocation.
+                count += 1;
+            } else {
+                // Bitmap entry — count set bits excluding LSB marker.
+                count += (val >> 1).count_ones() as u64;
+            }
+            i += 8;
+        }
+        ensure!(
+            count >= expected_count,
+            "RelrCount: expected at least {} RELR relocations, got {}",
+            expected_count,
+            count,
+        );
+        Ok(())
+    }
+
+    fn verify_expected_sections_with_assertions(
+        &self,
+        obj: &object::read::elf::ElfFile64<'_, object::Endianness>,
+    ) -> Result {
+        for expected in &self.expected_sections_with_assertions {
+            let section = obj
+                .section_by_name(&expected.section_name)
+                .with_context(|| format!("Section `{}` not found", expected.section_name))?;
+            if let Some(max_entries) = expected.assertions.max_entries {
+                let size = section.size();
+                let entry_size = section.elf_section_header().sh_entsize.get(obj.endian());
+                let entry_size = if entry_size == 0 { 1 } else { entry_size };
+                let actual_entries = size / entry_size;
+                ensure!(
+                    actual_entries <= max_entries,
+                    "Section `{}` has {} entries, expected at most {}. \
+                    Bitmap packing may not be working correctly.",
+                    expected.section_name,
+                    actual_entries,
+                    max_entries,
+                );
+            }
         }
         Ok(())
     }

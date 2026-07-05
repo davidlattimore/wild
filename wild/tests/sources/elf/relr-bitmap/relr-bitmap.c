@@ -1,33 +1,58 @@
 // Verify that consecutive RELR-eligible relocations are packed into bitmap
 // entries rather than emitted as individual address entries.
-// With bitmap packing, 4 consecutive pointers should produce 2 RELR entries
-// (1 address + 1 bitmap) instead of 4 individual address entries.
+//
+// Three consecutive constructors in .init_array produce function pointers at
+// consecutive 8-byte-aligned offsets. Without bitmap packing, each would get
+// its own RELR address entry. With packing, they share an address entry and
+// a bitmap entry.
+//#AbstractConfig:default
 //#Object:runtime.c
+//#Object:init.c:-fPIC
 //#Mode:dynamic
-//#LinkArgs:-pie -z now -z pack-relative-relocs
+//#LinkArgs:-pie -z now -z pack-relative-relocs --no-gc-sections
 //#DiffMatchAny:true
 // GNU ld ignores `-z pack-relative-relocs` on RISC-V.
 //#ReferenceLinkers:lld
+// Verify all 3 constructor pointers are correctly encoded as RELR relocations.
+//#RelrCount:3
+
+//#Config:x86_64:default
+//#Arch:x86_64
+//#ExpectSection:.relr.dyn max_entries=2
+
+//#Config:aarch64:default
+//#Arch:aarch64
+//#ExpectSection:.relr.dyn max_entries=6
+
+//#Config:loongarch64:default
+//#Arch:loongarch64
+//#ExpectSection:.relr.dyn max_entries=6
+
+//#Config:riscv64:default
+//#Arch:riscv64
+//#ExpectSection:.relr.dyn max_entries=7
+
+//#Config:ppc64le:default
+//#Arch:ppc64le
+//#ExpectSection:.relr.dyn max_entries=4
+#include "../common/init.h"
 #include "../common/runtime.h"
 
-// Four consecutive static pointers — eligible for RELR bitmap packing.
-// These should produce 1 address entry + 1 bitmap entry (0x0f) in .relr.dyn,
-// not 4 individual address entries.
-static int a, b, c, d;
-static int* p1 = &a;
-static int* p2 = &b;
-static int* p3 = &c;
-static int* p4 = &d;
+static int foo = 0;
+static int bar = 0;
+static int baz = 0;
+
+// Three consecutive constructors — their function pointers go into .init_array
+// at consecutive 8-byte-aligned offsets, making them RELR bitmap-packable.
+__attribute__((constructor)) static void ctor_foo(void) { foo = 1; }
+__attribute__((constructor)) static void ctor_bar(void) { bar = 2; }
+__attribute__((constructor)) static void ctor_baz(void) { baz = 3; }
+
 void _start(void) {
   runtime_init();
-  // Verify pointers were correctly relocated at runtime.
-  *p1 = 1;
-  *p2 = 2;
-  *p3 = 3;
-  *p4 = 4;
-  if (*p1 != 1) exit_syscall(1);
-  if (*p2 != 2) exit_syscall(2);
-  if (*p3 != 3) exit_syscall(3);
-  if (*p4 != 4) exit_syscall(4);
+  call_init_functions();
+  if (foo != 1) exit_syscall(1);
+  if (bar != 2) exit_syscall(2);
+  if (baz != 3) exit_syscall(3);
   exit_syscall(42);
 }
