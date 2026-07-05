@@ -213,6 +213,9 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
                 eval!(if_false)
             }
         }
+        Expression::Defined(name) => Ok(symbol_db
+            .get_unversioned(&UnversionedSymbolName::prehashed(name))
+            .map_or(0, |_| 1)),
     }
 }
 
