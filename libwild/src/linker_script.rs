@@ -1172,7 +1172,13 @@ fn parse_at_address<'input>(input: &mut &'input BStr) -> winnow::Result<Expressi
 fn parse_contents_command<'input>(
     input: &mut &'input BStr,
 ) -> winnow::Result<ContentsCommand<'input>> {
-    alt((parse_contents_provide, parse_matcher, parse_assignment, parse_constructors)).parse_next(input)
+    alt((
+        parse_contents_provide,
+        parse_matcher,
+        parse_assignment,
+        parse_constructors,
+    ))
+    .parse_next(input)
 }
 
 fn parse_contents_provide<'input>(
