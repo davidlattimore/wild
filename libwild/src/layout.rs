@@ -5187,9 +5187,7 @@ fn compute_layout_sections<'data, P: Platform>(
             OrderEvent::SetLocation(expr, loc, idx) => {
                 let value =
                     expression_eval(&expr, &loc, memory_regions, &section_layouts, &resolved_lc)?;
-                if resolved_lc.len() > 1 {
-                    pending_location = Some(value);
-                }
+                pending_location = Some(value);
                 resolved_lc[idx] = ResolvedLocationCounter {
                     value,
                     section_offset: None,
@@ -5201,9 +5199,7 @@ fn compute_layout_sections<'data, P: Platform>(
                 let value =
                     expression_eval(&expr, &loc, memory_regions, &section_layouts, &resolved_lc)?;
                 let offset = value - section_base;
-                if resolved_lc.len() > 1 {
-                    pending_location = Some(value);
-                }
+                pending_location = Some(value);
                 resolved_lc[idx] = ResolvedLocationCounter {
                     value,
                     section_offset: Some(offset),

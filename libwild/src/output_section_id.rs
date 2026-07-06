@@ -455,8 +455,27 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             self.events.push(OrderEvent::Section(*section));
 
             let secondaries: &Vec<OutputSectionId> = self.secondary.get(*section);
-            for sid in secondaries {
-                self.events.push(OrderEvent::Section(*sid));
+            let mut keyed: Vec<(u16, OutputSectionId)> = secondaries
+                .iter()
+                .map(|&sid| {
+                    let key_pri = match output_sections.secondary_order(sid) {
+                        Some(crate::output_section_id::SecondaryOrder::InitFini { priority }) => {
+                            priority
+                        }
+                        None => u16::MAX,
+                    };
+                    (key_pri, sid)
+                })
+                .collect();
+            keyed.sort_by_key(|(pri, _sid)| *pri);
+
+            for (_pri, sid) in keyed {
+                let sec_info = output_sections.output_info(sid);
+                if let Some(ref loc_info) = sec_info.location_info {
+                    let (lc_start, lc_stop) = loc_info.location_counters;
+                    self.emit_location_counters(lc_start, lc_stop);
+                }
+                self.events.push(OrderEvent::Section(sid));
             }
         }
         self.events.push(OrderEvent::SegmentEnd(segment_id));

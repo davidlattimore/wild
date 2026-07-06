@@ -6,6 +6,18 @@
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64,ppc64le
 
+//#Config:phdrs
+//#LinkerScript:linker-script-location-counter-phdrs.ld
+//#Object:runtime.c
+// RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
+//#SkipArch:riscv64,ppc64le
+
+//#Config:single_location_counter
+//#LinkerScript:linker-script-single-location-counter.ld
+//#Object:runtime.c
+// RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
+//#SkipArch:riscv64,ppc64le
+
 //#Config:no_gc_sections:default
 //#LinkArgs:--no-gc-sections
 
@@ -20,4 +32,10 @@
 
 int ret = 42;
 
-void begin_here(void) { exit_syscall(ret); }
+__attribute__((section(".text.foo")))
+void foo(void) {}
+
+void begin_here(void) {
+    foo();
+    exit_syscall(ret);
+}
