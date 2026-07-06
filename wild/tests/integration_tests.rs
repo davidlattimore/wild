@@ -1503,8 +1503,7 @@ struct Assertions {
     expected_load_alignments: Vec<u64>,
     expected_dynamic_entries: Vec<String>,
     absent_dynamic_entries: Vec<String>,
-    expected_sections: Vec<String>,
-    expected_sections_with_assertions: Vec<ExpectedSection>,
+    expected_sections: Vec<ExpectedSection>,
     absent_sections: Vec<String>,
     expected_section_bytes: Vec<ExpectedSectionBytes>,
     relr_count: Option<u64>,
@@ -1895,18 +1894,15 @@ fn process_directive(
         "Contains" => config.assertions.contains_strings.push(arg.to_owned()),
         "ExpectSection" => {
             let arg = arg.trim();
-            if let Some((name, props)) = arg.split_once(' ') {
-                let assertions = serde_keyvalue::from_key_values(props.trim())?;
-                config
-                    .assertions
-                    .expected_sections_with_assertions
-                    .push(ExpectedSection {
-                        section_name: name.to_owned(),
-                        assertions,
-                    });
+            let (name, assertions) = if let Some((name, props)) = arg.split_once(' ') {
+                (name, serde_keyvalue::from_key_values(props.trim())?)
             } else {
-                config.assertions.expected_sections.push(arg.to_owned());
-            }
+                (arg, SectionAssertions::default())
+            };
+            config.assertions.expected_sections.push(ExpectedSection {
+                section_name: name.to_owned(),
+                assertions,
+            });
         }
         "RelrCount" => {
             config.assertions.relr_count = Some(
@@ -4175,7 +4171,7 @@ impl Assertions {
                 self.verify_symbols_absent(&self.no_sym, elf_obj.dynamic_symbols(), "dynsym")?;
                 self.verify_symbols_absent(&self.no_dynsym, elf_obj.dynamic_symbols(), "dynsym")?;
                 self.verify_program_headers(&elf_obj)?;
-                self.verify_expected_sections_with_assertions(&elf_obj)?;
+                self.verify_section_max_entries(&elf_obj)?;
             }
             object::File::MachO64(_) => {
                 if !self.expected_comments.is_empty() {
@@ -4225,7 +4221,18 @@ impl Assertions {
         );
 
         validate_wasm(path, linker_used.name())?;
-        ensure_wasm_sections(path, &self.expected_sections, linker_used.name())?;
+        ensure!(
+            self.expected_sections
+                .iter()
+                .all(|s| s.assertions == SectionAssertions::default()),
+            "Section property assertions are not supported for Wasm"
+        );
+        let section_names: Vec<String> = self
+            .expected_sections
+            .iter()
+            .map(|s| s.section_name.clone())
+            .collect();
+        ensure_wasm_sections(path, &section_names, linker_used.name())?;
         ensure_wasm_func_types_unique(path, linker_used.name())?;
 
         let sections = wasm_standard_sections(path)?;
@@ -4245,10 +4252,11 @@ impl Assertions {
     }
 
     fn verify_expected_sections(&self, obj: &object::File) -> Result {
-        for name in &self.expected_sections {
+        for expected in &self.expected_sections {
             ensure!(
-                obj.section_by_name(name).is_some(),
-                "Expected section `{name}` not found"
+                obj.section_by_name(&expected.section_name).is_some(),
+                "Expected section `{}` not found",
+                expected.section_name
             );
         }
         Ok(())
@@ -4401,28 +4409,29 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_expected_sections_with_assertions(
+    fn verify_section_max_entries(
         &self,
         obj: &object::read::elf::ElfFile64<'_, object::Endianness>,
     ) -> Result {
-        for expected in &self.expected_sections_with_assertions {
+        for expected in &self.expected_sections {
+            let Some(max_entries) = expected.assertions.max_entries else {
+                continue;
+            };
             let section = obj
                 .section_by_name(&expected.section_name)
                 .with_context(|| format!("Section `{}` not found", expected.section_name))?;
-            if let Some(max_entries) = expected.assertions.max_entries {
-                let size = section.size();
-                let entry_size = section.elf_section_header().sh_entsize.get(obj.endian());
-                let entry_size = if entry_size == 0 { 1 } else { entry_size };
-                let actual_entries = size / entry_size;
-                ensure!(
-                    actual_entries <= max_entries,
-                    "Section `{}` has {} entries, expected at most {}. \
-                    Bitmap packing may not be working correctly.",
-                    expected.section_name,
-                    actual_entries,
-                    max_entries,
-                );
-            }
+            let size = section.size();
+            let entry_size = section.elf_section_header().sh_entsize.get(obj.endian());
+            let entry_size = if entry_size == 0 { 1 } else { entry_size };
+            let actual_entries = size / entry_size;
+            ensure!(
+                actual_entries <= max_entries,
+                "Section `{}` has {} entries, expected at most {}. \
+                Bitmap packing may not be working correctly.",
+                expected.section_name,
+                actual_entries,
+                max_entries,
+            );
         }
         Ok(())
     }
