@@ -32,10 +32,9 @@
 
 int ret = 42;
 
-__attribute__((section(".text.foo")))
-void foo(void) {}
+__attribute__((section(".text.foo"))) void foo(void) {}
 
 void begin_here(void) {
-    foo();
-    exit_syscall(ret);
+  foo();
+  exit_syscall(ret);
 }
