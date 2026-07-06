@@ -1318,7 +1318,10 @@ impl platform::Platform for MachO {
         fixup_table_size += CHAINED_FIXUP_PAGE_START_SIZE
             * (state.imported_symbols.len() as u64).div_ceil(MACHO_PAGE_ALIGNMENT.value());
 
-        mem_sizes.increment(part_id::CHAINED_FIXUP_TABLE, fixup_table_size);
+        mem_sizes.increment(
+            part_id::CHAINED_FIXUP_TABLE,
+            alignment::USIZE.align_up(fixup_table_size),
+        );
     }
 
     fn finalise_sizes_all<'data>(
@@ -1709,10 +1712,12 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     };
     defs[output_section_id::CHAINED_FIXUP_TABLE.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"DYLD_CHAINED_FIXUPS_TABLE")),
+        min_alignment: alignment::USIZE,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"SYMTAB")),
+        min_alignment: alignment::USIZE,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::CODE_SIGNATURE.as_usize()] = BuiltInSectionDetails {
