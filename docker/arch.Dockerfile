@@ -9,7 +9,7 @@
 # `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`
 # See https://github.com/rr-debugger/rr/wiki/Docker
 
-FROM archlinux:base-20251005.0.430597 AS chef
+FROM archlinux:base-20260628.0.549485 AS chef
 
 RUN pacman --noconfirm -Syu \
     wget \
