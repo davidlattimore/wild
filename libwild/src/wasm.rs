@@ -32,6 +32,7 @@ use wasmparser::ConstExpr;
 use wasmparser::DataKind;
 use wasmparser::DataSectionReader;
 use wasmparser::ExportSectionReader;
+use wasmparser::FuncType;
 use wasmparser::FunctionSectionReader;
 use wasmparser::GlobalSectionReader;
 use wasmparser::GlobalType;
@@ -1842,7 +1843,8 @@ fn compute_code_section_size(bodies: &[WasmFunctionBody<'_>]) -> u64 {
 
 #[derive(Debug, Default)]
 pub(crate) struct WasmObjectIndexMap {
-    pub(crate) type_index_base: u32,
+    /// Maps this object's local type index to the final output type index.
+    pub(crate) type_indices: Vec<u32>,
     pub(crate) function_indices: Vec<u32>,
     pub(crate) global_indices: Vec<u32>,
     pub(crate) memory_indices: Vec<u32>,
@@ -1861,10 +1863,7 @@ impl WasmObjectIndexMap {
         memory_base: u32,
     ) -> Result<u32> {
         if reloc.ty == R_WASM_TYPE_INDEX_LEB {
-            return self
-                .type_index_base
-                .checked_add(reloc.index)
-                .ok_or_else(|| crate::error!("Wasm type index overflow"));
+            return remap_wasm_index(&self.type_indices, reloc.index, "type");
         }
 
         let sym = symbols
@@ -2175,8 +2174,17 @@ impl<'data> WasmObjectLayoutInput<'data> {
             "Wasm global import resolution count mismatch"
         );
 
+        let mut type_indices = Vec::with_capacity(self.types.len());
+        for local_ty in 0..self.types.len() {
+            let output_type_index = index_bases
+                .type_index_base
+                .checked_add(u32::try_from(local_ty).context("too many Wasm types")?)
+                .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+            type_indices.push(output_type_index);
+        }
+
         let mut index_map = WasmObjectIndexMap {
-            type_index_base: index_bases.type_index_base,
+            type_indices,
             function_indices: Vec::with_capacity(
                 self.function_imports.len() + self.module_functions.len(),
             ),
@@ -2716,6 +2724,63 @@ fn ensure_void_void_type(types: &mut Vec<wasmparser::FuncType>) -> u32 {
     (types.len() - 1) as u32
 }
 
+/// Collapse identical function types in the output type section and rewrite every type index that
+/// refers into it.
+fn deduplicate_output_types(layout: &mut WasmLayout<'_>) {
+    if layout.output_types.is_empty() {
+        return;
+    }
+
+    let mut unique_types = Vec::with_capacity(layout.output_types.len());
+    let mut type_to_new_index: HashMap<FuncType, u32> = HashMap::new();
+    let mut old_to_new = Vec::with_capacity(layout.output_types.len());
+
+    for ty in std::mem::take(&mut layout.output_types) {
+        if let Some(&new_index) = type_to_new_index.get(&ty) {
+            old_to_new.push(new_index);
+            continue;
+        }
+        let new_index = u32::try_from(unique_types.len()).expect("too many Wasm types");
+        type_to_new_index.insert(ty.clone(), new_index);
+        unique_types.push(ty);
+        old_to_new.push(new_index);
+    }
+
+    layout.output_types = unique_types;
+
+    if old_to_new
+        .iter()
+        .enumerate()
+        .all(|(old, &new)| old as u32 == new)
+    {
+        // No remapping required.
+        return;
+    }
+
+    let remap = |index: u32| -> u32 {
+        old_to_new
+            .get(index as usize)
+            .copied()
+            .expect("type index out of range during dedup")
+    };
+
+    for type_index in &mut layout.function_type_indices {
+        *type_index = remap(*type_index);
+    }
+
+    for import in &mut layout.imports {
+        if let OutputImportEntity::Function { type_index } = &mut import.entity {
+            *type_index = remap(*type_index);
+        }
+    }
+
+    for index_map in &mut layout.object_index_maps {
+        for type_index in &mut index_map.type_indices {
+            *type_index = remap(*type_index);
+        }
+    }
+}
+
 fn empty_linker_function_body() -> WasmFunctionBody<'static> {
     WasmFunctionBody {
         bytes: EMPTY_FUNCTION_BODY,
@@ -2984,6 +3049,7 @@ where
     }
 
     emit_reserved_linker_definitions(&mut layout, &indices);
+    deduplicate_output_types(&mut layout);
 
     if linker_memory && layout.memories.is_empty() {
         layout

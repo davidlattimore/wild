@@ -529,6 +529,58 @@ fn ensure_wasm_sections(
     Ok(())
 }
 
+/// Collect function types from a linked Wasm module's type section, in section order.
+fn wasm_func_types(wasm_file: &Path) -> Result<Vec<wasmparser::FuncType>> {
+    use wasmparser::CompositeInnerType;
+    use wasmparser::Parser;
+    use wasmparser::Payload;
+
+    let bytes = std::fs::read(wasm_file)
+        .with_context(|| format!("Failed to read wasm file {}", wasm_file.display()))?;
+    let mut types = Vec::new();
+    for payload in Parser::new(0).parse_all(&bytes) {
+        let Payload::TypeSection(section) = payload? else {
+            continue;
+        };
+        for group in section {
+            for ty in group
+                .with_context(|| format!("Invalid type group in {}", wasm_file.display()))?
+                .into_types()
+            {
+                match ty.composite_type.inner {
+                    CompositeInnerType::Func(func) => types.push(func),
+                    other => bail!(
+                        "Unsupported non-function type in {}: {other:?}",
+                        wasm_file.display()
+                    ),
+                }
+            }
+        }
+    }
+    Ok(types)
+}
+
+/// Linked modules must not repeat identical function types.
+fn ensure_wasm_func_types_unique(wasm_file: &Path, linker_name: &str) -> Result {
+    let types = wasm_func_types(wasm_file)?;
+    let mut seen = HashSet::new();
+    for (index, ty) in types.iter().enumerate() {
+        ensure!(
+            seen.insert(ty.clone()),
+            "Duplicate Wasm function type at type index {index} in {linker_name} output ({}): {ty}\n\
+             All entries: [{}]",
+            wasm_file.display(),
+            types
+                .iter()
+                .enumerate()
+                .map(|(i, t)| format!("{i}:{t}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    Ok(())
+}
+
 fn validate_wasm(wasm_file: &Path, linker_name: &str) -> Result {
     let output = Command::new("wasm-tools")
         .arg("validate")
@@ -4174,6 +4226,7 @@ impl Assertions {
 
         validate_wasm(path, linker_used.name())?;
         ensure_wasm_sections(path, &self.expected_sections, linker_used.name())?;
+        ensure_wasm_func_types_unique(path, linker_used.name())?;
 
         let sections = wasm_standard_sections(path)?;
         for name in &self.absent_sections {
