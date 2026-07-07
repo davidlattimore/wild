@@ -2844,6 +2844,7 @@ fn emit_reserved_linker_definitions(layout: &mut WasmLayout<'_>, indices: &Linke
 fn fill_linker_defined_values(
     layout: &mut WasmLayout<'_>,
     indices: &LinkerDefinedIndices,
+    needs_stack_gap: bool,
 ) -> Result {
     if let Some(defined_slot) = indices.stack_pointer_defined_slot {
         let sp = layout
@@ -2862,7 +2863,7 @@ fn fill_linker_defined_values(
     }
 
     let mut bytes_needed = u64::from(layout.data_end.max(layout.memory_base));
-    if indices.stack_pointer_defined_slot.is_some() {
+    if indices.stack_pointer_defined_slot.is_some() || needs_stack_gap {
         bytes_needed =
             bytes_needed.max(u64::from(layout.data_end.saturating_add(LINKER_STACK_SIZE)));
     }
@@ -3058,14 +3059,15 @@ where
         ensure_memory_export(&mut layout.exports);
     }
     layout.data_end = memory_cursor;
-    compute_data_addresses(
+    let needs_stack_gap = compute_data_addresses(
         &mut layout.object_index_maps,
         &layout.per_object_symbols,
         &layout.object_data_layouts,
         &layout_inputs,
         symbol_db,
+        layout.data_end,
     )?;
-    fill_linker_defined_values(&mut layout, &indices)?;
+    fill_linker_defined_values(&mut layout, &indices, needs_stack_gap)?;
     ensure_entry_export(
         &mut layout.exports,
         &layout_inputs,
@@ -3234,18 +3236,53 @@ fn data_symbol_memory_address(
         .ok_or_else(|| crate::error!("Wasm data symbol address overflow"))
 }
 
+/// Result of resolving a linker-defined data symbol name.
+#[derive(Debug, Clone, Copy)]
+struct LinkerDefinedDataAddress {
+    address: u32,
+    /// True when the address assumes a stack reservation after static data.
+    needs_stack_gap: bool,
+}
+
+/// Absolute addresses linker-defined data symbols.
+fn linker_defined_data_symbol_address(
+    name: &[u8],
+    data_end: u32,
+) -> Result<Option<LinkerDefinedDataAddress>> {
+    match name {
+        b"__data_end" => Ok(Some(LinkerDefinedDataAddress {
+            address: data_end,
+            needs_stack_gap: false,
+        })),
+        b"__heap_base" => {
+            let address = data_end
+                .checked_add(LINKER_STACK_SIZE)
+                .ok_or_else(|| crate::error!("Wasm __heap_base address overflow"))?;
+            Ok(Some(LinkerDefinedDataAddress {
+                address,
+                needs_stack_gap: true,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn compute_data_addresses(
     object_index_maps: &mut [WasmObjectIndexMap],
     per_object_symbols: &[Vec<WasmSymbol>],
     object_data_layouts: &[WasmObjectDataLayout<'_>],
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
-) -> Result<()> {
+    data_end: u32,
+) -> Result<bool> {
     let file_id_to_index: HashMap<crate::input_data::FileId, usize> = layout_inputs
         .iter()
         .enumerate()
         .map(|(i, input)| (input.file_id, i))
         .collect();
+
+    // True if any synthesised address assumes a stack gap after static data (`__heap_base`).
+    let mut needs_stack_gap = false;
 
     for (obj_idx, (index_map, symbols)) in object_index_maps
         .iter_mut()
@@ -3257,29 +3294,43 @@ fn compute_data_addresses(
             if sym.kind != WasmSymbolKind::Data {
                 continue;
             }
-            let (def_obj_idx, def_sym) = if sym.is_undefined() {
-                let symbol_id = layout_inputs[obj_idx].symbol_id_range.offset_to_id(sym_idx);
+            let symbol_id = layout_inputs[obj_idx].symbol_id_range.offset_to_id(sym_idx);
+
+            // Resolve to the canonical definition when this is an undefined reference..
+            let (def_obj_idx, def_sym, name_symbol_id) = if sym.is_undefined() {
                 let def_id = symbol_db.definition(symbol_id);
-                if def_id == symbol_id {
-                    continue;
-                }
                 let def_file_id = symbol_db.file_id_for_symbol(def_id);
                 let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) else {
                     continue;
                 };
                 let def_input = &layout_inputs[def_obj_idx];
                 let def_sym_offset = def_id.to_offset(def_input.symbol_id_range);
-                (def_obj_idx, per_object_symbols[def_obj_idx][def_sym_offset])
+                (
+                    def_obj_idx,
+                    per_object_symbols[def_obj_idx][def_sym_offset],
+                    def_id,
+                )
             } else {
-                (obj_idx, *sym)
+                (obj_idx, *sym, symbol_id)
             };
+
+            if def_sym.is_undefined() {
+                let name = symbol_db.symbol_name(name_symbol_id)?;
+                if let Some(resolved) = linker_defined_data_symbol_address(name.bytes(), data_end)?
+                {
+                    needs_stack_gap |= resolved.needs_stack_gap;
+                    data_addresses[sym_idx] = resolved.address;
+                }
+                continue;
+            }
+
             data_addresses[sym_idx] =
                 data_symbol_memory_address(&object_data_layouts[def_obj_idx], &def_sym)?;
         }
         index_map.data_addresses = data_addresses;
     }
 
-    Ok(())
+    Ok(needs_stack_gap)
 }
 
 fn allocate_wasm_object_index_bases(
