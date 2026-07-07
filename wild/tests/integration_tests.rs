@@ -307,6 +307,7 @@
 mod external_tests;
 
 use bitflags::bitflags;
+use gimli::Reader as _;
 use itertools::Itertools;
 use libloading::Library;
 use libtest_mimic::Trial;
@@ -786,6 +787,10 @@ impl Linker {
 
     fn is_lld(&self) -> bool {
         self.name() == "lld"
+    }
+
+    fn is_bfd(&self) -> bool {
+        self.gcc_name() == "bfd"
     }
 
     fn gcc_name(&self) -> &str {
@@ -4274,6 +4279,7 @@ impl Assertions {
         self.verify_expected_sections(&obj)?;
         self.verify_absent_sections(&obj)?;
         self.verify_section_bytes(&obj)?;
+        self.verify_eh_frame_terminator(&obj, linker_used)?;
         self.verify_relr_count(&obj)?;
         self.verify_gdb_index_cu_count(&obj)?;
         self.verify_gdb_index_symbols(&obj)?;
@@ -4516,6 +4522,39 @@ impl Assertions {
             );
         }
         Ok(())
+    }
+
+    fn verify_eh_frame_terminator(&self, obj: &object::File, linker: &Linker) -> Result {
+        // BFD fails this check for at least one of our tests.
+        if linker.is_bfd() {
+            return Ok(());
+        }
+
+        // This check is mostly so that we don't enforce terminator checks when a test uses a linker
+        // script to just concatenate .eh_frame without proper processing.
+        if obj.section_by_name(".eh_frame_hdr").is_none() {
+            return Ok(());
+        }
+
+        let Some(section) = obj.section_by_name(".eh_frame") else {
+            return Ok(());
+        };
+
+        let data = section.data()?;
+        let mut reader = gimli::EndianSlice::new(data, gimli::LittleEndian);
+        while !reader.is_empty() {
+            let (length, _) = reader.read_initial_length()?;
+            if length == 0 {
+                ensure!(
+                    reader.is_empty(),
+                    "Section `.eh_frame` has a terminator before the end"
+                );
+                return Ok(());
+            }
+            reader.skip(length)?;
+        }
+
+        bail!("Section `.eh_frame` has no terminator")
     }
 
     fn verify_relr_count(&self, obj: &object::File) -> Result {

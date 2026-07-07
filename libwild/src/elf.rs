@@ -538,10 +538,6 @@ impl platform::Platform for Elf {
                 common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
             }
         }
-
-        if resources.symbol_db.args.should_write_eh_frame_hdr {
-            common.allocate(part_id::EH_FRAME_HDR, size_of::<EhFrameHdr>() as u64);
-        }
     }
 
     fn finalise_sizes_dynamic<'data>(
@@ -1012,6 +1008,7 @@ impl platform::Platform for Elf {
         queue: &mut crate::layout::LocalWorkQueue,
         scope: &rayon::Scope<'scope>,
     ) -> Result {
+        object.format_specific.has_eh_frame_input = true;
         let eh_frame_section = object.object.section(eh_frame_section_index)?;
         let data = object.object.raw_section_data(eh_frame_section)?;
         let frame_index_offset = object.format_specific.exception_frames.len();
@@ -1121,6 +1118,7 @@ impl platform::Platform for Elf {
             gnu_hash_layout,
             verdefs: Default::default(),
             build_id_size,
+            needs_eh_frame_terminator: false,
         }
     }
 
@@ -1274,6 +1272,10 @@ impl platform::Platform for Elf {
             dynamic_symbol_defs.len() as u64 * elf::SYMTAB_ENTRY_SIZE,
         );
 
+        if epilogue_state.needs_eh_frame_terminator {
+            memory_offsets.increment(part_id::EH_FRAME, size_of::<u32>() as u64);
+        }
+
         if let Some(build_id_sec_size) = epilogue_state.gnu_build_id_note_section_size() {
             memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
@@ -1321,8 +1323,14 @@ impl platform::Platform for Elf {
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
+        format_specific: &Self::FinaliseSizesExt<'_>,
         args: &ElfArgs,
     ) -> Result {
+        if format_specific.has_eh_frame_input || *current_sizes.get(part_id::EH_FRAME) != 0 {
+            extra_sizes.increment(part_id::EH_FRAME, size_of::<u32>() as u64);
+            state.needs_eh_frame_terminator = true;
+        }
+
         if args.hash_style.includes_sysv() {
             allocate_sysv_hash(state, current_sizes, extra_sizes, dynamic_symbol_defs)?;
         }
@@ -1333,6 +1341,17 @@ impl platform::Platform for Elf {
             if relr_entries > 0 {
                 extra_sizes.increment(part_id::RELR_DYN, relr_entries * RELR_ENTRY_SIZE);
             }
+        }
+        Ok(())
+    }
+
+    fn apply_late_size_adjustments_prelude(
+        current_sizes: &OutputSectionPartMap<u64>,
+        extra_sizes: &mut OutputSectionPartMap<u64>,
+        args: &ElfArgs,
+    ) -> Result {
+        if args.should_write_eh_frame_hdr && *current_sizes.get(part_id::EH_FRAME_HDR) != 0 {
+            extra_sizes.increment(part_id::EH_FRAME_HDR, size_of::<EhFrameHdr>() as u64);
         }
         Ok(())
     }
@@ -2838,6 +2857,12 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
         // See https://www.airs.com/blog/archives/170
         let prefix =
             EhFrameEntryPrefix::read_from_bytes(&data[offset..offset + PREFIX_LEN]).unwrap();
+        if prefix.length == 0 {
+            offset = data.len();
+            // Note, linker behaviour differs here. We match lld's behaviour, which is to stop when
+            // a zero-length frame is encountered. BFD ignores the frame, but continues.
+            break;
+        }
         let size = size_of_val(&prefix.length) + prefix.length as usize;
         let next_offset = offset + size;
 
@@ -2934,7 +2959,10 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
 
     // Allocate space for any remaining bytes in .eh_frame that aren't large enough to constitute an
     // actual entry. crtend.o has a single u32 equal to 0 as an end marker.
-    object.format_specific.eh_frame_size += (data.len() - offset) as u64;
+    let remaining = &data[offset..];
+    if !is_eh_frame_terminator(remaining) {
+        object.format_specific.eh_frame_size += remaining.len() as u64;
+    }
 
     Ok(exception_frames)
 }
@@ -3297,6 +3325,10 @@ pub(crate) struct EhFrameEntryPrefix {
     pub(crate) cie_id: u32,
 }
 
+pub(crate) fn is_eh_frame_terminator(data: &[u8]) -> bool {
+    data.len() == size_of::<u32>() && data.iter().all(|&b| b == 0)
+}
+
 /// The offset of the pc_begin field in an FDE.
 pub(crate) const FDE_PC_BEGIN_OFFSET: usize = 8;
 
@@ -3550,6 +3582,8 @@ pub(crate) struct ObjectLayoutStateExt<'data> {
     gnu_property_notes: Vec<GnuProperty>,
     pub(crate) riscv_attributes: Vec<RiscVAttribute>,
 
+    has_eh_frame_input: bool,
+
     cies: SmallVec<[CieAtOffset<'data>; 2]>,
 
     eh_frame_size: u64,
@@ -3565,6 +3599,7 @@ pub(crate) struct LayoutExt {
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
     pub(crate) riscv_attributes: RiscVAttributes,
     pub(crate) eflags: object::elf::FileFlags,
+    has_eh_frame_input: bool,
 }
 
 impl LayoutExt {
@@ -3576,11 +3611,13 @@ impl LayoutExt {
         let gnu_property_notes = merge_gnu_property_notes::<A>(states.clone(), args.z_isa)?;
         let riscv_attributes = merge_riscv_attributes::<A>(states)?;
         let eflags = merge_eflags::<A>(objects_iter(groups).map(|o| o.object))?;
+        let has_eh_frame_input = objects_iter(groups).any(|o| o.format_specific.has_eh_frame_input);
 
         Ok(Self {
             gnu_property_notes,
             riscv_attributes,
             eflags,
+            has_eh_frame_input,
         })
     }
 }
@@ -4222,6 +4259,7 @@ pub(crate) struct EpilogueLayoutExt {
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
     pub(crate) verdefs: Option<Vec<VersionDef>>,
     build_id_size: Option<usize>,
+    pub(crate) needs_eh_frame_terminator: bool,
 }
 
 #[derive(Debug, Clone, Copy)]

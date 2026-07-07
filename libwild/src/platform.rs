@@ -593,6 +593,15 @@ pub(crate) trait Platform:
         _current_sizes: &OutputSectionPartMap<u64>,
         _extra_sizes: &mut OutputSectionPartMap<u64>,
         _dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
+        _format_specific: &Self::FinaliseSizesExt<'_>,
+        _args: &Self::Args,
+    ) -> Result {
+        Ok(())
+    }
+
+    fn apply_late_size_adjustments_prelude(
+        _current_sizes: &OutputSectionPartMap<u64>,
+        _extra_sizes: &mut OutputSectionPartMap<u64>,
         _args: &Self::Args,
     ) -> Result {
         Ok(())

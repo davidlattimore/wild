@@ -3174,6 +3174,12 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             per_symbol_flags,
         );
 
+        P::apply_late_size_adjustments_prelude(
+            total_sizes,
+            &mut extra_sizes,
+            resources.symbol_db.args,
+        )?;
+
         self.allocate_symbol_table_sizes(
             output_sections,
             per_symbol_flags,
@@ -3829,6 +3835,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
             total_sizes,
             &mut extra_sizes,
             resources.dynamic_symbol_definitions,
+            resources.format_specific,
             resources.symbol_db.args,
         )?;
 

@@ -188,7 +188,13 @@ pub(crate) fn write<'data, A: Arch<Platform = Elf>>(
 
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
 
-    if layout.args().should_write_eh_frame_hdr {
+    if layout.args().should_write_eh_frame_hdr
+        && layout
+            .section_layouts
+            .get(output_section_id::EH_FRAME_HDR)
+            .mem_size
+            > 0
+    {
         sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
     }
 
@@ -1375,6 +1381,13 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             return Err(insufficient_allocation(".eh_frame"));
         }
         Ok(self.eh_frame.split_off_mut(..size).unwrap())
+    }
+
+    fn write_eh_frame_terminator(&mut self) {
+        // Ignore insufficient capacity so that we don't error if .eh_frame is empty.
+        if let Ok(buf) = self.take_eh_frame_data(size_of::<u32>()) {
+            buf.fill(0);
+        }
     }
 
     /// Takes a prefix of dynsym, dynstr and versym suitable for writing the supplied definitions.
@@ -2617,6 +2630,10 @@ fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation>(
         let prefix =
             elf::EhFrameEntryPrefix::read_from_bytes(&data[input_pos..input_pos + PREFIX_LEN])
                 .unwrap();
+        if prefix.length == 0 {
+            input_pos = data.len();
+            break;
+        }
         let size = size_of_val(&prefix.length) + prefix.length as usize;
         let next_input_pos = input_pos + size;
         let next_output_pos = output_pos + size;
@@ -2753,7 +2770,7 @@ fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation>(
     // Copy any remaining bytes in .eh_frame that aren't large enough to constitute an actual
     // entry. crtend.o has a single u32 equal to 0 as an end marker.
     let remaining = data.len() - input_pos;
-    if remaining > 0 {
+    if remaining > 0 && !elf::is_eh_frame_terminator(&data[input_pos..input_pos + remaining]) {
         table_writer
             .take_eh_frame_data(remaining)?
             .copy_from_slice(&data[input_pos..input_pos + remaining]);
@@ -3855,7 +3872,13 @@ fn write_prelude_except_gdb_index<'data, A: Arch<Platform = Elf>>(
         write_symbol_table_entries(prelude, &mut table_writer.debug_symbol_writer, layout)?;
     }
 
-    if layout.args().should_write_eh_frame_hdr {
+    if layout.args().should_write_eh_frame_hdr
+        && layout
+            .section_layouts
+            .get(output_section_id::EH_FRAME_HDR)
+            .mem_size
+            > 0
+    {
         write_eh_frame_hdr(table_writer, layout)?;
     }
 
@@ -4253,6 +4276,9 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
             layout.args().soname.as_ref().map(|s| s.as_bytes()),
             &epilogue_offsets,
         )?;
+    }
+    if epilogue.format_specific.needs_eh_frame_terminator {
+        table_writer.write_eh_frame_terminator();
     }
 
     // The actual build-id will be filled in later once all writing has completed. It's important
