@@ -33,4 +33,8 @@ ASSERT((symbol1 > symbol2 ? symbol1 : symbol2) == MAX(symbol1, symbol2), "Expect
 ASSERT(DEFINED(symbol1), "symbol1 must be defined");
 ASSERT(DEFINED(symbol3), "symbol3 must be defined");
 ASSERT(DEFINED(symbol4), "symbol4 must be defined");
-ASSERT(!DEFINED(symbol5), "symbol5 is not defined");
+ASSERT(!DEFINED(symbol5), "symbol5 should not be defined");
+ASSERT(DEFINED(symbol6), "symbol6 must be defined");
+ASSERT(DEFINED(symbol7), "symbol7 must be defined");
+ASSERT(!DEFINED(symbol8), "symbol8 should not be defined");
+ASSERT(!DEFINED(symbol9), "symbol9 should not be defined");
