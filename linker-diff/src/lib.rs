@@ -674,6 +674,7 @@ impl Report {
         );
         header_diff::check_dynamic_headers(self, objects);
         header_diff::check_file_headers(self, objects);
+        header_diff::check_macho_linkedit_alignment(self, objects);
         header_diff::report_section_diffs(self, objects);
         eh_frame_diff::report_diffs(self, objects);
         version_diff::report_diffs(self, objects);

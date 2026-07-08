@@ -22,13 +22,19 @@ use object::ObjectSymbol as _;
 use object::Section;
 #[allow(clippy::wildcard_imports)]
 use object::elf::*;
+use object::macho::LC_CODE_SIGNATURE;
+use object::macho::LC_DYLD_CHAINED_FIXUPS;
 use object::read::elf::Dyn;
+use object::read::macho::LoadCommandVariant;
 use object::read::macho::MachHeader;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use tabled::Table;
 use tabled::settings::Style;
 use tabled::settings::style::HorizontalLine;
+
+const MACHO64_LINKEDIT_ALIGNMENT: u32 = 8;
+const MACHO_CODE_SIGNATURE_ALIGNMENT: u32 = 16;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Converter {
@@ -195,6 +201,15 @@ pub(crate) fn check_dynamic_headers(report: &mut Report, objects: &[crate::Binar
         read_dynamic_fields,
         DYNAMIC_SECTION_NAME_STR,
         DiffMode::IgnoreIfAllErrors,
+    ));
+}
+
+pub(crate) fn check_macho_linkedit_alignment(report: &mut Report, objects: &[crate::Binary]) {
+    report.add_diffs(diff_fields(
+        objects,
+        read_macho_linkedit_fields,
+        "linkedit",
+        DiffMode::IgnoreMissingValues,
     ));
 }
 
@@ -708,4 +723,50 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
     }
 
     Ok(values)
+}
+
+fn read_macho_linkedit_fields(obj: &Binary) -> Result<FieldValues> {
+    let mut values = FieldValues::default();
+    let object::File::MachO64(file) = obj.file else {
+        return Ok(values);
+    };
+    let e = file.endianness();
+    let mut load_commands = file.macho_load_commands()?;
+
+    while let Some(load_command) = load_commands.next()? {
+        match load_command.variant()? {
+            LoadCommandVariant::Symtab(symtab) => {
+                values.insert_string(
+                    "SYMTAB.symoff.alignment",
+                    format_alignment(symtab.symoff.get(e), MACHO64_LINKEDIT_ALIGNMENT),
+                );
+            }
+            LoadCommandVariant::LinkeditData(linkedit) => match linkedit.cmd.get(e) {
+                LC_DYLD_CHAINED_FIXUPS => {
+                    values.insert_string(
+                        "DYLD_CHAINED_FIXUPS.dataoff.alignment",
+                        format_alignment(linkedit.dataoff.get(e), MACHO64_LINKEDIT_ALIGNMENT),
+                    );
+                }
+                LC_CODE_SIGNATURE => {
+                    values.insert_string(
+                        "CODE_SIGNATURE.dataoff.alignment",
+                        format_alignment(linkedit.dataoff.get(e), MACHO_CODE_SIGNATURE_ALIGNMENT),
+                    );
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    Ok(values)
+}
+
+fn format_alignment(offset: u32, alignment: u32) -> String {
+    if offset.is_multiple_of(alignment) {
+        "OK".to_owned()
+    } else {
+        format!("offset 0x{offset:x} is not {alignment}-byte aligned")
+    }
 }
