@@ -4147,6 +4147,11 @@ impl Assertions {
 
         let obj = object::File::parse(bytes.as_slice())?;
 
+        // For Mach-O.
+        if matches!(obj, object::File::MachO64(_)) {
+            return self.check_macho_path(&obj, &bytes);
+        }
+
         self.verify_file_kind(&obj)?;
         verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols(), "symtab")?;
         verify_symbol_assertions(
@@ -4177,35 +4182,50 @@ impl Assertions {
                 self.verify_program_headers(&elf_obj)?;
                 self.verify_expected_sections_with_assertions(&elf_obj)?;
             }
-            object::File::MachO64(_) => {
-                if !self.expected_comments.is_empty() {
-                    bail!("ExpectComment is not supported for MachO",);
-                }
-                if !self.no_dynsym.is_empty() {
-                    bail!("NoDynSym is not supported for MachO",);
-                }
-                if !self.expected_load_alignments.is_empty() {
-                    bail!("ExpectLoadAlignment is not supported for MachO",);
-                }
-                if !self.expected_dynamic_entries.is_empty() {
-                    bail!("ExpectDynamic is not supported for MachO",);
-                }
-                if !self.absent_dynamic_entries.is_empty() {
-                    bail!("NoDynamic is not supported for MachO",);
-                }
-                if !self.expected_program_headers.is_empty() {
-                    bail!("ExpectProgramHeader is not supported for MachO",);
-                }
-                if !self.absent_program_headers.is_empty() {
-                    bail!("NoProgramHeader is not supported for MachO");
-                }
-            }
             _ => bail!("Unsupported object file format"),
         }
 
         if linker_used.is_wild() {
             self.verify_max_thunks(path)?;
         }
+        Ok(())
+    }
+
+    fn check_macho_path(&self, obj: &object::File, bytes: &[u8]) -> Result {
+        // Allowlist of assertion fields implemented for Mach-O.
+        let supported = Assertions {
+            expected_symtab_entries: self.expected_symtab_entries.clone(),
+            expected_dynsym_entries: self.expected_dynsym_entries.clone(),
+            no_sym: self.no_sym.clone(),
+            does_not_contain: self.does_not_contain.clone(),
+            contains_strings: self.contains_strings.clone(),
+            expect_dynamic: self.expect_dynamic,
+            expected_sections: self.expected_sections.clone(),
+            absent_sections: self.absent_sections.clone(),
+            expected_section_bytes: self.expected_section_bytes.clone(),
+            output_file_matches: self.output_file_matches.clone(),
+            ..Default::default()
+        };
+        ensure!(
+            *self == supported,
+            "One or more assertions are not supported for MachO"
+        );
+
+        self.verify_file_kind(obj)?;
+        verify_symbol_assertions(obj, &self.expected_symtab_entries, obj.symbols(), "symtab")?;
+        verify_symbol_assertions(
+            obj,
+            &self.expected_dynsym_entries,
+            obj.dynamic_symbols(),
+            "dynsym",
+        )?;
+        self.verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
+        self.verify_expected_sections(obj)?;
+        self.verify_absent_sections(obj)?;
+        self.verify_section_bytes(obj)?;
+        self.verify_strings(bytes)?;
+        verify_no_overlapping_sections(obj)?;
+        verify_no_overlapping_segments(obj)?;
         Ok(())
     }
 
