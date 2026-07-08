@@ -3299,7 +3299,7 @@ fn compute_data_addresses(
             }
             let symbol_id = layout_inputs[obj_idx].symbol_id_range.offset_to_id(sym_idx);
 
-            // Resolve to the canonical definition when this is an undefined reference..
+            // Resolve to the canonical definition when this is an undefined reference.
             let (def_obj_idx, def_sym, name_symbol_id) = if sym.is_undefined() {
                 let def_id = symbol_db.definition(symbol_id);
                 let def_file_id = symbol_db.file_id_for_symbol(def_id);
