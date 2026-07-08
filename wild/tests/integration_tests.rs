@@ -288,6 +288,10 @@
 //! included in the program header's segment. By default, the list of sections given and the
 //! sections in the segment must exactly match, unless the '*' wildcard is included, in which case
 //! the segment may have more sections than what is listed.
+//!
+//! file-size=N: Type: Integer. Asserts the file size of the segment.
+//!
+//! mem-size=N: Type: Integer. Asserts the mem size of the segment.
 
 mod external_tests;
 
@@ -1550,6 +1554,12 @@ struct PhdrAssertions {
 
     paddr: Option<u64>,
     vaddr: Option<u64>,
+
+    #[serde(rename = "file-size")]
+    file_size: Option<u64>,
+
+    #[serde(rename = "mem-size")]
+    mem_size: Option<u64>,
 }
 
 impl ExpectedProgramHeaders {
@@ -4620,6 +4630,18 @@ impl Assertions {
 
                     if let Some(expected_vaddr) = assertions.vaddr
                         && header.p_vaddr(endian) != expected_vaddr
+                    {
+                        continue;
+                    }
+
+                    if let Some(expected_file_size) = assertions.file_size
+                        && header.p_filesz(endian) != expected_file_size
+                    {
+                        continue;
+                    }
+
+                    if let Some(expected_mem_size) = assertions.mem_size
+                        && header.p_memsz(endian) != expected_mem_size
                     {
                         continue;
                     }
