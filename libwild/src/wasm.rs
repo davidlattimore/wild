@@ -3244,7 +3244,7 @@ struct LinkerDefinedDataAddress {
     needs_stack_gap: bool,
 }
 
-/// Absolute addresses linker-defined data symbols.
+/// Absolute addresses for linker-defined data symbols.
 fn linker_defined_data_symbol_address(
     name: &[u8],
     data_end: u32,
@@ -3260,6 +3260,9 @@ fn linker_defined_data_symbol_address(
                 .ok_or_else(|| crate::error!("Wasm __heap_base address overflow"))?;
             Ok(Some(LinkerDefinedDataAddress {
                 address,
+                // We place the stack in [data_end, data_end + LINKER_STACK_SIZE) and define
+                // __heap_base as the end of that range (same as initial __stack_pointer). The
+                // address itself therefore requires that memory cover the stack gap.
                 needs_stack_gap: true,
             }))
         }
