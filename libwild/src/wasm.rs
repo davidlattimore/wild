@@ -4184,3 +4184,64 @@ fn wasm_symbol_from_info(
 
     sym
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linker_defined_heap_base_requires_stack_gap() {
+        let data_end = 1024u32;
+        let de = linker_defined_data_symbol_address(b"__data_end", data_end)
+            .unwrap()
+            .expect("__data_end");
+        assert_eq!(de.address, data_end);
+        assert!(
+            !de.needs_stack_gap,
+            "`__data_end` is the end of static data. It must not force a stack reservation"
+        );
+
+        let hb = linker_defined_data_symbol_address(b"__heap_base", data_end)
+            .unwrap()
+            .expect("__heap_base");
+        assert_eq!(hb.address, data_end + LINKER_STACK_SIZE);
+        assert!(
+            hb.needs_stack_gap,
+            "`__heap_base` sits past the stack gap, so memory must cover that range"
+        );
+    }
+
+    #[test]
+    fn needs_stack_gap_grows_memory_that_would_not_cover_heap_base() {
+        // Default freestanding links often already request 2 pages, which hides a missing
+        // needs_stack_gap. Therefore start from a 1-page memory so the grow path is observable.
+        let data_end = 1024u32;
+        let mut layout = WasmLayout {
+            data_end,
+            memories: vec![MemoryType {
+                memory64: false,
+                shared: false,
+                initial: 1,
+                maximum: None,
+                page_size_log2: None,
+            }],
+            ..Default::default()
+        };
+        let indices = LinkerDefinedIndices::default();
+
+        fill_linker_defined_values(&mut layout, &indices, false).unwrap();
+        assert_eq!(
+            layout.memories[0].initial, 1,
+            "without `needs_stack_gap`, a 1-page memory must stay 1 page"
+        );
+
+        fill_linker_defined_values(&mut layout, &indices, true).unwrap();
+        let bytes_needed = u64::from(data_end) + u64::from(LINKER_STACK_SIZE);
+        let pages_needed = bytes_needed.div_ceil(65536);
+        assert_eq!(
+            layout.memories[0].initial, pages_needed,
+            "`needs_stack_gap` must grow memory to cover `data_end` + `LINKER_STACK_SIZE`"
+        );
+        assert!(pages_needed > 1);
+    }
+}
