@@ -141,6 +141,10 @@ pub(crate) struct File<'data> {
     #[debug(skip)]
     pub(crate) segments: Vec<WasmSegmentInfo<'data>>,
 
+    /// Init functions from the linking section (`InitFuncs`), in input order.
+    #[debug(skip)]
+    pub(crate) init_funcs: Vec<WasmInitFunc>,
+
     #[debug(skip)]
     pub(crate) reloc_sections: Vec<WasmRelocSection>,
 
@@ -149,6 +153,15 @@ pub(crate) struct File<'data> {
     /// Raw payload of the `target_features` custom section, if present.
     #[debug(skip)]
     pub(crate) target_features_raw: Option<&'data [u8]>,
+}
+
+/// A constructor from the linking `InitFuncs` subsection.
+///
+/// `symbol_index` indexes the linking symbol table.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WasmInitFunc {
+    pub(crate) priority: u32,
+    pub(crate) symbol_index: u32,
 }
 
 /// A single section of a Wasm module.
@@ -475,7 +488,7 @@ pub(crate) struct WasmObjectDataLayout<'data> {
 #[derive(Debug, Clone)]
 pub(crate) struct WasmFunctionBody<'data> {
     /// Raw body bytes (locals + operators) without the LEB128 size prefix.
-    pub(crate) bytes: &'data [u8],
+    pub(crate) bytes: Cow<'data, [u8]>,
     /// Byte offset of this body (starting at its size prefix) within the code section payload.
     pub(crate) code_offset: u32,
     /// Relocations targeting this body, with offsets relative to the body start.
@@ -642,7 +655,7 @@ impl<'data> File<'data> {
                 res.map(|body| {
                     let range = body.range();
                     WasmFunctionBody {
-                        bytes: &self.data[range.clone()],
+                        bytes: Cow::Borrowed(&self.data[range.clone()]),
                         code_offset: range.start as u32 - code_payload_start,
                         relocations: Vec::new(),
                         object_index: 0,
@@ -1970,6 +1983,7 @@ struct WasmObjectLayoutInput<'data> {
     data_segments: Vec<WasmDataSegment<'data>>,
     data_relocations: Vec<WasmRelocation>,
     symbols: Vec<WasmSymbol>,
+    init_funcs: Vec<WasmInitFunc>,
     symbol_id_range: crate::symbol_db::SymbolIdRange,
     file_id: crate::input_data::FileId,
 }
@@ -2153,6 +2167,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             data_segments,
             data_relocations,
             symbols: file.symbols.clone(),
+            init_funcs: file.init_funcs.clone(),
             symbol_id_range,
             file_id,
         })
@@ -2600,18 +2615,53 @@ struct LinkerDefinedIndices {
     stack_pointer_defined_slot: Option<u32>,
     call_ctors_func: Option<u32>,
     call_dtors_func: Option<u32>,
+    entry_wrapper_func: Option<u32>,
     num_defined_globals: u32,
     num_defined_functions: u32,
+}
+
+/// True if inputs import or export `__wasm_call_ctors`.
+fn call_ctors_used_in_objects(inputs: &[WasmObjectLayoutInput<'_>]) -> bool {
+    inputs.iter().any(|input| {
+        input
+            .function_imports
+            .iter()
+            .any(|imp| imp.name == "__wasm_call_ctors")
+            || input
+                .exports
+                .iter()
+                .any(|exp| exp.name == "__wasm_call_ctors")
+    })
+}
+
+fn entry_is_defined_function(
+    layout_inputs: &[WasmObjectLayoutInput<'_>],
+    symbol_db: &SymbolDb<'_, Wasm>,
+) -> bool {
+    let entry_name = symbol_db.entry_symbol_name();
+    let Some(symbol_id) = symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(entry_name))
+    else {
+        return false;
+    };
+    let def_id = symbol_db.definition(symbol_id);
+    let def_file_id = symbol_db.file_id_for_symbol(def_id);
+    let Some(input) = layout_inputs.iter().find(|i| i.file_id == def_file_id) else {
+        return false;
+    };
+    let sym = &input.symbols[input.symbol_id_range.id_to_offset(def_id)];
+    !sym.is_undefined() && sym.kind == WasmSymbolKind::Func
 }
 
 impl LinkerDefinedIndices {
     fn compute(
         inputs: &[WasmObjectLayoutInput<'_>],
         import_resolutions: &[ObjectImportResolutions],
+        has_init_funcs: bool,
+        wrap_entry: bool,
     ) -> Result<Self> {
         let mut needs_memory_base = false;
         let mut needs_stack_pointer = false;
-        let mut needs_ctors = false;
+        let mut needs_ctors = has_init_funcs;
         let mut needs_dtors = false;
         let mut function_import_count = 0u32;
         let mut global_import_count = 0u32;
@@ -2676,6 +2726,11 @@ impl LinkerDefinedIndices {
             next_func += 1;
             idx
         });
+        let entry_wrapper_func = wrap_entry.then(|| {
+            let idx = next_func;
+            next_func += 1;
+            idx
+        });
         let num_defined_functions = next_func - function_import_count;
 
         Ok(Self {
@@ -2684,6 +2739,7 @@ impl LinkerDefinedIndices {
             stack_pointer_defined_slot,
             call_ctors_func,
             call_dtors_func,
+            entry_wrapper_func,
             num_defined_globals,
             num_defined_functions,
         })
@@ -2783,14 +2839,98 @@ fn deduplicate_output_types(layout: &mut WasmLayout<'_>) {
 
 fn empty_linker_function_body() -> WasmFunctionBody<'static> {
     WasmFunctionBody {
-        bytes: EMPTY_FUNCTION_BODY,
+        bytes: Cow::Borrowed(EMPTY_FUNCTION_BODY),
         code_offset: 0,
         relocations: Vec::new(),
         object_index: 0,
     }
 }
 
-fn emit_reserved_linker_definitions(layout: &mut WasmLayout<'_>, indices: &LinkerDefinedIndices) {
+fn owned_linker_function_body(bytes: Vec<u8>) -> WasmFunctionBody<'static> {
+    WasmFunctionBody {
+        bytes: Cow::Owned(bytes),
+        code_offset: 0,
+        relocations: Vec::new(),
+        object_index: 0,
+    }
+}
+
+fn encode_call_sequence_body(func_indices: &[u32]) -> Vec<u8> {
+    let mut bytes = vec![0x00]; // 0 locals
+    for &func_index in func_indices {
+        bytes.push(0x10); // call
+        leb128::write::unsigned(&mut bytes, u64::from(func_index))
+            .expect("leb128 write to Vec cannot fail");
+    }
+    bytes.push(0x0b); // end
+    bytes
+}
+
+fn function_type_for_symbol<'a>(
+    input: &'a WasmObjectLayoutInput<'_>,
+    sym: &WasmSymbol,
+) -> Result<&'a wasmparser::FuncType> {
+    let n_imports = u32::try_from(input.function_imports.len()).context("too many Wasm imports")?;
+    let type_index = if sym.index < n_imports {
+        input.function_imports[sym.index as usize].type_index
+    } else {
+        let local = (sym.index - n_imports) as usize;
+        input
+            .module_functions
+            .get(local)
+            .ok_or_else(|| crate::error!("Wasm function index {} out of range", sym.index))?
+            .type_index
+    };
+    input
+        .types
+        .get(type_index as usize)
+        .ok_or_else(|| crate::error!("Wasm type index {type_index} out of range"))
+}
+
+/// From InitFuncs to output function indices, sorted by ascending priority.
+fn collect_sorted_init_function_indices(
+    inputs: &[WasmObjectLayoutInput<'_>],
+    object_index_maps: &[WasmObjectIndexMap],
+) -> Result<Vec<u32>> {
+    let mut items = Vec::new();
+    for (obj_idx, input) in inputs.iter().enumerate() {
+        let index_map = object_index_maps
+            .get(obj_idx)
+            .context("missing Wasm object index map for init function")?;
+        for init in &input.init_funcs {
+            let sym = input
+                .symbols
+                .get(init.symbol_index as usize)
+                .ok_or_else(|| {
+                    crate::error!(
+                        "Wasm init function symbol index {} out of range",
+                        init.symbol_index
+                    )
+                })?;
+            ensure!(
+                sym.kind == WasmSymbolKind::Func && !sym.is_undefined(),
+                "Wasm init function must be a defined function symbol"
+            );
+            let ty = function_type_for_symbol(input, sym)?;
+            ensure!(
+                ty.params().is_empty() && ty.results().is_empty(),
+                "Wasm constructor must have type () -> ()"
+            );
+            let output_index =
+                remap_wasm_index(&index_map.function_indices, sym.index, "function")?;
+            items.push((init.priority, output_index));
+        }
+    }
+    items.sort_by_key(|(priority, _)| *priority);
+    Ok(items.into_iter().map(|(_, index)| index).collect())
+}
+
+fn emit_reserved_linker_definitions(
+    layout: &mut WasmLayout<'_>,
+    indices: &LinkerDefinedIndices,
+    call_ctors_body: Option<Vec<u8>>,
+    entry_wrapper_body: Option<Vec<u8>>,
+) {
     let mut linker_globals = Vec::with_capacity(indices.num_defined_globals as usize);
     if indices.memory_base_global.is_some() {
         layout.memory_base = LINKER_MEMORY_BASE;
@@ -2825,11 +2965,21 @@ fn emit_reserved_linker_definitions(layout: &mut WasmLayout<'_>, indices: &Linke
         let mut bodies = Vec::with_capacity(indices.num_defined_functions as usize);
         if indices.call_ctors_func.is_some() {
             type_indices.push(void_ty);
-            bodies.push(empty_linker_function_body());
+            bodies.push(match call_ctors_body {
+                Some(bytes) => owned_linker_function_body(bytes),
+                None => empty_linker_function_body(),
+            });
         }
         if indices.call_dtors_func.is_some() {
             type_indices.push(void_ty);
             bodies.push(empty_linker_function_body());
+        }
+        if indices.entry_wrapper_func.is_some() {
+            type_indices.push(void_ty);
+            bodies.push(match entry_wrapper_body {
+                Some(bytes) => owned_linker_function_body(bytes),
+                None => empty_linker_function_body(),
+            });
         }
         type_indices.append(&mut layout.function_type_indices);
 
@@ -2928,28 +3078,23 @@ fn push_function_export<'data>(
     });
 }
 
-/// Export the command module (as opposed to `--no-entry` reactor modules) entry symbol (default
-/// `_start`).
-fn ensure_entry_export<'data>(
-    exports: &mut Vec<OutputExport<'data>>,
+/// Resolved user entry function, if present among the linked objects.
+struct ResolvedEntry<'data> {
+    export_name: &'data str,
+    function_index: u32,
+}
+
+/// Find the defined user entry function (default `_start`) without exporting it yet.
+fn resolve_entry_function<'data>(
     layout_inputs: &[WasmObjectLayoutInput<'data>],
     object_index_maps: &[WasmObjectIndexMap],
     symbol_db: &SymbolDb<'data, Wasm>,
-) -> Result {
+) -> Result<Option<ResolvedEntry<'data>>> {
     let entry_name_bytes = symbol_db.entry_symbol_name();
-    if export_name_exists(
-        exports,
-        core::str::from_utf8(entry_name_bytes)
-            .context("invalid UTF-8 in Wasm entry symbol name")?,
-    ) {
-        return Ok(());
-    }
-
     let Some(symbol_id) =
         symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(entry_name_bytes))
     else {
-        // No symbol with the entry name.
-        return Ok(());
+        return Ok(None);
     };
     let def_id = symbol_db.definition(symbol_id);
     let def_file_id = symbol_db.file_id_for_symbol(def_id);
@@ -2958,22 +3103,51 @@ fn ensure_entry_export<'data>(
         .iter()
         .position(|input| input.file_id == def_file_id)
     else {
-        return Ok(());
+        return Ok(None);
     };
     let def_input = &layout_inputs[def_obj_idx];
     let def_sym = &def_input.symbols[def_input.symbol_id_range.id_to_offset(def_id)];
     if def_sym.is_undefined() || def_sym.kind != WasmSymbolKind::Func {
-        return Ok(());
+        return Ok(None);
     }
 
     let index_map = object_index_maps
         .get(def_obj_idx)
         .context("missing Wasm object index map for entry symbol definition")?;
-    let index = remap_wasm_index(&index_map.function_indices, def_sym.index, "function")?;
+    let function_index = remap_wasm_index(&index_map.function_indices, def_sym.index, "function")?;
     let export_name = core::str::from_utf8(symbol_db.symbol_name(def_id)?.bytes())
         .context("invalid UTF-8 in Wasm entry symbol name")?;
-    push_function_export(exports, export_name, index);
-    Ok(())
+    Ok(Some(ResolvedEntry {
+        export_name,
+        function_index,
+    }))
+}
+
+/// Export the command entry (default `_start`). With a wrapper, retarget any existing export.
+fn ensure_entry_export<'data>(
+    exports: &mut Vec<OutputExport<'data>>,
+    entry: Option<&ResolvedEntry<'data>>,
+    entry_wrapper_func: Option<u32>,
+) {
+    let Some(entry) = entry else {
+        return;
+    };
+    let index = entry_wrapper_func.unwrap_or(entry.function_index);
+    if let Some(existing) = exports
+        .iter_mut()
+        .find(|export| export.name == entry.export_name)
+    {
+        if entry_wrapper_func.is_some() {
+            existing.kind = wasmparser::ExternalKind::Func;
+            existing.index = index;
+        }
+        return;
+    }
+    exports.push(OutputExport {
+        name: entry.export_name,
+        kind: wasmparser::ExternalKind::Func,
+        index,
+    });
 }
 
 fn build_output_module_layout<'data, 'files>(
@@ -2994,7 +3168,20 @@ where
         .collect::<Result<Vec<_>>>()?;
 
     let import_resolutions = resolve_cross_object_imports(&layout_inputs, symbol_db)?;
-    let indices = LinkerDefinedIndices::compute(&layout_inputs, &import_resolutions)?;
+    let has_init_funcs = layout_inputs
+        .iter()
+        .any(|input| !input.init_funcs.is_empty());
+    // Like wasm-ld, wrap only when InitFuncs exist and crt does not already call
+    // `__wasm_call_ctors`.
+    let wrap_entry = has_init_funcs
+        && !call_ctors_used_in_objects(&layout_inputs)
+        && entry_is_defined_function(&layout_inputs, symbol_db);
+    let indices = LinkerDefinedIndices::compute(
+        &layout_inputs,
+        &import_resolutions,
+        has_init_funcs,
+        wrap_entry,
+    )?;
     let index_bases =
         allocate_wasm_object_index_bases(&layout_inputs, &import_resolutions, &indices)?;
     let object_layouts = layout_inputs
@@ -3049,7 +3236,21 @@ where
         )?);
     }
 
-    emit_reserved_linker_definitions(&mut layout, &indices);
+    let init_function_indices =
+        collect_sorted_init_function_indices(&layout_inputs, &layout.object_index_maps)?;
+    let call_ctors_body = indices
+        .call_ctors_func
+        .map(|_| encode_call_sequence_body(&init_function_indices));
+
+    let entry = resolve_entry_function(&layout_inputs, &layout.object_index_maps, symbol_db)?;
+    let entry_wrapper_body = match (indices.entry_wrapper_func, indices.call_ctors_func, &entry) {
+        (Some(_), Some(ctors), Some(entry)) => {
+            Some(encode_call_sequence_body(&[ctors, entry.function_index]))
+        }
+        _ => None,
+    };
+
+    emit_reserved_linker_definitions(&mut layout, &indices, call_ctors_body, entry_wrapper_body);
     deduplicate_output_types(&mut layout);
 
     if linker_memory && layout.memories.is_empty() {
@@ -3070,10 +3271,9 @@ where
     fill_linker_defined_values(&mut layout, &indices, needs_stack_gap)?;
     ensure_entry_export(
         &mut layout.exports,
-        &layout_inputs,
-        &layout.object_index_maps,
-        symbol_db,
-    )?;
+        entry.as_ref(),
+        indices.entry_wrapper_func,
+    );
     finalize_indirect_function_table(&mut layout, &layout_inputs)?;
     layout.encode_metadata_sections()?;
     Ok(layout)
@@ -3642,10 +3842,18 @@ impl platform::Platform for Wasm {
     }
 
     fn create_linker_defined_symbols(
-        _symbols: &mut crate::parsing::InternalSymbolsBuilder<Self>,
+        symbols: &mut crate::parsing::InternalSymbolsBuilder<Self>,
         _output_kind: crate::output_kind::OutputKind,
         _args: &Self::Args,
     ) {
+        // Reserve SymbolId 0 as the linker’s undefined sentinel (Wasm objects have no null symbol
+        // entry).
+        symbols
+            .add_symbol(crate::parsing::InternalSymDefInfo::new(
+                crate::parsing::SymbolPlacement::Undefined,
+                b"",
+            ))
+            .hide();
     }
 
     fn built_in_section_infos<'data>()
@@ -3949,6 +4157,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
     let mut sections: Vec<SectionHeader> = Vec::new();
     let mut symbols: Vec<WasmSymbol> = Vec::new();
     let mut segments: Vec<WasmSegmentInfo<'data>> = Vec::new();
+    let mut init_funcs: Vec<WasmInitFunc> = Vec::new();
     let mut reloc_sections: Vec<WasmRelocSection> = Vec::new();
     let mut linking_version: Option<u32> = None;
     let mut target_features_raw: Option<&'data [u8]> = None;
@@ -3971,7 +4180,13 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
             if section_name == LINKING_SECTION_NAME {
                 if let KnownCustom::Linking(linking) = reader.as_known() {
                     linking_version = Some(linking.version());
-                    parse_linking_subsections(input, &linking, &mut symbols, &mut segments)?;
+                    parse_linking_subsections(
+                        input,
+                        &linking,
+                        &mut symbols,
+                        &mut segments,
+                        &mut init_funcs,
+                    )?;
                 }
             } else if section_name.starts_with(RELOC_SECTION_PREFIX) {
                 if let KnownCustom::Reloc(reloc) = reader.as_known() {
@@ -4011,6 +4226,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         standard_section_index,
         symbols,
         segments,
+        init_funcs,
         reloc_sections,
         linking_version,
         target_features_raw,
@@ -4090,6 +4306,7 @@ fn parse_linking_subsections<'data>(
     linking: &wasmparser::LinkingSectionReader<'data>,
     symbols: &mut Vec<WasmSymbol>,
     segments: &mut Vec<WasmSegmentInfo<'data>>,
+    init_funcs: &mut Vec<WasmInitFunc>,
 ) -> Result {
     let data_start = data.as_ptr() as usize;
     let to_name_range = |s: &str| -> (u32, u32) {
@@ -4114,7 +4331,16 @@ fn parse_linking_subsections<'data>(
                     });
                 }
             }
-            // `InitFuncs`, `ComdatInfo`, and `Unknown` subsections are not consumed.
+            Linking::InitFuncs(map) => {
+                for init in map {
+                    let init = init?;
+                    init_funcs.push(WasmInitFunc {
+                        priority: init.priority,
+                        symbol_index: init.symbol_index,
+                    });
+                }
+            }
+            // `ComdatInfo` and `Unknown` subsections are not consumed.
             _ => {}
         }
     }

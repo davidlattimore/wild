@@ -183,7 +183,7 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
         pos += write_uleb128(&mut out[pos..], body_len);
         let body_start = pos;
         let len = body.bytes.len();
-        out[pos..pos + len].copy_from_slice(body.bytes);
+        out[pos..pos + len].copy_from_slice(&body.bytes);
         let index_map = &object_index_maps[body.object_index];
         let symbols = &per_object_symbols[body.object_index];
         for reloc in &body.relocations {
