@@ -918,7 +918,8 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
         return Ok(());
     };
 
-    starts_in_image[data_const_segment_index + 1].set(LE, starts_in_image_len as u32);
+    // Accounts for both seg_count and __PAGEZERO.
+    starts_in_image[data_const_segment_index + 2].set(LE, starts_in_image_len as u32);
 
     let (starts_in_segment, rest) = DyldChainedStartsInSegment::mut_from_prefix(rest)
         .map_err(|_| error!("Invalid chained fixups starts in segment allocation"))?;

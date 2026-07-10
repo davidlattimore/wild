@@ -309,7 +309,11 @@ use object::Object as _;
 use object::ObjectKind;
 use object::ObjectSection;
 use object::ObjectSymbol as _;
+use object::macho::LC_DYLD_CHAINED_FIXUPS;
+use object::macho::SEG_TEXT;
 use object::read::elf::ProgramHeader;
+use object::read::macho::LoadCommandVariant;
+use object::read::macho::Segment;
 use regex::Regex;
 use serde::Deserialize;
 use serde::Serialize;
@@ -4232,6 +4236,7 @@ impl Assertions {
         self.verify_strings(bytes)?;
         verify_no_overlapping_sections(obj)?;
         verify_no_overlapping_segments(obj)?;
+        verify_chained_fixups_segment_offsets(obj, bytes)?;
         Ok(())
     }
 
@@ -4935,6 +4940,82 @@ fn verify_no_overlapping_segments(obj: &object::File) -> Result {
             );
         }
     }
+    Ok(())
+}
+
+fn verify_chained_fixups_segment_offsets(obj: &object::File, bytes: &[u8]) -> Result {
+    let object::File::MachO64(file) = obj else {
+        return Ok(());
+    };
+
+    let e = file.endianness();
+    let mut load_commands = file.macho_load_commands()?;
+    let mut segments = Vec::new();
+    let mut chained_fixups = None;
+
+    while let Some(load_command) = load_commands.next()? {
+        match load_command.variant()? {
+            LoadCommandVariant::Segment64(segment, _) => {
+                segments.push(segment);
+            }
+            LoadCommandVariant::LinkeditData(linkedit)
+                if linkedit.cmd.get(e) == LC_DYLD_CHAINED_FIXUPS =>
+            {
+                chained_fixups = Some(linkedit);
+            }
+            _ => {}
+        }
+    }
+
+    let Some(chained_fixups) = chained_fixups else {
+        return Ok(());
+    };
+
+    let load_addr = segments
+        .iter()
+        .find(|segment| segment.name() == SEG_TEXT.as_bytes())
+        .map(|segment| segment.vmaddr.get(e))
+        .context("Missing __TEXT segment")?;
+
+    let dataoff = usize::try_from(chained_fixups.dataoff.get(e))?;
+    let datasize = usize::try_from(chained_fixups.datasize.get(e))?;
+    let dataend = dataoff
+        .checked_add(datasize)
+        .context("Chained fixups data range overflow")?;
+    let blob = bytes
+        .get(dataoff..dataend)
+        .context("Invalid chained fixups data range")?;
+
+    let starts_offset = usize::try_from(u32::from_le_bytes(blob[4..8].try_into()?))?;
+    let starts_in_image = blob
+        .get(starts_offset..)
+        .context("Invalid chained fixups starts_offset")?;
+    let seg_count = usize::try_from(u32::from_le_bytes(starts_in_image[..4].try_into()?))?;
+    let seg_info_offsets = &starts_in_image[4..];
+
+    for (i, offset_bytes) in seg_info_offsets.chunks_exact(4).take(seg_count).enumerate() {
+        let seg_info_offset = usize::try_from(u32::from_le_bytes(offset_bytes.try_into()?))?;
+        if seg_info_offset == 0 {
+            continue;
+        }
+
+        let starts_in_segment = starts_in_image
+            .get(seg_info_offset..)
+            .context("Invalid chained fixups seg_info_offset")?;
+        let segment_offset = u64::from_le_bytes(starts_in_segment[8..16].try_into()?);
+        let expected_segment_offset = segments[i]
+            .vmaddr
+            .get(e)
+            .checked_sub(load_addr)
+            .context("Chained fixups segment address is before __TEXT")?;
+
+        ensure!(
+            segment_offset == expected_segment_offset,
+            "Chained fixups segment {i} has segment_offset {segment_offset:#x}, \
+            expected offset {expected_segment_offset:#x}"
+        );
+    }
+
     Ok(())
 }
 
