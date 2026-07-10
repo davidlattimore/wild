@@ -484,7 +484,25 @@ pub(crate) struct WasmFunctionBody<'data> {
     pub(crate) object_index: usize,
 }
 
+fn is_debug_section_name(name: &[u8]) -> bool {
+    name.starts_with(b".debug")
+}
+
 impl<'data> File<'data> {
+    fn section_is_debug(&self, index: u32) -> bool {
+        let Some(header) = self.sections.get(index as usize) else {
+            return false;
+        };
+        let Some(name_range) = &header.name_range else {
+            return false;
+        };
+        let name = self
+            .data
+            .get(name_range.start as usize..name_range.end as usize)
+            .unwrap_or_default();
+        is_debug_section_name(name)
+    }
+
     /// Construct a `BinaryReader` over the payload of the standard section with the given id,
     /// or `None` if the input has no such section.
     fn standard_section_reader(&self, id: u8) -> Option<BinaryReader<'data>> {
@@ -2076,13 +2094,17 @@ impl<'data> WasmObjectLayoutInput<'data> {
             .map(|s| s.entries.clone())
             .unwrap_or_default();
 
-        let has_other_non_code_relocs = file.reloc_sections.iter().any(|s| {
+        // TODO(wasm): Currently relocs targeting `.debug*` are ignored (not applied, not emitted).
+        let has_unsupported_non_code_relocs = file.reloc_sections.iter().any(|s| {
             let target = Some(s.target_section_index);
-            target != code_section_index && target != data_section_index
+            if target == code_section_index || target == data_section_index {
+                return false;
+            }
+            !file.section_is_debug(s.target_section_index)
         });
 
         let mut unsupported_output = Vec::new();
-        if has_other_non_code_relocs {
+        if has_unsupported_non_code_relocs {
             unsupported_output.push("non-code relocation");
         }
         if !data_relocations.is_empty() && !data_relocations_are_supported(&data_relocations) {
