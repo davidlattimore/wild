@@ -4679,6 +4679,12 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         is_relro: true,
         ..DEFAULT_DEFS
     };
+    defs[output_section_id::GOT_RELR.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Secondary(output_section_id::GOT),
+        element_size: crate::elf::GOT_ENTRY_SIZE,
+        min_alignment: alignment::GOT_ENTRY,
+        ..DEFAULT_DEFS
+    };
     defs[output_section_id::PLT_GOT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(PLT_GOT_SECTION_NAME)),
         ty: sht::PROGBITS,

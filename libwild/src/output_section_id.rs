@@ -74,6 +74,7 @@ pub(crate) const SECTION_HEADERS: OutputSectionId = part_id::SECTION_HEADERS.out
 pub(crate) const SHSTRTAB: OutputSectionId = part_id::SHSTRTAB.output_section_id();
 pub(crate) const STRTAB: OutputSectionId = part_id::STRTAB.output_section_id();
 pub(crate) const GOT: OutputSectionId = part_id::GOT.output_section_id();
+pub(crate) const GOT_RELR: OutputSectionId = part_id::GOT_RELR.output_section_id();
 pub(crate) const RELA_PLT: OutputSectionId = part_id::RELA_PLT.output_section_id();
 pub(crate) const EH_FRAME: OutputSectionId = part_id::EH_FRAME.output_section_id();
 pub(crate) const EH_FRAME_HDR: OutputSectionId = part_id::EH_FRAME_HDR.output_section_id();
