@@ -1331,6 +1331,24 @@ impl platform::Platform for Elf {
         finalise_gnu_version_size(mem_sizes, symbol_db);
     }
 
+    fn post_compute_sizes(
+        section_part_sizes: &mut OutputSectionPartMap<u64>,
+        args: &Self::Args,
+    ) {
+        if !args.is_relr_enabled() {
+            return;
+        }
+        let got_relr_size = *section_part_sizes.get(part_id::GOT_RELR);
+        if got_relr_size == 0 {
+            return;
+        }
+        let n = got_relr_size / RELR_ENTRY_SIZE;
+        // 1 address entry + ceil((n-1) / 63) bitmap entries
+        let bitmap_entries = n.saturating_sub(1).div_ceil(63);
+        let relr_entries = 1 + bitmap_entries;
+        section_part_sizes.increment(part_id::RELR_DYN, relr_entries * RELR_ENTRY_SIZE);
+    }
+
     fn is_symbol_non_interposable<'data>(
         object: &Self::File<'data>,
         args: &Self::Args,

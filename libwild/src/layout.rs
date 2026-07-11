@@ -239,6 +239,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         gc_outputs.must_keep_sections,
         &finalise_sizes_resources,
     )?;
+    P::post_compute_sizes(&mut section_part_sizes, symbol_db.args);
 
     let thunk_blocks = thunk_layout_builder
         .map(|builder| {
