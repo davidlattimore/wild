@@ -654,8 +654,14 @@ impl platform::Platform for Elf {
                 );
             }
 
-            let resolution =
-                Self::create_resolution(flags, address, dynamic_symbol_index, memory_offsets);
+            let resolution = Self::create_resolution(
+                flags,
+                address,
+                dynamic_symbol_index,
+                memory_offsets,
+                resources.symbol_db.args,
+                resources.symbol_db.output_kind,
+            );
 
             resolutions_out.write(Some(resolution))?;
         }
@@ -1331,10 +1337,7 @@ impl platform::Platform for Elf {
         finalise_gnu_version_size(mem_sizes, symbol_db);
     }
 
-    fn post_compute_sizes(
-        section_part_sizes: &mut OutputSectionPartMap<u64>,
-        args: &Self::Args,
-    ) {
+    fn post_compute_sizes(section_part_sizes: &mut OutputSectionPartMap<u64>, args: &Self::Args) {
         if !args.is_relr_enabled() {
             return;
         }
@@ -1464,7 +1467,17 @@ impl platform::Platform for Elf {
             flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
 
         if flags.needs_got() && !flags.is_tls() {
-            mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
+            let is_got_relr = args.is_relr_enabled()
+                && !flags.is_ifunc()
+                && !has_dynamic_symbol
+                && flags.is_address()
+                && !flags.is_downgraded_to_local()
+                && output_kind.is_relocatable();
+            if is_got_relr {
+                mem_sizes.increment(part_id::GOT_RELR, elf::GOT_ENTRY_SIZE);
+            } else {
+                mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
+            }
             if flags.needs_plt() {
                 mem_sizes.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
             }
@@ -1473,13 +1486,7 @@ impl platform::Platform for Elf {
             } else if has_dynamic_symbol {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             } else if flags.is_address() && output_kind.is_relocatable() {
-                if args.is_relr_enabled() {
-                    // TODO: Implement bitmap packing for GOT-based RELR entries.
-                    // Currently counts flat (one entry per GOT slot) to match the
-                    // writer's write_relr_entry_flat. Bitmap packing requires splitting
-                    // the GOT so relative relocations are contiguous.
-                    mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                } else {
+                if !args.is_relr_enabled() || flags.is_downgraded_to_local() {
                     mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
                 }
             }
@@ -1651,6 +1658,8 @@ impl platform::Platform for Elf {
         raw_value: u64,
         dynamic_symbol_index: Option<NonZeroU32>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
+        args: &<Elf as Platform>::Args,
+        output_kind: OutputKind,
     ) -> Resolution<Elf> {
         let mut resolution: Resolution<Elf> = Resolution {
             raw_value,
@@ -1694,7 +1703,19 @@ impl platform::Platform for Elf {
             resolution.format_specific.got_address =
                 Some(allocate_got(num_got_slots, memory_offsets));
         } else if flags.needs_got() {
-            resolution.format_specific.got_address = Some(allocate_got(1, memory_offsets));
+            let has_dynamic_symbol =
+                flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
+            let is_got_relr = args.is_relr_enabled()
+                && !flags.is_ifunc()
+                && !has_dynamic_symbol
+                && flags.is_address()
+                && !flags.is_downgraded_to_local()
+                && output_kind.is_relocatable();
+            resolution.format_specific.got_address = if is_got_relr {
+                Some(allocate_got_relr(memory_offsets))
+            } else {
+                Some(allocate_got(1, memory_offsets))
+            };
         }
 
         resolution
@@ -5324,6 +5345,12 @@ pub(crate) struct SymtabShndxEntry {
 fn allocate_got(num_entries: u64, memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
     let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT)).unwrap();
     memory_offsets.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * num_entries);
+    got_address
+}
+
+fn allocate_got_relr(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
+    let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT_RELR)).unwrap();
+    memory_offsets.increment(part_id::GOT_RELR, elf::GOT_ENTRY_SIZE);
     got_address
 }
 

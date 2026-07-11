@@ -1541,6 +1541,8 @@ impl platform::Platform for MachO {
         raw_value: u64,
         dynamic_symbol_index: Option<std::num::NonZeroU32>,
         memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _args: &<Self as crate::platform::Platform>::Args,
+        _output_kind: crate::OutputKind,
     ) -> crate::layout::Resolution<Self> {
         let mut resolution: Resolution<MachO> = Resolution {
             raw_value,

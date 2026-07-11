@@ -612,6 +612,7 @@ enum RelrWriterState {
 struct TableWriter<'layout, 'out> {
     output_kind: OutputKind,
     got: &'out mut [u64],
+    got_relr: &'out mut [u64],
     plt_got: &'out mut [u8],
     rela_plt: &'out mut [elf::Rela],
     tls: Range<u64>,
@@ -681,6 +682,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         TableWriter {
             output_kind,
             got: <[u64]>::mut_from_bytes(buffers.take(part_id::GOT)).unwrap(),
+            got_relr: <[u64]>::mut_from_bytes(buffers.take(part_id::GOT_RELR)).unwrap(),
             plt_got: buffers.take(part_id::PLT_GOT),
             rela_plt: slice_from_all_bytes_mut(buffers.take(part_id::RELA_PLT)),
             tls,
@@ -738,8 +740,19 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             return Ok(());
         }
 
-        let got_entry = self.take_next_got_entry()?;
-
+        let has_dynamic_symbol =
+            res.flags.is_dynamic() || (flags.needs_export_dynamic() && res.flags.is_interposable());
+        let is_got_relr = args.is_relr_enabled()
+            && !res.flags.is_ifunc()
+            && !has_dynamic_symbol
+            && res.flags.is_address()
+            && !res.flags.is_downgraded_to_local()
+            && self.output_kind.is_relocatable();
+        let got_entry = if is_got_relr {
+            self.take_next_got_relr_entry()?
+        } else {
+            self.take_next_got_entry()?
+        };
         if res.flags.is_dynamic()
             || (flags.needs_export_dynamic() && res.flags.is_interposable())
                 && !res.flags.is_ifunc()
@@ -931,6 +944,12 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             .ok_or_else(|| insufficient_allocation(".got"))
     }
 
+    fn take_next_got_relr_entry(&mut self) -> Result<&'out mut u64> {
+        self.got_relr
+            .split_off_first_mut()
+            .ok_or_else(|| insufficient_allocation(".got (relr)"))
+    }
+
     /// Resets RELR run state between input sections.
     /// Layout tracks runs per-section; writer must do the same to stay in sync.
     fn reset_relr_run(&mut self) {
@@ -944,6 +963,13 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 ".got",
                 self.got.len() as u64 * elf::GOT_ENTRY_SIZE,
                 *mem_sizes.get(part_id::GOT),
+            ));
+        }
+        if !self.got_relr.is_empty() {
+            return Err(excessive_allocation(
+                ".got (relr)",
+                self.got_relr.len() as u64 * elf::GOT_ENTRY_SIZE,
+                *mem_sizes.get(part_id::GOT_RELR),
             ));
         }
         if !self.rela_dyn_relative.is_empty() {

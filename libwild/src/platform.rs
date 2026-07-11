@@ -584,10 +584,8 @@ pub(crate) trait Platform:
         symbol_db: &SymbolDb<'data, Self>,
     );
 
-    fn post_compute_sizes(
-        _section_part_sizes: &mut OutputSectionPartMap<u64>,
-        _args: &Self::Args,
-    ) {}
+    fn post_compute_sizes(_section_part_sizes: &mut OutputSectionPartMap<u64>, _args: &Self::Args) {
+    }
 
     fn apply_late_size_adjustments_epilogue(
         _state: &mut Self::EpilogueLayoutExt,
@@ -728,6 +726,8 @@ pub(crate) trait Platform:
         raw_value: u64,
         dynamic_symbol_index: Option<NonZeroU32>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
+        args: &Self::Args,
+        output_kind: OutputKind,
     ) -> layout::Resolution<Self>;
 
     fn validate_resolution(

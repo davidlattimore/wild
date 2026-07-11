@@ -3859,6 +3859,8 @@ impl platform::Platform for Wasm {
         raw_value: u64,
         dynamic_symbol_index: Option<std::num::NonZeroU32>,
         _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _args: &<Self as crate::platform::Platform>::Args,
+        _output_kind: crate::OutputKind,
     ) -> crate::layout::Resolution<Self> {
         crate::layout::Resolution {
             raw_value,

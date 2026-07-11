@@ -3679,6 +3679,8 @@ fn create_internal_symbol_resolution<'data, P: Platform>(
         raw_value,
         None,
         memory_offsets,
+        resources.symbol_db.args,
+        resources.symbol_db.output_kind,
     ))
 }
 
@@ -4446,6 +4448,8 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             raw_value,
             dynamic_symbol_index,
             memory_offsets,
+            resources.symbol_db.args,
+            resources.symbol_db.output_kind,
         )))
     }
 
@@ -4679,7 +4683,14 @@ pub(crate) fn default_create_resolutions<'data, P: Platform>(
             .symbol_db
             .flags_for_symbol(resources.per_symbol_flags, symbol_id);
         if flags.has_resolution() && resources.symbol_db.is_canonical(symbol_id) {
-            resolutions_out.write(Some(P::create_resolution(flags, 0, None, memory_offsets)))?;
+            resolutions_out.write(Some(P::create_resolution(
+                flags,
+                0,
+                None,
+                memory_offsets,
+                resources.symbol_db.args,
+                resources.symbol_db.output_kind,
+            )))?;
         } else {
             resolutions_out.write(None)?;
         }
@@ -5929,12 +5940,20 @@ fn verify_consistent_allocation_handling<P: Platform>(
     P::allocate_resolution(flags, &mut mem_sizes, output_kind, args);
     let mut memory_offsets = output_sections.new_part_map();
     *memory_offsets.get_mut(part_id::GOT) = 0x10;
+    *memory_offsets.get_mut(part_id::GOT_RELR) = 0x10;
     *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;
     let has_dynamic_symbol =
         flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
     let dynamic_symbol_index = has_dynamic_symbol.then(|| NonZeroU32::new(1).unwrap());
 
-    let resolution = P::create_resolution(flags, 0, dynamic_symbol_index, &mut memory_offsets);
+    let resolution = P::create_resolution(
+        flags,
+        0,
+        dynamic_symbol_index,
+        &mut memory_offsets,
+        args,
+        output_kind,
+    );
 
     P::verify_resolution_allocation(
         &output_sections,
