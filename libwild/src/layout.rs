@@ -239,8 +239,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         gc_outputs.must_keep_sections,
         &finalise_sizes_resources,
     )?;
-    P::post_compute_sizes(&mut section_part_sizes, symbol_db.args);
 
+    let got_relr_n = *section_part_sizes.get(part_id::GOT_RELR) / 8;
     let thunk_blocks = thunk_layout_builder
         .map(|builder| {
             builder.build(
@@ -458,6 +458,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let mut layout = Layout {
         symbol_db,
         symbol_resolutions,
+        got_relr_n,
         segment_layouts,
         section_part_layouts,
         section_layouts,
@@ -718,6 +719,7 @@ fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout
 pub struct Layout<'data, P: Platform> {
     pub(crate) symbol_db: SymbolDb<'data, P>,
     pub(crate) symbol_resolutions: SymbolResolutions<P>,
+    pub(crate) got_relr_n: u64,
     pub(crate) section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
 
     pub(crate) section_layouts: OutputSectionMap<OutputRecordLayout>,

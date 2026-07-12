@@ -742,12 +742,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
         let has_dynamic_symbol =
             res.flags.is_dynamic() || (flags.needs_export_dynamic() && res.flags.is_interposable());
-        let is_got_relr = args.is_relr_enabled()
-            && !res.flags.is_ifunc()
-            && !has_dynamic_symbol
-            && res.flags.is_address()
-            && !res.flags.is_downgraded_to_local()
-            && self.output_kind.is_relocatable();
+        let is_got_relr =
+            crate::elf::is_got_relr_eligible(res.flags, has_dynamic_symbol, args, self.output_kind);
         let got_entry = if is_got_relr {
             self.take_next_got_relr_entry()?
         } else {
@@ -775,7 +771,10 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = 0;
             self.write_ifunc_relocation::<A>(res)?;
         } else {
-            *got_entry = if res.flags.is_address() && self.output_kind.is_relocatable() {
+            *got_entry = if is_got_relr {
+                // GOT_RELR entries are bitmap-packed by write_got_relr_bitmap — just store value.
+                res.raw_value
+            } else if res.flags.is_address() && self.output_kind.is_relocatable() {
                 self.write_relr_entry_flat::<A>(got_address, res.raw_value)?
             } else {
                 res.raw_value
@@ -954,6 +953,38 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     /// Layout tracks runs per-section; writer must do the same to stay in sync.
     fn reset_relr_run(&mut self) {
         self.relr_state = RelrWriterState::NoRun;
+    }
+
+    /// Writes bitmap-packed RELR entries for the entire GOT_RELR block.
+    /// Called after all symbol resolutions are processed.
+    fn write_got_relr_bitmap(&mut self, n: u64, base: u64) -> Result {
+        if base == 0 || n == 0 {
+            return Ok(());
+        }
+        let Some(relr_writer) = &mut self.relr_dyn else {
+            return Ok(());
+        };
+        // Write address entry for base.
+        let idx = self.relr_dyn_index;
+        if idx >= relr_writer.len() {
+            return Err(insufficient_allocation(".relr.dyn"));
+        }
+        relr_writer[idx].0.set(LittleEndian, base);
+        self.relr_dyn_index += 1;
+        // Write bitmap entries for remaining n-1 slots.
+        let mut remaining = n - 1;
+        while remaining > 0 {
+            let slots = remaining.min(elf::RELR_BITMAP_SLOTS);
+            let bitmap: u64 = ((1u64 << slots) - 1) << 1 | 1;
+            let idx = self.relr_dyn_index;
+            if idx >= relr_writer.len() {
+                return Err(insufficient_allocation(".relr.dyn"));
+            }
+            relr_writer[idx].0.set(LittleEndian, bitmap);
+            self.relr_dyn_index += 1;
+            remaining = remaining.saturating_sub(elf::RELR_BITMAP_SLOTS);
+        }
+        Ok(())
     }
 
     /// Checks that we used all of the entries that we requested during layout.
@@ -1150,7 +1181,6 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if let Some(relr_writer) = &mut self.relr_dyn
             && place.is_multiple_of(2)
         {
-            const BITMAP_SLOTS: u64 = 63;
             const WORD_SIZE: u64 = 8;
             self.relr_state = match self.relr_state {
                 RelrWriterState::NoRun => {
@@ -1168,7 +1198,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 RelrWriterState::AddressOnly { bitmap_base }
                 | RelrWriterState::WithBitmap { bitmap_base, .. } => {
                     let d = place.wrapping_sub(bitmap_base);
-                    if d % WORD_SIZE == 0 && d < BITMAP_SLOTS * WORD_SIZE {
+                    if d % WORD_SIZE == 0 && d < elf::RELR_BITMAP_SLOTS * WORD_SIZE {
                         // Fits in current bitmap window.
                         let bit = d / WORD_SIZE + 1;
                         if let RelrWriterState::WithBitmap { bitmap_idx, .. } = self.relr_state {
@@ -1198,9 +1228,9 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                         && d % WORD_SIZE == 0
                     {
                         // Current window has bits — try next window.
-                        let next_base = bitmap_base + BITMAP_SLOTS * WORD_SIZE;
+                        let next_base = bitmap_base + elf::RELR_BITMAP_SLOTS * WORD_SIZE;
                         let d2 = place.wrapping_sub(next_base);
-                        if d2.is_multiple_of(WORD_SIZE) && d2 < BITMAP_SLOTS * WORD_SIZE {
+                        if d2.is_multiple_of(WORD_SIZE) && d2 < elf::RELR_BITMAP_SLOTS * WORD_SIZE {
                             // Fits in next window — write new bitmap entry.
                             let bit = d2 / WORD_SIZE + 1;
                             let idx = self.relr_dyn_index;
@@ -4192,6 +4222,15 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
 
     if layout.symbol_db.output_kind.needs_dynamic() {
         write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
+    }
+
+    let got_relr_n = layout.got_relr_n;
+    if got_relr_n > 0 {
+        let got_relr_base = layout
+            .section_part_layouts
+            .get(part_id::GOT_RELR)
+            .mem_offset;
+        table_writer.write_got_relr_bitmap(got_relr_n, got_relr_base)?;
     }
     write_sysv_hash_table(layout, epilogue, buffers)?;
     write_gnu_hash_tables(layout, epilogue, buffers)?;

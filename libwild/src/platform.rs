@@ -584,9 +584,6 @@ pub(crate) trait Platform:
         symbol_db: &SymbolDb<'data, Self>,
     );
 
-    fn post_compute_sizes(_section_part_sizes: &mut OutputSectionPartMap<u64>, _args: &Self::Args) {
-    }
-
     fn apply_late_size_adjustments_epilogue(
         _state: &mut Self::EpilogueLayoutExt,
         _current_sizes: &OutputSectionPartMap<u64>,
