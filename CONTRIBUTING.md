@@ -73,6 +73,9 @@ then use `cargo test` as usual.
 
 Wild supports testing on non-native architectures using QEMU.
 
+> **Note:** Ubuntu 26.04 is recommended for cross-architecture testing.
+
+
 ### Setup
 
 1. Add required Rust targets:
@@ -86,6 +89,9 @@ Wild supports testing on non-native architectures using QEMU.
   
   # For loongarch64
   rustup target add --toolchain nightly loongarch64-unknown-linux-gnu loongarch64-unknown-linux-musl
+
+  # For ppc64le
+  rustup target add --toolchain nightly powerpc64le-unknown-linux-gnu
   ```
 
 2. Install required packages (for apt-based systems):
@@ -99,6 +105,10 @@ Wild supports testing on non-native architectures using QEMU.
 
   # For loongarch64
   sudo apt install qemu-user gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu binutils-loongarch64-linux-gnu
+
+  # For ppc64le
+  sudo apt install qemu-user gcc-powerpc64le-linux-gnu g++-powerpc64le-linux-gnu binutils-powerpc64le-linux-gnu
+
   ```
 
 ### Running tests
@@ -114,6 +124,9 @@ WILD_TEST_CROSS=riscv64 cargo test
 
 # For loongarch64
 WILD_TEST_CROSS=loongarch64 cargo test
+
+# For ppc64le
+WILD_TEST_CROSS=ppc64le cargo test
 
 # All
 WILD_TEST_CROSS=all cargo test
