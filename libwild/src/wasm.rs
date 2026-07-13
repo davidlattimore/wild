@@ -2870,11 +2870,12 @@ fn function_type_for_symbol<'a>(
     input: &'a WasmObjectLayoutInput<'_>,
     sym: &WasmSymbol,
 ) -> Result<&'a wasmparser::FuncType> {
-    let n_imports = u32::try_from(input.function_imports.len()).context("too many Wasm imports")?;
-    let type_index = if sym.index < n_imports {
-        input.function_imports[sym.index as usize].type_index
+    let sym_index = sym.index as usize;
+    let n_imports = input.function_imports.len();
+    let type_index = if sym_index < n_imports {
+        input.function_imports[sym_index].type_index
     } else {
-        let local = (sym.index - n_imports) as usize;
+        let local = (sym_index - n_imports);
         input
             .module_functions
             .get(local)
@@ -2894,19 +2895,9 @@ fn collect_sorted_init_function_indices(
 ) -> Result<Vec<u32>> {
     let mut items = Vec::new();
     for (obj_idx, input) in inputs.iter().enumerate() {
-        let index_map = object_index_maps
-            .get(obj_idx)
-            .context("missing Wasm object index map for init function")?;
+        let index_map = &object_index_maps[obj_idx];
         for init in &input.init_funcs {
-            let sym = input
-                .symbols
-                .get(init.symbol_index as usize)
-                .ok_or_else(|| {
-                    crate::error!(
-                        "Wasm init function symbol index {} out of range",
-                        init.symbol_index
-                    )
-                })?;
+            let sym = &input.symbols[init.symbol_index as usize];
             ensure!(
                 sym.kind == WasmSymbolKind::Func && !sym.is_undefined(),
                 "Wasm init function must be a defined function symbol"
