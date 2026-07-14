@@ -484,6 +484,17 @@ impl crate::platform::Arch for ElfX86_64 {
             offset_in_section,
         )
     }
+
+    fn fill_nop_padding(buf: &mut [u8], offset: usize, len: usize) {
+        buf[offset..offset + len].fill(0xcc);
+    }
+
+    fn requires_nop_padding_for_section(section_flags: object::elf::SectionFlags) -> bool {
+        if section_flags.contains(object::elf::SHF_EXECINSTR) {
+            return true;
+        }
+        false
+    }
 }
 
 #[derive(Debug, Clone)]

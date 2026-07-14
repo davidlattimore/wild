@@ -2004,7 +2004,7 @@ fn write_object_section<'data, A: Arch<Platform = Elf>>(
         }
     }
 
-    let out = write_section_raw(object, layout, section, section_index, buffers)?;
+    let out = write_section_raw::<A>(object, layout, section, section_index, buffers)?;
 
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
     // reverse order while .init_array/.fini_array are executed in forward order.
@@ -2141,7 +2141,7 @@ fn write_debug_section<'data, A: Arch<Platform = Elf>>(
         return Ok(());
     }
 
-    let out = write_section_raw(object, layout, section, section_index, buffers)?;
+    let out = write_section_raw::<A>(object, layout, section, section_index, buffers)?;
     let relocations = object.relocations(section_index)?;
     let result = match relocations {
         elf::RelocationList::Rela(rela) => apply_debug_relocations::<A, Rela, _>(
@@ -2165,7 +2165,7 @@ fn write_debug_section<'data, A: Arch<Platform = Elf>>(
     Ok(())
 }
 
-fn write_section_raw<'out, 'data>(
+fn write_section_raw<'out, 'data, A: Arch<Platform = Elf>>(
     object: &ObjectLayout<'data, Elf>,
     layout: &ElfLayout,
     sec: Section,
@@ -2190,13 +2190,18 @@ fn write_section_raw<'out, 'data>(
         let out = section_buffer.split_off_mut(..allocation_size).unwrap();
         let object_section = object.object.section(section_index)?;
         let relax_deltas = object.section_relax_deltas.get(section_index.0);
+        let section_flags = object_section.sh_flags(LittleEndian);
 
         match relax_deltas {
             None => {
                 let section_size = object.object.section_size(object_section)?;
                 let (out, padding) = out.split_at_mut(section_size as usize);
                 object.object.copy_section_data(object_section, out)?;
-                padding.fill(0);
+                if A::requires_nop_padding_for_section(section_flags) {
+                    A::fill_nop_padding(padding, 0, padding.len());
+                } else {
+                    padding.fill(0);
+                }
                 Ok(out)
             }
             Some(deltas) => {
@@ -2226,7 +2231,11 @@ fn write_section_raw<'out, 'data>(
                         .copy_from_slice(&input_data[input_pos..]);
                     output_pos += remaining;
                 }
-                out[output_pos..].fill(0);
+                if A::requires_nop_padding_for_section(section_flags) {
+                    A::fill_nop_padding(out, output_pos, out.len() - output_pos);
+                } else {
+                    out[output_pos..].fill(0);
+                }
 
                 Ok(&mut out[..effective_size])
             }

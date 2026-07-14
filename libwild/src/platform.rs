@@ -213,6 +213,10 @@ pub(crate) trait Arch: Send + Sync + 'static {
             Self::DEFAULT_LOAD_ADDRESS
         }
     }
+
+    fn requires_nop_padding_for_section(_section_flags: object::elf::SectionFlags) -> bool {
+        false
+    }
 }
 
 pub(crate) trait Relaxation: Send + Sync + 'static {
