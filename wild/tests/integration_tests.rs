@@ -77,8 +77,8 @@
 //!
 //! NoSection:{section_name} Checks that the specified section does not exist in the output binary.
 //!
-//! ExpectSectionBytes:{section_name}=0x{hex_bytes} Checks that the specified section contains
-//! exactly the given bytes.
+//! ExpectSectionBytes:{section_name}=0x{hex_bytes} [start_range..end_range] Checks that the
+//! specified section contains exactly the given bytes.
 //!
 //! ExpectGdbIndexCuCount:{count} Checks that the `.gdb_index` section contains exactly the
 //! specified number of CU entries.
