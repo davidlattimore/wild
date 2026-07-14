@@ -247,8 +247,11 @@ impl PlatformKind {
 pub(crate) enum VersionMode {
     /// Don't print version
     None,
-    /// Print version and continue linking (-v)
+    /// Print version and continue linking if object files are specified (-v).
     Verbose,
+    /// Print version along with supported emulations and continue linking if object files are
+    /// specified (-V).
+    VerboseWithEmulations,
     /// Print version and exit immediately (--version)
     ExitAfterPrint,
 }

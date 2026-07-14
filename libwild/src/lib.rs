@@ -220,7 +220,22 @@ impl Linker {
             args::VersionMode::Verbose => {
                 let mut stdout = std::io::stdout().lock();
                 writeln!(stdout, "{identity}")?;
-                // Continue linking
+                // Continue linking if object files are specified
+                if args.common().inputs.is_empty() {
+                    return Ok(LinkerOutput { layout: None });
+                }
+            }
+            args::VersionMode::VerboseWithEmulations => {
+                let mut stdout = std::io::stdout().lock();
+                writeln!(stdout, "{identity}")?;
+                writeln!(
+                    stdout,
+                    "supported emulations: elf_x86_64 aarch64elf elf64lriscv elf64loongarch elf64lppc"
+                )?;
+                // Continue linking if object files are specified
+                if args.common().inputs.is_empty() {
+                    return Ok(LinkerOutput { layout: None });
+                }
             }
             args::VersionMode::None => {
                 // Don't print version
