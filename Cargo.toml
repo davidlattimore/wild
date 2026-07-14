@@ -101,7 +101,7 @@ symbolic-demangle = { version = "13.0.0", default-features = false, features = [
   "cpp",
   "rust",
 ] }
-tabled = "0.21.0"
+tabled = { version = "0.21.0", default-features = false, features = ["std"] }
 tempfile = "3.0.2"
 thread_local = "1.1.9"
 toml = "1.0.3"
