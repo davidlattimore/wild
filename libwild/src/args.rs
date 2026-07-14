@@ -25,6 +25,7 @@ use jobserver::Acquired;
 use jobserver::Client;
 use rayon::ThreadPoolBuilder;
 use std::fmt::Display;
+use std::io::Write;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -200,6 +201,19 @@ impl Args {
             Args::MachO(macho_args) => &mut macho_args.common,
             Args::Wasm(wasm_args) => &mut wasm_args.common,
         }
+    }
+
+    pub(crate) fn print_emulation_info(&self, stdout: &mut dyn Write) -> Result<()> {
+        match self {
+            Args::Elf(_) => {
+                writeln!(
+                    stdout,
+                    "supported emulations: elf_x86_64 aarch64elf elf64lriscv elf64loongarch elf64lppc"
+                )?;
+            }
+            Args::MachO(_) | Args::Wasm(_) => (),
+        }
+        Ok(())
     }
 }
 
