@@ -486,6 +486,23 @@ pub struct ThreadPool {
     _jobserver_tokens: Vec<Acquired>,
 }
 
+impl ThreadPool {
+    /// Creates a `ThreadPool` marker without configuring the global rayon pool. Use this when the
+    /// global pool is already initialized; otherwise use [`CommonArgs::activate_thread_pool`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            _jobserver_tokens: Vec::new(),
+        }
+    }
+}
+
+impl Default for ThreadPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // TODO: remove
 #[allow(clippy::large_enum_variant)]
 pub enum Args {
