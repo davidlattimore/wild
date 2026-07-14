@@ -321,6 +321,7 @@ use object::Object as _;
 use object::ObjectKind;
 use object::ObjectSection;
 use object::ObjectSymbol as _;
+use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
 use object::macho::SEG_TEXT;
 use object::read::elf::ProgramHeader;
@@ -4264,7 +4265,7 @@ impl Assertions {
 
         // For Mach-O.
         if matches!(obj, object::File::MachO64(_)) {
-            return self.check_macho_path(&obj, &bytes);
+            return self.check_macho_path(&obj, &bytes, linker_used);
         }
 
         self.verify_file_kind(&obj)?;
@@ -4307,7 +4308,7 @@ impl Assertions {
         Ok(())
     }
 
-    fn check_macho_path(&self, obj: &object::File, bytes: &[u8]) -> Result {
+    fn check_macho_path(&self, obj: &object::File, bytes: &[u8], linker_used: &Linker) -> Result {
         // Allowlist of assertion fields implemented for Mach-O.
         let supported = Assertions {
             expected_symtab_entries: self.expected_symtab_entries.clone(),
@@ -4343,6 +4344,10 @@ impl Assertions {
         verify_no_overlapping_sections(obj)?;
         verify_no_overlapping_segments(obj)?;
         verify_chained_fixups_segment_offsets(obj, bytes)?;
+
+        if linker_used.is_wild() {
+            verify_uuid(obj, bytes)?;
+        }
         Ok(())
     }
 
@@ -5161,6 +5166,80 @@ fn verify_chained_fixups_segment_offsets(obj: &object::File, bytes: &[u8]) -> Re
         );
     }
 
+    Ok(())
+}
+
+fn verify_uuid(obj: &object::File, bytes: &[u8]) -> Result {
+    const CS_BLOCK_SIZE: usize = 4096;
+    const CS_HASH_SIZE: usize = 32;
+
+    let object::File::MachO64(file) = obj else {
+        return Ok(());
+    };
+
+    let e = file.endianness();
+    let mut load_commands = file.macho_load_commands()?;
+    let mut code_signature = None;
+    let mut uuid = None;
+
+    while let Some(load_command) = load_commands.next()? {
+        match load_command.variant()? {
+            LoadCommandVariant::LinkeditData(linkedit)
+                if linkedit.cmd.get(e) == LC_CODE_SIGNATURE =>
+            {
+                code_signature = Some(linkedit);
+            }
+            LoadCommandVariant::Uuid(uuid_cmd) => {
+                uuid = Some(uuid_cmd);
+            }
+            _ => {}
+        }
+    }
+
+    let code_signature = code_signature.context("Missing LC_CODE_SIGNATURE")?;
+    let uuid = uuid.context("Missing LC_UUID")?;
+
+    let uuid_size = uuid.uuid.len();
+    let uuid_start = bytes
+        .element_offset(&uuid.uuid[0])
+        .context("Invalid UUID offset")?;
+    let uuid_end = uuid_start
+        .checked_add(uuid_size)
+        .context("Invalid UUID size")?;
+
+    let code_signature_offset = usize::try_from(code_signature.dataoff.get(e))?;
+    let hashes_size = code_signature_offset
+        .div_ceil(CS_BLOCK_SIZE)
+        .checked_mul(CS_HASH_SIZE)
+        .context("Invalid code signature hashes size")?;
+    let hashes_start = bytes
+        .len()
+        .checked_sub(hashes_size)
+        .context("Invalid code signature hashes range")?;
+    let zero_hashes = vec![0; hashes_size];
+
+    ensure!(
+        uuid_end <= hashes_start,
+        "UUID range {uuid_start:#x}..{uuid_end:#x} overlaps code signature hashes \
+        starting at {hashes_start:#x}"
+    );
+
+    let expected_hash = blake3::Hasher::new()
+        .update(&bytes[..uuid_start])
+        .update(&[0; 16])
+        .update_rayon(&bytes[uuid_end..hashes_start])
+        .update(&zero_hashes)
+        .finalize();
+
+    let mut expected_uuid = [0; 16];
+    expected_uuid.copy_from_slice(&expected_hash.as_bytes()[..uuid_size]);
+    expected_uuid[6] = (expected_uuid[6] & 0x0f) | 0x30;
+    expected_uuid[8] = (expected_uuid[8] & 0x3f) | 0x80;
+
+    ensure!(
+        uuid.uuid == expected_uuid,
+        "LC_UUID does not match expected hash"
+    );
     Ok(())
 }
 

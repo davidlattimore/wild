@@ -24,6 +24,7 @@ use crate::macho::CS_BLOB_HEADERS_SIZE;
 use crate::macho::CS_BLOCK_SIZE;
 use crate::macho::CS_BLOCK_SIZE_EXP;
 use crate::macho::CS_HASH_SIZE;
+use crate::macho::CS_HEADERS_SIZE;
 use crate::macho::ChainedFixupsHeader;
 use crate::macho::CodeSignatureCommand;
 use crate::macho::DYLINKER_PATH;
@@ -100,6 +101,7 @@ use object::macho::LC_MAIN;
 use object::macho::LC_SEGMENT_64;
 use object::macho::LC_SYMTAB;
 use object::macho::LC_UUID;
+use object::macho::LoadCommand;
 use object::macho::MH_CIGAM_64;
 use object::macho::MH_EXECUTE;
 use object::macho::N_ABS;
@@ -163,7 +165,9 @@ pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
     write_got_entries(layout, section_buffers.get_mut(output_section_id::GOT))?;
     write_plt_entries::<A>(layout, section_buffers.get_mut(output_section_id::PLT_GOT))?;
 
-    write_code_signature(layout, sized_output)?;
+    write_code_signature_metadata(layout, sized_output)?;
+    write_uuid(layout, sized_output)?;
+    write_code_signature_hashes(layout, sized_output)?;
 
     Ok(())
 }
@@ -775,7 +779,6 @@ fn write_build_version_command(layout: &MachOLayout, command: &mut BuildVersionC
 fn write_uuid_command(command: &mut UuidCommand) {
     command.cmd.set(LE, LC_UUID);
     command.cmdsize.set(LE, size_of::<UuidCommand>() as u32);
-    // TODO: write a proper UUID
     command.uuid.zero();
 }
 
@@ -998,19 +1001,49 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
     Ok(())
 }
 
-fn write_code_signature(layout: &MachOLayout, sized_output: &mut SizedOutput) -> Result {
-    verbose_timing_phase!("Write code signature");
+fn write_uuid(layout: &MachOLayout, sized_output: &mut SizedOutput) -> Result {
+    verbose_timing_phase!("Write UUID");
+
+    let hash = blake3::Hasher::new()
+        .update_rayon(&sized_output.out)
+        .finalize();
+
+    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
+    let load_commands = section_buffers.get_mut(output_section_id::LOAD_COMMANDS);
+
+    while !load_commands.is_empty() {
+        let header = object::from_bytes::<LoadCommand<Endianness>>(load_commands)
+            .map_err(|_| error!("Invalid load command header"))?
+            .0;
+        let cmd_type = header.cmd.get(LE);
+        let cmd_size = header.cmdsize.get(LE) as usize;
+        let mut cmd = load_commands
+            .split_off_mut(..cmd_size)
+            .context("Invalid load command allocation")?;
+
+        if cmd_type == LC_UUID {
+            let uuid_cmd = take_mut::<UuidCommand>(&mut cmd)?;
+            let uuid_size = uuid_cmd.uuid.len();
+
+            uuid_cmd.uuid.copy_from_slice(&hash.as_bytes()[..uuid_size]);
+            // Match lld's UUID Version 3 from RFC 9562.
+            uuid_cmd.uuid[6] = (uuid_cmd.uuid[6] & 0x0f) | 0x30;
+            uuid_cmd.uuid[8] = (uuid_cmd.uuid[8] & 0x3f) | 0x80;
+            return Ok(());
+        }
+    }
+
+    bail!("Missing LC_UUID");
+}
+
+fn write_code_signature_metadata(layout: &MachOLayout, sized_output: &mut SizedOutput) -> Result {
+    verbose_timing_phase!("Write code signature metadata");
 
     let code_signature_section = layout
         .section_layouts
         .get(output_section_id::CODE_SIGNATURE);
     let code_signature_identifier = code_signature_identifier(layout.args());
     let padded_identifier_size = code_signature_padded_identifier_size(layout.args()) as usize;
-    let calculated_hashes: Vec<_> = sized_output.out[..code_signature_section.file_offset]
-        .par_chunks(CS_BLOCK_SIZE)
-        .map(Sha256::digest)
-        .collect();
-    let calculated_hashes = calculated_hashes.into_iter().flatten().collect_vec();
 
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
     let code_signature = section_buffers.get_mut(output_section_id::CODE_SIGNATURE);
@@ -1080,6 +1113,31 @@ fn write_code_signature(layout: &MachOLayout, sized_output: &mut SizedOutput) ->
 
     identifier[..code_signature_identifier.len()].copy_from_slice(code_signature_identifier);
     identifier[code_signature_identifier.len()..].fill(0);
+    hashes.fill(0);
+
+    Ok(())
+}
+
+fn write_code_signature_hashes(layout: &MachOLayout, sized_output: &mut SizedOutput) -> Result {
+    verbose_timing_phase!("Write code signature hashes");
+
+    let code_signature_section = layout
+        .section_layouts
+        .get(output_section_id::CODE_SIGNATURE);
+    let calculated_hashes: Vec<_> = sized_output.out[..code_signature_section.file_offset]
+        .par_chunks(CS_BLOCK_SIZE)
+        .map(Sha256::digest)
+        .collect();
+    let calculated_hashes = calculated_hashes.into_iter().flatten().collect_vec();
+
+    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
+    let code_signature = section_buffers.get_mut(output_section_id::CODE_SIGNATURE);
+    let hashes_offset =
+        (CS_HEADERS_SIZE + code_signature_padded_identifier_size(layout.args())) as usize;
+    let hashes = code_signature
+        .get_mut(hashes_offset..)
+        .ok_or_else(|| error!("Invalid CODE_SIGNATURE allocation"))?;
+
     hashes.copy_from_slice(&calculated_hashes);
 
     #[cfg(target_os = "macos")]
