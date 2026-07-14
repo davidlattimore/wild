@@ -202,6 +202,8 @@
 //!
 //! The following input types support an optional template parameter. This should look something
 //! like `Shared:template(--push-state --as-needed $O --pop-state):filename.c`.
+//! `$O` is replaced with the built input path. `$OUT_DIR` is replaced with the test build
+//! directory (same as in `LinkArgs`). At least one of `$O` or `$OUT_DIR` must appear.
 //!
 //! Object:{source-filename}[:extra-compilation-args] Builds the specified filename as a regular
 //! object and adds it to the link.
@@ -630,6 +632,7 @@ type Result<T = (), E = libwild::error::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
 
 const TEMPLATE_PLACEHOLDER: &str = "$O";
+const TEMPLATE_OUT_DIR_PLACEHOLDER: &str = "$OUT_DIR";
 
 fn base_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2111,8 +2114,13 @@ fn process_directive(
                     .split_once("):")
                     .with_context(|| format!("Missing '):' in {arg}"))?;
                 let parts = t.split(' ').map(|p| p.to_owned()).collect_vec();
-                if !parts.iter().any(|a| a.contains(TEMPLATE_PLACEHOLDER)) {
-                    bail!("Template `{t}` must contain {TEMPLATE_PLACEHOLDER}");
+                if !parts.iter().any(|a| {
+                    a.contains(TEMPLATE_PLACEHOLDER) || a.contains(TEMPLATE_OUT_DIR_PLACEHOLDER)
+                }) {
+                    bail!(
+                        "Template `{t}` must contain {TEMPLATE_PLACEHOLDER} or \
+                         {TEMPLATE_OUT_DIR_PLACEHOLDER}"
+                    );
                 }
                 template = Some(parts);
                 arg = rest;
@@ -4090,13 +4098,17 @@ fn add_inputs_to_command(config: &Config, inputs: &[LinkerInput], command: &mut 
         command.args(input.prefix_arg);
         if let Some(template) = input.template.as_ref() {
             let path_str = input.path.to_str().expect("Non-UTF-8 paths not supported");
+            let out_dir = config
+                .build_dir()
+                .to_str()
+                .expect("Non-UTF-8 paths not supported")
+                .to_owned();
 
             for a in template {
-                if a.contains(TEMPLATE_PLACEHOLDER) {
-                    command.arg(a.replace(TEMPLATE_PLACEHOLDER, path_str));
-                } else {
-                    command.arg(a);
-                }
+                let arg = a
+                    .replace(TEMPLATE_OUT_DIR_PLACEHOLDER, &out_dir)
+                    .replace(TEMPLATE_PLACEHOLDER, path_str);
+                command.arg(arg);
             }
         } else {
             command.arg(&input.path);

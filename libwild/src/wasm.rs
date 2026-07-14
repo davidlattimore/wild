@@ -121,6 +121,9 @@ const EMPTY_FUNCTION_BODY: &[u8] = &[0x00, 0x0b];
 /// `i32.const` body for `LINKER_MEMORY_BASE`.
 const LINKER_MEMORY_BASE_INIT_EXPR: &[u8] = &[0x41, 0x80, 0x08];
 
+/// `i32.const 0`. Used for immutable `__tls_base` when no TLS segment is laid out.
+const ZERO_I32_INIT_EXPR: &[u8] = &[0x41, 0x00];
+
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
     #[debug(skip)]
@@ -2567,6 +2570,7 @@ struct LinkerImportAbsorption {
     absorbed_globals: u32,
     needs_memory_base: bool,
     needs_stack_pointer: bool,
+    needs_tls_base: bool,
     needs_ctors: bool,
     needs_dtors: bool,
 }
@@ -2612,6 +2616,11 @@ impl LinkerImportAbsorption {
                     absorption.needs_stack_pointer = true;
                     absorption.absorbed_globals += 1;
                 }
+                // Single-threaded. Immutable base (no TLS segment yet).
+                "__tls_base" => {
+                    absorption.needs_tls_base = true;
+                    absorption.absorbed_globals += 1;
+                }
                 _ => {}
             }
         }
@@ -2632,6 +2641,7 @@ fn remaining_unresolved_imports(unresolved: u32, absorbed: u32) -> Result<u32> {
 struct LinkerDefinedIndices {
     memory_base_global: Option<u32>,
     stack_pointer_global: Option<u32>,
+    tls_base_global: Option<u32>,
     /// Index of `__stack_pointer` among the defined globals prepended by
     /// `emit_reserved_linker_definitions` (not the Wasm module global index).
     stack_pointer_defined_slot: Option<u32>,
@@ -2683,6 +2693,7 @@ impl LinkerDefinedIndices {
     ) -> Result<Self> {
         let mut needs_memory_base = false;
         let mut needs_stack_pointer = false;
+        let mut needs_tls_base = false;
         let mut needs_ctors = has_init_funcs;
         let mut needs_dtors = false;
         let mut function_import_count = 0u32;
@@ -2694,6 +2705,7 @@ impl LinkerDefinedIndices {
             needs_dtors |= absorption.needs_dtors;
             needs_memory_base |= absorption.needs_memory_base;
             needs_stack_pointer |= absorption.needs_stack_pointer;
+            needs_tls_base |= absorption.needs_tls_base;
 
             function_import_count = function_import_count
                 .checked_add(remaining_unresolved_imports(
@@ -2735,6 +2747,12 @@ impl LinkerDefinedIndices {
             next_defined_global_slot += 1;
             idx
         });
+        let tls_base_global = needs_tls_base.then(|| {
+            let idx = next_global;
+            next_global += 1;
+            next_defined_global_slot += 1;
+            idx
+        });
         let num_defined_globals = next_global - global_import_count;
 
         let mut next_func = function_import_count;
@@ -2758,6 +2776,7 @@ impl LinkerDefinedIndices {
         Ok(Self {
             memory_base_global,
             stack_pointer_global,
+            tls_base_global,
             stack_pointer_defined_slot,
             call_ctors_func,
             call_dtors_func,
@@ -2771,6 +2790,7 @@ impl LinkerDefinedIndices {
         match name {
             "__memory_base" => self.memory_base_global,
             "__stack_pointer" => self.stack_pointer_global,
+            "__tls_base" => self.tls_base_global,
             _ => None,
         }
     }
@@ -2964,6 +2984,16 @@ fn emit_reserved_linker_definitions(
                 shared: false,
             },
             init_expr_body: Cow::Borrowed(LINKER_MEMORY_BASE_INIT_EXPR),
+        });
+    }
+    if indices.tls_base_global.is_some() {
+        linker_globals.push(OutputGlobal {
+            ty: GlobalType {
+                content_type: wasmparser::ValType::I32,
+                mutable: false,
+                shared: false,
+            },
+            init_expr_body: Cow::Borrowed(ZERO_I32_INIT_EXPR),
         });
     }
     if !linker_globals.is_empty() {
@@ -3405,7 +3435,18 @@ fn is_memory_addr_relocation(ty: u8) -> bool {
 }
 
 fn is_supported_data_relocation(ty: u8) -> bool {
-    is_memory_addr_relocation(ty) || ty == reloc_type::FUNCTION_INDEX_I32
+    is_memory_addr_relocation(ty)
+        || matches!(
+            ty,
+            reloc_type::FUNCTION_INDEX_I32
+                | reloc_type::FUNCTION_INDEX_LEB
+                | reloc_type::TABLE_INDEX_I32
+                | reloc_type::TABLE_INDEX_SLEB
+                | reloc_type::TABLE_NUMBER_LEB
+                | reloc_type::GLOBAL_INDEX_I32
+                | reloc_type::GLOBAL_INDEX_LEB
+                | reloc_type::TYPE_INDEX_LEB
+        )
 }
 
 fn data_relocations_are_supported(relocs: &[WasmRelocation]) -> bool {

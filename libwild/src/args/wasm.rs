@@ -4,6 +4,8 @@ use crate::alignment::Alignment;
 use crate::args::ArgumentParser;
 use crate::args::CommonArgs;
 use crate::args::FILES_PER_GROUP_ENV;
+use crate::args::Input;
+use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::args::REFERENCE_LINKER_ENV;
 use crate::args::RelocationModel;
@@ -26,6 +28,7 @@ pub(crate) const WASM_PAGE_SIZE: u64 = WASM_PAGE_ALIGNMENT.value();
 #[derive(Debug)]
 pub struct WasmArgs {
     pub(crate) common: super::CommonArgs,
+    pub(crate) lib_search_path: Vec<Box<Path>>,
 }
 
 impl WasmArgs {
@@ -42,6 +45,7 @@ impl Default for WasmArgs {
     fn default() -> Self {
         Self {
             common: CommonArgs::default(),
+            lib_search_path: Vec::new(),
         }
     }
 }
@@ -70,7 +74,7 @@ impl platform::Args for WasmArgs {
     }
 
     fn lib_search_path(&self) -> &[Box<std::path::Path>] {
-        todo!()
+        &self.lib_search_path
     }
 
     fn common(&self) -> &crate::args::CommonArgs {
@@ -134,6 +138,37 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Set the output filename")
         .execute(|args, _modifier_stack, value| {
             args.common.output = Arc::from(Path::new(value));
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .prefix("L")
+        .help("Add directory to library search path")
+        .execute(|args, _modifier_stack, value| {
+            args.common.save_dir.handle_file(value);
+            args.lib_search_path.push(Box::from(Path::new(value)));
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .prefix("l")
+        .help("Link with library")
+        .execute(|args, modifier_stack, value| {
+            // Prefer static archives. Wasm has no shared-object loading.
+            let mut modifiers = *modifier_stack.last().unwrap();
+            modifiers.allow_shared = false;
+            let spec = if let Some(stripped) = value.strip_prefix(':') {
+                InputSpec::Search(Box::from(stripped))
+            } else {
+                InputSpec::Lib(Box::from(value))
+            };
+            args.common.inputs.push(Input {
+                spec,
+                search_first: None,
+                modifiers,
+            });
             Ok(())
         });
 
