@@ -24,13 +24,13 @@
 // GNU ld only prints a warning.
 //#ReferenceLinkers:lld
 //#LinkerScript:linker-script-region-missing.ld
-//#ExpectError:(?i)memory region 'FLASH' not declared
+//#ExpectError:(?i-u)memory region 'FLASH' not declared
 
 //#Config:region-overflow:default
 // lld gives a similar error, but with a different message.
 //#ReferenceLinkers:bfd
 //#LinkerScript:linker-script-region-overflow.ld
-//#ExpectError:(?i)region .FLASH' overflowed by 1 byte
+//#ExpectError:(?i-u)region [`']FLASH' overflowed by 1 byte
 
 static int var1 __attribute__((used, section(".data.ram1"))) = 0x01;
 static int var2 __attribute__((used, section(".data.rom"))) = 0x02;

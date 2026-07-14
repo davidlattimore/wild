@@ -24,7 +24,7 @@
 //#Config:underflow
 //#Object:runtime.c
 //#LinkerScript:linker-script-location-counter-underflow.ld
-//#ExpectError:(?i)cannot move location counter backwards
+//#ExpectError:(?i-u)cannot move location counter backwards
 
 #include <stddef.h>
 

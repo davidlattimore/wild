@@ -65,7 +65,7 @@ perf-event.workspace = true
 nix.workspace = true
 
 [build-dependencies]
-cc = "1.1.12"
+cc.workspace = true
 
 [dev-dependencies]
 ar.workspace = true

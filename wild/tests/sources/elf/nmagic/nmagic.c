@@ -20,7 +20,7 @@
 // Re-enable ppc64le here: this config links fine, but inherits the SkipArch from `default`.
 //#Arch: x86_64,aarch64,riscv64,loongarch64,ppc64le
 //#Shared:force-dynamic-linking.c
-//#ExpectError:(?i)Attempted static link of dynamic object
+//#ExpectError:(?i-u)Attempted static link of dynamic object
 
 #include "../common/runtime.h"
 
