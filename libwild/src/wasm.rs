@@ -15,6 +15,8 @@ use crate::output_section_id::SectionName;
 use crate::platform;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
+use crate::timing_phase;
+use crate::verbose_timing_phase;
 use crate::wasm_writer::OutputExport;
 use crate::wasm_writer::OutputGlobal;
 use crate::wasm_writer::OutputImport;
@@ -1617,6 +1619,7 @@ fn encode_wasm_section(section: &impl wasm_encoder::Section) -> Vec<u8> {
 
 impl<'data> WasmLayout<'data> {
     fn encode_metadata_sections(&mut self) -> Result {
+        timing_phase!("Encode Wasm metadata sections");
         let type_section = crate::wasm_writer::build_type_section(&self.output_types)?;
         if !type_section.is_empty() {
             self.encoded_sections.ty = Some(encode_wasm_section(&type_section));
@@ -2452,6 +2455,7 @@ fn resolve_cross_object_imports<'data>(
     inputs: &[WasmObjectLayoutInput<'data>],
     symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
 ) -> Result<Vec<ObjectImportResolutions>> {
+    timing_phase!("Resolve Wasm cross-object imports");
     let file_id_to_index: HashMap<crate::input_data::FileId, usize> = inputs
         .iter()
         .enumerate()
@@ -2461,6 +2465,7 @@ fn resolve_cross_object_imports<'data>(
     inputs
         .par_iter()
         .map(|input| {
+            verbose_timing_phase!("Resolve Wasm object imports");
             let (function_resolutions, unresolved_function_count) = resolve_import_symbols(
                 input.function_imports.len(),
                 WasmSymbolKind::Func,
@@ -3216,15 +3221,21 @@ fn build_output_module_layout<'data, 'files>(
 where
     'data: 'files,
 {
-    let objects_and_states: Vec<_> = layout::objects_iter(groups)
-        .map(|state| (&state.object, &state.format_specific))
-        .collect();
-    let layout_inputs = objects_and_states
-        .par_iter()
-        .map(|(object, state)| {
-            WasmObjectLayoutInput::from_file(object, state.symbol_id_range, state.file_id)
-        })
-        .collect::<Result<Vec<_>>>()?;
+    timing_phase!("Build Wasm module layout");
+
+    let layout_inputs = {
+        timing_phase!("Collect Wasm object layout inputs");
+        let objects_and_states: Vec<_> = layout::objects_iter(groups)
+            .map(|state| (&state.object, &state.format_specific))
+            .collect();
+        objects_and_states
+            .par_iter()
+            .map(|(object, state)| {
+                verbose_timing_phase!("Collect Wasm object layout input");
+                WasmObjectLayoutInput::from_file(object, state.symbol_id_range, state.file_id)
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
 
     let import_resolutions = resolve_cross_object_imports(&layout_inputs, symbol_db)?;
     let has_init_funcs = layout_inputs
@@ -3243,19 +3254,23 @@ where
     )?;
     let index_bases =
         allocate_wasm_object_index_bases(&layout_inputs, &import_resolutions, &indices)?;
-    let object_layouts = layout_inputs
-        .par_iter()
-        .zip(import_resolutions.par_iter())
-        .enumerate()
-        .map(|(obj_idx, (input, resolutions))| {
-            input.build_object_output_layout(
-                index_bases[obj_idx],
-                resolutions,
-                &index_bases,
-                &indices,
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let object_layouts = {
+        timing_phase!("Build per-object Wasm layouts");
+        layout_inputs
+            .par_iter()
+            .zip(import_resolutions.par_iter())
+            .enumerate()
+            .map(|(obj_idx, (input, resolutions))| {
+                verbose_timing_phase!("Build Wasm object output layout");
+                input.build_object_output_layout(
+                    index_bases[obj_idx],
+                    resolutions,
+                    &index_bases,
+                    &indices,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
 
     let linker_memory = any_object_needs_linker_memory(&layout_inputs);
     let mut layout = WasmLayout {
@@ -3268,31 +3283,36 @@ where
     };
     let mut memory_cursor = layout.memory_base;
     let mut section_cursor = 0u32;
-    for (obj_idx, (input, object_layout)) in layout_inputs.iter().zip(object_layouts).enumerate() {
-        layout.output_types.extend(object_layout.types);
-        layout.imports.extend(object_layout.imports);
-        layout
-            .function_type_indices
-            .extend(object_layout.function_type_indices);
-        layout.globals.extend(object_layout.globals);
-        layout.exports.extend(object_layout.exports);
-        let mut bodies = object_layout.function_bodies;
-        for body in &mut bodies {
-            body.object_index = obj_idx;
+    {
+        timing_phase!("Merge Wasm object layouts");
+        for (obj_idx, (input, object_layout)) in
+            layout_inputs.iter().zip(object_layouts).enumerate()
+        {
+            layout.output_types.extend(object_layout.types);
+            layout.imports.extend(object_layout.imports);
+            layout
+                .function_type_indices
+                .extend(object_layout.function_type_indices);
+            layout.globals.extend(object_layout.globals);
+            layout.exports.extend(object_layout.exports);
+            let mut bodies = object_layout.function_bodies;
+            for body in &mut bodies {
+                body.object_index = obj_idx;
+            }
+            layout.function_bodies.extend(bodies);
+            layout.memories.extend(object_layout.memories);
+            layout
+                .unsupported_output
+                .extend(object_layout.unsupported_output);
+            layout.object_index_maps.push(object_layout.index_map);
+            layout.per_object_symbols.push(input.symbols.clone());
+            layout.object_data_layouts.push(layout_object_data(
+                input,
+                layout.object_index_maps.last().expect("index map pushed"),
+                &mut memory_cursor,
+                &mut section_cursor,
+            )?);
         }
-        layout.function_bodies.extend(bodies);
-        layout.memories.extend(object_layout.memories);
-        layout
-            .unsupported_output
-            .extend(object_layout.unsupported_output);
-        layout.object_index_maps.push(object_layout.index_map);
-        layout.per_object_symbols.push(input.symbols.clone());
-        layout.object_data_layouts.push(layout_object_data(
-            input,
-            layout.object_index_maps.last().expect("index map pushed"),
-            &mut memory_cursor,
-            &mut section_cursor,
-        )?);
     }
 
     let init_function_indices =
@@ -3309,31 +3329,42 @@ where
         _ => None,
     };
 
-    emit_reserved_linker_definitions(&mut layout, &indices, call_ctors_body, entry_wrapper_body);
-    deduplicate_output_types(&mut layout);
+    {
+        timing_phase!("Wasm linker-defined symbols and data addresses");
+        emit_reserved_linker_definitions(
+            &mut layout,
+            &indices,
+            call_ctors_body,
+            entry_wrapper_body,
+        );
+        deduplicate_output_types(&mut layout);
 
-    if linker_memory && layout.memories.is_empty() {
-        layout
-            .memories
-            .push(linker_output_memory_type(&layout_inputs));
-        ensure_memory_export(&mut layout.exports);
+        if linker_memory && layout.memories.is_empty() {
+            layout
+                .memories
+                .push(linker_output_memory_type(&layout_inputs));
+            ensure_memory_export(&mut layout.exports);
+        }
+        layout.data_end = memory_cursor;
+        let needs_stack_gap = compute_data_addresses(
+            &mut layout.object_index_maps,
+            &layout.per_object_symbols,
+            &layout.object_data_layouts,
+            &layout_inputs,
+            symbol_db,
+            layout.data_end,
+        )?;
+        fill_linker_defined_values(&mut layout, &indices, needs_stack_gap)?;
+        ensure_entry_export(
+            &mut layout.exports,
+            entry.as_ref(),
+            indices.entry_wrapper_func,
+        );
     }
-    layout.data_end = memory_cursor;
-    let needs_stack_gap = compute_data_addresses(
-        &mut layout.object_index_maps,
-        &layout.per_object_symbols,
-        &layout.object_data_layouts,
-        &layout_inputs,
-        symbol_db,
-        layout.data_end,
-    )?;
-    fill_linker_defined_values(&mut layout, &indices, needs_stack_gap)?;
-    ensure_entry_export(
-        &mut layout.exports,
-        entry.as_ref(),
-        indices.entry_wrapper_func,
-    );
-    finalize_indirect_function_table(&mut layout, &layout_inputs)?;
+    {
+        timing_phase!("Finalize Wasm indirect function table");
+        finalize_indirect_function_table(&mut layout, &layout_inputs)?;
+    }
     layout.encode_metadata_sections()?;
     Ok(layout)
 }

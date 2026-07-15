@@ -6,6 +6,8 @@ use crate::file_writer::SizedOutput;
 use crate::file_writer::split_output_into_sections;
 use crate::layout::Layout;
 use crate::platform::Arch;
+use crate::timing_phase;
+use crate::verbose_timing_phase;
 use crate::wasm::WASM_MAGIC;
 use crate::wasm::WASM_VERSION;
 use crate::wasm::Wasm;
@@ -48,6 +50,7 @@ pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
     sized_output: &mut SizedOutput,
     layout: &Layout<'data, Wasm>,
 ) -> Result<()> {
+    timing_phase!("Write Wasm output");
     let (mut section_buffers, mut padding) =
         split_output_into_sections(layout, &mut sized_output.out);
     padding.fill_zero();
@@ -63,15 +66,24 @@ pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
         bail!("Wasm {unsupported} emission is not implemented yet");
     }
 
-    copy_metadata_sections(&layout.format_specific, &mut section_buffers)?;
-    write_code_section(
-        &layout.format_specific,
-        section_buffers.get_mut(crate::output_section_id::WASM_CODE),
-    )?;
-    write_data_section(
-        &layout.format_specific,
-        section_buffers.get_mut(crate::output_section_id::WASM_DATA),
-    )?;
+    {
+        timing_phase!("Copy Wasm metadata sections");
+        copy_metadata_sections(&layout.format_specific, &mut section_buffers)?;
+    }
+    {
+        timing_phase!("Write Wasm code section");
+        write_code_section(
+            &layout.format_specific,
+            section_buffers.get_mut(crate::output_section_id::WASM_CODE),
+        )?;
+    }
+    {
+        timing_phase!("Write Wasm data section");
+        write_data_section(
+            &layout.format_specific,
+            section_buffers.get_mut(crate::output_section_id::WASM_DATA),
+        )?;
+    }
 
     Ok(())
 }
@@ -141,6 +153,7 @@ fn copy_encoded_section(encoded: Option<&Vec<u8>>, out: &mut [u8]) -> Result<()>
 // Each `WasmFunctionBody.bytes` is the raw body content (locals + operators) without a size prefix.
 // This function writes the LEB128 size prefix for each body, then resolves and applies relocations.
 fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()> {
+    verbose_timing_phase!("Apply Wasm code relocations");
     let bodies = &wasm_layout.function_bodies;
     let object_index_maps = &wasm_layout.object_index_maps;
     let per_object_symbols = &wasm_layout.per_object_symbols;
@@ -210,6 +223,7 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
 }
 
 fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()> {
+    verbose_timing_phase!("Encode Wasm data section");
     let object_data_layouts = &wasm_layout.object_data_layouts;
     let has_segments = object_data_layouts
         .iter()
