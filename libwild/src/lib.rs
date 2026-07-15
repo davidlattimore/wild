@@ -133,6 +133,7 @@ pub fn run(mut args: Args) -> error::Result {
     thread_pool.pool.install(move || -> error::Result {
         let linker = Linker::new();
         linker.run(&args)?;
+        drop(linker);
         timing::finalise_perfetto_trace()?;
         Ok(())
     })?;
