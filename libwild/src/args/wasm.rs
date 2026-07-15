@@ -29,6 +29,7 @@ pub(crate) const WASM_PAGE_SIZE: u64 = WASM_PAGE_ALIGNMENT.value();
 pub struct WasmArgs {
     pub(crate) common: super::CommonArgs,
     pub(crate) lib_search_path: Vec<Box<Path>>,
+    pub(crate) export_symbols: Vec<String>,
 }
 
 impl WasmArgs {
@@ -46,6 +47,7 @@ impl Default for WasmArgs {
         Self {
             common: CommonArgs::default(),
             lib_search_path: Vec::new(),
+            export_symbols: Vec::new(),
         }
     }
 }
@@ -71,6 +73,10 @@ impl platform::Args for WasmArgs {
         // TODO: probably add option. wasm-ld defaults to `_start` for command
         // modules and no entry for reactor modules.
         b"_start"
+    }
+
+    fn force_export_symbol_names(&self) -> &[String] {
+        &self.export_symbols
     }
 
     fn lib_search_path(&self) -> &[Box<std::path::Path>] {
@@ -181,7 +187,42 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
             Ok(())
         });
 
+    parser
+        .declare_with_param()
+        .long("export")
+        .help("Force a symbol to be exported")
+        .execute(|args, _modifier_stack, value| {
+            args.export_symbols.push(value.to_owned());
+            Ok(())
+        });
+
     super::declare_common_args(&mut parser);
 
     parser
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::Args as _;
+
+    fn parse_args<'a>(args: impl IntoIterator<Item = &'a str>) -> WasmArgs {
+        let mut wasm_args = WasmArgs::new().unwrap();
+        wasm_args.parse(args.into_iter()).unwrap();
+        wasm_args
+    }
+
+    #[test]
+    fn parse_export_space_and_equals() {
+        let args = parse_args(["--export", "foo", "--export=bar", "-o", "out.wasm"]);
+        assert_eq!(args.export_symbols, ["foo", "bar"]);
+        assert_eq!(args.force_export_symbol_names(), ["foo", "bar"]);
+    }
+
+    #[test]
+    fn export_is_not_treated_as_input_path() {
+        let args = parse_args(["--export", "__main_void", "-o", "out.wasm"]);
+        assert_eq!(args.export_symbols, ["__main_void"]);
+        assert!(args.common.inputs.is_empty());
+    }
 }
