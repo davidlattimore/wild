@@ -3254,7 +3254,7 @@ where
     )?;
     let index_bases =
         allocate_wasm_object_index_bases(&layout_inputs, &import_resolutions, &indices)?;
-    let object_layouts = {
+    let mut object_layouts = {
         timing_phase!("Build per-object Wasm layouts");
         layout_inputs
             .par_iter()
@@ -3285,33 +3285,71 @@ where
     let mut section_cursor = 0u32;
     {
         timing_phase!("Merge Wasm object layouts");
-        for (obj_idx, (input, object_layout)) in
-            layout_inputs.iter().zip(object_layouts).enumerate()
+        let n_objects = object_layouts.len();
+        layout.object_index_maps.reserve(n_objects);
+        layout.per_object_symbols.reserve(n_objects);
+        layout.object_data_layouts.reserve(n_objects);
+
         {
-            layout.output_types.extend(object_layout.types);
-            layout.imports.extend(object_layout.imports);
-            layout
-                .function_type_indices
-                .extend(object_layout.function_type_indices);
-            layout.globals.extend(object_layout.globals);
-            layout.exports.extend(object_layout.exports);
-            let mut bodies = object_layout.function_bodies;
-            for body in &mut bodies {
-                body.object_index = obj_idx;
+            timing_phase!("Merge Wasm section lists");
+            for object_layout in &mut object_layouts {
+                layout
+                    .output_types
+                    .extend(std::mem::take(&mut object_layout.types));
+                layout
+                    .imports
+                    .extend(std::mem::take(&mut object_layout.imports));
+                layout
+                    .function_type_indices
+                    .extend(std::mem::take(&mut object_layout.function_type_indices));
+                layout
+                    .globals
+                    .extend(std::mem::take(&mut object_layout.globals));
+                layout
+                    .exports
+                    .extend(std::mem::take(&mut object_layout.exports));
+                layout
+                    .memories
+                    .extend(std::mem::take(&mut object_layout.memories));
+                layout
+                    .unsupported_output
+                    .extend(std::mem::take(&mut object_layout.unsupported_output));
             }
-            layout.function_bodies.extend(bodies);
-            layout.memories.extend(object_layout.memories);
-            layout
-                .unsupported_output
-                .extend(object_layout.unsupported_output);
-            layout.object_index_maps.push(object_layout.index_map);
-            layout.per_object_symbols.push(input.symbols.clone());
-            layout.object_data_layouts.push(layout_object_data(
-                input,
-                layout.object_index_maps.last().expect("index map pushed"),
-                &mut memory_cursor,
-                &mut section_cursor,
-            )?);
+        }
+        {
+            timing_phase!("Merge Wasm function bodies");
+            for (obj_idx, object_layout) in object_layouts.iter_mut().enumerate() {
+                let mut bodies = std::mem::take(&mut object_layout.function_bodies);
+                for body in &mut bodies {
+                    body.object_index = obj_idx;
+                }
+                layout.function_bodies.extend(bodies);
+            }
+        }
+        {
+            timing_phase!("Merge Wasm index maps");
+            for object_layout in &mut object_layouts {
+                layout
+                    .object_index_maps
+                    .push(std::mem::take(&mut object_layout.index_map));
+            }
+        }
+        {
+            timing_phase!("Clone Wasm symbol tables");
+            for input in &layout_inputs {
+                layout.per_object_symbols.push(input.symbols.clone());
+            }
+        }
+        {
+            timing_phase!("Layout Wasm data segments");
+            for (obj_idx, input) in layout_inputs.iter().enumerate() {
+                layout.object_data_layouts.push(layout_object_data(
+                    input,
+                    &layout.object_index_maps[obj_idx],
+                    &mut memory_cursor,
+                    &mut section_cursor,
+                )?);
+            }
         }
     }
 
