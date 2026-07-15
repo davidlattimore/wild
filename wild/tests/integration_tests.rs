@@ -3939,7 +3939,6 @@ impl LinkCommand {
                 .collect::<Option<Vec<&str>>>()
                 .context("Linker args must be valid utf-8")?;
 
-            let linker = libwild::Linker::new();
             let get_args = || std::iter::once("wild").chain(args.iter().copied());
             let mut parsed_args = libwild::Args::new(get_args)?;
             parsed_args.set_version("integration-test");
@@ -3952,10 +3951,7 @@ impl LinkCommand {
 
             // This call is expected to error for all but the first call.
             let _ = libwild::setup_tracing(&parsed_args);
-            let thread_pool = libwild::activate_thread_pool(&mut parsed_args)?;
-
-            linker
-                .run(&parsed_args, &thread_pool)
+            libwild::run(parsed_args)
                 .with_context(|| format!("libwild reported error. Rerun command(s):\n{self}"))?;
 
             let warnings = warnings.lock().unwrap();

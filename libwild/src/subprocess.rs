@@ -41,10 +41,13 @@ fn subprocess_result(mut args: Args) -> Result<i32> {
             // Fork success in child - Run linker in this process.
 
             crate::setup_tracing(&args)?;
-            let thread_pool = args.common_mut().activate_thread_pool()?;
-            let linker = crate::Linker::new();
-            let _outputs = linker.run(&args, &thread_pool)?;
-            crate::timing::finalise_perfetto_trace()?;
+            let thread_pool = args.common_mut().build_thread_pool()?;
+            thread_pool.pool.install(|| -> Result {
+                let linker = crate::Linker::new();
+                linker.run(&args)?;
+                crate::timing::finalise_perfetto_trace()?;
+                Ok(())
+            })?;
             inform_parent_done(&fds);
             Ok(0)
         }
