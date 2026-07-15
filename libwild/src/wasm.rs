@@ -1755,35 +1755,77 @@ fn data_segment_payload_offset_in_section(kind: &DataKind<'_>, data_len: usize) 
         .ok_or_else(|| crate::error!("Wasm data segment payload offset underflow"))
 }
 
+/// Precomputed span of one input data segment within the data section payload.
+struct DataSegmentSpan {
+    /// Inclusive start of the encoded segment in the section payload.
+    start: u32,
+    /// Exclusive end of the encoded segment.
+    end: u32,
+    /// Absolute section offset of the first payload byte (after segment header / init expr).
+    payload_start: u32,
+}
+
+/// Map data-section relocations onto their owning segment with payload-local offsets.
 fn classify_data_relocations(
     segments: &[WasmDataSegment<'_>],
     relocs: &[WasmRelocation],
 ) -> Vec<Vec<WasmRelocation>> {
-    let mut per_segment = vec![Vec::new(); segments.len()];
-    for &reloc in relocs {
-        let Some(segment_idx) = segments.iter().position(|segment| {
-            let Ok(encoded) = wasm_data_segment_encoded_size(&segment.kind, segment.data.len())
-            else {
-                return false;
-            };
-            let start = segment.section_offset;
-            let end = start.saturating_add(encoded);
-            reloc.offset >= start && reloc.offset < end
-        }) else {
+    if segments.is_empty() || relocs.is_empty() {
+        return vec![Vec::new(); segments.len()];
+    }
+
+    let mut spans = Vec::with_capacity(segments.len());
+    for segment in segments {
+        let Ok(encoded) = wasm_data_segment_encoded_size(&segment.kind, segment.data.len()) else {
+            spans.push(DataSegmentSpan {
+                start: 0,
+                end: 0,
+                payload_start: 0,
+            });
             continue;
         };
-        let segment = &segments[segment_idx];
-        let Ok(payload_start) =
+        let Ok(payload_rel) =
             data_segment_payload_offset_in_section(&segment.kind, segment.data.len())
         else {
+            spans.push(DataSegmentSpan {
+                start: 0,
+                end: 0,
+                payload_start: 0,
+            });
             continue;
         };
-        let segment_payload_start = segment.section_offset.saturating_add(payload_start);
-        if reloc.offset < segment_payload_start {
+        let start = segment.section_offset;
+        let end = start.saturating_add(encoded);
+        let payload_start = start.saturating_add(payload_rel);
+        spans.push(DataSegmentSpan {
+            start,
+            end,
+            payload_start,
+        });
+    }
+
+    debug_assert!(
+        spans.windows(2).all(|w| w[0].start <= w[1].start),
+        "data segments must be ordered by section_offset for binary search"
+    );
+
+    let mut per_segment = vec![Vec::new(); segments.len()];
+    for &reloc in relocs {
+        // Last span with start <= reloc.offset.
+        let idx = spans
+            .partition_point(|span| span.start <= reloc.offset)
+            .saturating_sub(1);
+        let Some(span) = spans.get(idx) else {
+            continue;
+        };
+        if reloc.offset < span.start || reloc.offset >= span.end {
             continue;
         }
-        per_segment[segment_idx].push(WasmRelocation {
-            offset: reloc.offset - segment_payload_start,
+        if reloc.offset < span.payload_start {
+            continue;
+        }
+        per_segment[idx].push(WasmRelocation {
+            offset: reloc.offset - span.payload_start,
             ..reloc
         });
     }
