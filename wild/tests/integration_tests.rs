@@ -1957,7 +1957,7 @@ fn process_directive(
             let match_range = if let Some(match_range) = match_range {
                 let (start_range, end_range) = match_range.split_once("..").with_context(|| {
                     format!(
-                        "ExpectSectionBytes requires section_name=0xhex_bytes .. 0xhex_bytes, got `{match_range}`"
+                        "ExpectSectionBytes requires section_name=0xhex_bytes start_range..end_range, got `{match_range}`"
                     )
                 })?;
                 Some(start_range.parse::<usize>()?..end_range.parse::<usize>()?)
