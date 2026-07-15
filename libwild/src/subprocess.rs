@@ -44,11 +44,11 @@ fn subprocess_result(mut args: Args) -> Result<i32> {
             let thread_pool = args.common_mut().build_thread_pool()?;
             thread_pool.pool.install(|| -> Result {
                 let linker = crate::Linker::new();
-                linker.run(&args)?;
+                let _outputs = linker.run(&args)?;
                 crate::timing::finalise_perfetto_trace()?;
+                inform_parent_done(&fds);
                 Ok(())
             })?;
-            inform_parent_done(&fds);
             Ok(0)
         }
         -1 => {
