@@ -21,6 +21,7 @@ use crate::wasm_writer::OutputImport;
 use crate::wasm_writer::OutputImportEntity;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
+use leb128::write::signed_len as sleb128_size;
 use leb128::write::unsigned_len as uleb128_size;
 use linker_utils::utils::u32_from_slice;
 use rayon::prelude::*;
@@ -1718,9 +1719,9 @@ fn wasm_data_segment_encoded_size(kind: &DataKind<'_>, data_len: usize) -> Resul
     }
 }
 
-/// Byte length of the offset `expr` we emit (`i32.const` + LEB + `end`).
+/// Byte length of the offset `expr` we emit (`i32.const` + SLEB + `end`).
 fn output_i32_const_init_expr_size(offset: u32) -> u32 {
-    1 + uleb128_size(u64::from(offset)) as u32 + 1
+    1 + sleb128_size(i64::from(offset)) as u32 + 1
 }
 
 fn output_data_segment_encoded_size(
