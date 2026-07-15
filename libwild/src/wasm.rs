@@ -116,9 +116,6 @@ const LINKER_MEMORY_BASE: u32 = 1024;
 /// Default stack size reserved above `__data_end` for the main stack.
 const LINKER_STACK_SIZE: u32 = 64 * 1024;
 
-/// Stack and post-data gap alignment.
-const LINKER_STACK_ALIGNMENT: Alignment = crate::alignment::STACK_ALIGNMENT;
-
 /// Empty function body: zero locals + `end`.
 const EMPTY_FUNCTION_BODY: &[u8] = &[0x00, 0x0b];
 
@@ -1792,9 +1789,9 @@ fn classify_data_relocations(
     per_segment
 }
 
-/// Align `data_end` to [`LINKER_STACK_ALIGNMENT`], then add the stack size.
+/// Align `data_end` to [`STACK_ALIGNMENT`], then add the stack size.
 fn stack_high_after_data(data_end: u32) -> Result<u32> {
-    let stack_base = u32::try_from(LINKER_STACK_ALIGNMENT.align_up(u64::from(data_end)))
+    let stack_base = u32::try_from(crate::alignment::STACK_ALIGNMENT.align_up(u64::from(data_end)))
         .map_err(|_| crate::error!("Wasm stack base overflow"))?;
     stack_base
         .checked_add(LINKER_STACK_SIZE)

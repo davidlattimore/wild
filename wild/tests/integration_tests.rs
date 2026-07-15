@@ -656,11 +656,12 @@ fn wasi_sysroot() -> Option<PathBuf> {
     candidates.find(|root| root.join("lib/wasm32-wasi/libc.a").exists())
 }
 
-fn wasi_sysroot_display() -> String {
+fn wasi_sysroot_path_str() -> String {
     wasi_sysroot()
         .unwrap_or_else(|| PathBuf::from("/usr"))
-        .display()
-        .to_string()
+        .to_str()
+        .expect("WASI_SYSROOT must be valid UTF-8")
+        .to_owned()
 }
 
 fn expand_test_arg_placeholders(arg: &str, config: &Config) -> String {
@@ -668,7 +669,7 @@ fn expand_test_arg_placeholders(arg: &str, config: &Config) -> String {
         TEMPLATE_OUT_DIR_PLACEHOLDER,
         &config.build_dir().display().to_string(),
     )
-    .replace(TEMPLATE_WASI_SYSROOT_PLACEHOLDER, &wasi_sysroot_display())
+    .replace(TEMPLATE_WASI_SYSROOT_PLACEHOLDER, &wasi_sysroot_path_str())
 }
 
 fn base_dir() -> &'static Path {
@@ -4171,7 +4172,7 @@ fn add_inputs_to_command(config: &Config, inputs: &[LinkerInput], command: &mut 
                 .expect("Non-UTF-8 paths not supported")
                 .to_owned();
 
-            let wasi_sysroot = wasi_sysroot_display();
+            let wasi_sysroot = wasi_sysroot_path_str();
             for a in template {
                 let arg = a
                     .replace(TEMPLATE_OUT_DIR_PLACEHOLDER, &out_dir)

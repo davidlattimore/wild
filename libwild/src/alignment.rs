@@ -59,7 +59,7 @@ pub(crate) const EH_FRAME_HDR: Alignment = Alignment { exponent: 2 };
 pub(crate) const NOTE_GNU_PROPERTY: Alignment = Alignment { exponent: 3 };
 pub(crate) const NOTE_GNU_BUILD_ID: Alignment = Alignment { exponent: 2 };
 
-// GNU_STACK.alignment
+// GNU_STACK.alignment and Wasm stack alignment
 pub(crate) const STACK_ALIGNMENT: Alignment = Alignment { exponent: 4 };
 
 // Mach-O specific
