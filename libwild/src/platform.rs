@@ -214,8 +214,8 @@ pub(crate) trait Arch: Send + Sync + 'static {
         }
     }
 
-    fn requires_nop_padding_for_section(_section_flags: object::elf::SectionFlags) -> bool {
-        false
+    fn fill_section_padding(buf: &mut [u8], _section_flags: object::elf::SectionFlags) {
+        buf.fill(0);
     }
 }
 

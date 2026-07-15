@@ -2197,11 +2197,7 @@ fn write_section_raw<'out, 'data, A: Arch<Platform = Elf>>(
                 let section_size = object.object.section_size(object_section)?;
                 let (out, padding) = out.split_at_mut(section_size as usize);
                 object.object.copy_section_data(object_section, out)?;
-                if A::requires_nop_padding_for_section(section_flags) {
-                    A::fill_nop_padding(padding, 0, padding.len());
-                } else {
-                    padding.fill(0);
-                }
+                A::fill_section_padding(padding, section_flags);
                 Ok(out)
             }
             Some(deltas) => {
@@ -2231,11 +2227,7 @@ fn write_section_raw<'out, 'data, A: Arch<Platform = Elf>>(
                         .copy_from_slice(&input_data[input_pos..]);
                     output_pos += remaining;
                 }
-                if A::requires_nop_padding_for_section(section_flags) {
-                    A::fill_nop_padding(out, output_pos, out.len() - output_pos);
-                } else {
-                    out[output_pos..].fill(0);
-                }
+                A::fill_section_padding(&mut out[output_pos..], section_flags);
 
                 Ok(&mut out[..effective_size])
             }
