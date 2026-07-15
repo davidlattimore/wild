@@ -3000,7 +3000,8 @@ fn apply_relocation<
             let removed_bytes =
                 relax_deltas.map_or(0u64, |d| u64::from(d.delta_bytes_at(rel.offset())));
             let padding_bytes = addend.saturating_sub(removed_bytes) as usize;
-            A::fill_nop_padding(out, offset_in_section as usize, padding_bytes);
+            let offset_in_section = offset_in_section as usize;
+            A::fill_nop_padding(&mut out[offset_in_section..offset_in_section + padding_bytes]);
 
             return Ok(RelocationModifier::Normal);
         }

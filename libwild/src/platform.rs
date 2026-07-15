@@ -180,7 +180,7 @@ pub(crate) trait Arch: Send + Sync + 'static {
     ) -> Option<Self::Relaxation>;
 
     /// Fill `len` bytes of NOP padding at `offset` in `buf`.
-    fn fill_nop_padding(_buf: &mut [u8], _offset: usize, _len: usize) {}
+    fn fill_nop_padding(_buf: &mut [u8]) {}
 
     fn process_riscv_attributes<'data>(
         _object: &<Self::Platform as Platform>::File<'data>,

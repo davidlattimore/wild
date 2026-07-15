@@ -157,18 +157,18 @@ impl crate::platform::Arch for ElfRiscV64 {
         ]
     }
 
-    fn fill_nop_padding(buf: &mut [u8], offset: usize, len: usize) {
+    fn fill_nop_padding(buf: &mut [u8]) {
         // Fill with 4-byte NOP.
         let mut i = 0;
-        while i + 4 <= len {
-            buf[offset + i..offset + i + 4].copy_from_slice(&0x0000_0013u32.to_le_bytes());
+        while i + 4 <= buf.len() {
+            buf[i..i + 4].copy_from_slice(&0x0000_0013u32.to_le_bytes());
             i += 4;
         }
         // Fill a remaining 2-byte slot with c.nop. This is safe because a 2-byte
         // remainder only arises when the assembler used c.nop in the original sled,
         // which implies the C extension is enabled.
-        if i + 2 <= len {
-            buf[offset + i..offset + i + 2].copy_from_slice(&0x0001u16.to_le_bytes());
+        if i + 2 <= buf.len() {
+            buf[i..i + 2].copy_from_slice(&0x0001u16.to_le_bytes());
         }
     }
 
