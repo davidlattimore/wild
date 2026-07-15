@@ -1741,8 +1741,8 @@ impl Config {
             linker_args: platform.default_args_for_linking(),
             post_linker_args: ArgumentSet::empty(),
             linker_so_args: platform.default_args_for_linking(),
-            compiler_args: platform.default_compiler_args(),
-            compiler_so_args: platform.default_compiler_args(),
+            compiler_args: ArgumentSet::default_for_compiling(),
+            compiler_so_args: ArgumentSet::default_for_compiling(),
             wild_extra_linker_args: ArgumentSet::empty(),
             diff_ignore: Default::default(),
             reference_linkers: None,
@@ -6428,18 +6428,6 @@ impl PlatformKind {
         match self {
             PlatformKind::Elf => "gcc",
             PlatformKind::MachO | PlatformKind::Wasm => "clang",
-        }
-    }
-
-    /// TODO(wasm): Remove the Wasm special case (and possibly this helper) once tests can rely on a
-    /// normal toolchain / WASI crt like ELF, and set freestanding flags via `CompArgs` only where
-    /// needed.
-    fn default_compiler_args(self) -> ArgumentSet {
-        match self {
-            PlatformKind::Wasm => ArgumentSet {
-                args: vec!["-nostdlib".to_owned()],
-            },
-            PlatformKind::Elf | PlatformKind::MachO => ArgumentSet::default_for_compiling(),
         }
     }
 

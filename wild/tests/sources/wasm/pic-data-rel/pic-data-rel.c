@@ -1,4 +1,4 @@
-//#CompArgs:-nostdlib -fPIC
+//#CompArgs:-fPIC
 
 int g = 7;
 int* p = &g;
