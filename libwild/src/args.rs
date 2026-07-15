@@ -208,7 +208,8 @@ impl Args {
             Args::Elf(_) => {
                 writeln!(
                     stdout,
-                    "supported emulations: elf_x86_64 aarch64elf elf64lriscv elf64loongarch elf64lppc"
+                    "supported emulations: {}",
+                    crate::arch::SUPPORTED_EMULATIONS
                 )?;
             }
             Args::MachO(_) | Args::Wasm(_) => (),
