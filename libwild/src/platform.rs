@@ -179,7 +179,7 @@ pub(crate) trait Arch: Send + Sync + 'static {
         relax_deltas: Option<&SectionRelaxDeltas>,
     ) -> Option<Self::Relaxation>;
 
-    /// Fill `len` bytes of NOP padding at `offset` in `buf`.
+    /// Fill `buf` with NOP padding.
     fn fill_nop_padding(_buf: &mut [u8]) {}
 
     fn process_riscv_attributes<'data>(
