@@ -31,13 +31,6 @@ pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
         std::path::Path::new(OsStr::from_bytes(bytes)).to_path_buf()
     }
 
-    #[cfg(windows)]
-    {
-        use std::path::PathBuf;
-        let path = std::str::from_utf8(bytes).expect("Invalid UTF-8 in archive path name");
-        PathBuf::from(path)
-    }
-
     #[cfg(target_os = "wasi")]
     {
         use std::ffi::OsStr;
@@ -45,7 +38,7 @@ pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
         std::path::Path::new(OsStr::from_bytes(bytes)).to_path_buf()
     }
 
-    #[cfg(not(any(unix, windows, target_os = "wasi")))]
+    #[cfg(not(any(unix, target_os = "wasi")))]
     {
         let path = std::str::from_utf8(bytes).expect("Invalid UTF-8 in archive path name");
         PathBuf::from(path)
