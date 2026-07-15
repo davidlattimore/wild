@@ -365,16 +365,12 @@ impl CommonArgs {
             }
         });
 
-        let pool = if self.available_threads.get() == 1 {
-            ThreadPoolBuilder::new()
-                .use_current_thread()
-                .num_threads(1)
-                .build()?
-        } else {
-            ThreadPoolBuilder::new()
-                .num_threads(self.available_threads.get())
-                .build()?
-        };
+        // Always let Rayon spawn the pool's workers, even when only one thread is requested.
+        // Reusing the current thread would fail if it already belonged to another pool; instead,
+        // it blocks in `install` until linking finishes.
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(self.available_threads.get())
+            .build()?;
 
         Ok(ThreadPool {
             pool,
