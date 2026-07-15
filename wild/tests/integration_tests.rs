@@ -21,7 +21,11 @@
 //! LinkArgs:... Arguments to pass to the linker. If using a LinkerDriver, these arguments should be
 //! whatever the linker driver expects. e.g. `-Wl,--strip-all` rather than `--strip-all`.
 //! `./<filename>` will be replaced with the path to the input file. `$OUT_DIR` will be replaced
-//! with the path to the test's build directory.
+//! with the path to the test's build directory. `$WASI_SYSROOT` will be replaced with the wasi-libc
+//! sysroot (see RequiresWasiLibc). These arguments are passed before input objects.
+//!
+//! PostLinkArgs:... Like LinkArgs, but appended after input objects. Useful for archive libraries
+//! such as `-lc` that need to appear after objects that reference them.
 //!
 //! LinkSoArgs:... Arguments to pass when linking a shared object.
 //!
@@ -171,6 +175,11 @@
 //! checks that a simple C program can be compiled with `-flto` and skips the test if that fails.
 //! This can be used for both C and Rust tests. In the case of Rust tests, the clang compiler will
 //! be checked. Also checks that wild was not statically linked.
+//!
+//! RequiresWasiLibc:{bool} Defaults to false. Set to true to skip this test when wasi-libc is not
+//! available. When set, `$WASI_SYSROOT` in LinkArgs, PostLinkArgs, CompArgs and input templates is
+//! expanded to the wasi-libc sysroot. The sysroot is taken from the `WASI_SYSROOT` environment
+//! variable if set, otherwise `/usr` when `/usr/lib/wasm32-wasi/libc.a` exists.
 //!
 //! AutoAddObjects:{bool} Whether to automatically add input objects for the test to the command
 //! line. Defaults to true.
@@ -633,6 +642,34 @@ type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
 
 const TEMPLATE_PLACEHOLDER: &str = "$O";
 const TEMPLATE_OUT_DIR_PLACEHOLDER: &str = "$OUT_DIR";
+const TEMPLATE_WASI_SYSROOT_PLACEHOLDER: &str = "$WASI_SYSROOT";
+
+/// Returns the wasi-libc sysroot if available.
+///
+/// Expected layout: `{sysroot}/lib/wasm32-wasi/libc.a` and `{sysroot}/include/wasm32-wasi/`.
+fn wasi_sysroot() -> Option<PathBuf> {
+    let mut candidates = std::env::var_os("WASI_SYSROOT")
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(std::iter::once(PathBuf::from("/usr")));
+
+    candidates.find(|root| root.join("lib/wasm32-wasi/libc.a").exists())
+}
+
+fn wasi_sysroot_display() -> String {
+    wasi_sysroot()
+        .unwrap_or_else(|| PathBuf::from("/usr"))
+        .display()
+        .to_string()
+}
+
+fn expand_test_arg_placeholders(arg: &str, config: &Config) -> String {
+    arg.replace(
+        TEMPLATE_OUT_DIR_PLACEHOLDER,
+        &config.build_dir().display().to_string(),
+    )
+    .replace(TEMPLATE_WASI_SYSROOT_PLACEHOLDER, &wasi_sysroot_display())
+}
 
 fn base_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1013,6 +1050,7 @@ struct Config {
     assertions: Assertions,
     linker_driver: LinkerDriver,
     linker_args: ArgumentSet,
+    post_linker_args: ArgumentSet,
     linker_so_args: ArgumentSet,
     wild_extra_linker_args: ArgumentSet,
     compiler_args: ArgumentSet,
@@ -1041,6 +1079,7 @@ struct Config {
     requires_compiler_flags: Vec<String>,
     requires_linker_flags: Vec<String>,
     requires_nightly_rustc: bool,
+    requires_wasi_libc: bool,
     auto_add_objects: bool,
     remove_sections: Vec<String>,
     rustc_channel: RustcChannel,
@@ -1700,6 +1739,7 @@ impl Config {
             assertions: Default::default(),
             linker_driver: LinkerDriver::Direct(DirectConfig::default()),
             linker_args: platform.default_args_for_linking(),
+            post_linker_args: ArgumentSet::empty(),
             linker_so_args: platform.default_args_for_linking(),
             compiler_args: platform.default_compiler_args(),
             compiler_so_args: platform.default_compiler_args(),
@@ -1730,6 +1770,7 @@ impl Config {
             requires_linker_flags: Vec::new(),
             requires_nightly_rustc: false,
             requires_linker_plugin: false,
+            requires_wasi_libc: false,
             auto_add_objects: true,
             rustc_channel: RustcChannel::Default,
             requires_rust_musl: false,
@@ -1859,7 +1900,7 @@ fn process_directive(
             if is_rust {
                 bail!("LinkArgs is not used when building Rust code");
             }
-            let arg = &arg.replace("$OUT_DIR", &config.build_dir().display().to_string());
+            let arg = expand_test_arg_placeholders(arg, config);
             if let Some((_, rest)) = arg.split_once("./") {
                 let filename = rest.split_once(' ').map_or(rest, |(f, _)| f);
                 let src_path = config.test_src_dir.join(filename);
@@ -1868,8 +1909,15 @@ fn process_directive(
                     arg.replace(&format!("./{filename}"), &src_path.display().to_string());
                 config.linker_args = ArgumentSet::parse(&with_replaced_path)?
             } else {
-                config.linker_args = ArgumentSet::parse(arg)?
+                config.linker_args = ArgumentSet::parse(&arg)?
             }
+        }
+        "PostLinkArgs" => {
+            if is_rust {
+                bail!("PostLinkArgs is not used when building Rust code");
+            }
+            let arg = expand_test_arg_placeholders(arg, config);
+            config.post_linker_args = ArgumentSet::parse(&arg)?
         }
         "LinkSoArgs" => {
             if is_rust {
@@ -1891,8 +1939,14 @@ fn process_directive(
             config.linker_driver = LinkerDriver::parse(arg)?;
         }
         "WildExtraLinkArgs" => config.wild_extra_linker_args = ArgumentSet::parse(arg)?,
-        "CompArgs" => config.compiler_args = ArgumentSet::parse(arg)?,
-        "CompSoArgs" => config.compiler_so_args = ArgumentSet::parse(arg)?,
+        "CompArgs" => {
+            let arg = expand_test_arg_placeholders(arg, config);
+            config.compiler_args = ArgumentSet::parse(&arg)?
+        }
+        "CompSoArgs" => {
+            let arg = expand_test_arg_placeholders(arg, config);
+            config.compiler_so_args = ArgumentSet::parse(&arg)?
+        }
         "ExpectSym" => config
             .assertions
             .expected_symtab_entries
@@ -2196,6 +2250,9 @@ fn process_directive(
         }
         "RequiresLinkerPlugin" => {
             config.requires_linker_plugin = arg.to_lowercase().parse()?;
+        }
+        "RequiresWasiLibc" => {
+            config.requires_wasi_libc = parse_bool(arg, "RequiresWasiLibc")?;
         }
         "TestUpdateInPlace" => {
             config.test_update_in_place = arg.to_lowercase().parse()?;
@@ -3038,7 +3095,7 @@ fn build_obj(
             }
 
             if let Some(arch) = cross_arch {
-                let target = get_target(&compiler_args).cloned().unwrap_or_else(|_| {
+                let target = get_target(&compiler_args).unwrap_or_else(|_| {
                     command.arg(format!(
                         "--target={}",
                         arch.default_target_triple_rustc(config.platform)
@@ -3218,7 +3275,6 @@ fn add_cross_args(
     if !platform.is_host() || cross_arch.is_some() {
         let arch = cross_arch.unwrap_or_else(get_host_architecture);
         let target = get_target(compiler_args)
-            .cloned()
             .unwrap_or_else(|_| arch.default_target_triple(platform).to_owned());
         command.arg(format!("--target={target}"));
     }
@@ -3318,16 +3374,26 @@ fn compiler_for_file(
     Ok(Some((compiler, compiler_kind)))
 }
 
-/// Returns the value of the --target flag.
-fn get_target(compiler_args: &[String]) -> Result<&String> {
+/// Returns the value of the `--target` / `-target` flag, if present.
+fn get_target(compiler_args: &[String]) -> Result<String> {
     let mut is_next = false;
 
     for arg in compiler_args {
         if is_next {
-            return Ok(arg);
+            return Ok(arg.clone());
         }
 
-        is_next = arg == "--target";
+        if arg == "--target" || arg == "-target" {
+            is_next = true;
+            continue;
+        }
+
+        if let Some(target) = arg
+            .strip_prefix("--target=")
+            .or_else(|| arg.strip_prefix("-target="))
+        {
+            return Ok(target.to_owned());
+        }
     }
 
     bail!("No --target flag found");
@@ -3710,6 +3776,7 @@ impl LinkCommand {
             }
 
             add_inputs_to_command(config, inputs, &mut command);
+            command.args(&config.post_linker_args.args);
         }
 
         if linker.is_wild() {
@@ -4104,10 +4171,12 @@ fn add_inputs_to_command(config: &Config, inputs: &[LinkerInput], command: &mut 
                 .expect("Non-UTF-8 paths not supported")
                 .to_owned();
 
+            let wasi_sysroot = wasi_sysroot_display();
             for a in template {
                 let arg = a
                     .replace(TEMPLATE_OUT_DIR_PLACEHOLDER, &out_dir)
-                    .replace(TEMPLATE_PLACEHOLDER, path_str);
+                    .replace(TEMPLATE_PLACEHOLDER, path_str)
+                    .replace(TEMPLATE_WASI_SYSROOT_PLACEHOLDER, &wasi_sysroot);
                 command.arg(arg);
             }
         } else {
@@ -6031,6 +6100,18 @@ fn run_integration_test(
     if !test_config.allow_rust_musl_target && config.requires_rust_musl {
         return Ok(libtest_mimic::Completion::ignored_with(
             "Test doesn't support musl-libc",
+        ));
+    }
+
+    if config.requires_wasi_libc && wasi_sysroot().is_none() {
+        if full_test_platform_required() {
+            bail!(
+                "RequiresWasiLibc is set, but wasi-libc was not found. Install the wasi-libc \
+                 package or set WASI_SYSROOT to a sysroot containing lib/wasm32-wasi/libc.a"
+            );
+        }
+        return Ok(libtest_mimic::Completion::ignored_with(
+            "wasi-libc not found (install wasi-libc or set WASI_SYSROOT)",
         ));
     }
 

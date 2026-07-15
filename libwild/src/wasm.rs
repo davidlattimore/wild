@@ -3527,12 +3527,10 @@ fn linker_defined_data_symbol_address(
             address: data_end,
             needs_stack_gap: false,
         })),
-        b"__heap_base" => {
-            Ok(Some(LinkerDefinedDataAddress {
-                address: stack_high_after_data(data_end)?,
-                needs_stack_gap: true,
-            }))
-        }
+        b"__heap_base" => Ok(Some(LinkerDefinedDataAddress {
+            address: stack_high_after_data(data_end)?,
+            needs_stack_gap: true,
+        })),
         _ => Ok(None),
     }
 }
