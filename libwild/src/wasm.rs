@@ -13,6 +13,7 @@ use crate::layout_rules::SectionRule;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::output_section_id::SectionName;
 use crate::platform;
+use crate::platform::Args as _;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::timing_phase;
@@ -3142,6 +3143,17 @@ fn push_function_export<'data>(
     });
 }
 
+fn push_global_export<'data>(exports: &mut Vec<OutputExport<'data>>, name: &'data str, index: u32) {
+    if export_name_exists(exports, name) {
+        return;
+    }
+    exports.push(OutputExport {
+        name,
+        kind: wasmparser::ExternalKind::Global,
+        index,
+    });
+}
+
 /// Resolved user entry function, if present among the linked objects.
 struct ResolvedEntry<'data> {
     export_name: &'data str,
@@ -3212,6 +3224,68 @@ fn ensure_entry_export<'data>(
         kind: wasmparser::ExternalKind::Func,
         index,
     });
+}
+
+/// Export symbols requested via `--export`.
+fn ensure_force_exports<'data>(
+    exports: &mut Vec<OutputExport<'data>>,
+    layout_inputs: &[WasmObjectLayoutInput<'data>],
+    object_index_maps: &[WasmObjectIndexMap],
+    symbol_db: &SymbolDb<'data, Wasm>,
+    entry: Option<&ResolvedEntry<'data>>,
+    entry_wrapper_func: Option<u32>,
+) -> Result<()> {
+    for name in symbol_db.args.force_export_symbol_names() {
+        let Some(symbol_id) =
+            symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()))
+        else {
+            bail!("symbol exported via --export not found: {name}");
+        };
+        let def_id = symbol_db.definition(symbol_id);
+        let def_file_id = symbol_db.file_id_for_symbol(def_id);
+
+        let Some(def_obj_idx) = layout_inputs
+            .iter()
+            .position(|input| input.file_id == def_file_id)
+        else {
+            bail!("symbol exported via --export not found: {name}");
+        };
+        let def_input = &layout_inputs[def_obj_idx];
+        let def_sym = &def_input.symbols[def_input.symbol_id_range.id_to_offset(def_id)];
+        if def_sym.is_undefined() {
+            bail!("symbol exported via --export not found: {name}");
+        }
+
+        let index_map = object_index_maps
+            .get(def_obj_idx)
+            .context("missing Wasm object index map for --export symbol definition")?;
+        let export_name = core::str::from_utf8(symbol_db.symbol_name(def_id)?.bytes())
+            .context("invalid UTF-8 in Wasm --export symbol name")?;
+
+        match def_sym.kind {
+            WasmSymbolKind::Func => {
+                let mut index =
+                    remap_wasm_index(&index_map.function_indices, def_sym.index, "function")?;
+                // If this is the entry and we wrap it, export the wrapper.
+                if let (Some(entry), Some(wrapper)) = (entry, entry_wrapper_func)
+                    && export_name == entry.export_name
+                {
+                    index = wrapper;
+                }
+                push_function_export(exports, export_name, index);
+            }
+            WasmSymbolKind::Global => {
+                let index = remap_wasm_index(&index_map.global_indices, def_sym.index, "global")?;
+                push_global_export(exports, export_name, index);
+            }
+            _ => {
+                bail!(
+                    "Wasm --export of non-function/non-global symbols is not yet supported: {name}"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn build_output_module_layout<'data, 'files>(
@@ -3398,6 +3472,14 @@ where
             entry.as_ref(),
             indices.entry_wrapper_func,
         );
+        ensure_force_exports(
+            &mut layout.exports,
+            &layout_inputs,
+            &layout.object_index_maps,
+            symbol_db,
+            entry.as_ref(),
+            indices.entry_wrapper_func,
+        )?;
     }
     {
         timing_phase!("Finalize Wasm indirect function table");
