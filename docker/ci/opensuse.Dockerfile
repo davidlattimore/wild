@@ -5,7 +5,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:$PATH
 
 RUN zypper refresh \
-    && zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup \
+    && zypper in -y gcc gcc-c++ glibc-devel-static clang lld llvm-gold curl rustup \
     && zypper clean --all \
     && curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-$(uname -m).gz \
         | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo \
