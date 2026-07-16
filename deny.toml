@@ -1,3 +1,8 @@
+[advisories]
+ignore = [
+  "RUSTSEC-2024-0436", # paste is no longer maintained
+]
+
 [licenses]
 confidence-threshold = 0.93
 allow = [
