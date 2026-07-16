@@ -229,6 +229,7 @@ jobs:
       - uses: wild-linker/action@latest
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --workspace --target x86_64-unknown-linux-gnu
+      - run: cargo clippy --all-targets --workspace --target x86_64-unknown-linux-gnu --no-default-features
 
   rustfmt:
     name: Check formatting
