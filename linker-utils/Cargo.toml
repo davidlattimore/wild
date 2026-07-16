@@ -12,7 +12,7 @@ anyhow.workspace = true
 derive_more.workspace = true
 leb128.workspace = true
 object.workspace = true
-pastey.workspace = true
+paste.workspace = true
 
 [lints]
 workspace = true

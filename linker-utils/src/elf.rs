@@ -10,7 +10,7 @@ macro_rules! const_or_literal {
         $name($value)
     };
     ($name:ident $prefix:ident $const:ident) => {
-        ::pastey::paste! {
+        ::paste::paste! {
             ::object::elf::[<$prefix _ $const>]
         }
     };

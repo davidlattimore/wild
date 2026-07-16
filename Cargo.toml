@@ -102,7 +102,7 @@ object = { git = "https://github.com/gimli-rs/object", rev = "a0bfa322", default
   "names",
 ] }
 os_info = { version = "3.1.0", default-features = false }
-pastey = { version = "0.2.3", default-features = false }
+paste = { version = "1.0.15", default-features = false }
 # 0.4.9 contains breaking changes.
 perf-event = { version = "=0.4.8", default-features = false }
 perfetto-recorder = { version = "0.3.0", default-features = false }
