@@ -1770,7 +1770,11 @@ pub(crate) fn merge_secondary_parts<P: Platform>(
         if let SectionKind::Secondary(primary_id) = info.kind {
             let secondary_layout = take(section_layouts.get_mut(id));
             let primary = section_layouts.get_mut(primary_id);
-            if info.location_info.is_some() {
+            let has_location_counters = info
+                .location_info
+                .as_ref()
+                .is_some_and(|li| li.location_counters.0 < li.location_counters.1);
+            if has_location_counters {
                 let mem_end = secondary_layout.mem_offset + secondary_layout.mem_size;
                 if mem_end > primary.mem_offset + primary.mem_size {
                     primary.mem_size = mem_end - primary.mem_offset;
@@ -1779,8 +1783,12 @@ pub(crate) fn merge_secondary_parts<P: Platform>(
                 if file_end > primary.file_offset + primary.file_size {
                     primary.file_size = file_end - primary.file_offset;
                 }
+                if secondary_layout.mem_size > 0 {
+                    primary.alignment = primary.alignment.max(secondary_layout.alignment);
+                }
+            } else {
+                primary.merge(&secondary_layout);
             }
-            primary.merge(&secondary_layout);
         }
     }
 }

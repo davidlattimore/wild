@@ -21,6 +21,12 @@
 //#Config:no_gc_sections:default
 //#LinkArgs:--no-gc-sections
 
+//#Config:section_sizeof
+//#LinkerScript:linker-script-section-sizeof.ld
+//#Object:runtime.c
+// RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
+//#SkipArch:riscv64,ppc64le
+
 //#Config:underflow
 //#Object:runtime.c
 //#LinkerScript:linker-script-location-counter-underflow.ld
@@ -31,6 +37,9 @@
 #include "../common/runtime.h"
 
 int ret = 42;
+
+__attribute__((section(".foo.first"))) int data_first = 1;
+__attribute__((section(".foo.second"), aligned(8))) int data_second = 2;
 
 __attribute__((section(".text.foo"))) void foo(void) {}
 
