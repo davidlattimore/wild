@@ -3,6 +3,7 @@ name = "benchmark-runner"
 description = "Runs benchmarks for the Wild linker"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
