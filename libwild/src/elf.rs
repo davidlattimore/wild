@@ -5100,7 +5100,7 @@ const RELR_ADDRESS_RANGE: u64 = RELR_BITMAP_SLOTS * RELR_TYPE_BYTE_SIZE;
 
 struct RelrBitmap {
     range: Range<u64>,
-    bitmap: u64,
+    encoded: u64,
 }
 
 impl RelrBitmap {
@@ -5109,7 +5109,7 @@ impl RelrBitmap {
         let start = address + RELR_TYPE_BYTE_SIZE;
         Self {
             range: start..start + RELR_ADDRESS_RANGE,
-            bitmap: 1,
+            encoded: 1,
         }
     }
 
@@ -5117,7 +5117,7 @@ impl RelrBitmap {
     fn next(&self) -> Self {
         Self {
             range: self.range.start + RELR_ADDRESS_RANGE..self.range.end + RELR_ADDRESS_RANGE,
-            bitmap: 1,
+            encoded: 1,
         }
     }
 
@@ -5128,7 +5128,7 @@ impl RelrBitmap {
         if !self.range.contains(&address) || !offset.is_multiple_of(RELR_TYPE_BYTE_SIZE) {
             false
         } else {
-            self.bitmap |= 1 << (offset / RELR_TYPE_BYTE_SIZE + 1);
+            self.encoded |= 1 << (offset / RELR_TYPE_BYTE_SIZE + 1);
             true
         }
     }
@@ -5176,7 +5176,7 @@ impl RelrEncoder {
             }
             RelrState::AddressOnly { mut next_bitmap } => {
                 if next_bitmap.insert(address) {
-                    encode_fn(next_bitmap.bitmap, RelrEntryEncoding::New)?;
+                    encode_fn(next_bitmap.encoded, RelrEntryEncoding::New)?;
                     RelrState::WithBitmap {
                         bitmap: next_bitmap,
                     }
@@ -5189,15 +5189,15 @@ impl RelrEncoder {
             }
             RelrState::WithBitmap { mut bitmap } => {
                 if bitmap.insert(address) {
-                    encode_fn(bitmap.bitmap, RelrEntryEncoding::Update)?;
+                    encode_fn(bitmap.encoded, RelrEntryEncoding::Update)?;
                     RelrState::WithBitmap { bitmap }
                 } else {
+                    // Current window has bits — try next window.
+                    // lld only advances to a new bitmap if the current one is
+                    // non-empty (breaks on empty bitmap). Same rule here.
                     let mut next_bitmap = bitmap.next();
                     if next_bitmap.insert(address) {
-                        // Current window has bits — try next window.
-                        // lld only advances to a new bitmap if the current one is
-                        // non-empty (breaks on empty bitmap). Same rule here.
-                        encode_fn(next_bitmap.bitmap, RelrEntryEncoding::New)?;
+                        encode_fn(next_bitmap.encoded, RelrEntryEncoding::New)?;
                         RelrState::WithBitmap {
                             bitmap: next_bitmap,
                         }
