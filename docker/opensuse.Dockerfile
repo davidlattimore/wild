@@ -15,6 +15,7 @@ RUN zypper install -y -t pattern devel_C_C++ && \
         cross-riscv64-binutils \
         qemu-linux-user \
         lld \
+        llvm-gold \
         vim \
         less
 RUN rustup toolchain install nightly \
