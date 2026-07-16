@@ -10,11 +10,12 @@
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::misc;
 use std::path::PathBuf;
 use std::process::Command;
 
 pub(crate) fn maybe_diff() -> Result {
-    if let Ok(reference_linker) = std::env::var(crate::args::REFERENCE_LINKER_ENV)
+    if let Ok(reference_linker) = misc::get_env(crate::args::REFERENCE_LINKER_ENV)
         && let Some(paths) = run_with_linker(&reference_linker)?
     {
         run_diff(&paths)?;

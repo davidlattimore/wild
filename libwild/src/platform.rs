@@ -21,6 +21,7 @@ use crate::layout_rules::LayoutRulesBuilder;
 use crate::layout_rules::SectionRule;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::linker_plugins::LinkerPlugin;
+use crate::misc;
 use crate::output_section_id::CustomSectionIds;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
@@ -1467,7 +1468,7 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
         let message = format!("{opt} is not yet supported");
 
-        match std::env::var(WILD_UNSUPPORTED_ENV)
+        match misc::get_env(WILD_UNSUPPORTED_ENV)
             .unwrap_or_default()
             .as_str()
         {

@@ -6,6 +6,7 @@ use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout::GroupLayout;
 use crate::layout::Layout;
+use crate::misc;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
@@ -385,7 +386,7 @@ pub(crate) fn excessive_allocation(
 /// Returns a message suggesting to set an environment variable to help debug a failure, but only if
 /// it's not already set, since that would be confusing.
 pub(crate) fn verify_allocations_message() -> String {
-    if std::env::var(WRITE_VERIFY_ALLOCATIONS_ENV).is_ok_and(|v| v == "1") {
+    if misc::get_env(WRITE_VERIFY_ALLOCATIONS_ENV).is_ok_and(|v| v == "1") {
         String::new()
     } else {
         format!("Setting {WRITE_VERIFY_ALLOCATIONS_ENV}=1 might give more info")

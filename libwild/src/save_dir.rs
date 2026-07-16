@@ -10,6 +10,7 @@ use crate::file_kind::FileKind;
 use crate::input_data::FileData;
 use crate::input_data::FileLoader;
 use crate::linker_script::LinkerScript;
+use crate::misc;
 use crate::platform;
 use foldhash::HashSet;
 use std::borrow::Cow;
@@ -75,7 +76,7 @@ impl SaveDir {
 }
 
 fn save_dir_from_env() -> Result<Option<PathBuf>> {
-    if let Ok(d) = std::env::var(SAVE_DIR_ENV) {
+    if let Ok(d) = misc::get_env(SAVE_DIR_ENV) {
         let dir = PathBuf::from(d);
 
         if dir.exists() {
@@ -99,7 +100,7 @@ fn save_dir_from_env() -> Result<Option<PathBuf>> {
         return Ok(Some(dir));
     }
 
-    if let Ok(d) = std::env::var(SAVE_BASE_ENV) {
+    if let Ok(d) = misc::get_env(SAVE_BASE_ENV) {
         let base = PathBuf::from(d);
         std::fs::create_dir_all(&base).with_context(|| {
             format!(
@@ -147,7 +148,7 @@ impl SaveDirState {
         self.write_args_file(&run_with_file, parsed_args)
             .with_context(|| format!("Failed to write `{}`", run_with_file.display()))?;
 
-        if std::env::var(SKIP_LINKING_ENV).is_ok() {
+        if misc::get_env(SKIP_LINKING_ENV).is_ok() {
             std::process::exit(0);
         }
         Ok(())
@@ -610,7 +611,7 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
 /// that are known to be used for communication between the compiler and say linker plugins.
 fn write_env(out: &mut BufWriter<&mut std::fs::File>, args: &impl platform::Args) -> Result {
     for var in &["COLLECT_GCC", "COLLECT_GCC_OPTIONS"] {
-        if let Ok(mut value) = std::env::var(var) {
+        if let Ok(mut value) = misc::get_env(var) {
             // COLLECT_GCC_OPTIONS has things like "-o /path/to/output-file" in it. Update these so
             // that we use the run-with scripts output file instead.
             if let Some(out) = args.output().to_str() {

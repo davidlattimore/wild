@@ -3,6 +3,7 @@
 use crate::args::CounterKind;
 use crate::error::AlreadyInitialised;
 use crate::error::Result;
+use crate::misc;
 use crate::perf::CounterList;
 use anyhow::Context;
 use anyhow::anyhow;
@@ -277,7 +278,7 @@ impl Display for Reading {
 }
 
 fn perfetto_output_file() -> Option<PathBuf> {
-    std::env::var(PERFETTO_ENV_VAR).ok().map(PathBuf::from)
+    misc::get_env(PERFETTO_ENV_VAR).ok().map(PathBuf::from)
 }
 
 pub(crate) fn finalise_perfetto_trace() -> Result {
