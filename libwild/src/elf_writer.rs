@@ -1181,7 +1181,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                         let entry = self
                             .current_relr_dyn
                             .as_deref_mut()
-                            .ok_or_else(|| insufficient_allocation(".relr.dyn"))?;
+                            .ok_or_else(|| error!("Internal error in RELR bitmap encoding"))?;
                         entry.0.set(LittleEndian, encoded);
                     }
                 }

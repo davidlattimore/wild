@@ -5106,9 +5106,9 @@ struct RelrBitmap {
 impl RelrBitmap {
     // Return bitmap starting after the current address.
     fn after(address: u64) -> Self {
-        let start = address.wrapping_add(RELR_TYPE_BYTE_SIZE);
+        let start = address + RELR_TYPE_BYTE_SIZE;
         Self {
-            range: start..start.wrapping_add(RELR_ADDRESS_RANGE),
+            range: start..start + RELR_ADDRESS_RANGE,
             bitmap: 1,
         }
     }
@@ -5131,11 +5131,6 @@ impl RelrBitmap {
             self.bitmap |= 1 << (offset / RELR_TYPE_BYTE_SIZE + 1);
             true
         }
-    }
-
-    // Return true if the bitmap does not encode any address.
-    fn is_empty(&self) -> bool {
-        self.bitmap == 1
     }
 }
 
@@ -5164,7 +5159,7 @@ pub(crate) struct RelrEncoder {
     state: RelrState,
 }
 
-// RELR bitmap packing state used for both allocation and the actual writting of relocations
+// RELR bitmap packing state used for both allocation and the actual writing of relocations
 // to the output stream.
 impl RelrEncoder {
     pub(crate) fn encode(
@@ -5196,7 +5191,7 @@ impl RelrEncoder {
                 if bitmap.insert(address) {
                     encode_fn(bitmap.bitmap, RelrEntryEncoding::Update)?;
                     RelrState::WithBitmap { bitmap }
-                } else if !bitmap.is_empty() {
+                } else {
                     let mut next_bitmap = bitmap.next();
                     if next_bitmap.insert(address) {
                         // Current window has bits — try next window.
@@ -5212,13 +5207,6 @@ impl RelrEncoder {
                         RelrState::AddressOnly {
                             next_bitmap: RelrBitmap::after(address),
                         }
-                    }
-                } else {
-                    // Unaligned, or current window empty and out of range.
-                    // lld breaks on empty bitmap — start new address entry.
-                    encode_fn(address, RelrEntryEncoding::New)?;
-                    RelrState::AddressOnly {
-                        next_bitmap: RelrBitmap::after(address),
                     }
                 }
             }
