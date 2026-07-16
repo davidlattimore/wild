@@ -579,6 +579,7 @@ mod tests {
         assert_eq!(recovered, input);
     }
 
+    #[cfg(feature = "zstd")]
     #[test]
     fn zstd_multi_shard_round_trip() {
         let input = pattern_bytes(MIN_CHUNK_SIZE * 3 + 123);
