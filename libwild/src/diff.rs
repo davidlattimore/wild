@@ -8,9 +8,9 @@
 //! For this to work, the linker-diff binary needs to be installed in the same directory as wild.
 
 use crate::bail;
+use crate::env;
 use crate::error::Context as _;
 use crate::error::Result;
-use crate::env;
 use std::path::PathBuf;
 use std::process::Command;
 

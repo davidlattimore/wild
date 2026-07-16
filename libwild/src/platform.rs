@@ -2,6 +2,7 @@ use crate::OutputKind;
 use crate::Result;
 use crate::alignment::Alignment;
 use crate::bail;
+use crate::env;
 use crate::error::Warning;
 use crate::grouping::Group;
 use crate::grouping::SequencedLinkerScript;
@@ -21,7 +22,6 @@ use crate::layout_rules::LayoutRulesBuilder;
 use crate::layout_rules::SectionRule;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::linker_plugins::LinkerPlugin;
-use crate::env;
 use crate::output_section_id::CustomSectionIds;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
@@ -1468,10 +1468,7 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
         let message = format!("{opt} is not yet supported");
 
-        match env::var(WILD_UNSUPPORTED_ENV)
-            .unwrap_or_default()
-            .as_str()
-        {
+        match env::var(WILD_UNSUPPORTED_ENV).unwrap_or_default().as_str() {
             "warn" | "" => self.warning(message),
             "ignore" => {}
             "error" => bail!("{message}"),
