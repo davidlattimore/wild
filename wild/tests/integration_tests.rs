@@ -6298,7 +6298,7 @@ fn verify_linker_plugin_requirements(
                 "-Clinker-plugin-lto",
                 "-Clink-arg=-flto",
                 "-o",
-                "/tmp/rust.out",
+                &format!("/tmp/rust-{}.out", config.arch),
             ]);
             verify_command_success(&mut command).context(
                 "Can't use rust+clang with linker plugin. LLVM version mismatch? \
