@@ -14,10 +14,10 @@
 
 use crate::bail;
 use crate::ensure;
+use crate::env;
 use crate::error::Context;
 use crate::error::Result;
 use crate::input_data::FileId;
-use crate::misc;
 use crate::save_dir::SaveDir;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
@@ -310,12 +310,12 @@ impl Default for CommonArgs {
             should_fork: true,
             demangle: true,
             version_mode: VersionMode::None,
-            validate_output: misc::get_env(VALIDATE_ENV).is_ok_and(|v| v == "1"),
-            verify_allocation_consistency: misc::get_env(WRITE_VERIFY_ALLOCATIONS_ENV)
+            validate_output: env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
+            verify_allocation_consistency: env::var(WRITE_VERIFY_ALLOCATIONS_ENV)
                 .is_ok_and(|v| v == "1"),
-            write_layout: misc::get_env(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1"),
-            write_trace: misc::get_env(WRITE_TRACE_ENV).is_ok_and(|v| v == "1"),
-            print_allocations: misc::get_env("WILD_PRINT_ALLOCATIONS")
+            write_layout: env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1"),
+            write_trace: env::var(WRITE_TRACE_ENV).is_ok_and(|v| v == "1"),
+            print_allocations: env::var("WILD_PRINT_ALLOCATIONS")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .map(FileId::from_encoded),
@@ -442,7 +442,7 @@ impl CommonArgs {
         // so we open it before the arguments are parsed (can open a file).
         let jobserver_client = unsafe { Client::from_env() };
 
-        let files_per_group = misc::get_env(FILES_PER_GROUP_ENV)
+        let files_per_group = env::var(FILES_PER_GROUP_ENV)
             .ok()
             .map(|s| s.parse())
             .transpose()?;
@@ -460,7 +460,7 @@ impl CommonArgs {
             ..Default::default()
         };
 
-        if misc::get_env(REFERENCE_LINKER_ENV).is_ok() {
+        if env::var(REFERENCE_LINKER_ENV).is_ok() {
             common.write_layout = true;
             common.write_trace = true;
         }

@@ -24,7 +24,7 @@ use crate::input_data::FileId;
 use crate::input_data::FileLoader;
 use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
-use crate::misc;
+use crate::env;
 use crate::output_section_id::OutputSections;
 use crate::platform::Args as _;
 use crate::platform::Platform;
@@ -231,7 +231,7 @@ impl<'data> LinkerPlugin<'data> {
             Ok(PLUGIN_OUTPUTS.take())
         })?;
 
-        if let Ok(dir_name) = misc::get_env(SAVE_VAR_NAME) {
+        if let Ok(dir_name) = env::var(SAVE_VAR_NAME) {
             plugin_outputs.save_to(Path::new(&dir_name))?;
         }
 

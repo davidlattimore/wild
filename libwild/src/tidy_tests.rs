@@ -3,7 +3,7 @@
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
-use crate::misc;
+use crate::env;
 use std::fs::read_dir;
 use std::path::Path;
 
@@ -12,7 +12,7 @@ fn check_sources_format() -> Result {
     use std::process::Command;
     use std::process::Stdio;
 
-    if misc::get_env("WILD_TEST_IGNORE_FORMAT").is_ok() {
+    if env::var("WILD_TEST_IGNORE_FORMAT").is_ok() {
         return Ok(());
     }
 
@@ -97,7 +97,7 @@ fn check_toml_format() -> Result {
     use std::process::Command;
     use std::process::Stdio;
 
-    if misc::get_env("WILD_TEST_IGNORE_FORMAT").is_ok() {
+    if env::var("WILD_TEST_IGNORE_FORMAT").is_ok() {
         return Ok(());
     }
 
