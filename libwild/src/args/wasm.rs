@@ -14,6 +14,7 @@ use crate::bail;
 use crate::ensure;
 use crate::error::Result;
 use crate::platform;
+use crate::platform::Args as _;
 use crate::save_dir::SaveDir;
 use jobserver::Client;
 use std::path::Path;
@@ -214,7 +215,10 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
                 Ok(())
             },
         )
-        .execute(|_args, _modifier_stack, value| bail!("unknown -z flag: {value}"));
+        .execute(|args, _modifier_stack, value| {
+            args.warn_unsupported(&(format!("-z {value}")))?;
+            Ok(())
+        });
 
     super::declare_common_args(&mut parser);
 
