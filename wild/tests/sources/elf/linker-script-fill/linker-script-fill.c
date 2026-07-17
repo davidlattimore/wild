@@ -18,8 +18,12 @@
 //#ExpectSectionBytes:.fill6=0x90909090909090909090909022 12..25
 
 //#Config:overflow-u32:default
-//#LinkerScript:linker-script-fill-large.ld
+//#LinkerScript:linker-script-fill-overflow.ld
 //#ExpectError:.*(?i-u)filler expression result does not fit 32-bit: 0x9090909090
+
+//#Config:negative-fill:default
+//#LinkerScript:linker-script-fill-neg.ld
+//#ExpectError:.*(?i-u)filler expression result does not fit 32-bit: 0xffffffffffffffff
 
 __attribute__((section(".fill1.first"), aligned(8))) char fill1_first = 0x11;
 __attribute__((section(".fill1.second"), aligned(8))) char fill1_second = 0x22;
