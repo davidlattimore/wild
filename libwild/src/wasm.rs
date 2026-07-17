@@ -3056,39 +3056,57 @@ fn emit_reserved_linker_definitions(
     }
 }
 
-/// Write stack-pointer init and memory page sizes after static data layout.
-fn fill_linker_defined_values(
-    layout: &mut WasmLayout<'_>,
-    indices: &LinkerDefinedIndices,
-    needs_stack_gap: bool,
-    stack_size: u32,
-) -> Result {
-    if let Some(defined_slot) = indices.stack_pointer_defined_slot {
-        let sp = stack_high_after_data(layout.data_end, stack_size)?;
-        let global = layout
-            .globals
-            .get_mut(defined_slot as usize)
-            .ok_or_else(|| crate::error!("Wasm stack pointer global missing"))?;
-        ensure!(
-            global.ty.mutable && global.ty.content_type == wasmparser::ValType::I32,
-            "Wasm stack pointer global has unexpected type"
-        );
-        global.init_expr_body = Cow::Owned(encode_i32_const_body(sp as i32));
-    }
+fn wasm_page_size() -> u64 {
+    crate::args::wasm::WASM_PAGE_SIZE
+}
 
+fn ensure_memory_covers(
+    layout: &mut WasmLayout<'_>,
+    stack_size: u32,
+    reserve_post_data_stack: bool,
+) -> Result<u64> {
+    let page = wasm_page_size();
     let mut bytes_needed = u64::from(layout.data_end.max(layout.memory_base));
-    if indices.stack_pointer_defined_slot.is_some() || needs_stack_gap {
+    if reserve_post_data_stack && stack_size > 0 {
         bytes_needed = bytes_needed.max(u64::from(stack_high_after_data(
             layout.data_end,
             stack_size,
         )?));
     }
-    if bytes_needed > 0 && !layout.memories.is_empty() {
-        let pages_needed = bytes_needed.div_ceil(65536).max(1);
+    if !layout.memories.is_empty() && bytes_needed > 0 {
+        let pages_needed = bytes_needed.div_ceil(page).max(1);
         for memory in &mut layout.memories {
             memory.initial = memory.initial.max(pages_needed);
         }
     }
+    Ok(layout.memories.iter().map(|m| m.initial).max().unwrap_or(0))
+}
+
+/// `__heap_end` = end of initial linear memory (`memory.initial * page_size`).
+fn heap_end_from_initial_pages(initial_pages: u64) -> Result<u32> {
+    u32::try_from(initial_pages.saturating_mul(wasm_page_size()))
+        .map_err(|_| crate::error!("Wasm initial memory size overflow"))
+}
+
+/// Write stack-pointer init after static data layout.
+fn fill_stack_pointer_init(
+    layout: &mut WasmLayout<'_>,
+    indices: &LinkerDefinedIndices,
+    stack_size: u32,
+) -> Result {
+    let Some(defined_slot) = indices.stack_pointer_defined_slot else {
+        return Ok(());
+    };
+    let sp = stack_high_after_data(layout.data_end, stack_size)?;
+    let global = layout
+        .globals
+        .get_mut(defined_slot as usize)
+        .ok_or_else(|| crate::error!("Wasm stack pointer global missing"))?;
+    ensure!(
+        global.ty.mutable && global.ty.content_type == wasmparser::ValType::I32,
+        "Wasm stack pointer global has unexpected type"
+    );
+    global.init_expr_body = Cow::Owned(encode_i32_const_body(sp as i32));
     Ok(())
 }
 
@@ -3460,7 +3478,14 @@ where
         }
         layout.data_end = memory_cursor;
         let stack_size = symbol_db.args.z_stack_size;
-        let needs_stack_gap = compute_data_addresses(
+        let initial_pages = ensure_memory_covers(&mut layout, stack_size, stack_size > 0)?;
+        // wasm-ld only defines `__heap_end` when linear memory exists (end of `memory.initial`).
+        let heap_end = if layout.memories.is_empty() {
+            None
+        } else {
+            Some(heap_end_from_initial_pages(initial_pages)?)
+        };
+        compute_data_addresses(
             &mut layout.object_index_maps,
             &layout.per_object_symbols,
             &layout.object_data_layouts,
@@ -3468,8 +3493,9 @@ where
             symbol_db,
             layout.data_end,
             stack_size,
+            heap_end,
         )?;
-        fill_linker_defined_values(&mut layout, &indices, needs_stack_gap, stack_size)?;
+        fill_stack_pointer_init(&mut layout, &indices, stack_size)?;
         ensure_entry_export(
             &mut layout.exports,
             entry.as_ref(),
@@ -3673,6 +3699,7 @@ fn linker_defined_data_symbol_address(
     name: &[u8],
     data_end: u32,
     stack_size: u32,
+    heap_end: Option<u32>,
 ) -> Result<Option<LinkerDefinedDataAddress>> {
     match name {
         b"__data_end" => Ok(Some(LinkerDefinedDataAddress {
@@ -3682,6 +3709,14 @@ fn linker_defined_data_symbol_address(
         b"__heap_base" => Ok(Some(LinkerDefinedDataAddress {
             address: stack_high_after_data(data_end, stack_size)?,
             needs_stack_gap: stack_size > 0,
+        })),
+        b"__wasm_first_page_end" => Ok(Some(LinkerDefinedDataAddress {
+            address: u32::try_from(wasm_page_size())?,
+            needs_stack_gap: false,
+        })),
+        b"__heap_end" => Ok(heap_end.map(|address| LinkerDefinedDataAddress {
+            address,
+            needs_stack_gap: false,
         })),
         _ => Ok(None),
     }
@@ -3695,15 +3730,13 @@ fn compute_data_addresses(
     symbol_db: &SymbolDb<'_, Wasm>,
     data_end: u32,
     stack_size: u32,
-) -> Result<bool> {
+    heap_end: Option<u32>,
+) -> Result {
     let file_id_to_index: HashMap<crate::input_data::FileId, usize> = layout_inputs
         .iter()
         .enumerate()
         .map(|(i, input)| (input.file_id, i))
         .collect();
-
-    // True if any synthesised address assumes a stack gap after static data (`__heap_base`).
-    let mut needs_stack_gap = false;
 
     for (obj_idx, (index_map, symbols)) in object_index_maps
         .iter_mut()
@@ -3737,10 +3770,12 @@ fn compute_data_addresses(
 
             if def_sym.is_undefined() {
                 let name = symbol_db.symbol_name(name_symbol_id)?;
-                if let Some(resolved) =
-                    linker_defined_data_symbol_address(name.bytes(), data_end, stack_size)?
-                {
-                    needs_stack_gap |= resolved.needs_stack_gap;
+                if let Some(resolved) = linker_defined_data_symbol_address(
+                    name.bytes(),
+                    data_end,
+                    stack_size,
+                    heap_end,
+                )? {
                     data_addresses[sym_idx] = resolved.address;
                 }
                 continue;
@@ -3752,7 +3787,7 @@ fn compute_data_addresses(
         index_map.data_addresses = data_addresses;
     }
 
-    Ok(needs_stack_gap)
+    Ok(())
 }
 
 fn allocate_wasm_object_index_bases(
@@ -4638,20 +4673,32 @@ mod tests {
     use crate::args::wasm::DEFAULT_STACK_SIZE;
 
     #[test]
-    fn linker_defined_heap_base_requires_stack_gap() {
+    fn linker_defined_data_symbol_addresses() {
         let data_end = 1024u32;
-        let de = linker_defined_data_symbol_address(b"__data_end", data_end, DEFAULT_STACK_SIZE)
-            .unwrap()
-            .expect("__data_end");
+        let page = wasm_page_size();
+        let heap_end = heap_end_from_initial_pages(2).unwrap();
+        let de = linker_defined_data_symbol_address(
+            b"__data_end",
+            data_end,
+            DEFAULT_STACK_SIZE,
+            Some(heap_end),
+        )
+        .unwrap()
+        .expect("__data_end");
         assert_eq!(de.address, data_end);
         assert!(
             !de.needs_stack_gap,
             "`__data_end` is the end of static data. It must not force a stack reservation"
         );
 
-        let hb = linker_defined_data_symbol_address(b"__heap_base", data_end, DEFAULT_STACK_SIZE)
-            .unwrap()
-            .expect("__heap_base");
+        let hb = linker_defined_data_symbol_address(
+            b"__heap_base",
+            data_end,
+            DEFAULT_STACK_SIZE,
+            Some(heap_end),
+        )
+        .unwrap()
+        .expect("__heap_base");
         assert_eq!(
             hb.address,
             stack_high_after_data(data_end, DEFAULT_STACK_SIZE).unwrap()
@@ -4659,6 +4706,46 @@ mod tests {
         assert!(
             hb.needs_stack_gap,
             "`__heap_base` sits past the stack gap, so memory must cover that range"
+        );
+
+        let page_end = linker_defined_data_symbol_address(
+            b"__wasm_first_page_end",
+            data_end,
+            DEFAULT_STACK_SIZE,
+            Some(heap_end),
+        )
+        .unwrap()
+        .expect("__wasm_first_page_end");
+        assert_eq!(u64::from(page_end.address), page);
+        assert!(!page_end.needs_stack_gap);
+
+        let he = linker_defined_data_symbol_address(
+            b"__heap_end",
+            data_end,
+            DEFAULT_STACK_SIZE,
+            Some(heap_end),
+        )
+        .unwrap()
+        .expect("__heap_end");
+        assert_eq!(he.address, heap_end);
+        assert!(he.address >= hb.address);
+        assert_eq!(u64::from(he.address) % page, 0);
+
+        // If there is no output memory, `__heap_end` is not synthesised.
+        assert!(
+            linker_defined_data_symbol_address(b"__heap_end", data_end, DEFAULT_STACK_SIZE, None,)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            linker_defined_data_symbol_address(
+                b"__wasm_first_page_end",
+                data_end,
+                DEFAULT_STACK_SIZE,
+                None,
+            )
+            .unwrap()
+            .is_some()
         );
     }
 
@@ -4673,9 +4760,7 @@ mod tests {
     }
 
     #[test]
-    fn needs_stack_gap_grows_memory_that_would_not_cover_heap_base() {
-        // Default freestanding links often already request 2 pages, which hides a missing
-        // needs_stack_gap. Therefore start from a 1-page memory so the grow path is observable.
+    fn ensure_memory_covers_stack_and_matches_heap_end() {
         let data_end = 1024u32;
         let mut layout = WasmLayout {
             data_end,
@@ -4688,21 +4773,21 @@ mod tests {
             }],
             ..Default::default()
         };
-        let indices = LinkerDefinedIndices::default();
 
-        fill_linker_defined_values(&mut layout, &indices, false, DEFAULT_STACK_SIZE).unwrap();
-        assert_eq!(
-            layout.memories[0].initial, 1,
-            "without `needs_stack_gap`, a 1-page memory must stay 1 page"
-        );
+        let pages = ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, false).unwrap();
+        assert_eq!(pages, 1);
+        assert_eq!(layout.memories[0].initial, 1);
 
-        fill_linker_defined_values(&mut layout, &indices, true, DEFAULT_STACK_SIZE).unwrap();
-        let bytes_needed = u64::from(data_end) + u64::from(DEFAULT_STACK_SIZE);
-        let pages_needed = bytes_needed.div_ceil(65536);
+        let pages = ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, true).unwrap();
+        let expected_pages = (u64::from(data_end) + u64::from(DEFAULT_STACK_SIZE))
+            .div_ceil(wasm_page_size())
+            .max(1);
+        assert_eq!(pages, expected_pages);
+        assert_eq!(layout.memories[0].initial, expected_pages);
+        assert!(expected_pages > 1);
         assert_eq!(
-            layout.memories[0].initial, pages_needed,
-            "`needs_stack_gap` must grow memory to cover `data_end` + stack size"
+            heap_end_from_initial_pages(pages).unwrap(),
+            u32::try_from(pages * wasm_page_size()).unwrap()
         );
-        assert!(pages_needed > 1);
     }
 }
