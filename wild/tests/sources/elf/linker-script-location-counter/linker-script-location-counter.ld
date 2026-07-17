@@ -28,6 +28,11 @@ SECTIONS
     .bss : {
         KEEP(*(.bss))
     }
+
+    /DISCARD/ : {
+        *(.foo.first)
+        *(.foo.second)
+    }
 }
 
 ASSERT(start_of_sections == 0x600000, "start_of_sections should be 0x600000");
