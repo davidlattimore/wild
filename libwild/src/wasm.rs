@@ -116,18 +116,6 @@ pub(crate) const TARGET_FEATURES_SECTION_NAME: &str = "target_features";
 /// Default static data base for linker-produced executables.
 const LINKER_MEMORY_BASE: u32 = 1024;
 
-/// Default stack size reserved above `__data_end` for the main stack.
-const LINKER_STACK_SIZE: u32 = 64 * 1024;
-
-/// Stack reservation in bytes.
-fn stack_size(args: &WasmArgs) -> Result<u32> {
-    match args.z_stack_size {
-        None => Ok(LINKER_STACK_SIZE),
-        Some(size) => u32::try_from(size)
-            .map_err(|_| crate::error!("-z stack-size is too large for Wasm32: {size}")),
-    }
-}
-
 /// Empty function body: zero locals + `end`.
 const EMPTY_FUNCTION_BODY: &[u8] = &[0x00, 0x0b];
 
@@ -3471,7 +3459,7 @@ where
             ensure_memory_export(&mut layout.exports);
         }
         layout.data_end = memory_cursor;
-        let stack_size = stack_size(symbol_db.args)?;
+        let stack_size = symbol_db.args.z_stack_size;
         let needs_stack_gap = compute_data_addresses(
             &mut layout.object_index_maps,
             &layout.per_object_symbols,
@@ -4647,11 +4635,12 @@ fn wasm_symbol_from_info(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args::wasm::DEFAULT_STACK_SIZE;
 
     #[test]
     fn linker_defined_heap_base_requires_stack_gap() {
         let data_end = 1024u32;
-        let de = linker_defined_data_symbol_address(b"__data_end", data_end, LINKER_STACK_SIZE)
+        let de = linker_defined_data_symbol_address(b"__data_end", data_end, DEFAULT_STACK_SIZE)
             .unwrap()
             .expect("__data_end");
         assert_eq!(de.address, data_end);
@@ -4660,12 +4649,12 @@ mod tests {
             "`__data_end` is the end of static data. It must not force a stack reservation"
         );
 
-        let hb = linker_defined_data_symbol_address(b"__heap_base", data_end, LINKER_STACK_SIZE)
+        let hb = linker_defined_data_symbol_address(b"__heap_base", data_end, DEFAULT_STACK_SIZE)
             .unwrap()
             .expect("__heap_base");
         assert_eq!(
             hb.address,
-            stack_high_after_data(data_end, LINKER_STACK_SIZE).unwrap()
+            stack_high_after_data(data_end, DEFAULT_STACK_SIZE).unwrap()
         );
         assert!(
             hb.needs_stack_gap,
@@ -4677,9 +4666,9 @@ mod tests {
     fn stack_high_is_sixteen_byte_aligned() {
         // Unaligned data_end must still yield a 16-byte-aligned stack top (wasm-ld).
         for data_end in [1u32, 2, 7, 1025, 4738] {
-            let sp = stack_high_after_data(data_end, LINKER_STACK_SIZE).unwrap();
+            let sp = stack_high_after_data(data_end, DEFAULT_STACK_SIZE).unwrap();
             assert_eq!(sp % 16, 0, "data_end={data_end} sp={sp}");
-            assert!(sp >= data_end + LINKER_STACK_SIZE);
+            assert!(sp >= data_end + DEFAULT_STACK_SIZE);
         }
     }
 
@@ -4701,14 +4690,14 @@ mod tests {
         };
         let indices = LinkerDefinedIndices::default();
 
-        fill_linker_defined_values(&mut layout, &indices, false, LINKER_STACK_SIZE).unwrap();
+        fill_linker_defined_values(&mut layout, &indices, false, DEFAULT_STACK_SIZE).unwrap();
         assert_eq!(
             layout.memories[0].initial, 1,
             "without `needs_stack_gap`, a 1-page memory must stay 1 page"
         );
 
-        fill_linker_defined_values(&mut layout, &indices, true, LINKER_STACK_SIZE).unwrap();
-        let bytes_needed = u64::from(data_end) + u64::from(LINKER_STACK_SIZE);
+        fill_linker_defined_values(&mut layout, &indices, true, DEFAULT_STACK_SIZE).unwrap();
+        let bytes_needed = u64::from(data_end) + u64::from(DEFAULT_STACK_SIZE);
         let pages_needed = bytes_needed.div_ceil(65536);
         assert_eq!(
             layout.memories[0].initial, pages_needed,
