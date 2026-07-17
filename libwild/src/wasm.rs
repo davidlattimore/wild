@@ -3690,8 +3690,6 @@ fn data_symbol_memory_address(
 #[derive(Debug, Clone, Copy)]
 struct LinkerDefinedDataAddress {
     address: u32,
-    /// True when the address assumes a stack reservation after static data.
-    needs_stack_gap: bool,
 }
 
 /// Absolute addresses for linker-defined data symbols.
@@ -3702,22 +3700,14 @@ fn linker_defined_data_symbol_address(
     heap_end: Option<u32>,
 ) -> Result<Option<LinkerDefinedDataAddress>> {
     match name {
-        b"__data_end" => Ok(Some(LinkerDefinedDataAddress {
-            address: data_end,
-            needs_stack_gap: false,
-        })),
+        b"__data_end" => Ok(Some(LinkerDefinedDataAddress { address: data_end })),
         b"__heap_base" => Ok(Some(LinkerDefinedDataAddress {
             address: stack_high_after_data(data_end, stack_size)?,
-            needs_stack_gap: stack_size > 0,
         })),
         b"__wasm_first_page_end" => Ok(Some(LinkerDefinedDataAddress {
             address: u32::try_from(wasm_page_size())?,
-            needs_stack_gap: false,
         })),
-        b"__heap_end" => Ok(heap_end.map(|address| LinkerDefinedDataAddress {
-            address,
-            needs_stack_gap: false,
-        })),
+        b"__heap_end" => Ok(heap_end.map(|address| LinkerDefinedDataAddress { address })),
         _ => Ok(None),
     }
 }
@@ -4686,10 +4676,6 @@ mod tests {
         .unwrap()
         .expect("__data_end");
         assert_eq!(de.address, data_end);
-        assert!(
-            !de.needs_stack_gap,
-            "`__data_end` is the end of static data. It must not force a stack reservation"
-        );
 
         let hb = linker_defined_data_symbol_address(
             b"__heap_base",
@@ -4703,10 +4689,6 @@ mod tests {
             hb.address,
             stack_high_after_data(data_end, DEFAULT_STACK_SIZE).unwrap()
         );
-        assert!(
-            hb.needs_stack_gap,
-            "`__heap_base` sits past the stack gap, so memory must cover that range"
-        );
 
         let page_end = linker_defined_data_symbol_address(
             b"__wasm_first_page_end",
@@ -4717,7 +4699,6 @@ mod tests {
         .unwrap()
         .expect("__wasm_first_page_end");
         assert_eq!(u64::from(page_end.address), page);
-        assert!(!page_end.needs_stack_gap);
 
         let he = linker_defined_data_symbol_address(
             b"__heap_end",
