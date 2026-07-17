@@ -1377,6 +1377,10 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         false
     }
 
+    fn sort_sections_by_name(&self) -> bool {
+        false
+    }
+
     fn rosegment(&self) -> bool {
         true
     }
