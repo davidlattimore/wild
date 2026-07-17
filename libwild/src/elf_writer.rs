@@ -21,6 +21,7 @@ use crate::elf::NonAddressableCounts;
 use crate::elf::ProgramHeader;
 use crate::elf::RawSymbolName;
 use crate::elf::Rela;
+use crate::elf::RelrEncoder;
 use crate::elf::RiscVAttribute;
 use crate::elf::SectionHeader;
 use crate::elf::SymtabEntry;
@@ -602,19 +603,6 @@ impl<'out> VersionWriter<'out> {
     }
 }
 
-/// Writer-phase RELR bitmap packing state.
-/// Carries slice indices so bitmap entries can be updated in-place.
-#[derive(Default)]
-enum RelrWriterState {
-    #[default]
-    NoRun,
-    /// Address entry written, no bitmap entry yet for current window.
-    /// `bitmap_base` = addr+8 initially, advances by 63*8 per emitted bitmap.
-    AddressOnly { bitmap_base: u64 },
-    /// Bitmap entry written at `bitmap_idx`; `bitmap_base` is current window start.
-    WithBitmap { bitmap_base: u64, bitmap_idx: usize },
-}
-
 struct TableWriter<'layout, 'out> {
     output_kind: OutputKind,
     got: &'out mut [u64],
@@ -625,10 +613,9 @@ struct TableWriter<'layout, 'out> {
     rela_dyn_relative: &'out mut [crate::elf::Rela],
     rela_dyn_general: &'out mut [crate::elf::Rela],
     relr_dyn: Option<&'out mut [elf::Relr]>,
-    /// Index of next free slot in relr_dyn.
-    relr_dyn_index: usize,
-    /// Writer-phase RELR run state for bitmap packing.
-    relr_state: RelrWriterState,
+    current_relr_dyn: Option<&'out mut elf::Relr>,
+    /// RELR run state for bitmap packing.
+    relr_writer: RelrEncoder,
     dynsym_writer: SymbolTableWriter<'layout, 'out>,
     debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
     eh_frame_start_address: u64,
@@ -697,8 +684,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             relr_dyn: pack_relative_relocs
                 .then(|| slice_from_all_bytes_mut(buffers.take(part_id::RELR_DYN)))
                 .filter(|b| !b.is_empty()),
-            relr_dyn_index: 0,
-            relr_state: RelrWriterState::NoRun,
+            current_relr_dyn: None,
+            relr_writer: RelrEncoder::default(),
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
@@ -958,7 +945,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     /// Resets RELR run state between input sections.
     /// Layout tracks runs per-section; writer must do the same to stay in sync.
     fn reset_relr_run(&mut self) {
-        self.relr_state = RelrWriterState::NoRun;
+        self.relr_writer = RelrEncoder::default();
+        self.current_relr_dyn = None;
     }
 
     /// Writes bitmap-packed RELR entries for the entire GOT_RELR block.
@@ -971,23 +959,19 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             return Ok(());
         };
         // Write address entry for base.
-        let idx = self.relr_dyn_index;
-        if idx >= relr_writer.len() {
-            return Err(insufficient_allocation(".relr.dyn"));
-        }
-        relr_writer[idx].0.set(LittleEndian, base);
-        self.relr_dyn_index += 1;
+        let entry = relr_writer
+            .split_off_first_mut()
+            .ok_or_else(|| insufficient_allocation(".relr.dyn"))?;
+        entry.0.set(LittleEndian, base);
         // Write bitmap entries for remaining n-1 slots.
         let mut remaining = n - 1;
         while remaining > 0 {
             let slots = remaining.min(elf::RELR_BITMAP_SLOTS);
             let bitmap: u64 = ((1u64 << slots) - 1) << 1 | 1;
-            let idx = self.relr_dyn_index;
-            if idx >= relr_writer.len() {
-                return Err(insufficient_allocation(".relr.dyn"));
-            }
-            relr_writer[idx].0.set(LittleEndian, bitmap);
-            self.relr_dyn_index += 1;
+            let entry = relr_writer
+                .split_off_first_mut()
+                .ok_or_else(|| insufficient_allocation(".relr.dyn"))?;
+            entry.0.set(LittleEndian, bitmap);
             remaining = remaining.saturating_sub(elf::RELR_BITMAP_SLOTS);
         }
         Ok(())
@@ -1023,15 +1007,14 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 *mem_sizes.get(part_id::RELA_DYN_GENERAL),
             ));
         }
-        if let Some(relr_dyn) = &self.relr_dyn {
-            let remaining = relr_dyn.len() - self.relr_dyn_index;
-            if remaining != 0 {
-                return Err(excessive_allocation(
-                    ".relr.dyn",
-                    remaining as u64 * elf::RELR_ENTRY_SIZE,
-                    *mem_sizes.get(part_id::RELR_DYN),
-                ));
-            }
+        if let Some(relr_dyn) = &self.relr_dyn
+            && !relr_dyn.is_empty()
+        {
+            return Err(excessive_allocation(
+                ".relr.dyn",
+                relr_dyn.len() as u64 * elf::RELR_ENTRY_SIZE,
+                *mem_sizes.get(part_id::RELR_DYN),
+            ));
         }
         self.dynsym_writer.check_exhausted()?;
         self.debug_symbol_writer.check_exhausted()?;
@@ -1148,12 +1131,10 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if let Some(relr_writer) = &mut self.relr_dyn
             && place.is_multiple_of(2)
         {
-            let idx = self.relr_dyn_index;
-            if idx >= relr_writer.len() {
-                return Err(insufficient_allocation(".relr.dyn"));
-            }
-            relr_writer[idx].0.set(LittleEndian, place);
-            self.relr_dyn_index += 1;
+            let entry = relr_writer
+                .split_off_first_mut()
+                .ok_or_else(|| insufficient_allocation(".relr.dyn"))?;
+            entry.0.set(LittleEndian, place);
             Ok(relative_address)
         } else {
             let rela = self
@@ -1187,95 +1168,25 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if let Some(relr_writer) = &mut self.relr_dyn
             && place.is_multiple_of(2)
         {
-            const WORD_SIZE: u64 = 8;
-            self.relr_state = match self.relr_state {
-                RelrWriterState::NoRun => {
-                    // No run — write address entry and start run.
-                    let idx = self.relr_dyn_index;
-                    if idx >= relr_writer.len() {
-                        return Err(insufficient_allocation(".relr.dyn"));
+            self.relr_writer.encode(place, |encoded, encoding| {
+                match encoding {
+                    elf::RelrEntryEncoding::New => {
+                        let entry = relr_writer
+                            .split_off_first_mut()
+                            .ok_or_else(|| insufficient_allocation(".relr.dyn"))?;
+                        entry.0.set(LittleEndian, encoded);
+                        self.current_relr_dyn = Some(entry);
                     }
-                    relr_writer[idx].0.set(LittleEndian, place);
-                    self.relr_dyn_index += 1;
-                    RelrWriterState::AddressOnly {
-                        bitmap_base: place + WORD_SIZE,
-                    }
-                }
-                RelrWriterState::AddressOnly { bitmap_base }
-                | RelrWriterState::WithBitmap { bitmap_base, .. } => {
-                    let d = place.wrapping_sub(bitmap_base);
-                    if d % WORD_SIZE == 0 && d < elf::RELR_BITMAP_SLOTS * WORD_SIZE {
-                        // Fits in current bitmap window.
-                        let bit = d / WORD_SIZE + 1;
-                        if let RelrWriterState::WithBitmap { bitmap_idx, .. } = self.relr_state {
-                            // Bitmap entry exists — OR in the new bit.
-                            let current = relr_writer[bitmap_idx].0.get(LittleEndian);
-                            relr_writer[bitmap_idx]
-                                .0
-                                .set(LittleEndian, current | (1 << bit));
-                            RelrWriterState::WithBitmap {
-                                bitmap_base,
-                                bitmap_idx,
-                            }
-                        } else {
-                            // First member in this window — write bitmap entry.
-                            let idx = self.relr_dyn_index;
-                            if idx >= relr_writer.len() {
-                                return Err(insufficient_allocation(".relr.dyn"));
-                            }
-                            relr_writer[idx].0.set(LittleEndian, 1 | (1 << bit));
-                            self.relr_dyn_index += 1;
-                            RelrWriterState::WithBitmap {
-                                bitmap_base,
-                                bitmap_idx: idx,
-                            }
-                        }
-                    } else if let RelrWriterState::WithBitmap { .. } = self.relr_state
-                        && d % WORD_SIZE == 0
-                    {
-                        // Current window has bits — try next window.
-                        let next_base = bitmap_base + elf::RELR_BITMAP_SLOTS * WORD_SIZE;
-                        let d2 = place.wrapping_sub(next_base);
-                        if d2.is_multiple_of(WORD_SIZE) && d2 < elf::RELR_BITMAP_SLOTS * WORD_SIZE {
-                            // Fits in next window — write new bitmap entry.
-                            let bit = d2 / WORD_SIZE + 1;
-                            let idx = self.relr_dyn_index;
-                            if idx >= relr_writer.len() {
-                                return Err(insufficient_allocation(".relr.dyn"));
-                            }
-                            relr_writer[idx].0.set(LittleEndian, 1 | (1 << bit));
-                            self.relr_dyn_index += 1;
-                            RelrWriterState::WithBitmap {
-                                bitmap_base: next_base,
-                                bitmap_idx: idx,
-                            }
-                        } else {
-                            // Gap too large — start new address entry.
-                            let idx = self.relr_dyn_index;
-                            if idx >= relr_writer.len() {
-                                return Err(insufficient_allocation(".relr.dyn"));
-                            }
-                            relr_writer[idx].0.set(LittleEndian, place);
-                            self.relr_dyn_index += 1;
-                            RelrWriterState::AddressOnly {
-                                bitmap_base: place + WORD_SIZE,
-                            }
-                        }
-                    } else {
-                        // Unaligned or current window empty and out of range.
-                        // Start new address entry.
-                        let idx = self.relr_dyn_index;
-                        if idx >= relr_writer.len() {
-                            return Err(insufficient_allocation(".relr.dyn"));
-                        }
-                        relr_writer[idx].0.set(LittleEndian, place);
-                        self.relr_dyn_index += 1;
-                        RelrWriterState::AddressOnly {
-                            bitmap_base: place + WORD_SIZE,
-                        }
+                    elf::RelrEntryEncoding::Update => {
+                        let entry = self
+                            .current_relr_dyn
+                            .as_deref_mut()
+                            .ok_or_else(|| error!("Internal error in RELR bitmap encoding"))?;
+                        entry.0.set(LittleEndian, encoded);
                     }
                 }
-            };
+                Ok(())
+            })?;
             Ok(relative_address)
         } else {
             let rela = self
