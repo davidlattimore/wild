@@ -908,6 +908,7 @@ impl Architecture {
     fn default_target_triple_rustc(&self, platform: PlatformKind) -> String {
         match (platform, self) {
             (PlatformKind::Elf, Architecture::RiscV64) => "riscv64gc-unknown-linux-gnu".to_string(),
+            (PlatformKind::Wasm, _) => "wasm32-wasip1".to_string(),
             _ => self.default_target_triple(platform),
         }
     }
@@ -3104,14 +3105,22 @@ fn build_obj(
 
             command
                 .env("WILD_SAVE_SKIP_LINKING", "1")
-                .args(config.rustc_channel.as_arg())
-                .args(["-C", "linker=clang"])
-                .args(["-C", &format!("link-arg=--ld-path={wild}")]);
+                .args(config.rustc_channel.as_arg());
+
+            if config.platform == PlatformKind::Wasm {
+                command
+                    .args(["-C", &format!("linker={wild}")])
+                    .args(["-C", "linker-flavor=wasm-ld"]);
+            } else {
+                command
+                    .args(["-C", "linker=clang"])
+                    .args(["-C", &format!("link-arg=--ld-path={wild}")]);
+            }
 
             if let Some(arch) = cross_arch {
                 // Debian sets sysroot to `/` and uses real paths for libraries in linker scripts.
                 // So using real sysroot path breaks linking.
-                if !is_host_debian_based() {
+                if !is_host_debian_based() && config.platform != PlatformKind::Wasm {
                     command.args([
                         "-C",
                         &format!("link-arg=--sysroot={}", arch.get_cross_sysroot_path()),
@@ -3127,20 +3136,22 @@ fn build_obj(
                     ));
                     arch.default_target_triple(config.platform).to_owned()
                 });
-                let target_underscore = target.replace('-', "_");
-                let target_triple = target.replace("-unknown", "");
+                if config.platform != PlatformKind::Wasm {
+                    let target_underscore = target.replace('-', "_");
+                    let target_triple = target.replace("-unknown", "");
 
-                command.env(
-                    format!("CC_{target_underscore}"),
-                    format!("{target_triple}-gcc"),
-                );
+                    command.env(
+                        format!("CC_{target_underscore}"),
+                        format!("{target_triple}-gcc"),
+                    );
 
-                command.env(
-                    format!("AR_{target_underscore}"),
-                    format!("{target_triple}-ar"),
-                );
+                    command.env(
+                        format!("AR_{target_underscore}"),
+                        format!("{target_triple}-ar"),
+                    );
 
-                command.arg(format!("-Clink-arg=--target={target}"));
+                    command.arg(format!("-Clink-arg=--target={target}"));
+                }
             }
 
             if is_musl_used() {
@@ -3805,7 +3816,12 @@ impl LinkCommand {
         }
 
         if linker.is_wild() {
-            if matches!(config.linker_driver, LinkerDriver::Direct(_)) {
+            // For Script mode, the linker binary is the first script argument and extra flags must
+            // not precede `-flavor` inside the script args. Use env vars instead of CLI
+            // flags in that case.
+            let pass_wild_flags_via_cli = matches!(config.linker_driver, LinkerDriver::Direct(_))
+                && invocation_mode != LinkerInvocationMode::Script;
+            if pass_wild_flags_via_cli {
                 command.arg("--validate-output");
                 // TODO: Add a flag or do something so that unsupported flags get ignored. i.e. the
                 // equivalent of the line below, but for directly calling libwild. Perhaps rather
@@ -3817,7 +3833,7 @@ impl LinkCommand {
             }
 
             if config.should_diff || config.assertions.requires_metrics() {
-                if matches!(config.linker_driver, LinkerDriver::Direct(_)) {
+                if pass_wild_flags_via_cli {
                     command.arg("--write-layout");
                     command.arg("--write-trace");
                 } else {
