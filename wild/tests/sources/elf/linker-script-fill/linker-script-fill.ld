@@ -23,4 +23,11 @@ SECTIONS {
         *(.fill5.first)
         *(.fill5.second)
     } = 0x9
+
+    .fill6 : {
+        . = . + 0x8;
+        *(.fill6.first)
+        . = . + 0x8;
+        *(.fill6.second)
+    } = 0x90909090
 }

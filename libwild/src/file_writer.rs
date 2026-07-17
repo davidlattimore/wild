@@ -408,17 +408,22 @@ pub(crate) fn split_output_by_group<'layout, 'data, 'out, P: Platform>(
         .collect()
 }
 
+pub(crate) struct PaddingSlice<'out> {
+    pub(crate) slice: &'out mut [u8],
+    pub(crate) parent_section_id: Option<OutputSectionId>,
+}
+
 #[derive(Default)]
 pub(crate) struct PaddingSlices<'out> {
-    slices: Vec<&'out mut [u8]>,
+    pub(crate) slices: Vec<PaddingSlice<'out>>,
 }
 
 impl PaddingSlices<'_> {
     pub(crate) fn fill_zero(&mut self) {
         verbose_timing_phase!("Fill padding bytes");
 
-        for slice in &mut self.slices {
-            slice.fill(0);
+        for pslice in &mut self.slices {
+            pslice.slice.fill(0);
         }
     }
 }
@@ -446,6 +451,7 @@ pub(crate) fn split_output_into_sections<'out, 'data, P: Platform>(
     // map.
     let mut section_data = OutputSectionMap::with_size(section_allocations.len());
     let mut offset = 0;
+    let mut prev_primary_id = None;
     for a in section_allocations {
         let Some(padding_size) = a.offset.checked_sub(offset) else {
             panic!(
@@ -453,11 +459,15 @@ pub(crate) fn split_output_into_sections<'out, 'data, P: Platform>(
                 a.offset
             );
         };
-        padding_slices
-            .slices
-            .push(data.split_off_mut(..padding_size).unwrap());
+        let curr_primary_id = layout.output_sections.primary_output_section(a.id);
+        padding_slices.slices.push(PaddingSlice {
+            slice: data.split_off_mut(..padding_size).unwrap(),
+            parent_section_id: prev_primary_id.filter(|prev| *prev == curr_primary_id),
+        });
+
         *section_data.get_mut(a.id) = data.split_off_mut(..a.size).unwrap();
         offset = a.offset + a.size;
+        prev_primary_id = Some(curr_primary_id);
     }
     (section_data, padding_slices)
 }

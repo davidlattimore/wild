@@ -8,6 +8,7 @@
 //#Config:with-linkerscript:default
 //#LinkerScript:exec-section-padding.ld
 //#ExpectSectionBytes:.text=0x48c7c03c000000c39090909090909090 0..16
+//#ExpectSectionBytes:.text=0x90909090909090909090909090909090 16..32
 //#RunEnabled:false
 
 .section .text.1

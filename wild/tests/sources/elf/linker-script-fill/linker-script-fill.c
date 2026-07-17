@@ -14,8 +14,10 @@
 //#ExpectSectionBytes:.fill3=0x119090909090909022 0..9
 //#ExpectSectionBytes:.fill4=0x110000009000000022 0..9
 //#ExpectSectionBytes:.fill5=0x110000000900000022 0..9
+//#ExpectSectionBytes:.fill6=0x909090909090909011909090 0..12
+//#ExpectSectionBytes:.fill6=0x90909090909090909090909022 12..25
 
-//#Config:sdf:default
+//#Config:overflow-u32:default
 //#LinkerScript:linker-script-fill-large.ld
 //#ExpectError:.*(?i-u)filler expression result does not fit 32-bit: 0x9090909090
 
@@ -33,5 +35,8 @@ __attribute__((section(".fill4.second"), aligned(8))) char fill4_second = 0x22;
 
 __attribute__((section(".fill5.first"), aligned(8))) char fill5_first = 0x11;
 __attribute__((section(".fill5.second"), aligned(8))) char fill5_second = 0x22;
+
+__attribute__((section(".fill6.first"), aligned(8))) char fill7_first = 0x11;
+__attribute__((section(".fill6.second"), aligned(8))) char fill7_second = 0x22;
 
 int main() { return 0; }

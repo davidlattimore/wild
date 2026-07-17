@@ -830,7 +830,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             secondary_order,
             phdr_name: None,
             region_name: primary_info.region_name,
-            fill: None,
+            fill: primary_info.fill,
         })
     }
 
