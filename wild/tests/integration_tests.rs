@@ -761,11 +761,17 @@ impl Linker {
             config.expect_stdout = Vec::new();
             config.should_error = false;
 
-            command.run(&config)?;
+            let messages = command.run(&config)?;
+            command.write_messages(&messages)?;
             command.write_input_hashes()?;
         }
 
-        Ok(LinkerInput::with_command(so_path.to_owned(), command))
+        let messages = command.read_messages()?;
+        Ok(LinkerInput::with_command(
+            so_path.to_owned(),
+            command,
+            messages,
+        ))
     }
 
     fn is_wild(&self) -> bool {
@@ -811,6 +817,13 @@ struct LinkOutput {
     binary: PathBuf,
     command: LinkCommand,
     linker_used: Linker,
+    messages: LinkerMessages,
+}
+
+#[derive(Debug, Default, Clone)]
+struct LinkerMessages {
+    stdout: String,
+    stderr: String,
 }
 
 #[derive(Debug)]
@@ -2701,6 +2714,7 @@ struct LinkerInput {
     prefix_arg: Option<&'static str>,
     path: PathBuf,
     command: Option<LinkCommand>,
+    messages: Option<LinkerMessages>,
     template: Option<Vec<String>>,
 }
 
@@ -2710,15 +2724,17 @@ impl LinkerInput {
             prefix_arg: None,
             path,
             command: None,
+            messages: None,
             template: None,
         }
     }
 
-    fn with_command(path: PathBuf, command: LinkCommand) -> LinkerInput {
+    fn with_command(path: PathBuf, command: LinkCommand, messages: LinkerMessages) -> LinkerInput {
         LinkerInput {
             prefix_arg: None,
             path,
             command: Some(command),
+            messages: Some(messages),
             template: None,
         }
     }
@@ -2728,6 +2744,7 @@ impl LinkerInput {
             prefix_arg: Some(prefix),
             path,
             command: None,
+            messages: None,
             template: None,
         }
     }
@@ -2899,7 +2916,7 @@ fn build_linker_input(
                     )?,
                 }
 
-                out = LinkerInput::new(fat_path);
+                out.path = fat_path;
             }
 
             out
@@ -3577,14 +3594,19 @@ impl Linker {
         }
         let mut command =
             LinkCommand::new(self, inputs, &output_path, &linker_args, config, cross_arch)?;
-        if !command.can_skip() {
-            command.run(config)?;
+        let messages = if command.can_skip() {
+            command.read_messages()?
+        } else {
+            let messages = command.run(config)?;
+            command.write_messages(&messages)?;
             command.write_input_hashes()?;
-        }
+            messages
+        };
         Ok(LinkOutput {
             binary: output_path,
             command,
             linker_used: self.clone(),
+            messages,
         })
     }
 
@@ -3869,7 +3891,7 @@ impl LinkCommand {
         Ok(link_command)
     }
 
-    fn run(&mut self, config: &Config) -> Result {
+    fn run(&mut self, config: &Config) -> Result<LinkerMessages> {
         if let Some(mode) = config.driver_mode {
             match mode {
                 DriverMode::SaveDirResponse => return self.run_save_dir_response(config),
@@ -3913,7 +3935,10 @@ impl LinkCommand {
             let warnings = warnings.lock().unwrap();
             self.check_messages(&config.expect_stderr, "stderr", &warnings, "", &warnings)?;
 
-            return Ok(());
+            return Ok(LinkerMessages {
+                stdout: String::new(),
+                stderr: warnings.clone(),
+            });
         }
 
         let output = self
@@ -3948,10 +3973,13 @@ impl LinkCommand {
             }
         }
 
-        Ok(())
+        Ok(LinkerMessages {
+            stdout: stdout.to_owned(),
+            stderr: stderr.to_owned(),
+        })
     }
 
-    fn run_save_dir_response(&mut self, config: &Config) -> Result {
+    fn run_save_dir_response(&mut self, config: &Config) -> Result<LinkerMessages> {
         let save_dir = self.output_path.with_extension("save");
         self.command.env("WILD_SAVE_DIR", &save_dir);
         self.opt_save_dir = Some(save_dir.clone());
@@ -4079,7 +4107,10 @@ impl LinkCommand {
             )
         })?;
 
-        Ok(())
+        Ok(LinkerMessages {
+            stdout: stdout.to_owned(),
+            stderr: stderr.to_owned(),
+        })
     }
 
     fn check_messages(
@@ -4106,10 +4137,6 @@ impl LinkCommand {
             }
         }
 
-        if self.linker.is_wild() && expectations.is_empty() && !output.is_empty() {
-            bail!("Unexpected output on {output_name}:\n{output}\nCommand:\n{self}");
-        }
-
         Ok(())
     }
 
@@ -4124,6 +4151,10 @@ impl LinkCommand {
             return false;
         }
 
+        if !self.stdout_path().is_file() || !self.stderr_path().is_file() {
+            return false;
+        }
+
         let Ok(previous_hashes) = std::fs::read_to_string(self.hashes_path()) else {
             return false;
         };
@@ -4134,7 +4165,10 @@ impl LinkCommand {
     /// Returns a report containing the hashes of all the inputs. Also includes the linker
     /// command-line, not hashed, because that's more useful.
     fn input_hashes(&self) -> String {
-        let mut hashes = self.to_string();
+        // Bump this to force everything to rerun.
+        const CACHE_VERSION: u32 = 1;
+
+        let mut hashes = format!("Cache version: {CACHE_VERSION}\n{self}");
 
         hashes.push_str("\n\n");
 
@@ -4181,12 +4215,33 @@ impl LinkCommand {
         Ok(())
     }
 
+    fn read_messages(&self) -> Result<LinkerMessages> {
+        Ok(LinkerMessages {
+            stdout: std::fs::read_to_string(self.stdout_path())?,
+            stderr: std::fs::read_to_string(self.stderr_path())?,
+        })
+    }
+
+    fn write_messages(&self, messages: &LinkerMessages) -> Result {
+        std::fs::write(self.stdout_path(), &messages.stdout)?;
+        std::fs::write(self.stderr_path(), &messages.stderr)?;
+        Ok(())
+    }
+
     fn depfile_path(&self) -> PathBuf {
         add_to_path(&self.output_path, ".deps")
     }
 
     fn hashes_path(&self) -> PathBuf {
         add_to_path(&self.output_path, ".hashes")
+    }
+
+    fn stdout_path(&self) -> PathBuf {
+        add_to_path(&self.output_path, ".stdout")
+    }
+
+    fn stderr_path(&self) -> PathBuf {
+        add_to_path(&self.output_path, ".stderr")
     }
 }
 
@@ -6144,6 +6199,14 @@ fn run_with_config(
         })
         .collect::<Result<Vec<_>>>()?;
 
+    if config.expect_stdout.is_empty() {
+        check_unexpected_linker_output(&programs, "stdout", |messages| &messages.stdout)?;
+    }
+
+    if config.expect_stderr.is_empty() {
+        check_unexpected_linker_output(&programs, "stderr", |messages| &messages.stderr)?;
+    }
+
     // If we expect an error, then don't try to diff or run the output.
     if config.should_error {
         return Ok(());
@@ -6208,6 +6271,100 @@ fn run_with_config(
             // That is definitely not intended, so just bail.
             bail!("RunDynSym is set but RunEnabled:false. {program}");
         }
+    }
+
+    Ok(())
+}
+
+/// Checks that if wild has output, that it exactly matches at least one of the reference linkers.
+fn check_unexpected_linker_output(
+    programs: &[Program<'_>],
+    output_name: &str,
+    output: impl Copy + Fn(&LinkerMessages) -> &str,
+) -> Result {
+    check_unexpected_intermediate_output(programs, output_name, output)?;
+
+    let wild = programs.last().unwrap();
+
+    let wild_out = output(&wild.link_output.messages);
+
+    if wild_out.is_empty() {
+        return Ok(());
+    }
+
+    if programs.iter().any(|reference| {
+        !reference.link_output.linker_used.is_wild()
+            && output(&reference.link_output.messages) == wild_out
+    }) {
+        return Ok(());
+    }
+
+    let all_outputs = programs
+        .iter()
+        .map(|candidate| {
+            format!(
+                "-- {} {output_name} --\n{}",
+                candidate.link_output.linker_used,
+                output(&candidate.link_output.messages)
+            )
+        })
+        .join("\n");
+
+    bail!(
+        "Unexpected output on {output_name} from Wild:\n{wild_out}\n\
+         {all_outputs}\nCommand:\n{}",
+        wild.link_output.command
+    );
+}
+
+fn check_unexpected_intermediate_output(
+    programs: &[Program<'_>],
+    output_name: &str,
+    output: impl Copy + Fn(&LinkerMessages) -> &str,
+) -> Result {
+    let intermediate_count = programs
+        .iter()
+        .map(|program| program.shared_objects.len())
+        .max()
+        .unwrap_or(0);
+
+    for index in 0..intermediate_count {
+        let intermediates = programs
+            .iter()
+            .filter_map(|program| program.shared_objects.get(index))
+            .collect_vec();
+
+        let wild = intermediates.last().unwrap();
+
+        let wild_out = output(wild.messages.as_ref().unwrap());
+
+        if wild_out.is_empty()
+            || intermediates.iter().any(|reference| {
+                let command = reference.command.as_ref().unwrap();
+                !command.linker.is_wild()
+                    && output(reference.messages.as_ref().unwrap()) == wild_out
+            })
+        {
+            continue;
+        }
+
+        let all_outputs = intermediates
+            .iter()
+            .map(|candidate| {
+                let command = candidate.command.as_ref().unwrap();
+                format!(
+                    "-- {} {output_name} --\n{}",
+                    command.linker,
+                    output(candidate.messages.as_ref().unwrap())
+                )
+            })
+            .join("\n");
+
+        bail!(
+            "Unexpected output on {output_name} from Wild intermediate link:\n{wild_out}\n\
+             {all_outputs}\nCommand:\n{}",
+            wild.command.as_ref().unwrap()
+        );
     }
 
     Ok(())
