@@ -9,11 +9,14 @@ use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::args::REFERENCE_LINKER_ENV;
 use crate::args::RelocationModel;
+use crate::bail;
 use crate::ensure;
+use crate::error;
 use crate::error::Result;
 use crate::platform;
 use crate::save_dir::SaveDir;
 use jobserver::Client;
+use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -30,6 +33,8 @@ pub struct WasmArgs {
     pub(crate) common: super::CommonArgs,
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) export_symbols: Vec<String>,
+    /// If not set, the stack size will be set to 64KiB.
+    pub(crate) z_stack_size: Option<u64>,
 }
 
 impl WasmArgs {
@@ -48,6 +53,7 @@ impl Default for WasmArgs {
             common: CommonArgs::default(),
             lib_search_path: Vec::new(),
             export_symbols: Vec::new(),
+            z_stack_size: None,
         }
     }
 }
@@ -195,6 +201,22 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
             args.export_symbols.push(value.to_owned());
             Ok(())
         });
+
+    parser
+        .declare_with_param()
+        .prefix("z")
+        .help("Linker options")
+        .sub_option_with_value(
+            "stack-size=",
+            "Set the main stack size in linear memory",
+            |args, _, value| {
+                let size = crate::parsing::parse_number(value)
+                    .map_err(|()| error!("Invalid number `{value}` for -z stack-size"))?;
+                args.z_stack_size = Some(size);
+                Ok(())
+            },
+        )
+        .execute(|_args, _modifier_stack, value| bail!("unknown -z flag: {value}"));
 
     super::declare_common_args(&mut parser);
 

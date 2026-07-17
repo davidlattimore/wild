@@ -119,6 +119,15 @@ const LINKER_MEMORY_BASE: u32 = 1024;
 /// Default stack size reserved above `__data_end` for the main stack.
 const LINKER_STACK_SIZE: u32 = 64 * 1024;
 
+/// Stack reservation in bytes.
+fn stack_size(args: &WasmArgs) -> Result<u32> {
+    match args.z_stack_size {
+        None => Ok(LINKER_STACK_SIZE),
+        Some(size) => u32::try_from(size)
+            .map_err(|_| crate::error!("-z stack-size is too large for Wasm32: {size}")),
+    }
+}
+
 /// Empty function body: zero locals + `end`.
 const EMPTY_FUNCTION_BODY: &[u8] = &[0x00, 0x0b];
 
@@ -1794,11 +1803,11 @@ fn classify_data_relocations(
 }
 
 /// Align `data_end` to [`STACK_ALIGNMENT`], then add the stack size.
-fn stack_high_after_data(data_end: u32) -> Result<u32> {
+fn stack_high_after_data(data_end: u32, stack_size: u32) -> Result<u32> {
     let stack_base = u32::try_from(crate::alignment::STACK_ALIGNMENT.align_up(u64::from(data_end)))
         .map_err(|_| crate::error!("Wasm stack base overflow"))?;
     stack_base
-        .checked_add(LINKER_STACK_SIZE)
+        .checked_add(stack_size)
         .ok_or_else(|| crate::error!("Wasm stack pointer overflow"))
 }
 
@@ -3064,9 +3073,10 @@ fn fill_linker_defined_values(
     layout: &mut WasmLayout<'_>,
     indices: &LinkerDefinedIndices,
     needs_stack_gap: bool,
+    stack_size: u32,
 ) -> Result {
     if let Some(defined_slot) = indices.stack_pointer_defined_slot {
-        let sp = stack_high_after_data(layout.data_end)?;
+        let sp = stack_high_after_data(layout.data_end, stack_size)?;
         let global = layout
             .globals
             .get_mut(defined_slot as usize)
@@ -3080,7 +3090,10 @@ fn fill_linker_defined_values(
 
     let mut bytes_needed = u64::from(layout.data_end.max(layout.memory_base));
     if indices.stack_pointer_defined_slot.is_some() || needs_stack_gap {
-        bytes_needed = bytes_needed.max(u64::from(stack_high_after_data(layout.data_end)?));
+        bytes_needed = bytes_needed.max(u64::from(stack_high_after_data(
+            layout.data_end,
+            stack_size,
+        )?));
     }
     if bytes_needed > 0 && !layout.memories.is_empty() {
         let pages_needed = bytes_needed.div_ceil(65536).max(1);
@@ -3458,6 +3471,7 @@ where
             ensure_memory_export(&mut layout.exports);
         }
         layout.data_end = memory_cursor;
+        let stack_size = stack_size(symbol_db.args)?;
         let needs_stack_gap = compute_data_addresses(
             &mut layout.object_index_maps,
             &layout.per_object_symbols,
@@ -3465,8 +3479,9 @@ where
             &layout_inputs,
             symbol_db,
             layout.data_end,
+            stack_size,
         )?;
-        fill_linker_defined_values(&mut layout, &indices, needs_stack_gap)?;
+        fill_linker_defined_values(&mut layout, &indices, needs_stack_gap, stack_size)?;
         ensure_entry_export(
             &mut layout.exports,
             entry.as_ref(),
@@ -3669,6 +3684,7 @@ struct LinkerDefinedDataAddress {
 fn linker_defined_data_symbol_address(
     name: &[u8],
     data_end: u32,
+    stack_size: u32,
 ) -> Result<Option<LinkerDefinedDataAddress>> {
     match name {
         b"__data_end" => Ok(Some(LinkerDefinedDataAddress {
@@ -3676,8 +3692,8 @@ fn linker_defined_data_symbol_address(
             needs_stack_gap: false,
         })),
         b"__heap_base" => Ok(Some(LinkerDefinedDataAddress {
-            address: stack_high_after_data(data_end)?,
-            needs_stack_gap: true,
+            address: stack_high_after_data(data_end, stack_size)?,
+            needs_stack_gap: stack_size > 0,
         })),
         _ => Ok(None),
     }
@@ -3690,6 +3706,7 @@ fn compute_data_addresses(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
     data_end: u32,
+    stack_size: u32,
 ) -> Result<bool> {
     let file_id_to_index: HashMap<crate::input_data::FileId, usize> = layout_inputs
         .iter()
@@ -3732,7 +3749,8 @@ fn compute_data_addresses(
 
             if def_sym.is_undefined() {
                 let name = symbol_db.symbol_name(name_symbol_id)?;
-                if let Some(resolved) = linker_defined_data_symbol_address(name.bytes(), data_end)?
+                if let Some(resolved) =
+                    linker_defined_data_symbol_address(name.bytes(), data_end, stack_size)?
                 {
                     needs_stack_gap |= resolved.needs_stack_gap;
                     data_addresses[sym_idx] = resolved.address;
@@ -4633,7 +4651,7 @@ mod tests {
     #[test]
     fn linker_defined_heap_base_requires_stack_gap() {
         let data_end = 1024u32;
-        let de = linker_defined_data_symbol_address(b"__data_end", data_end)
+        let de = linker_defined_data_symbol_address(b"__data_end", data_end, LINKER_STACK_SIZE)
             .unwrap()
             .expect("__data_end");
         assert_eq!(de.address, data_end);
@@ -4642,10 +4660,13 @@ mod tests {
             "`__data_end` is the end of static data. It must not force a stack reservation"
         );
 
-        let hb = linker_defined_data_symbol_address(b"__heap_base", data_end)
+        let hb = linker_defined_data_symbol_address(b"__heap_base", data_end, LINKER_STACK_SIZE)
             .unwrap()
             .expect("__heap_base");
-        assert_eq!(hb.address, stack_high_after_data(data_end).unwrap());
+        assert_eq!(
+            hb.address,
+            stack_high_after_data(data_end, LINKER_STACK_SIZE).unwrap()
+        );
         assert!(
             hb.needs_stack_gap,
             "`__heap_base` sits past the stack gap, so memory must cover that range"
@@ -4656,7 +4677,7 @@ mod tests {
     fn stack_high_is_sixteen_byte_aligned() {
         // Unaligned data_end must still yield a 16-byte-aligned stack top (wasm-ld).
         for data_end in [1u32, 2, 7, 1025, 4738] {
-            let sp = stack_high_after_data(data_end).unwrap();
+            let sp = stack_high_after_data(data_end, LINKER_STACK_SIZE).unwrap();
             assert_eq!(sp % 16, 0, "data_end={data_end} sp={sp}");
             assert!(sp >= data_end + LINKER_STACK_SIZE);
         }
@@ -4680,18 +4701,18 @@ mod tests {
         };
         let indices = LinkerDefinedIndices::default();
 
-        fill_linker_defined_values(&mut layout, &indices, false).unwrap();
+        fill_linker_defined_values(&mut layout, &indices, false, LINKER_STACK_SIZE).unwrap();
         assert_eq!(
             layout.memories[0].initial, 1,
             "without `needs_stack_gap`, a 1-page memory must stay 1 page"
         );
 
-        fill_linker_defined_values(&mut layout, &indices, true).unwrap();
+        fill_linker_defined_values(&mut layout, &indices, true, LINKER_STACK_SIZE).unwrap();
         let bytes_needed = u64::from(data_end) + u64::from(LINKER_STACK_SIZE);
         let pages_needed = bytes_needed.div_ceil(65536);
         assert_eq!(
             layout.memories[0].initial, pages_needed,
-            "`needs_stack_gap` must grow memory to cover `data_end` + `LINKER_STACK_SIZE`"
+            "`needs_stack_gap` must grow memory to cover `data_end` + stack size"
         );
         assert!(pages_needed > 1);
     }
