@@ -9,9 +9,12 @@ use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::args::REFERENCE_LINKER_ENV;
 use crate::args::RelocationModel;
+use crate::args::parse_number;
+use crate::bail;
 use crate::ensure;
 use crate::error::Result;
 use crate::platform;
+use crate::platform::Args as _;
 use crate::save_dir::SaveDir;
 use jobserver::Client;
 use std::path::Path;
@@ -25,11 +28,15 @@ pub(crate) const WASM_PAGE_ALIGNMENT: Alignment = Alignment { exponent: 16 };
 /// Default page size (in bytes) for a wasm linear memory page.
 pub(crate) const WASM_PAGE_SIZE: u64 = WASM_PAGE_ALIGNMENT.value();
 
+/// Default main stack size.
+pub(crate) const DEFAULT_STACK_SIZE: u32 = 64 * 1024;
+
 #[derive(Debug)]
 pub struct WasmArgs {
     pub(crate) common: super::CommonArgs,
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) export_symbols: Vec<String>,
+    pub(crate) z_stack_size: u32,
 }
 
 impl WasmArgs {
@@ -41,13 +48,13 @@ impl WasmArgs {
     }
 }
 
-#[expect(clippy::derivable_impls)]
 impl Default for WasmArgs {
     fn default() -> Self {
         Self {
             common: CommonArgs::default(),
             lib_search_path: Vec::new(),
             export_symbols: Vec::new(),
+            z_stack_size: DEFAULT_STACK_SIZE,
         }
     }
 }
@@ -193,6 +200,25 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Force a symbol to be exported")
         .execute(|args, _modifier_stack, value| {
             args.export_symbols.push(value.to_owned());
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .prefix("z")
+        .help("Linker options")
+        .sub_option_with_value(
+            "stack-size=",
+            "Set the main stack size in linear memory",
+            |args, _, value| {
+                let size = parse_number(value)?;
+                args.z_stack_size = u32::try_from(size)
+                    .map_err(|_| crate::error!("-z stack-size is too large for Wasm32: {size}"))?;
+                Ok(())
+            },
+        )
+        .execute(|args, _modifier_stack, value| {
+            args.warn_unsupported(&(format!("-z {value}")))?;
             Ok(())
         });
 

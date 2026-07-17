@@ -1259,6 +1259,10 @@ fn strip_option(arg: &str) -> Option<&str> {
     arg.strip_prefix("--").or(arg.strip_prefix('-'))
 }
 
+pub(crate) fn parse_number(s: &str) -> Result<u64> {
+    crate::parsing::parse_number(s).map_err(|()| crate::error!("Invalid number: {s}"))
+}
+
 pub(crate) fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read arguments from file `{}`", path.display()))?;
