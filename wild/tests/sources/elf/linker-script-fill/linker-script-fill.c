@@ -1,15 +1,23 @@
+//#AbstractConfig:default
 //#Mode:dynamic
 //#RunEnabled:false
 //#ReferenceLinkers:lld
-//#LinkArgs:-shared -z now -T ./linker-script-fill.ld
+//#LinkArgs:-shared -z now
 //#DiffIgnore:section.got
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
+
+//#Config:fillexpr:default
+//#LinkerScript:linker-script-fill.ld
 //#ExpectSectionBytes:.fill1=0x110000009000000022 0..9
 //#ExpectSectionBytes:.fill2=0x110000009000000022 0..9
 //#ExpectSectionBytes:.fill3=0x119090909090909022 0..9
 //#ExpectSectionBytes:.fill4=0x110000009000000022 0..9
 //#ExpectSectionBytes:.fill5=0x110000000900000022 0..9
+
+//#Config:sdf:default
+//#LinkerScript:linker-script-fill-large.ld
+//#ExpectError:.*(?i-u)filler expression result does not fit 32-bit: 0x9090909090
 
 __attribute__((section(".fill1.first"), aligned(8))) char fill1_first = 0x11;
 __attribute__((section(".fill1.second"), aligned(8))) char fill1_second = 0x22;

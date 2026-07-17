@@ -230,8 +230,14 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 .fill
                                 .as_ref()
                                 .map(|fill| -> Result<[u8; 4]> {
-                                    let value = evaluate_const(&fill.value)? as u32;
-                                    Ok(value.to_be_bytes())
+                                    let value = evaluate_const(&fill.value)?;
+                                    if value > u64::from(u32::MAX) {
+                                        crate::bail!(
+                                            "Filler expression result does not fit 32-bit: 0x{:x}",
+                                            value
+                                        );
+                                    }
+                                    Ok((value as u32).to_be_bytes())
                                 })
                                 .transpose()?;
 
