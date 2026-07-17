@@ -152,6 +152,8 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
+        with:
+          targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y wabt lld wasi-libc
       - uses: taiki-e/install-action@v2
