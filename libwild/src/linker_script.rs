@@ -97,6 +97,11 @@ pub(crate) struct Location<'a> {
     pub(crate) address: Expression<'a>,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) struct Fill<'a> {
+    pub(crate) value: Expression<'a>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Section<'a> {
     pub(crate) output_section_name: &'a [u8],
@@ -106,6 +111,7 @@ pub(crate) struct Section<'a> {
     pub(crate) phdr: Option<&'a [u8]>,
     pub(crate) at_address: Option<Expression<'a>>,
     pub(crate) region: Option<&'a [u8]>,
+    pub(crate) fill: Option<Fill<'a>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -1121,11 +1127,13 @@ fn parse_section_command<'input>(
 
     let mut phdr = None;
     let mut region = None;
-    while let Some(prefix) = opt(alt((b":", b">"))).parse_next(input)? {
+    let mut fill = None;
+    while let Some(prefix) = opt(alt((b":", b">", b"="))).parse_next(input)? {
         skip_comments_and_whitespace(input)?;
         match prefix {
             b":" => phdr = Some(parse_token(input)?),
             b">" => region = Some(parse_token(input)?),
+            b"=" => fill = Some(parse_fill(input)?),
             _ => unreachable!(),
         }
         skip_comments_and_whitespace(input)?;
@@ -1141,7 +1149,14 @@ fn parse_section_command<'input>(
         phdr,
         at_address,
         region,
+        fill,
     }))
+}
+
+fn parse_fill<'input>(input: &mut &'input BStr) -> winnow::Result<Fill<'input>> {
+    return Ok(Fill {
+        value: parse_expression.parse_next(input)?,
+    });
 }
 
 fn parse_alignment(input: &mut &BStr) -> winnow::Result<Alignment> {
@@ -1516,6 +1531,7 @@ mod tests {
                 phdr: None,
                 at_address: None,
                 region: None,
+                fill: None,
             }),
         );
     }
@@ -1539,6 +1555,7 @@ mod tests {
                 phdr: None,
                 at_address: None,
                 region: None,
+                fill: None,
             }),
         );
     }
@@ -1606,6 +1623,7 @@ mod tests {
                                 phdr: None,
                                 at_address: None,
                                 region: None,
+                                fill: None,
                             }),
                         ],
                     }),
@@ -1757,6 +1775,7 @@ mod tests {
                 phdr: None,
                 at_address: None,
                 region: None,
+                fill: None,
             }),
         );
     }
@@ -1780,6 +1799,7 @@ mod tests {
                 phdr: None,
                 at_address: None,
                 region: None,
+                fill: None,
             }),
         );
     }
@@ -1803,6 +1823,7 @@ mod tests {
                 phdr: None,
                 at_address: None,
                 region: None,
+                fill: None,
             }),
         );
     }
@@ -1834,6 +1855,7 @@ mod tests {
                             phdr: None,
                             at_address: None,
                             region: None,
+                            fill: None,
                         })],
                     }),
                     Command::Assert(AssertCommand {
@@ -1876,6 +1898,7 @@ mod tests {
                             phdr: None,
                             at_address: None,
                             region: None,
+                            fill: None,
                         }),
                         SectionCommand::Assert(AssertCommand {
                             expression: Expression::LessThan(

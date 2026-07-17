@@ -3,6 +3,7 @@
 use crate::OutputSections;
 use crate::alignment;
 use crate::error::Result;
+use crate::expression_eval::evaluate_const;
 use crate::glob_match::GlobPatternType;
 use crate::glob_match::analyze_glob_pattern;
 use crate::glob_match::compile_glob_pattern;
@@ -225,12 +226,22 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 is_top_level: true,
                             };
 
+                            let fill_value = sec
+                                .fill
+                                .as_ref()
+                                .map(|fill| -> Result<[u8; 4]> {
+                                    let value = evaluate_const(&fill.value)? as u32;
+                                    Ok(value.to_be_bytes())
+                                })
+                                .transpose()?;
+
                             let primary_section_id = output_sections.add_named_section(
                                 SectionName(sec.output_section_name),
                                 min_alignment,
                                 sec.phdr,
                                 sec.region,
                                 Some(location_info),
+                                fill_value,
                             );
                             current_section_id = Some(primary_section_id);
                             loc = SymbolLoc::SectionEnd(primary_section_id);
