@@ -9,14 +9,13 @@ use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::args::REFERENCE_LINKER_ENV;
 use crate::args::RelocationModel;
+use crate::args::parse_number;
 use crate::bail;
 use crate::ensure;
-use crate::error;
 use crate::error::Result;
 use crate::platform;
 use crate::save_dir::SaveDir;
 use jobserver::Client;
-use std::num::NonZeroU64;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -210,8 +209,7 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
             "stack-size=",
             "Set the main stack size in linear memory",
             |args, _, value| {
-                let size = crate::parsing::parse_number(value)
-                    .map_err(|()| error!("Invalid number `{value}` for -z stack-size"))?;
+                let size = parse_number(value)?;
                 args.z_stack_size = Some(size);
                 Ok(())
             },

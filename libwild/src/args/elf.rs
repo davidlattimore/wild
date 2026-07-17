@@ -17,6 +17,7 @@ use crate::args::Modifiers;
 use crate::args::RelocationModel;
 use crate::args::UnresolvedSymbols;
 use crate::args::VersionMode;
+use crate::args::parse_number;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -380,10 +381,6 @@ impl ElfArgs {
             || self.pack_dyn_relocs == PackDynRelocs::Relr
             || self.pack_dyn_relocs == PackDynRelocs::AndroidRelr
     }
-}
-
-fn parse_number(s: &str) -> Result<u64> {
-    crate::parsing::parse_number(s).map_err(|_| crate::error!("Invalid number: {}", s))
 }
 
 // Parse the supplied input arguments, which should not include the program name.
