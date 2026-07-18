@@ -29,5 +29,6 @@ SECTIONS {
         *(.fill6.first)
         . = . + 0x8;
         *(.fill6.second)
+        . = . + 0x8;
     } = 0x90909090
 }
