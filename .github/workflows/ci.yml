@@ -233,6 +233,18 @@ jobs:
       - run: cargo clippy --all-targets --workspace --target x86_64-unknown-linux-gnu
       - run: cargo clippy --all-targets --workspace --target x86_64-unknown-linux-gnu --no-default-features
 
+  cargo-deny:
+    name: Cargo deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
   rustfmt:
     name: Check formatting
     runs-on: ubuntu-24.04
