@@ -177,8 +177,11 @@ impl SaveDirState {
         )?;
 
         out.write_all(&setup_buf)?;
-        out.write_all(b"exec \"$@\"")?;
+        // Note that LINKER_WRAPPER is deliberately not quoted. It generally isn't going to be set,
+        // in which case we just exec $L.
+        out.write_all(b"exec $LINKER_WRAPPER \"$L\"")?;
         out.write_all(&args_buf)?;
+        out.write_all(b"\\\n  \"$@\"")?;
 
         if let Some(orig) = original_output_file {
             out.write_all(b"\n# Original output file: ")?;
