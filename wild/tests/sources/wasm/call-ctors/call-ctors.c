@@ -3,6 +3,9 @@
 // definitions.
 //#RunEnabled: false
 //#ExpectSection: Code
+//#ExpectSection: name
+//#Contains: __wasm_call_ctors
+//#Contains: __wasm_call_dtors
 
 __attribute__((import_module("env"), import_name("__wasm_call_ctors"))) void __wasm_call_ctors(
     void);

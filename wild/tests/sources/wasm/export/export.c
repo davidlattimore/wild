@@ -1,6 +1,7 @@
 //#Config:export-functions
 //#LinkArgs: --export=foo
 //#Contains: foo
+//#ExpectSection: name
 // TODO(wasm): verify that `not_exported` is actually not exported
 
 //#Config:missing-export
