@@ -54,7 +54,6 @@ pub struct ElfArgs {
     pub(crate) strip: Strip,
     pub(crate) merge_sections: bool,
     pub(crate) version_script_path: Option<PathBuf>,
-    pub(crate) debug_address: Option<u64>,
     pub(crate) should_write_eh_frame_hdr: bool,
     pub(crate) wrap: Vec<String>,
     pub(crate) rpath: Option<String>,
@@ -278,7 +277,6 @@ impl Default for ElfArgs {
             merge_sections: true,
             copy_relocations: CopyRelocations::Allowed,
             version_script_path: None,
-            debug_address: None,
             should_write_eh_frame_hdr: false,
             write_gc_stats: None,
             wrap: Vec::new(),
@@ -1357,15 +1355,6 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Don't write the linker name and version in .comment")
         .execute(|args, _modifier_stack| {
             args.should_write_linker_identity = false;
-            Ok(())
-        });
-
-    parser
-        .declare_with_param()
-        .long("debug-address")
-        .help("Set debug address")
-        .execute(|args, _modifier_stack, value| {
-            args.debug_address = Some(parse_number(value).context("Invalid --debug-address")?);
             Ok(())
         });
 
