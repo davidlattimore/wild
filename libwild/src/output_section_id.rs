@@ -594,6 +594,7 @@ pub(crate) struct SectionOutputInfo<'data, P: Platform> {
     pub(crate) secondary_order: Option<SecondaryOrder>,
     pub(crate) phdr_name: Option<&'data [u8]>,
     pub(crate) region_name: Option<&'data [u8]>,
+    pub(crate) fill: Option<[u8; 4]>,
 }
 
 impl OutputSectionId {
@@ -748,8 +749,14 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 at_location: None,
                 is_top_level: true,
             });
-            let section_id =
-                self.add_named_section(custom.name, custom.alignment, None, None, location_info);
+            let section_id = self.add_named_section(
+                custom.name,
+                custom.alignment,
+                None,
+                None,
+                location_info,
+                None,
+            );
 
             section_part_ids[custom.index.0] = section_id.part_id_with_alignment(custom.alignment);
         }
@@ -787,6 +794,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         phdr_name: Option<&'data [u8]>,
         region_name: Option<&'data [u8]>,
         location_info: Option<SectionLocationInfo<'data>>,
+        fill: Option<[u8; 4]>,
     ) -> OutputSectionId {
         *self.custom_by_name.entry(name).or_insert_with(|| {
             self.section_infos.add_new(SectionOutputInfo {
@@ -799,6 +807,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 secondary_order: None,
                 phdr_name,
                 region_name,
+                fill,
             })
         })
     }
@@ -821,6 +830,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             secondary_order,
             phdr_name: None,
             region_name: primary_info.region_name,
+            fill: primary_info.fill,
         })
     }
 
@@ -1069,6 +1079,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             output_sections.add_named_section(
                 SectionName(name.as_bytes()),
                 crate::alignment::MIN,
+                None,
                 None,
                 None,
                 None,

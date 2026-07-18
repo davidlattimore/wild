@@ -254,9 +254,15 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
     layout: &ElfLayout<'data>,
 ) -> Result {
     timing_phase!("Write data to file");
-    let (mut section_buffers, mut padding) =
-        split_output_into_sections(layout, &mut sized_output.out);
-    padding.fill_zero();
+    let (mut section_buffers, padding) = split_output_into_sections(layout, &mut sized_output.out);
+    for pslice in padding.slices {
+        if let Some(section_id) = pslice.parent_section_id {
+            let section_info = layout.output_sections.output_info(section_id);
+            fill_section_padding::<A>(pslice.slice, section_info);
+        } else {
+            pslice.slice.fill(0);
+        }
+    }
 
     let sym_index_map = if layout.args().should_output_partial_object() {
         build_sym_index_map(layout)
@@ -2170,14 +2176,16 @@ fn write_section_raw<'out, 'data, A: Arch<Platform = Elf>>(
         let out = section_buffer.split_off_mut(..allocation_size).unwrap();
         let object_section = object.object.section(section_index)?;
         let relax_deltas = object.section_relax_deltas.get(section_index.0);
-        let section_flags = object_section.sh_flags(LittleEndian);
 
+        let section_info = layout
+            .output_sections
+            .output_info(part_id.output_section_id());
         match relax_deltas {
             None => {
                 let section_size = object.object.section_size(object_section)?;
                 let (out, padding) = out.split_at_mut(section_size as usize);
                 object.object.copy_section_data(object_section, out)?;
-                A::fill_section_padding(padding, section_flags);
+                fill_section_padding::<A>(padding, section_info);
                 Ok(out)
             }
             Some(deltas) => {
@@ -2207,7 +2215,7 @@ fn write_section_raw<'out, 'data, A: Arch<Platform = Elf>>(
                         .copy_from_slice(&input_data[input_pos..]);
                     output_pos += remaining;
                 }
-                A::fill_section_padding(&mut out[output_pos..], section_flags);
+                fill_section_padding::<A>(&mut out[output_pos..], section_info);
 
                 Ok(&mut out[..effective_size])
             }
@@ -6041,4 +6049,19 @@ fn link_ids(section_id: OutputSectionId) -> &'static [OutputSectionId] {
         .get(section_id.as_usize())
         .map(|def| def.link)
         .unwrap_or_default()
+}
+
+fn fill_section_padding<A: Arch<Platform = Elf>>(
+    padding: &mut [u8],
+    section_info: &output_section_id::SectionOutputInfo<Elf>,
+) {
+    if let Some(pattern) = section_info.fill {
+        let chunks = padding.chunks_mut(4);
+        for chunk in chunks {
+            let len = chunk.len();
+            chunk.copy_from_slice(&pattern[..len]);
+        }
+    } else {
+        A::fill_section_padding(padding, section_info.section_attributes.flags);
+    }
 }

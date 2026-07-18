@@ -1151,6 +1151,7 @@ impl platform::Platform for MachO {
                 secondary_order: None,
                 phdr_name: None,
                 region_name: None,
+                fill: None,
             })
             .collect()
     }
