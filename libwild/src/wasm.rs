@@ -30,6 +30,8 @@ use linker_utils::utils::u32_from_slice;
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::ops::Range;
+use wasm_encoder::NameMap;
+use wasm_encoder::NameSection;
 use wasmparser::BinaryReader;
 use wasmparser::CodeSectionReader;
 use wasmparser::ConstExpr;
@@ -1372,7 +1374,8 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             | osid::WASM_ELEMENT
             | osid::WASM_DATA_COUNT
             | osid::WASM_CODE
-            | osid::WASM_DATA => SegmentType::Module,
+            | osid::WASM_DATA
+            | osid::WASM_NAME => SegmentType::Module,
             _ => SegmentType::Unused,
         };
 
@@ -1454,6 +1457,10 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails;
     };
     defs[osid::WASM_DATA.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"data")),
+        target_segment_type: Some(SegmentType::Module),
+    };
+    defs[osid::WASM_NAME.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"name")),
         target_segment_type: Some(SegmentType::Module),
     };
 
@@ -1584,6 +1591,8 @@ pub(crate) struct WasmEncodedSections {
     pub(crate) memory: Option<Vec<u8>>,
     pub(crate) table: Option<Vec<u8>>,
     pub(crate) element: Option<Vec<u8>>,
+    // Custom `name` section.
+    pub(crate) name: Option<Vec<u8>>,
 }
 
 impl WasmEncodedSections {
@@ -1596,6 +1605,7 @@ impl WasmEncodedSections {
         add_encoded_section_size(sizes, crate::part_id::WASM_GLOBAL, self.global.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_EXPORT, self.export.as_ref());
         add_encoded_section_size(sizes, crate::part_id::WASM_ELEMENT, self.element.as_ref());
+        add_encoded_section_size(sizes, crate::part_id::WASM_NAME, self.name.as_ref());
     }
 }
 
@@ -1615,8 +1625,129 @@ fn encode_wasm_section(section: &impl wasm_encoder::Section) -> Vec<u8> {
     bytes
 }
 
+fn build_name_section<'data>(
+    layout: &WasmLayout<'data>,
+    layout_inputs: &[WasmObjectLayoutInput<'data>],
+    indices: &LinkerDefinedIndices,
+) -> Option<wasm_encoder::NameSection> {
+    let mut function_names: Vec<(u32, &str)> = Vec::new();
+    let mut global_names: Vec<(u32, &str)> = Vec::new();
+
+    // Host / remaining imports.
+    let mut next_func_import = 0u32;
+    let mut next_global_import = 0u32;
+    for import in &layout.imports {
+        match import.entity {
+            crate::wasm_writer::OutputImportEntity::Function { .. } => {
+                function_names.push((next_func_import, import.name));
+                next_func_import += 1;
+            }
+            crate::wasm_writer::OutputImportEntity::Global(_) => {
+                global_names.push((next_global_import, import.name));
+                next_global_import += 1;
+            }
+        }
+    }
+
+    // Linker-synthesised functions / globals.
+    if let Some(idx) = indices.memory_base_global {
+        global_names.push((idx, "__memory_base"));
+    }
+    if let Some(idx) = indices.stack_pointer_global {
+        global_names.push((idx, "__stack_pointer"));
+    }
+    if let Some(idx) = indices.tls_base_global {
+        global_names.push((idx, "__tls_base"));
+    }
+    if let Some(idx) = indices.call_ctors_func {
+        function_names.push((idx, "__wasm_call_ctors"));
+    }
+    if let Some(idx) = indices.call_dtors_func {
+        function_names.push((idx, "__wasm_call_dtors"));
+    }
+
+    // Names from linking-section symbols on each input object.
+    for (obj_idx, input) in layout_inputs.iter().enumerate() {
+        let Some(index_map) = layout.object_index_maps.get(obj_idx) else {
+            continue;
+        };
+        for sym in &input.symbols {
+            let Some(name) = wasm_symbol_name_str(input.data, sym) else {
+                continue;
+            };
+            match sym.kind {
+                WasmSymbolKind::Func => {
+                    if let Some(&out_idx) = index_map.function_indices.get(sym.index as usize) {
+                        function_names.push((out_idx, name));
+                    }
+                }
+                WasmSymbolKind::Global => {
+                    if let Some(&out_idx) = index_map.global_indices.get(sym.index as usize) {
+                        global_names.push((out_idx, name));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for export in &layout.exports {
+        match export.kind {
+            wasmparser::ExternalKind::Func => {
+                function_names.push((export.index, export.name));
+            }
+            wasmparser::ExternalKind::Global => {
+                global_names.push((export.index, export.name));
+            }
+            _ => {}
+        }
+    }
+
+    if function_names.is_empty() && global_names.is_empty() {
+        return None;
+    }
+
+    let mut section = NameSection::new();
+    if let Some(map) = finalize_name_map(&mut function_names) {
+        section.functions(&map);
+    }
+    if let Some(map) = finalize_name_map(&mut global_names) {
+        section.globals(&map);
+    }
+    Some(section)
+}
+
+fn finalize_name_map(entries: &mut [(u32, &str)]) -> Option<NameMap> {
+    if entries.is_empty() {
+        return None;
+    }
+    entries.sort_by_key(|(a, _)| *a);
+    let mut map = NameMap::new();
+    let mut last_idx = None;
+    for &(idx, name) in entries.iter() {
+        if last_idx == Some(idx) {
+            continue;
+        }
+        last_idx = Some(idx);
+        map.append(idx, name);
+    }
+    Some(map)
+}
+
+fn wasm_symbol_name_str<'data>(data: &'data [u8], sym: &WasmSymbol) -> Option<&'data str> {
+    if !sym.has_name() {
+        return None;
+    }
+    let bytes = data.get(sym.name_range())?;
+    core::str::from_utf8(bytes).ok()
+}
+
 impl<'data> WasmLayout<'data> {
-    fn encode_metadata_sections(&mut self) -> Result {
+    fn encode_metadata_sections(
+        &mut self,
+        layout_inputs: &[WasmObjectLayoutInput<'data>],
+        indices: &LinkerDefinedIndices,
+    ) -> Result {
         timing_phase!("Encode Wasm metadata sections");
         let type_section = crate::wasm_writer::build_type_section(&self.output_types)?;
         if !type_section.is_empty() {
@@ -1658,6 +1789,10 @@ impl<'data> WasmLayout<'data> {
             let element_section =
                 crate::wasm_writer::build_element_section(&self.element_functions);
             self.encoded_sections.element = Some(encode_wasm_section(&element_section));
+        }
+
+        if let Some(name_section) = build_name_section(self, layout_inputs, indices) {
+            self.encoded_sections.name = Some(encode_wasm_section(&name_section));
         }
 
         self.code_section_size = compute_code_section_size(&self.function_bodies);
@@ -2008,6 +2143,8 @@ pub(crate) struct WasmObjectLayout<'data> {
 
 #[derive(Debug)]
 struct WasmObjectLayoutInput<'data> {
+    /// Input module bytes.
+    data: &'data [u8],
     types: Vec<wasmparser::FuncType>,
     function_imports: Vec<WasmFunctionImport<'data>>,
     global_imports: Vec<WasmGlobalImport<'data>>,
@@ -2197,6 +2334,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
         }
 
         Ok(Self {
+            data: file.data,
             types,
             function_imports,
             global_imports,
@@ -3514,7 +3652,7 @@ where
         timing_phase!("Finalize Wasm indirect function table");
         finalize_indirect_function_table(&mut layout, &layout_inputs)?;
     }
-    layout.encode_metadata_sections()?;
+    layout.encode_metadata_sections(&layout_inputs, &indices)?;
     Ok(layout)
 }
 
@@ -4378,6 +4516,7 @@ impl platform::Platform for Wasm {
         builder.add_section(osid::WASM_DATA_COUNT);
         builder.add_section(osid::WASM_CODE);
         builder.add_section(osid::WASM_DATA);
+        builder.add_section(osid::WASM_NAME);
 
         builder.build()
     }
