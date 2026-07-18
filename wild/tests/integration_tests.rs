@@ -501,30 +501,56 @@ fn for_each_test_dir(platform_name: &str, mut cb: impl FnMut(&str, PathBuf) -> R
     Ok(())
 }
 
-fn wasm_standard_sections(wasm_file: &Path) -> Result<std::collections::HashSet<String>> {
+/// Section names present in a Wasm module for `ExpectSection` / `NoSection`.
+fn wasm_section_names(wasm_file: &Path) -> Result<HashSet<String>> {
     use wasmparser::Parser;
     use wasmparser::Payload;
 
     let bytes = std::fs::read(wasm_file)
         .with_context(|| format!("Failed to read wasm file {}", wasm_file.display()))?;
-    let mut sections = std::collections::HashSet::new();
+    let mut sections = HashSet::new();
     for payload in Parser::new(0).parse_all(&bytes) {
-        if let Some(name) = match payload? {
-            Payload::TypeSection(_) => Some("Type"),
-            Payload::ImportSection(_) => Some("Import"),
-            Payload::FunctionSection(_) => Some("Function"),
-            Payload::TableSection(_) => Some("Table"),
-            Payload::MemorySection(_) => Some("Memory"),
-            Payload::GlobalSection(_) => Some("Global"),
-            Payload::ExportSection(_) => Some("Export"),
-            Payload::StartSection { .. } => Some("Start"),
-            Payload::ElementSection(_) => Some("Element"),
-            Payload::CodeSectionStart { .. } => Some("Code"),
-            Payload::DataSection(_) => Some("Data"),
-            Payload::DataCountSection { .. } => Some("DataCount"),
-            _ => None,
-        } {
-            sections.insert(name.to_owned());
+        match payload? {
+            Payload::TypeSection(_) => {
+                sections.insert("Type".to_owned());
+            }
+            Payload::ImportSection(_) => {
+                sections.insert("Import".to_owned());
+            }
+            Payload::FunctionSection(_) => {
+                sections.insert("Function".to_owned());
+            }
+            Payload::TableSection(_) => {
+                sections.insert("Table".to_owned());
+            }
+            Payload::MemorySection(_) => {
+                sections.insert("Memory".to_owned());
+            }
+            Payload::GlobalSection(_) => {
+                sections.insert("Global".to_owned());
+            }
+            Payload::ExportSection(_) => {
+                sections.insert("Export".to_owned());
+            }
+            Payload::StartSection { .. } => {
+                sections.insert("Start".to_owned());
+            }
+            Payload::ElementSection(_) => {
+                sections.insert("Element".to_owned());
+            }
+            Payload::CodeSectionStart { .. } => {
+                sections.insert("Code".to_owned());
+            }
+            Payload::DataSection(_) => {
+                sections.insert("Data".to_owned());
+            }
+            Payload::DataCountSection { .. } => {
+                sections.insert("DataCount".to_owned());
+            }
+            Payload::CustomSection(reader) => {
+                sections.insert(reader.name().to_owned());
+            }
+            _ => {}
         }
     }
     Ok(sections)
@@ -535,7 +561,7 @@ fn ensure_wasm_sections(
     section_names: &[String],
     linker_name: &str,
 ) -> Result<()> {
-    let sections = wasm_standard_sections(wasm_file)?;
+    let sections = wasm_section_names(wasm_file)?;
     for section_name in section_names {
         ensure!(
             sections.contains(section_name),
@@ -4397,7 +4423,7 @@ impl Assertions {
         ensure_wasm_sections(path, &section_names, linker_used.name())?;
         ensure_wasm_func_types_unique(path, linker_used.name())?;
 
-        let sections = wasm_standard_sections(path)?;
+        let sections = wasm_section_names(path)?;
         for name in &self.absent_sections {
             ensure!(
                 !sections.contains(name),

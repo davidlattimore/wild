@@ -256,6 +256,7 @@ fn test_merge_parts() {
         output_section_id::WASM_DATA_COUNT,
         output_section_id::WASM_CODE,
         output_section_id::WASM_DATA,
+        output_section_id::WASM_NAME,
     ];
     let mut sum_of_sums = 0;
     sum_of_1s.for_each(|section_id, sum| {

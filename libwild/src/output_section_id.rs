@@ -128,6 +128,7 @@ pub(crate) const WASM_ELEMENT: OutputSectionId = part_id::WASM_ELEMENT.output_se
 pub(crate) const WASM_DATA_COUNT: OutputSectionId = part_id::WASM_DATA_COUNT.output_section_id();
 pub(crate) const WASM_CODE: OutputSectionId = part_id::WASM_CODE.output_section_id();
 pub(crate) const WASM_DATA: OutputSectionId = part_id::WASM_DATA.output_section_id();
+pub(crate) const WASM_NAME: OutputSectionId = part_id::WASM_NAME.output_section_id();
 
 // Regular sections copied from the input objects.
 pub(crate) const RODATA: OutputSectionId = OutputSectionId::regular(0);

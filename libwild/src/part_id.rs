@@ -71,8 +71,9 @@ pub(crate) const WASM_ELEMENT: PartId = PartId(46);
 pub(crate) const WASM_DATA_COUNT: PartId = PartId(47);
 pub(crate) const WASM_CODE: PartId = PartId(48);
 pub(crate) const WASM_DATA: PartId = PartId(49);
+pub(crate) const WASM_NAME: PartId = PartId(50);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 50;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 51;
 
 #[cfg(test)]
 pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_SINGLE_PART_SECTIONS as usize

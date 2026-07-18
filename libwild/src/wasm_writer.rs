@@ -125,6 +125,10 @@ fn copy_metadata_sections(
         encoded.element.as_ref(),
         section_buffers.get_mut(crate::output_section_id::WASM_ELEMENT),
     )?;
+    copy_encoded_section(
+        encoded.name.as_ref(),
+        section_buffers.get_mut(crate::output_section_id::WASM_NAME),
+    )?;
     Ok(())
 }
 
