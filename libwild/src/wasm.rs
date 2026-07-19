@@ -3894,54 +3894,44 @@ struct LinkerDefinedDataAddress {
 }
 
 /// Wasm symbols synthesized by the linker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter, strum::EnumString, strum::IntoStaticStr,
+)]
 enum WasmLinkerSymbol {
     // Data
+    #[strum(serialize = "__data_end")]
     DataEnd,
+    #[strum(serialize = "__heap_base")]
     HeapBase,
+    #[strum(serialize = "__heap_end")]
     HeapEnd,
+    #[strum(serialize = "__wasm_first_page_end")]
     WasmFirstPageEnd,
     // Globals
+    #[strum(serialize = "__memory_base")]
     MemoryBase,
+    #[strum(serialize = "__stack_pointer")]
     StackPointer,
+    #[strum(serialize = "__tls_base")]
     TlsBase,
     // Functions
+    #[strum(serialize = "__wasm_call_ctors")]
     CallCtors,
+    #[strum(serialize = "__wasm_call_dtors")]
     CallDtors,
 }
 
 impl WasmLinkerSymbol {
     fn name(self) -> &'static [u8] {
-        match self {
-            Self::DataEnd => b"__data_end",
-            Self::HeapBase => b"__heap_base",
-            Self::HeapEnd => b"__heap_end",
-            Self::WasmFirstPageEnd => b"__wasm_first_page_end",
-            Self::MemoryBase => b"__memory_base",
-            Self::StackPointer => b"__stack_pointer",
-            Self::TlsBase => b"__tls_base",
-            Self::CallCtors => b"__wasm_call_ctors",
-            Self::CallDtors => b"__wasm_call_dtors",
-        }
+        <&'static str>::from(self).as_bytes()
     }
 
     fn parse_bytes(name: &[u8]) -> Option<Self> {
-        match name {
-            b"__data_end" => Some(Self::DataEnd),
-            b"__heap_base" => Some(Self::HeapBase),
-            b"__heap_end" => Some(Self::HeapEnd),
-            b"__wasm_first_page_end" => Some(Self::WasmFirstPageEnd),
-            b"__memory_base" => Some(Self::MemoryBase),
-            b"__stack_pointer" => Some(Self::StackPointer),
-            b"__tls_base" => Some(Self::TlsBase),
-            b"__wasm_call_ctors" => Some(Self::CallCtors),
-            b"__wasm_call_dtors" => Some(Self::CallDtors),
-            _ => None,
-        }
+        std::str::from_utf8(name).ok()?.parse().ok()
     }
 
     fn parse(name: &str) -> Option<Self> {
-        Self::parse_bytes(name.as_bytes())
+        name.parse().ok()
     }
 
     fn matches_import_kind(self, kind: WasmSymbolKind) -> bool {
