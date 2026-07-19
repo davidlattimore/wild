@@ -3872,24 +3872,57 @@ struct LinkerDefinedDataAddress {
     address: u32,
 }
 
-/// Absolute addresses for linker-defined data symbols.
+/// Wasm data symbols synthesized by the linker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
+enum WasmLinkerDataSymbol {
+    DataEnd,
+    HeapBase,
+    HeapEnd,
+    WasmFirstPageEnd,
+}
+
+impl WasmLinkerDataSymbol {
+    fn name(self) -> &'static [u8] {
+        match self {
+            Self::DataEnd => b"__data_end",
+            Self::HeapBase => b"__heap_base",
+            Self::HeapEnd => b"__heap_end",
+            Self::WasmFirstPageEnd => b"__wasm_first_page_end",
+        }
+    }
+
+    fn parse(name: &[u8]) -> Option<Self> {
+        match name {
+            b"__data_end" => Some(Self::DataEnd),
+            b"__heap_base" => Some(Self::HeapBase),
+            b"__heap_end" => Some(Self::HeapEnd),
+            b"__wasm_first_page_end" => Some(Self::WasmFirstPageEnd),
+            _ => None,
+        }
+    }
+
+    fn address(self, data_end: u32, stack_size: u32, heap_end: Option<u32>) -> Result<Option<u32>> {
+        Ok(match self {
+            Self::DataEnd => Some(data_end),
+            Self::HeapBase => Some(stack_high_after_data(data_end, stack_size)?),
+            Self::WasmFirstPageEnd => Some(u32::try_from(wasm_page_size())?),
+            Self::HeapEnd => heap_end,
+        })
+    }
+}
+
 fn linker_defined_data_symbol_address(
     name: &[u8],
     data_end: u32,
     stack_size: u32,
     heap_end: Option<u32>,
 ) -> Result<Option<LinkerDefinedDataAddress>> {
-    match name {
-        b"__data_end" => Ok(Some(LinkerDefinedDataAddress { address: data_end })),
-        b"__heap_base" => Ok(Some(LinkerDefinedDataAddress {
-            address: stack_high_after_data(data_end, stack_size)?,
-        })),
-        b"__wasm_first_page_end" => Ok(Some(LinkerDefinedDataAddress {
-            address: u32::try_from(wasm_page_size())?,
-        })),
-        b"__heap_end" => Ok(heap_end.map(|address| LinkerDefinedDataAddress { address })),
-        _ => Ok(None),
-    }
+    let Some(sym) = WasmLinkerDataSymbol::parse(name) else {
+        return Ok(None);
+    };
+    Ok(sym
+        .address(data_end, stack_size, heap_end)?
+        .map(|address| LinkerDefinedDataAddress { address }))
 }
 
 fn compute_data_addresses(
@@ -3920,39 +3953,32 @@ fn compute_data_addresses(
             }
             let symbol_id = layout_inputs[obj_idx].symbol_id_range.offset_to_id(sym_idx);
 
-            // Resolve to the canonical definition when this is an undefined reference.
-            let (def_obj_idx, def_sym, name_symbol_id) = if sym.is_undefined() {
-                let def_id = symbol_db.definition(symbol_id);
-                let def_file_id = symbol_db.file_id_for_symbol(def_id);
-                let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) else {
-                    continue;
-                };
-                let def_input = &layout_inputs[def_obj_idx];
-                let def_sym_offset = def_id.to_offset(def_input.symbol_id_range);
-                (
-                    def_obj_idx,
-                    per_object_symbols[def_obj_idx][def_sym_offset],
-                    def_id,
-                )
-            } else {
-                (obj_idx, *sym, symbol_id)
-            };
-
-            if def_sym.is_undefined() {
-                let name = symbol_db.symbol_name(name_symbol_id)?;
-                if let Some(resolved) = linker_defined_data_symbol_address(
-                    name.bytes(),
-                    data_end,
-                    stack_size,
-                    heap_end,
-                )? {
-                    data_addresses[sym_idx] = resolved.address;
-                }
+            if !sym.is_undefined() {
+                data_addresses[sym_idx] =
+                    data_symbol_memory_address(&object_data_layouts[obj_idx], sym)?;
                 continue;
             }
 
-            data_addresses[sym_idx] =
-                data_symbol_memory_address(&object_data_layouts[def_obj_idx], &def_sym)?;
+            let def_id = symbol_db.definition(symbol_id);
+            let def_file_id = symbol_db.file_id_for_symbol(def_id);
+
+            if let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) {
+                let def_input = &layout_inputs[def_obj_idx];
+                let def_sym =
+                    per_object_symbols[def_obj_idx][def_id.to_offset(def_input.symbol_id_range)];
+                if !def_sym.is_undefined() {
+                    data_addresses[sym_idx] =
+                        data_symbol_memory_address(&object_data_layouts[def_obj_idx], &def_sym)?;
+                    continue;
+                }
+            }
+
+            let name = symbol_db.symbol_name(def_id)?;
+            if let Some(resolved) =
+                linker_defined_data_symbol_address(name.bytes(), data_end, stack_size, heap_end)?
+            {
+                data_addresses[sym_idx] = resolved.address;
+            }
         }
         index_map.data_addresses = data_addresses;
     }
@@ -4278,6 +4304,10 @@ impl platform::Platform for Wasm {
                 b"",
             ))
             .hide();
+
+        for sym in <WasmLinkerDataSymbol as strum::IntoEnumIterator>::iter() {
+            symbols.linker_defined(sym.name()).hide();
+        }
     }
 
     fn built_in_section_infos<'data>()

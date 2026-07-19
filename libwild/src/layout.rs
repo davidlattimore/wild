@@ -3634,7 +3634,9 @@ fn create_internal_symbol_resolution<'data, P: Platform>(
     }
 
     let raw_value = match def_info.placement {
-        SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => 0,
+        SymbolPlacement::Undefined
+        | SymbolPlacement::ForceUndefined
+        | SymbolPlacement::LinkerDefined => 0,
         SymbolPlacement::SectionStart(section_id) => {
             resources.section_layouts.get(section_id).mem_offset
         }

@@ -873,6 +873,7 @@ dependencies = [
  "sharded-offset-map",
  "sharded-vec-writer",
  "smallvec",
+ "strum",
  "symbolic-common",
  "symbolic-demangle",
  "tempfile",

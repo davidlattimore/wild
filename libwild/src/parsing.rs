@@ -98,6 +98,9 @@ pub(crate) enum SymbolPlacement<'data> {
 
     /// Symbol will point to the start of the first loadable segment.
     LoadBaseAddress,
+
+    /// A symbol defined by the linker.
+    LinkerDefined,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -293,6 +296,16 @@ impl<'data, P: Platform> InternalSymbolsBuilder<'data, P> {
         self.add_symbol(InternalSymDefInfo::new(
             SymbolPlacement::SectionGroupEnd(section_id),
             name.as_bytes(),
+        ))
+    }
+
+    pub(crate) fn linker_defined(
+        &mut self,
+        name: &'static [u8],
+    ) -> &mut InternalSymDefInfo<'data, P> {
+        self.add_symbol(InternalSymDefInfo::new(
+            SymbolPlacement::LinkerDefined,
+            name,
         ))
     }
 }

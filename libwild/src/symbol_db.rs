@@ -2060,6 +2060,10 @@ impl<'data, P: Platform> Prelude<'data, P> {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     ValueFlags::NON_INTERPOSABLE
                 }
+                SymbolPlacement::LinkerDefined => {
+                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
+                    ValueFlags::NON_INTERPOSABLE | ValueFlags::ABSOLUTE
+                }
                 SymbolPlacement::Redirect(redirect) => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     if matches!(redirect.loc, SymbolLoc::None) {
@@ -2095,7 +2099,8 @@ impl<P: Platform> InternalSymDefInfo<'_, P> {
             }) => Some(i),
             SymbolPlacement::Undefined
             | SymbolPlacement::ForceUndefined
-            | SymbolPlacement::Redirect(_) => None,
+            | SymbolPlacement::Redirect(_)
+            | SymbolPlacement::LinkerDefined => None,
             SymbolPlacement::SectionStart(i) => Some(i),
             SymbolPlacement::SectionEnd(i) => Some(i),
             SymbolPlacement::SectionGroupEnd(i) => Some(i),
