@@ -7,6 +7,7 @@ use crate::bail;
 use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
@@ -2441,10 +2442,6 @@ impl<'data> WasmObjectLayoutInput<'data> {
         for (i, import) in self.function_imports.iter().enumerate() {
             match resolutions.function_resolutions[i] {
                 ImportResolution::Unresolved => {
-                    if let Some(index) = indices.function_index(import.name) {
-                        index_map.function_indices.push(index);
-                        continue;
-                    }
                     let output_type_index = index_bases
                         .type_index_base
                         .checked_add(import.type_index)
@@ -2462,6 +2459,12 @@ impl<'data> WasmObjectLayoutInput<'data> {
                             type_index: output_type_index,
                         },
                     });
+                }
+                ImportResolution::LinkerDefined(known) => {
+                    let index = indices.function_index(known).ok_or_else(|| {
+                        crate::error!("missing reserved Wasm function for {known:?}")
+                    })?;
+                    index_map.function_indices.push(index);
                 }
                 ImportResolution::ResolvedFunction {
                     object_index,
@@ -2489,10 +2492,6 @@ impl<'data> WasmObjectLayoutInput<'data> {
         for (i, import) in self.global_imports.iter().enumerate() {
             match resolutions.global_resolutions[i] {
                 ImportResolution::Unresolved => {
-                    if let Some(index) = indices.global_index(import.name) {
-                        index_map.global_indices.push(index);
-                        continue;
-                    }
                     let output_global_index = index_bases
                         .global_import_base
                         .checked_add(unresolved_global_count)
@@ -2504,6 +2503,12 @@ impl<'data> WasmObjectLayoutInput<'data> {
                         name: import.name,
                         entity: OutputImportEntity::Global(import.ty),
                     });
+                }
+                ImportResolution::LinkerDefined(known) => {
+                    let index = indices.global_index(known).ok_or_else(|| {
+                        crate::error!("missing reserved Wasm global for {known:?}")
+                    })?;
+                    index_map.global_indices.push(index);
                 }
                 ImportResolution::ResolvedGlobal {
                     object_index,
@@ -2608,6 +2613,8 @@ enum ImportResolution {
         object_index: usize,
         local_defined_index: u32,
     },
+    /// Resolved to a linker-synthesized function or global.
+    LinkerDefined(WasmLinkerSymbol),
 }
 
 #[derive(Debug, Default)]
@@ -2706,6 +2713,21 @@ fn resolve_import_symbols<'data>(
         }
     }
 
+    let import_names: Vec<&str> = match kind {
+        WasmSymbolKind::Func => input.function_imports.iter().map(|i| i.name).collect(),
+        WasmSymbolKind::Global => input.global_imports.iter().map(|i| i.name).collect(),
+        _ => Vec::new(),
+    };
+    for (import_idx, name) in import_names.iter().enumerate() {
+        if !matches!(resolutions[import_idx], ImportResolution::Unresolved) {
+            continue;
+        }
+        if let Some(resolution) = linker_defined_import_resolution(name, kind, symbol_db) {
+            unresolved_count -= 1;
+            resolutions[import_idx] = resolution;
+        }
+    }
+
     Ok((resolutions, unresolved_count))
 }
 
@@ -2724,6 +2746,14 @@ fn resolve_one_import<'data>(
         return Ok(ImportResolution::Unresolved);
     }
     let def_file_id = symbol_db.file_id_for_symbol(def_id);
+
+    if def_file_id == PRELUDE_FILE_ID {
+        return Ok(
+            linker_defined_from_prelude_def(def_id, expected_kind, symbol_db)
+                .unwrap_or(ImportResolution::Unresolved),
+        );
+    }
+
     let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) else {
         return Ok(ImportResolution::Unresolved);
     };
@@ -2759,6 +2789,36 @@ fn resolve_one_import<'data>(
     }
 }
 
+fn linker_defined_from_prelude_def(
+    def_id: crate::symbol_db::SymbolId,
+    expected_kind: WasmSymbolKind,
+    symbol_db: &SymbolDb<'_, Wasm>,
+) -> Option<ImportResolution> {
+    let name = symbol_db.symbol_name(def_id).ok()?;
+    let known = WasmLinkerSymbol::parse_bytes(name.bytes())?;
+    known
+        .matches_import_kind(expected_kind)
+        .then_some(ImportResolution::LinkerDefined(known))
+}
+
+/// Resolve an import name to a prelude linker definition, if present in [`SymbolDb`].
+fn linker_defined_import_resolution(
+    import_name: &str,
+    expected_kind: WasmSymbolKind,
+    symbol_db: &SymbolDb<'_, Wasm>,
+) -> Option<ImportResolution> {
+    let known = WasmLinkerSymbol::parse(import_name)?;
+    if !known.matches_import_kind(expected_kind) {
+        return None;
+    }
+    let symbol_id = symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(known.name()))?;
+    let def_id = symbol_db.definition(symbol_id);
+    if symbol_db.file_id_for_symbol(def_id) != PRELUDE_FILE_ID {
+        return None;
+    }
+    Some(ImportResolution::LinkerDefined(known))
+}
+
 fn object_needs_linker_memory(input: &WasmObjectLayoutInput<'_>) -> bool {
     !input.memory_imports.is_empty() || !input.memories.is_empty()
 }
@@ -2769,8 +2829,6 @@ fn any_object_needs_linker_memory(inputs: &[WasmObjectLayoutInput<'_>]) -> bool 
 
 #[derive(Debug, Clone, Copy, Default)]
 struct LinkerImportAbsorption {
-    absorbed_functions: u32,
-    absorbed_globals: u32,
     needs_memory_base: bool,
     needs_stack_pointer: bool,
     needs_tls_base: bool,
@@ -2779,64 +2837,30 @@ struct LinkerImportAbsorption {
 }
 
 impl LinkerImportAbsorption {
-    fn for_object(
-        input: &WasmObjectLayoutInput<'_>,
-        resolutions: &ObjectImportResolutions,
-    ) -> Self {
+    fn from_resolutions(resolutions: &ObjectImportResolutions) -> Self {
         let mut absorption = Self::default();
-        for (i, import) in input.function_imports.iter().enumerate() {
-            if !matches!(
-                resolutions.function_resolutions.get(i),
-                Some(ImportResolution::Unresolved)
-            ) {
-                continue;
-            }
-            match WasmLinkerSymbol::parse(import.name) {
-                Some(WasmLinkerSymbol::CallCtors) => {
-                    absorption.needs_ctors = true;
-                    absorption.absorbed_functions += 1;
+        for resolution in &resolutions.function_resolutions {
+            if let ImportResolution::LinkerDefined(known) = *resolution {
+                match known {
+                    WasmLinkerSymbol::CallCtors => absorption.needs_ctors = true,
+                    WasmLinkerSymbol::CallDtors => absorption.needs_dtors = true,
+                    _ => {}
                 }
-                Some(WasmLinkerSymbol::CallDtors) => {
-                    absorption.needs_dtors = true;
-                    absorption.absorbed_functions += 1;
-                }
-                _ => {}
             }
         }
-        for (i, import) in input.global_imports.iter().enumerate() {
-            if !matches!(
-                resolutions.global_resolutions.get(i),
-                Some(ImportResolution::Unresolved)
-            ) {
-                continue;
-            }
-            match WasmLinkerSymbol::parse(import.name) {
-                Some(WasmLinkerSymbol::MemoryBase) => {
-                    absorption.needs_memory_base = true;
-                    absorption.absorbed_globals += 1;
+        for resolution in &resolutions.global_resolutions {
+            if let ImportResolution::LinkerDefined(known) = *resolution {
+                match known {
+                    WasmLinkerSymbol::MemoryBase => absorption.needs_memory_base = true,
+                    WasmLinkerSymbol::StackPointer => absorption.needs_stack_pointer = true,
+                    // Single-threaded. Immutable base (no TLS segment yet).
+                    WasmLinkerSymbol::TlsBase => absorption.needs_tls_base = true,
+                    _ => {}
                 }
-                Some(WasmLinkerSymbol::StackPointer) => {
-                    absorption.needs_stack_pointer = true;
-                    absorption.absorbed_globals += 1;
-                }
-                // Single-threaded. Immutable base (no TLS segment yet).
-                Some(WasmLinkerSymbol::TlsBase) => {
-                    absorption.needs_tls_base = true;
-                    absorption.absorbed_globals += 1;
-                }
-                _ => {}
             }
         }
         absorption
     }
-}
-
-fn remaining_unresolved_imports(unresolved: u32, absorbed: u32) -> Result<u32> {
-    unresolved.checked_sub(absorbed).ok_or_else(|| {
-        crate::error!(
-            "Wasm linker absorption count ({absorbed}) exceeds unresolved imports ({unresolved})"
-        )
-    })
 }
 
 /// Reserved Wasm index-space slots for linker-defined globals/functions.
@@ -2858,13 +2882,17 @@ struct LinkerDefinedIndices {
 /// True if inputs import or export `__wasm_call_ctors`.
 fn call_ctors_used_in_objects(inputs: &[WasmObjectLayoutInput<'_>]) -> bool {
     inputs.iter().any(|input| {
-        input
-            .function_imports
-            .iter()
-            .any(|imp| matches!(WasmLinkerSymbol::parse(imp.name), Some(WasmLinkerSymbol::CallCtors)))
-            || input.exports.iter().any(|exp| {
-                matches!(WasmLinkerSymbol::parse(exp.name), Some(WasmLinkerSymbol::CallCtors))
-            })
+        input.function_imports.iter().any(|imp| {
+            matches!(
+                WasmLinkerSymbol::parse(imp.name),
+                Some(WasmLinkerSymbol::CallCtors)
+            )
+        }) || input.exports.iter().any(|exp| {
+            matches!(
+                WasmLinkerSymbol::parse(exp.name),
+                Some(WasmLinkerSymbol::CallCtors)
+            )
+        })
     })
 }
 
@@ -2902,7 +2930,7 @@ impl LinkerDefinedIndices {
         let mut global_import_count = 0u32;
 
         for (input, resolutions) in inputs.iter().zip(import_resolutions) {
-            let absorption = LinkerImportAbsorption::for_object(input, resolutions);
+            let absorption = LinkerImportAbsorption::from_resolutions(resolutions);
             needs_ctors |= absorption.needs_ctors;
             needs_dtors |= absorption.needs_dtors;
             needs_memory_base |= absorption.needs_memory_base;
@@ -2910,17 +2938,11 @@ impl LinkerDefinedIndices {
             needs_tls_base |= absorption.needs_tls_base;
 
             function_import_count = function_import_count
-                .checked_add(remaining_unresolved_imports(
-                    resolutions.unresolved_function_count,
-                    absorption.absorbed_functions,
-                )?)
+                .checked_add(resolutions.unresolved_function_count)
                 .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
 
             global_import_count = global_import_count
-                .checked_add(remaining_unresolved_imports(
-                    resolutions.unresolved_global_count,
-                    absorption.absorbed_globals,
-                )?)
+                .checked_add(resolutions.unresolved_global_count)
                 .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
 
             if !needs_memory_base
@@ -2988,8 +3010,8 @@ impl LinkerDefinedIndices {
         })
     }
 
-    fn global_index(&self, name: &str) -> Option<u32> {
-        match WasmLinkerSymbol::parse(name)? {
+    fn global_index(&self, known: WasmLinkerSymbol) -> Option<u32> {
+        match known {
             WasmLinkerSymbol::MemoryBase => self.memory_base_global,
             WasmLinkerSymbol::StackPointer => self.stack_pointer_global,
             WasmLinkerSymbol::TlsBase => self.tls_base_global,
@@ -2997,8 +3019,8 @@ impl LinkerDefinedIndices {
         }
     }
 
-    fn function_index(&self, name: &str) -> Option<u32> {
-        match WasmLinkerSymbol::parse(name)? {
+    fn function_index(&self, known: WasmLinkerSymbol) -> Option<u32> {
+        match known {
             WasmLinkerSymbol::CallCtors => self.call_ctors_func,
             WasmLinkerSymbol::CallDtors => self.call_dtors_func,
             _ => None,
@@ -4050,18 +4072,11 @@ fn allocate_wasm_object_index_bases(
             .checked_add(u32::try_from(input.types.len()).context("too many Wasm types")?)
             .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
 
-        let absorption = LinkerImportAbsorption::for_object(input, resolutions);
         next_function_import_index = next_function_import_index
-            .checked_add(remaining_unresolved_imports(
-                resolutions.unresolved_function_count,
-                absorption.absorbed_functions,
-            )?)
+            .checked_add(resolutions.unresolved_function_count)
             .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
         next_global_import_index = next_global_import_index
-            .checked_add(remaining_unresolved_imports(
-                resolutions.unresolved_global_count,
-                absorption.absorbed_globals,
-            )?)
+            .checked_add(resolutions.unresolved_global_count)
             .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
     }
 
