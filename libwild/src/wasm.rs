@@ -2791,12 +2791,12 @@ impl LinkerImportAbsorption {
             ) {
                 continue;
             }
-            match import.name {
-                "__wasm_call_ctors" => {
+            match WasmLinkerSymbol::parse(import.name) {
+                Some(WasmLinkerSymbol::CallCtors) => {
                     absorption.needs_ctors = true;
                     absorption.absorbed_functions += 1;
                 }
-                "__wasm_call_dtors" => {
+                Some(WasmLinkerSymbol::CallDtors) => {
                     absorption.needs_dtors = true;
                     absorption.absorbed_functions += 1;
                 }
@@ -2810,17 +2810,17 @@ impl LinkerImportAbsorption {
             ) {
                 continue;
             }
-            match import.name {
-                "__memory_base" => {
+            match WasmLinkerSymbol::parse(import.name) {
+                Some(WasmLinkerSymbol::MemoryBase) => {
                     absorption.needs_memory_base = true;
                     absorption.absorbed_globals += 1;
                 }
-                "__stack_pointer" => {
+                Some(WasmLinkerSymbol::StackPointer) => {
                     absorption.needs_stack_pointer = true;
                     absorption.absorbed_globals += 1;
                 }
                 // Single-threaded. Immutable base (no TLS segment yet).
-                "__tls_base" => {
+                Some(WasmLinkerSymbol::TlsBase) => {
                     absorption.needs_tls_base = true;
                     absorption.absorbed_globals += 1;
                 }
@@ -2861,11 +2861,10 @@ fn call_ctors_used_in_objects(inputs: &[WasmObjectLayoutInput<'_>]) -> bool {
         input
             .function_imports
             .iter()
-            .any(|imp| imp.name == "__wasm_call_ctors")
-            || input
-                .exports
-                .iter()
-                .any(|exp| exp.name == "__wasm_call_ctors")
+            .any(|imp| matches!(WasmLinkerSymbol::parse(imp.name), Some(WasmLinkerSymbol::CallCtors)))
+            || input.exports.iter().any(|exp| {
+                matches!(WasmLinkerSymbol::parse(exp.name), Some(WasmLinkerSymbol::CallCtors))
+            })
     })
 }
 
@@ -2990,18 +2989,18 @@ impl LinkerDefinedIndices {
     }
 
     fn global_index(&self, name: &str) -> Option<u32> {
-        match name {
-            "__memory_base" => self.memory_base_global,
-            "__stack_pointer" => self.stack_pointer_global,
-            "__tls_base" => self.tls_base_global,
+        match WasmLinkerSymbol::parse(name)? {
+            WasmLinkerSymbol::MemoryBase => self.memory_base_global,
+            WasmLinkerSymbol::StackPointer => self.stack_pointer_global,
+            WasmLinkerSymbol::TlsBase => self.tls_base_global,
             _ => None,
         }
     }
 
     fn function_index(&self, name: &str) -> Option<u32> {
-        match name {
-            "__wasm_call_ctors" => self.call_ctors_func,
-            "__wasm_call_dtors" => self.call_dtors_func,
+        match WasmLinkerSymbol::parse(name)? {
+            WasmLinkerSymbol::CallCtors => self.call_ctors_func,
+            WasmLinkerSymbol::CallDtors => self.call_dtors_func,
             _ => None,
         }
     }
@@ -3872,41 +3871,82 @@ struct LinkerDefinedDataAddress {
     address: u32,
 }
 
-/// Wasm data symbols synthesized by the linker.
+/// Wasm symbols synthesized by the linker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
-enum WasmLinkerDataSymbol {
+enum WasmLinkerSymbol {
+    // Data
     DataEnd,
     HeapBase,
     HeapEnd,
     WasmFirstPageEnd,
+    // Globals
+    MemoryBase,
+    StackPointer,
+    TlsBase,
+    // Functions
+    CallCtors,
+    CallDtors,
 }
 
-impl WasmLinkerDataSymbol {
+impl WasmLinkerSymbol {
     fn name(self) -> &'static [u8] {
         match self {
             Self::DataEnd => b"__data_end",
             Self::HeapBase => b"__heap_base",
             Self::HeapEnd => b"__heap_end",
             Self::WasmFirstPageEnd => b"__wasm_first_page_end",
+            Self::MemoryBase => b"__memory_base",
+            Self::StackPointer => b"__stack_pointer",
+            Self::TlsBase => b"__tls_base",
+            Self::CallCtors => b"__wasm_call_ctors",
+            Self::CallDtors => b"__wasm_call_dtors",
         }
     }
 
-    fn parse(name: &[u8]) -> Option<Self> {
+    fn parse_bytes(name: &[u8]) -> Option<Self> {
         match name {
             b"__data_end" => Some(Self::DataEnd),
             b"__heap_base" => Some(Self::HeapBase),
             b"__heap_end" => Some(Self::HeapEnd),
             b"__wasm_first_page_end" => Some(Self::WasmFirstPageEnd),
+            b"__memory_base" => Some(Self::MemoryBase),
+            b"__stack_pointer" => Some(Self::StackPointer),
+            b"__tls_base" => Some(Self::TlsBase),
+            b"__wasm_call_ctors" => Some(Self::CallCtors),
+            b"__wasm_call_dtors" => Some(Self::CallDtors),
             _ => None,
         }
     }
 
-    fn address(self, data_end: u32, stack_size: u32, heap_end: Option<u32>) -> Result<Option<u32>> {
+    fn parse(name: &str) -> Option<Self> {
+        Self::parse_bytes(name.as_bytes())
+    }
+
+    fn matches_import_kind(self, kind: WasmSymbolKind) -> bool {
+        match self {
+            Self::CallCtors | Self::CallDtors => kind == WasmSymbolKind::Func,
+            Self::MemoryBase | Self::StackPointer | Self::TlsBase => kind == WasmSymbolKind::Global,
+            Self::DataEnd | Self::HeapBase | Self::HeapEnd | Self::WasmFirstPageEnd => false,
+        }
+    }
+
+    /// Data-symbol address after memory layout. `None` for non-data variants or absent memory.
+    fn data_address(
+        self,
+        data_end: u32,
+        stack_size: u32,
+        heap_end: Option<u32>,
+    ) -> Result<Option<u32>> {
         Ok(match self {
             Self::DataEnd => Some(data_end),
             Self::HeapBase => Some(stack_high_after_data(data_end, stack_size)?),
             Self::WasmFirstPageEnd => Some(u32::try_from(wasm_page_size())?),
             Self::HeapEnd => heap_end,
+            Self::MemoryBase
+            | Self::StackPointer
+            | Self::TlsBase
+            | Self::CallCtors
+            | Self::CallDtors => None,
         })
     }
 }
@@ -3917,11 +3957,11 @@ fn linker_defined_data_symbol_address(
     stack_size: u32,
     heap_end: Option<u32>,
 ) -> Result<Option<LinkerDefinedDataAddress>> {
-    let Some(sym) = WasmLinkerDataSymbol::parse(name) else {
+    let Some(sym) = WasmLinkerSymbol::parse_bytes(name) else {
         return Ok(None);
     };
     Ok(sym
-        .address(data_end, stack_size, heap_end)?
+        .data_address(data_end, stack_size, heap_end)?
         .map(|address| LinkerDefinedDataAddress { address }))
 }
 
@@ -4305,7 +4345,7 @@ impl platform::Platform for Wasm {
             ))
             .hide();
 
-        for sym in <WasmLinkerDataSymbol as strum::IntoEnumIterator>::iter() {
+        for sym in <WasmLinkerSymbol as strum::IntoEnumIterator>::iter() {
             symbols.linker_defined(sym.name()).hide();
         }
     }
