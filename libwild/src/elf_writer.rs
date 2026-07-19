@@ -4591,11 +4591,12 @@ fn get_symbol_attributes(
                 .and_then(|section_index| {
                     let slot = &obj.sections[section_index.0];
                     match slot {
-                        SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => {
+                        SectionSlot::Loaded(_)
+                        | SectionSlot::MergeStrings(_)
+                        | SectionSlot::Sorted(_) => {
                             let output_section_id = obj
                                 .section_part_id(section_index, &layout.symbol_db.section_part_ids)
                                 .output_section_id();
-
                             layout
                                 .output_sections
                                 .output_index_of_section(output_section_id)
@@ -4827,8 +4828,11 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
             SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => object
                 .section_part_id(section_index, &layout.symbol_db.section_part_ids)
                 .output_section_id(),
+            SectionSlot::Sorted(_) => object
+                .section_part_id(section_index, &layout.symbol_db.section_part_ids)
+                .output_section_id(),
             _ => bail!(
-                "Internal error: Defined symbols should always be for a loaded or merge-strings section"
+                "Internal error: Defined symbols should always be for a loaded, merge-strings or sorted section"
             ),
         };
         let output_section_id = layout

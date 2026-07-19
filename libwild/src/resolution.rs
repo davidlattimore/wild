@@ -1347,7 +1347,7 @@ fn resolve_section<'data, P: Platform>(
             must_load |= output_info.must_keep;
 
             unloaded_section = UnloadedSection::new();
-            unloaded_section.needs_sorting = output_info.sorted;
+            unloaded_section.needs_sorting = output_info.sorted || args.sort_sections_by_name();
         }
         SectionRuleOutcome::SortedSection(output_info) => {
             part_id = if output_info.section_id.is_regular() {

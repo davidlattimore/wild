@@ -136,6 +136,13 @@ pub struct ElfArgs {
     experimental_sframe: bool,
 
     pub(crate) debug_compression_kind: Option<CompressionKind>,
+    pub(crate) sort_section: Option<SortSectionMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SortSectionMode {
+    Name,
+    Alignment,
 }
 
 #[derive(Debug)]
@@ -333,6 +340,7 @@ impl Default for ElfArgs {
 
             experimental_sframe: false,
             debug_compression_kind: None,
+            sort_section: None,
             gdb_index: false,
         }
     }
@@ -1539,7 +1547,14 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("sort-section")
         .help("Specify section sorting criteria")
         .execute(|args, _modifier_stack, value| {
-            args.warn_unsupported(&format!("--sort-section={value}"))?;
+            args.sort_section = Some(match value {
+                "name" => SortSectionMode::Name,
+                "alignment" => SortSectionMode::Alignment,
+                other => {
+                    args.warn_unsupported(&format!("--sort-section={other}"))?;
+                    return Ok(());
+                }
+            });
             Ok(())
         });
 
@@ -1945,6 +1960,10 @@ impl platform::Args for ElfArgs {
 
     fn should_relax(&self) -> bool {
         self.relax
+    }
+
+    fn sort_sections_by_name(&self) -> bool {
+        self.sort_section == Some(SortSectionMode::Name)
     }
 
     fn should_emit_got_plt_syms(&self) -> bool {
