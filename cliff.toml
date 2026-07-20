@@ -75,8 +75,9 @@ commit_parsers = [
   { message = "^refactor", group = "<!-- 11 -->🔨 Refactor" },
   { body = ".*security", group = "<!-- 12 -->🛡️ Security" },
   { message = "^revert", group = "<!-- 13 -->◀️ Revert" },
+  { message = "^cli", group = "<!-- 14 -->💻 CLI" },
   { message = "^*\\(deps", group = "<!-- 50 -->Ignored" },
-  { message = ".*", group = "<!-- 11 -->💼 Other" },
+  { message = ".*", group = "<!-- 15 -->💼 Other" },
 ]
 # Exclude commits that are not matched by any commit parser.
 filter_commits = false
