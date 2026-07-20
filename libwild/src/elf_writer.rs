@@ -2161,7 +2161,7 @@ fn write_section_raw<'out, 'data, A: Arch<Platform = Elf>>(
     let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
     if layout
         .output_sections
-        .has_data_in_file(part_id.output_section_id())
+        .has_data_in_file(part_id.output_section_id(), layout.args().should_only_keep_debug())
     {
         let section_buffer = buffers.get_mut(part_id);
         let allocation_size = sec.capacity(part_id, &layout.output_sections) as usize;
@@ -5539,8 +5539,13 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
         let entry = entries.next().unwrap();
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
-
-        let sh_type = if layout.args().use_android_relr_tags && section_type == sht::RELR {
+        let sh_type = if layout.args().should_only_keep_debug()
+            && section_type != sht::NULL
+            && section_id.is_regular()
+            && !layout.output_sections.is_debug_section(section_id)
+        {
+            sht::NOBITS
+        } else if layout.args().use_android_relr_tags && section_type == sht::RELR {
             object::elf::SHT_ANDROID_RELR
         } else {
             section_type

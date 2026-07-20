@@ -52,6 +52,7 @@ pub struct ElfArgs {
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) dynamic_linker: Option<Box<Path>>,
     pub(crate) strip: Strip,
+    pub(crate) only_keep_debug: bool,
     pub(crate) merge_sections: bool,
     pub(crate) version_script_path: Option<PathBuf>,
     pub(crate) should_write_eh_frame_hdr: bool,
@@ -274,6 +275,7 @@ impl Default for ElfArgs {
             should_output_partial_object: false,
             dynamic_linker: None,
             strip: Strip::Nothing,
+            only_keep_debug: false,
             // For now, we default to --gc-sections. This is different to other linkers, but other
             // than being different, there doesn't seem to be any downside to doing
             // this. We don't currently do any less work if we're not GCing sections,
@@ -788,6 +790,15 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Strip debug symbols")
         .execute(|args, _modifier_stack| {
             args.strip = Strip::Debug;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("only-keep-debug")
+        .help("Keep only debug sections, discarding content of others")
+        .execute(|args, _modifier_stack| {
+            args.only_keep_debug = true;
             Ok(())
         });
 
@@ -1867,6 +1878,10 @@ impl platform::Args for ElfArgs {
 
     fn common_mut(&mut self) -> &mut crate::args::CommonArgs {
         &mut self.common
+    }
+
+    fn should_only_keep_debug(&self) -> bool {
+        self.only_keep_debug
     }
 
     // TODO: Some linkers like ld and mold cleanup debug symbols when linking with -r. For now, we

@@ -683,7 +683,7 @@ fn write_section_raw<'out, 'data>(
     let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
     if layout
         .output_sections
-        .has_data_in_file(part_id.output_section_id())
+        .has_data_in_file(part_id.output_section_id(), layout.args().should_only_keep_debug())
     {
         let section_buffer = buffers.get_mut(part_id);
         let allocation_size = sec.capacity(part_id, &layout.output_sections) as usize;

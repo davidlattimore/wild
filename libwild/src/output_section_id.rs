@@ -981,11 +981,23 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         self.section_infos.len() - NUM_SINGLE_PART_SECTIONS as usize
     }
 
-    pub(crate) fn has_data_in_file(&self, section_id: OutputSectionId) -> bool {
-        let attributes = self.output_info(section_id).section_attributes;
-        !attributes.is_no_bits()
+    pub(crate) fn is_debug_section(&self, section_id: OutputSectionId) -> bool {
+        match self.output_info(section_id).kind {
+            SectionKind::Primary(section_name) => section_name.0.starts_with(b".debug_"),
+            SectionKind::Secondary(primary_id) => self.is_debug_section(primary_id),
+        }
     }
 
+    pub(crate) fn has_data_in_file(&self, section_id: OutputSectionId, only_keep_debug: bool) -> bool {
+        let attributes = self.output_info(section_id).section_attributes;
+        if attributes.is_no_bits() {
+            return false;
+        }
+        if only_keep_debug && section_id.is_regular() && !self.is_debug_section(section_id) {
+            return false;
+        }
+        true
+    }
     pub(crate) fn output_info(&self, id: OutputSectionId) -> &SectionOutputInfo<'data, P> {
         self.section_infos.get(id)
     }
