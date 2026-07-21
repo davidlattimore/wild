@@ -2162,10 +2162,10 @@ fn write_section_raw<'out, 'data, A: Arch<Platform = Elf>>(
     buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result<&'out mut [u8]> {
     let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
-    if layout
-        .output_sections
-        .has_data_in_file(part_id.output_section_id(), layout.args().should_only_keep_debug())
-    {
+    if layout.output_sections.has_data_in_file(
+        part_id.output_section_id(),
+        layout.args().should_only_keep_debug(),
+    ) {
         let section_buffer = buffers.get_mut(part_id);
         let allocation_size = sec.capacity(part_id, &layout.output_sections) as usize;
         if section_buffer.len() < allocation_size {
@@ -3849,9 +3849,10 @@ fn write_merged_strings(
     });
 
     if layout.args().should_write_linker_identity
-        && layout
-            .output_sections
-            .has_data_in_file(output_section_id::COMMENT, layout.args().should_only_keep_debug())
+        && layout.output_sections.has_data_in_file(
+            output_section_id::COMMENT,
+            layout.args().should_only_keep_debug(),
+        )
     {
         // Write linker identity into .comment section.
         let comment_buffer =

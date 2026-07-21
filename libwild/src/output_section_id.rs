@@ -988,7 +988,11 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         }
     }
 
-    pub(crate) fn has_data_in_file(&self, section_id: OutputSectionId, only_keep_debug: bool) -> bool {
+    pub(crate) fn has_data_in_file(
+        &self,
+        section_id: OutputSectionId,
+        only_keep_debug: bool,
+    ) -> bool {
         let attributes = self.output_info(section_id).section_attributes;
         if attributes.is_no_bits() {
             return false;
