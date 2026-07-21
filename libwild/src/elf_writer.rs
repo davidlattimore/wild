@@ -1991,6 +1991,9 @@ fn write_object_section<'data, A: Arch<Platform = Elf>>(
     }
 
     let out = write_section_raw::<A>(object, layout, section, section_index, buffers)?;
+    if out.is_empty() {
+        return Ok(());
+    }
 
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
     // reverse order while .init_array/.fini_array are executed in forward order.
@@ -3835,14 +3838,21 @@ fn write_merged_strings(
     layout: &ElfLayout,
 ) {
     layout.merged_strings.for_each(|section_id, merged| {
-        if merged.len() > 0 {
+        if merged.len() > 0
+            && layout
+                .output_sections
+                .has_data_in_file(section_id, layout.args().should_only_keep_debug())
+        {
             let buffer = buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
-
             write_merged_strings_to_buffer(merged, buffer);
         }
     });
 
-    if layout.args().should_write_linker_identity {
+    if layout.args().should_write_linker_identity
+        && layout
+            .output_sections
+            .has_data_in_file(output_section_id::COMMENT, layout.args().should_only_keep_debug())
+    {
         // Write linker identity into .comment section.
         let comment_buffer =
             buffers.get_mut(output_section_id::COMMENT.part_id_with_alignment(alignment::MIN));
