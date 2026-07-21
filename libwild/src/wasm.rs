@@ -3857,8 +3857,8 @@ fn data_symbol_memory_address(
     );
     let segment = object_data_layout
         .segments
-        .iter()
-        .find(|segment| segment.segment_index == sym.index)
+        .get(sym.index as usize)
+        .filter(|segment| segment.segment_index == sym.index)
         .ok_or_else(|| crate::error!("Wasm data symbol segment {} not found", sym.index))?;
     segment
         .output_memory_offset
