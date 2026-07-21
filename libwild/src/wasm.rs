@@ -2794,29 +2794,25 @@ fn linker_defined_from_prelude_def(
     expected_kind: WasmSymbolKind,
     symbol_db: &SymbolDb<'_, Wasm>,
 ) -> Option<ImportResolution> {
-    let name = symbol_db.symbol_name(def_id).ok()?;
-    let known = WasmLinkerSymbol::parse_bytes(name.bytes())?;
+    let def_info = symbol_db.prelude_symbol_def(def_id)?;
+    let crate::parsing::SymbolPlacement::PlatformSpecific(known) = &def_info.placement else {
+        return None;
+    };
     known
         .matches_import_kind(expected_kind)
-        .then_some(ImportResolution::LinkerDefined(known))
+        .then_some(ImportResolution::LinkerDefined(*known))
 }
 
-/// Resolve an import name to a prelude linker definition, if present in [`SymbolDb`].
+/// Resolve an import name to a prelude platform-specific definition, if present in `SymbolDb`.
 fn linker_defined_import_resolution(
     import_name: &str,
     expected_kind: WasmSymbolKind,
     symbol_db: &SymbolDb<'_, Wasm>,
 ) -> Option<ImportResolution> {
-    let known = WasmLinkerSymbol::parse(import_name)?;
-    if !known.matches_import_kind(expected_kind) {
-        return None;
-    }
-    let symbol_id = symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(known.name()))?;
+    let symbol_id =
+        symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(import_name.as_bytes()))?;
     let def_id = symbol_db.definition(symbol_id);
-    if symbol_db.file_id_for_symbol(def_id) != PRELUDE_FILE_ID {
-        return None;
-    }
-    Some(ImportResolution::LinkerDefined(known))
+    linker_defined_from_prelude_def(def_id, expected_kind, symbol_db)
 }
 
 fn object_needs_linker_memory(input: &WasmObjectLayoutInput<'_>) -> bool {
@@ -3897,7 +3893,7 @@ struct LinkerDefinedDataAddress {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter, strum::EnumString, strum::IntoStaticStr,
 )]
-enum WasmLinkerSymbol {
+pub(crate) enum WasmLinkerSymbol {
     // Data
     #[strum(serialize = "__data_end")]
     DataEnd,
@@ -4025,11 +4021,12 @@ fn compute_data_addresses(
                 }
             }
 
-            let name = symbol_db.symbol_name(def_id)?;
-            if let Some(resolved) =
-                linker_defined_data_symbol_address(name.bytes(), data_end, stack_size, heap_end)?
+            if let Some(def_info) = symbol_db.prelude_symbol_def(def_id)
+                && let crate::parsing::SymbolPlacement::PlatformSpecific(known) =
+                    &def_info.placement
+                && let Some(address) = known.data_address(data_end, stack_size, heap_end)?
             {
-                data_addresses[sym_idx] = resolved.address;
+                data_addresses[sym_idx] = address;
             }
         }
         index_map.data_addresses = data_addresses;
@@ -4141,6 +4138,7 @@ impl platform::Platform for Wasm {
     type File<'data> = File<'data>;
     type FileFlags = u32;
     type SymtabEntry = WasmSymbol;
+    type PlatformSpecificSymbol = WasmLinkerSymbol;
     type SectionHeader = SectionHeader;
     type SectionFlags = SectionFlags;
     type SectionAttributes = SectionAttributes;
@@ -4351,7 +4349,7 @@ impl platform::Platform for Wasm {
             .hide();
 
         for sym in <WasmLinkerSymbol as strum::IntoEnumIterator>::iter() {
-            symbols.linker_defined(sym.name()).hide();
+            symbols.platform_specific(sym.name(), sym).hide();
         }
     }
 

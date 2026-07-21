@@ -684,6 +684,21 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         }
     }
 
+    /// Returns the prelude definition for `symbol_id` when it belongs to the prelude.
+    pub(crate) fn prelude_symbol_def(
+        &self,
+        symbol_id: SymbolId,
+    ) -> Option<&InternalSymDefInfo<'data, P>> {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        if file_id != PRELUDE_FILE_ID {
+            return None;
+        }
+        match &self.groups[file_id.group()] {
+            Group::Prelude(prelude) => Some(prelude.symbol_def(symbol_id)),
+            _ => None,
+        }
+    }
+
     /// Get the version of a symbol. Only intended for diagnostic purposes.
     pub(crate) fn symbol_version_debug(&self, symbol_id: SymbolId) -> Option<String> {
         let file_id = self.file_id_for_symbol(symbol_id);
@@ -2060,7 +2075,7 @@ impl<'data, P: Platform> Prelude<'data, P> {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     ValueFlags::NON_INTERPOSABLE
                 }
-                SymbolPlacement::LinkerDefined => {
+                SymbolPlacement::PlatformSpecific(_) => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     ValueFlags::NON_INTERPOSABLE | ValueFlags::ABSOLUTE
                 }
@@ -2100,7 +2115,7 @@ impl<P: Platform> InternalSymDefInfo<'_, P> {
             SymbolPlacement::Undefined
             | SymbolPlacement::ForceUndefined
             | SymbolPlacement::Redirect(_)
-            | SymbolPlacement::LinkerDefined => None,
+            | SymbolPlacement::PlatformSpecific(_) => None,
             SymbolPlacement::SectionStart(i) => Some(i),
             SymbolPlacement::SectionEnd(i) => Some(i),
             SymbolPlacement::SectionGroupEnd(i) => Some(i),
