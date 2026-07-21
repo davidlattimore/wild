@@ -5240,8 +5240,14 @@ fn verify_chained_fixups_segment_offsets(obj: &object::File, bytes: &[u8]) -> Re
     let seg_count = usize::try_from(u32::from_le_bytes(starts_in_image[..4].try_into()?))?;
     let seg_info_offsets = &starts_in_image[4..];
 
-    for (i, offset_bytes) in seg_info_offsets.chunks_exact(4).take(seg_count).enumerate() {
-        let seg_info_offset = usize::try_from(u32::from_le_bytes(offset_bytes.try_into()?))?;
+    for (i, offset_bytes) in seg_info_offsets
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .take(seg_count)
+        .enumerate()
+    {
+        let seg_info_offset = usize::try_from(u32::from_le_bytes(*offset_bytes))?;
         if seg_info_offset == 0 {
             continue;
         }

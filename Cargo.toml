@@ -272,6 +272,10 @@ too_many_lines = "allow"
 # Some of our tests do this and there doesn't seem to be much value in changing them.
 unreadable_literal = "allow"
 
+# Sometimes explicit if/else branches are clearer, even when the if branch always returns,
+# because the reader doesn't have to recognize that the fallthrough is an implicit else branch.
+redundant_else = "allow"
+
 trivially_copy_pass_by_ref = "warn"
 uninlined_format_args = "warn"
 unnecessary_wraps = "warn"
@@ -285,7 +289,6 @@ inconsistent_struct_constructor = "warn"
 map_unwrap_or = "warn"
 match_wildcard_for_single_variants = "warn"
 needless_pass_by_value = "warn"
-redundant_else = "warn"
 semicolon_if_nothing_returned = "warn"
 range_plus_one = "warn"
 must_use_candidate = "warn"

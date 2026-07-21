@@ -57,9 +57,12 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
         data.len() >= offset + bucket_len,
         "Insufficient data for .hash buckets"
     );
-    let buckets = data[offset..offset + bucket_len]
-        .chunks_exact(4)
-        .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+    let chunks = data[offset..offset + bucket_len].as_chunks::<4>();
+    ensure!(chunks.1.is_empty(), "data size must be a multiple of 4");
+    let buckets = chunks
+        .0
+        .iter()
+        .map(|chunk| u32::from_le_bytes(*chunk))
         .collect_vec();
     offset += bucket_len;
 
@@ -68,9 +71,12 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
         data.len() >= offset + chain_len,
         "Insufficient data for .hash chains"
     );
-    let chains = data[offset..offset + chain_len]
-        .chunks_exact(4)
-        .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+    let chunks = data[offset..offset + chain_len].as_chunks::<4>();
+    ensure!(chunks.1.is_empty(), "data size must be a multiple of 4");
+    let chains = chunks
+        .0
+        .iter()
+        .map(|chunk| u32::from_le_bytes(*chunk))
         .collect_vec();
 
     for sym in obj.file.dynamic_symbols() {

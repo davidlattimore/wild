@@ -7,6 +7,7 @@ use crate::arch::RType as _;
 use crate::get_r_type;
 use crate::header_diff::ResolvedValue;
 use anyhow::Context;
+use anyhow::ensure;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::secnames;
 use object::Object;
@@ -44,7 +45,12 @@ fn get_pointer_list<A: Arch>(bin: &Binary, section_name: &str) -> Result<Vec<Res
 
     let mut names = Vec::with_capacity(data.len() / ADDRESS_SIZE);
 
-    for (entry_num, address_bytes) in data.chunks_exact(ADDRESS_SIZE).enumerate() {
+    let chunks = data.as_chunks::<ADDRESS_SIZE>();
+    ensure!(
+        chunks.1.is_empty(),
+        "data must be a multiple of ADDRESS_SIZE"
+    );
+    for (entry_num, address_bytes) in chunks.0.iter().enumerate() {
         let mut address = u64::from_le_bytes(*address_bytes.first_chunk::<ADDRESS_SIZE>().unwrap());
         let entry_address = section_address + (entry_num * ADDRESS_SIZE) as u64;
         let mut symbol_names = Vec::new();
