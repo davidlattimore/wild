@@ -4613,19 +4613,21 @@ fn get_symbol_attributes(
         FileLayout::LinkerScript(script) => {
             let local_index = symbol_id.to_input(script.symbol_id_range);
             let def_info = &script.internal_symbols.symbol_definitions[local_index.0];
-            let shndx = match &def_info.placement {
-                crate::parsing::SymbolPlacement::Redirect(redirect)
-                    if let SymbolLoc::SectionEnd(section_id) = redirect.loc =>
-                {
-                    let section_id = layout.output_sections.primary_output_section(section_id);
-                    layout
-                        .output_sections
-                        .output_index_of_nearest_section(section_id)
-                }
-                _ => def_info.section_id().and_then(|section_id| {
-                    let section_id = layout.output_sections.primary_output_section(section_id);
-                    layout.output_sections.output_index_of_section(section_id)
-                }),
+            let shndx = if let crate::parsing::SymbolPlacement::Redirect(redirect) =
+                &def_info.placement
+                && let SymbolLoc::SectionEnd(section_id) = redirect.loc
+            {
+                let section_id = layout.output_sections.primary_output_section(section_id);
+                layout
+                    .output_sections
+                    .output_index_of_nearest_section(section_id)
+            } else {
+                script.internal_symbols.symbol_definitions[local_index.0]
+                    .section_id()
+                    .and_then(|section_id| {
+                        let section_id = layout.output_sections.primary_output_section(section_id);
+                        layout.output_sections.output_index_of_section(section_id)
+                    })
             }
             .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
 
