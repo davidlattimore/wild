@@ -1,6 +1,4 @@
 //#CompArgs:-fPIC
-// TODO(wasm): enable run once __table_base is linker-defined.
-//#RunEnabled:false
 
 static int f(void) { return 1; }
 

@@ -132,6 +132,9 @@ const LINKER_MEMORY_BASE_INIT_EXPR: &[u8] = &[0x41, 0x80, 0x08];
 /// `i32.const 0`. Used for immutable `__tls_base` when no TLS segment is laid out.
 const ZERO_I32_INIT_EXPR: &[u8] = &[0x41, 0x00];
 
+/// `i32.const 1` for `DEFAULT_TABLE_BASE`.
+const DEFAULT_TABLE_BASE_INIT_EXPR: &[u8] = &[0x41, 0x01];
+
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
     #[debug(skip)]
@@ -1660,6 +1663,9 @@ fn build_name_section<'data>(
     if let Some(idx) = indices.memory_base_global {
         global_names.push((idx, "__memory_base"));
     }
+    if let Some(idx) = indices.table_base_global {
+        global_names.push((idx, "__table_base"));
+    }
     if let Some(idx) = indices.stack_pointer_global {
         global_names.push((idx, "__stack_pointer"));
     }
@@ -2841,6 +2847,7 @@ fn any_object_needs_linker_memory(inputs: &[WasmObjectLayoutInput<'_>]) -> bool 
 #[derive(Debug, Clone, Copy, Default)]
 struct LinkerImportAbsorption {
     needs_memory_base: bool,
+    needs_table_base: bool,
     needs_stack_pointer: bool,
     needs_tls_base: bool,
     needs_ctors: bool,
@@ -2863,6 +2870,7 @@ impl LinkerImportAbsorption {
             if let ImportResolution::LinkerDefined(known) = *resolution {
                 match known {
                     WasmLinkerSymbol::MemoryBase => absorption.needs_memory_base = true,
+                    WasmLinkerSymbol::TableBase => absorption.needs_table_base = true,
                     WasmLinkerSymbol::StackPointer => absorption.needs_stack_pointer = true,
                     // Single-threaded. Immutable base (no TLS segment yet).
                     WasmLinkerSymbol::TlsBase => absorption.needs_tls_base = true,
@@ -2878,6 +2886,7 @@ impl LinkerImportAbsorption {
 #[derive(Debug, Clone, Copy, Default)]
 struct LinkerDefinedIndices {
     memory_base_global: Option<u32>,
+    table_base_global: Option<u32>,
     stack_pointer_global: Option<u32>,
     tls_base_global: Option<u32>,
     /// Index of `__stack_pointer` among the defined globals prepended by
@@ -2933,6 +2942,7 @@ impl LinkerDefinedIndices {
         wrap_entry: bool,
     ) -> Result<Self> {
         let mut needs_memory_base = false;
+        let mut needs_table_base = false;
         let mut needs_stack_pointer = false;
         let mut needs_tls_base = false;
         let mut needs_ctors = has_init_funcs;
@@ -2945,6 +2955,7 @@ impl LinkerDefinedIndices {
             needs_ctors |= absorption.needs_ctors;
             needs_dtors |= absorption.needs_dtors;
             needs_memory_base |= absorption.needs_memory_base;
+            needs_table_base |= absorption.needs_table_base;
             needs_stack_pointer |= absorption.needs_stack_pointer;
             needs_tls_base |= absorption.needs_tls_base;
 
@@ -2965,11 +2976,26 @@ impl LinkerDefinedIndices {
             {
                 needs_memory_base = true;
             }
+            if !needs_table_base
+                && input
+                    .code_relocations
+                    .iter()
+                    .chain(input.data_relocations.iter())
+                    .any(|reloc| reloc.ty == reloc_type::TABLE_INDEX_REL_SLEB)
+            {
+                needs_table_base = true;
+            }
         }
 
         let mut next_global = global_import_count;
         let mut next_defined_global_slot = 0u32;
         let memory_base_global = needs_memory_base.then(|| {
+            let idx = next_global;
+            next_global += 1;
+            next_defined_global_slot += 1;
+            idx
+        });
+        let table_base_global = needs_table_base.then(|| {
             let idx = next_global;
             next_global += 1;
             next_defined_global_slot += 1;
@@ -3010,6 +3036,7 @@ impl LinkerDefinedIndices {
 
         Ok(Self {
             memory_base_global,
+            table_base_global,
             stack_pointer_global,
             tls_base_global,
             stack_pointer_defined_slot,
@@ -3024,6 +3051,7 @@ impl LinkerDefinedIndices {
     fn global_index(&self, known: WasmLinkerSymbol) -> Option<u32> {
         match known {
             WasmLinkerSymbol::MemoryBase => self.memory_base_global,
+            WasmLinkerSymbol::TableBase => self.table_base_global,
             WasmLinkerSymbol::StackPointer => self.stack_pointer_global,
             WasmLinkerSymbol::TlsBase => self.tls_base_global,
             _ => None,
@@ -3218,6 +3246,16 @@ fn emit_reserved_linker_definitions(
                 shared: false,
             },
             init_expr_body: Cow::Borrowed(LINKER_MEMORY_BASE_INIT_EXPR),
+        });
+    }
+    if indices.table_base_global.is_some() {
+        linker_globals.push(OutputGlobal {
+            ty: GlobalType {
+                content_type: wasmparser::ValType::I32,
+                mutable: false,
+                shared: false,
+            },
+            init_expr_body: Cow::Borrowed(DEFAULT_TABLE_BASE_INIT_EXPR),
         });
     }
     if indices.stack_pointer_global.is_some() {
@@ -3936,6 +3974,8 @@ pub(crate) enum WasmLinkerSymbol {
     // Globals
     #[strum(serialize = "__memory_base")]
     MemoryBase,
+    #[strum(serialize = "__table_base")]
+    TableBase,
     #[strum(serialize = "__stack_pointer")]
     StackPointer,
     #[strum(serialize = "__tls_base")]
@@ -3963,7 +4003,9 @@ impl WasmLinkerSymbol {
     fn matches_import_kind(self, kind: WasmSymbolKind) -> bool {
         match self {
             Self::CallCtors | Self::CallDtors => kind == WasmSymbolKind::Func,
-            Self::MemoryBase | Self::StackPointer | Self::TlsBase => kind == WasmSymbolKind::Global,
+            Self::MemoryBase | Self::TableBase | Self::StackPointer | Self::TlsBase => {
+                kind == WasmSymbolKind::Global
+            }
             Self::DataEnd | Self::HeapBase | Self::HeapEnd | Self::WasmFirstPageEnd => false,
         }
     }
@@ -3981,6 +4023,7 @@ impl WasmLinkerSymbol {
             Self::WasmFirstPageEnd => Some(u32::try_from(wasm_page_size())?),
             Self::HeapEnd => heap_end,
             Self::MemoryBase
+            | Self::TableBase
             | Self::StackPointer
             | Self::TlsBase
             | Self::CallCtors
