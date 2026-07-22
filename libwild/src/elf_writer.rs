@@ -3013,13 +3013,7 @@ fn apply_relocation<
         }
         RelocationKind::Absolute
             if layout.symbol_db.output_kind.is_shared_object()
-                && matches!(
-                    r_type,
-                    object::elf::R_X86_64_32
-                        | object::elf::R_X86_64_32S
-                        | object::elf::R_X86_64_8
-                        | object::elf::R_X86_64_16
-                ) =>
+                && A::is_disallowed_in_shared_object(r_type) =>
         {
             bail!(
                 "relocation type {} cannot be used when making a shared object; \

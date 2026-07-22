@@ -132,6 +132,12 @@ pub(crate) trait Arch: Send + Sync + 'static {
         false
     }
 
+    /// Returns true if the given relocation type cannot be used when making a shared object,
+    /// regardless of whether the symbol is interposable. Default is false (allow).
+    fn is_disallowed_in_shared_object(_r_type: u32) -> bool {
+        false
+    }
+
     /// Uses debug info, if available, to get information about where in the source code a
     /// particular offset in a particular section came from.
     fn get_source_info<'data>(
