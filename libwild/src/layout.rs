@@ -3246,7 +3246,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 }
 
                 // We always emit symbols that the user requested be undefined.
-                let mut should_emit = def_info.placement == SymbolPlacement::ForceUndefined;
+                let mut should_emit = matches!(def_info.placement, SymbolPlacement::ForceUndefined);
 
                 // Keep the symbol if we're going to write the section, even though the symbol isn't
                 // referenced. It can be useful to have symbols like _GLOBAL_OFFSET_TABLE_ when
@@ -3634,7 +3634,9 @@ fn create_internal_symbol_resolution<'data, P: Platform>(
     }
 
     let raw_value = match def_info.placement {
-        SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => 0,
+        SymbolPlacement::Undefined
+        | SymbolPlacement::ForceUndefined
+        | SymbolPlacement::PlatformSpecific(_) => 0,
         SymbolPlacement::SectionStart(section_id) => {
             resources.section_layouts.get(section_id).mem_offset
         }

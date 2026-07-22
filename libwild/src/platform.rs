@@ -246,6 +246,7 @@ pub(crate) trait Platform:
     type File<'data>: ObjectFile<'data, Platform = Self>;
     type FileFlags;
     type SymtabEntry: Symbol;
+    type PlatformSpecificSymbol: Copy + PartialEq + Eq + std::fmt::Debug + Send + Sync + 'static;
     type SectionHeader: SectionHeader;
     type SectionFlags: SectionFlags;
     type SectionAttributes: SectionAttributes<Platform = Self>;

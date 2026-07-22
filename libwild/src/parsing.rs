@@ -69,13 +69,13 @@ pub(crate) struct SyntheticSymbols {
 #[derive(Clone, derive_more::Debug)]
 pub(crate) struct InternalSymDefInfo<'data, P: Platform> {
     pub(crate) symbol: P::SymtabEntry,
-    pub(crate) placement: SymbolPlacement<'data>,
+    pub(crate) placement: SymbolPlacement<'data, P>,
     #[debug("{:?}", String::from_utf8_lossy(name))]
     pub(crate) name: &'data [u8],
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub(crate) enum SymbolPlacement<'data> {
+pub(crate) enum SymbolPlacement<'data, P: Platform> {
     /// Symbol 0 - the undefined symbol.
     Undefined,
 
@@ -98,6 +98,9 @@ pub(crate) enum SymbolPlacement<'data> {
 
     /// Symbol will point to the start of the first loadable segment.
     LoadBaseAddress,
+
+    /// Platform-specific linker symbol.
+    PlatformSpecific(P::PlatformSpecificSymbol),
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -156,7 +159,7 @@ pub(crate) fn parse_number(s: &str) -> Result<u64, ()> {
 }
 
 impl<'data, P: Platform> InternalSymDefInfo<'data, P> {
-    pub(crate) fn new(placement: SymbolPlacement<'data>, name: &'data [u8]) -> Self {
+    pub(crate) fn new(placement: SymbolPlacement<'data, P>, name: &'data [u8]) -> Self {
         Self {
             placement,
             name,
@@ -246,6 +249,10 @@ impl<'data, P: Platform> Prelude<'data, P> {
         let def = &self.symbol_definitions[symbol_id.as_usize()];
         UnversionedSymbolName::new(def.name)
     }
+
+    pub(crate) fn symbol_def(&self, symbol_id: SymbolId) -> &InternalSymDefInfo<'data, P> {
+        &self.symbol_definitions[symbol_id.as_usize()]
+    }
 }
 
 #[derive(Default)]
@@ -293,6 +300,17 @@ impl<'data, P: Platform> InternalSymbolsBuilder<'data, P> {
         self.add_symbol(InternalSymDefInfo::new(
             SymbolPlacement::SectionGroupEnd(section_id),
             name.as_bytes(),
+        ))
+    }
+
+    pub(crate) fn platform_specific(
+        &mut self,
+        name: &'static [u8],
+        specific: P::PlatformSpecificSymbol,
+    ) -> &mut InternalSymDefInfo<'data, P> {
+        self.add_symbol(InternalSymDefInfo::new(
+            SymbolPlacement::PlatformSpecific(specific),
+            name,
         ))
     }
 }

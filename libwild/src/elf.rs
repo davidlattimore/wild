@@ -300,6 +300,7 @@ impl platform::Platform for Elf {
     type File<'data> = File<'data>;
     type FileFlags = object::elf::FileFlags;
     type SymtabEntry = SymtabEntry;
+    type PlatformSpecificSymbol = core::convert::Infallible;
     type SectionHeader = SectionHeader;
     type SectionFlags = SectionFlags;
     type SectionAttributes = SectionAttributes;

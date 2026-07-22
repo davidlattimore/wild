@@ -914,6 +914,7 @@ impl platform::Platform for MachO {
     type File<'data> = File<'data>;
     type FileFlags = u32;
     type SymtabEntry = SymtabEntry;
+    type PlatformSpecificSymbol = core::convert::Infallible;
     type SectionHeader = SectionHeader;
     type SectionFlags = SectionFlags;
     type SectionAttributes = SectionAttributes;
