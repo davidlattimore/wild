@@ -4622,7 +4622,7 @@ fn get_symbol_attributes(
                     .output_sections
                     .output_index_of_nearest_section(section_id)
             } else {
-                script.internal_symbols.symbol_definitions[local_index.0]
+                def_info
                     .section_id()
                     .and_then(|section_id| {
                         let section_id = layout.output_sections.primary_output_section(section_id);
