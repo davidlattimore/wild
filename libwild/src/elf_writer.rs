@@ -4622,12 +4622,10 @@ fn get_symbol_attributes(
                     .output_sections
                     .output_index_of_nearest_section(section_id)
             } else {
-                def_info
-                    .section_id()
-                    .and_then(|section_id| {
-                        let section_id = layout.output_sections.primary_output_section(section_id);
-                        layout.output_sections.output_index_of_section(section_id)
-                    })
+                def_info.section_id().and_then(|section_id| {
+                    let section_id = layout.output_sections.primary_output_section(section_id);
+                    layout.output_sections.output_index_of_section(section_id)
+                })
             }
             .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
 
