@@ -33,6 +33,7 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
+use crate::parsing::Redirect;
 use crate::parsing::SymbolLoc;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
@@ -3534,9 +3535,20 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
                 continue;
             }
 
-            // Mark the section referenced by this symbol so that empty sections
-            // defined by the linker script are still emitted.
-            if let Some(section_id) = def_info.section_id() {
+            // Mark the section referenced by this symbol so that empty sections defined by the
+            // linker script are still emitted. Symbols defined within an output-section body keep
+            // that section alive. Symbols between output sections instead belong to the preceding
+            // emitted section, so they must not retain an otherwise discarded section.
+            let section_id = match &def_info.placement {
+                SymbolPlacement::Redirect(Redirect {
+                    loc:
+                        SymbolLoc::SectionStartRelative(section_id)
+                        | SymbolLoc::SectionEndRelative(section_id),
+                    ..
+                }) => Some(*section_id),
+                _ => None,
+            };
+            if let Some(section_id) = section_id {
                 resources
                     .must_keep_sections
                     .get(section_id)

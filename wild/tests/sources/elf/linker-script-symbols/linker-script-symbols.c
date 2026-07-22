@@ -1,6 +1,8 @@
 //#Config:default
 //#AugmentLinkerScript:script.ld
 //#Object:runtime.c
+//#NoSection:.rodata
+//#ExpectSym:value3
 
 //#Config:lto:default
 //#RequiresLinkerPlugin:true

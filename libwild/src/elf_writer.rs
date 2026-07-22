@@ -4612,13 +4612,22 @@ fn get_symbol_attributes(
         }
         FileLayout::LinkerScript(script) => {
             let local_index = symbol_id.to_input(script.symbol_id_range);
-            let shndx = script.internal_symbols.symbol_definitions[local_index.0]
-                .section_id()
-                .and_then(|section_id| {
+            let def_info = &script.internal_symbols.symbol_definitions[local_index.0];
+            let shndx = if let crate::parsing::SymbolPlacement::Redirect(redirect) =
+                &def_info.placement
+                && let SymbolLoc::SectionEnd(section_id) = redirect.loc
+            {
+                let section_id = layout.output_sections.primary_output_section(section_id);
+                layout
+                    .output_sections
+                    .output_index_of_nearest_section(section_id)
+            } else {
+                def_info.section_id().and_then(|section_id| {
                     let section_id = layout.output_sections.primary_output_section(section_id);
                     layout.output_sections.output_index_of_section(section_id)
                 })
-                .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
+            }
+            .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
 
             Ok((shndx, object::elf::STT_NOTYPE))
         }
@@ -4668,30 +4677,32 @@ fn get_defsym_attributes(
         }
     } else {
         let shndx = match redirect.loc {
-            SymbolLoc::SectionStartRelative(os)
-            | SymbolLoc::SectionEndRelative(os)
-            | SymbolLoc::SectionEnd(os) => {
+            SymbolLoc::SectionEnd(os) => {
                 let os = layout.output_sections.primary_output_section(os);
-                layout
-                    .output_sections
-                    .output_index_of_section(os)
-                    .unwrap_or(0)
+                layout.output_sections.output_index_of_nearest_section(os)
             }
-            SymbolLoc::FirstSection => 1,
+            SymbolLoc::SectionStartRelative(os) | SymbolLoc::SectionEndRelative(os) => {
+                let os = layout.output_sections.primary_output_section(os);
+                layout.output_sections.output_index_of_section(os)
+            }
+            SymbolLoc::FirstSection => Some(1),
             SymbolLoc::LocationCounter(_, os) => {
                 if let Some(os) = os {
                     let os = layout.output_sections.primary_output_section(os);
-                    layout
-                        .output_sections
-                        .output_index_of_section(os)
-                        .unwrap_or(0)
+                    layout.output_sections.output_index_of_section(os)
                 } else {
-                    1
+                    Some(1)
                 }
             }
             SymbolLoc::None => return Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE)),
         };
-        Ok((SymbolSection::Index(shndx), object::elf::STT_NOTYPE))
+        Ok((
+            shndx.map_or(
+                SymbolSection::Raw(object::elf::SHN_ABS),
+                SymbolSection::Index,
+            ),
+            object::elf::STT_NOTYPE,
+        ))
     }
 }
 

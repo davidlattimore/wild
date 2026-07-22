@@ -999,6 +999,17 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             .flatten()
     }
 
+    pub(crate) fn output_index_of_nearest_section(&self, id: OutputSectionId) -> Option<u32> {
+        let sections = self.output_section_indexes[..=id.as_usize()].iter().rev();
+
+        for section in sections {
+            if section.is_some() {
+                return *section;
+            }
+        }
+        None
+    }
+
     /// Returns whether we're going to emit the specified section.
     pub(crate) fn will_emit_section(&self, id: OutputSectionId) -> bool {
         self.output_index_of_section(id).is_some()
