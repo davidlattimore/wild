@@ -1093,3 +1093,6 @@ impl AArch64Instruction {
         (extracted_value, negative)
     }
 }
+
+// Two words at TP are reserved by the arch.
+pub const TLS_TCB_SIZE: u64 = 2 * 8;

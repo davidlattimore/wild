@@ -1626,6 +1626,13 @@ impl<'data, P: Platform> Layout<'data, P> {
             .map_or(0, |seg| seg.mem_offset)
     }
 
+    pub(crate) fn tls_start_address_aligned(&self) -> u64 {
+        self.segment_layouts
+            .tls_layout
+            .as_ref()
+            .map_or(0, |seg| seg.alignment.align_down(seg.mem_offset))
+    }
+
     /// Returns the memory address of the end of the TLS segment including any padding required to
     /// make sure that the TCB will be usize-aligned.
     pub(crate) fn tls_end_address(&self) -> u64 {
@@ -1637,8 +1644,8 @@ impl<'data, P: Platform> Layout<'data, P> {
     /// Returns the memory address of the start of the TLS segment used by the AArch64.
     pub(crate) fn tls_start_address_aarch64(&self) -> u64 {
         self.segment_layouts.tls_layout.as_ref().map_or(0, |seg| {
-            // Two words at TP are reserved by the arch.
-            seg.alignment.align_down(seg.mem_offset - 2 * 8)
+            seg.alignment
+                .align_down(seg.mem_offset - linker_utils::aarch64::TLS_TCB_SIZE)
         })
     }
 
@@ -1950,6 +1957,7 @@ fn compute_segment_layout<'data, P: Platform>(
                         output_sections,
                         section_id,
                     )?;
+
                     for opt_rec in &mut active_segments {
                         let Some(rec) = opt_rec.as_mut() else {
                             continue;
@@ -5385,8 +5393,11 @@ fn compute_layout_sections<'data, P: Platform>(
                         };
 
                         // Note, we align up even if our size is zero, otherwise our section will
-                        // start at an unaligned address.
-                        file_offset = alignment.align_up_usize(file_offset);
+                        // start at an unaligned address. We don't however align up for NOBITS
+                        // sections.
+                        if output_sections.has_data_in_file(merge_target) {
+                            file_offset = alignment.align_up_usize(file_offset);
+                        }
 
                         if section_flags.is_alloc() {
                             if args.should_output_partial_object() {
