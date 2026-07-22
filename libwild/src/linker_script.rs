@@ -1140,6 +1140,8 @@ fn parse_section_command<'input>(
     }
 
     skip_comments_and_whitespace(input)?;
+    opt(',').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
 
     Ok(SectionCommand::Section(Section {
         output_section_name: name,
