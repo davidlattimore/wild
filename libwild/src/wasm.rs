@@ -3117,12 +3117,17 @@ fn owned_linker_function_body(bytes: Vec<u8>) -> WasmFunctionBody<'static> {
     }
 }
 
-fn encode_call_sequence_body(func_indices: &[u32]) -> Vec<u8> {
+/// Encode a body that calls each function in order.
+///
+/// `calls` is `(function_index, result_count)`. Result values are dropped so that
+/// `__wasm_call_ctors` can stay `() -> ()` even when a constructor returns a value.
+fn encode_call_sequence_body(calls: &[(u32, usize)]) -> Vec<u8> {
     let mut bytes = vec![0x00]; // 0 locals
-    for &func_index in func_indices {
+    for &(func_index, result_count) in calls {
         bytes.push(0x10); // call
         leb128::write::unsigned(&mut bytes, u64::from(func_index))
             .expect("leb128 write to Vec cannot fail");
+        bytes.extend(std::iter::repeat_n(0x1a, result_count)); // drop each result
     }
     bytes.push(0x0b); // end
     bytes
@@ -3150,11 +3155,11 @@ fn function_type_for_symbol<'a>(
         .ok_or_else(|| crate::error!("Wasm type index {type_index} out of range"))
 }
 
-/// From InitFuncs to output function indices, sorted by ascending priority.
-fn collect_sorted_init_function_indices(
+/// From InitFuncs to `(output function index, result count)`, sorted by ascending priority.
+fn collect_sorted_init_function_calls(
     inputs: &[WasmObjectLayoutInput<'_>],
     object_index_maps: &[WasmObjectIndexMap],
-) -> Result<Vec<u32>> {
+) -> Result<Vec<(u32, usize)>> {
     let mut items = Vec::new();
     for (obj_idx, input) in inputs.iter().enumerate() {
         let index_map = &object_index_maps[obj_idx];
@@ -3166,16 +3171,20 @@ fn collect_sorted_init_function_indices(
             );
             let ty = function_type_for_symbol(input, sym)?;
             ensure!(
-                ty.params().is_empty() && ty.results().is_empty(),
-                "Wasm constructor must have type () -> ()"
+                ty.params().is_empty(),
+                "Wasm constructor must take no parameters (got {} param(s))",
+                ty.params().len()
             );
             let output_index =
                 remap_wasm_index(&index_map.function_indices, sym.index, "function")?;
-            items.push((init.priority, output_index));
+            items.push((init.priority, output_index, ty.results().len()));
         }
     }
-    items.sort_by_key(|(priority, _)| *priority);
-    Ok(items.into_iter().map(|(_, index)| index).collect())
+    items.sort_by_key(|(priority, _, _)| *priority);
+    Ok(items
+        .into_iter()
+        .map(|(_, index, n_results)| (index, n_results))
+        .collect())
 }
 
 fn emit_reserved_linker_definitions(
@@ -3643,17 +3652,18 @@ where
         }
     }
 
-    let init_function_indices =
-        collect_sorted_init_function_indices(&layout_inputs, &layout.object_index_maps)?;
+    let init_function_calls =
+        collect_sorted_init_function_calls(&layout_inputs, &layout.object_index_maps)?;
     let call_ctors_body = indices
         .call_ctors_func
-        .map(|_| encode_call_sequence_body(&init_function_indices));
+        .map(|_| encode_call_sequence_body(&init_function_calls));
 
     let entry = resolve_entry_function(&layout_inputs, &layout.object_index_maps, symbol_db)?;
     let entry_wrapper_body = match (indices.entry_wrapper_func, indices.call_ctors_func, &entry) {
-        (Some(_), Some(ctors), Some(entry)) => {
-            Some(encode_call_sequence_body(&[ctors, entry.function_index]))
-        }
+        (Some(_), Some(ctors), Some(entry)) => Some(encode_call_sequence_body(&[
+            (ctors, 0),
+            (entry.function_index, 0),
+        ])),
         _ => None,
     };
 
