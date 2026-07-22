@@ -812,9 +812,10 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
         let mapped_segment = match section_id {
             output_section_id::FILE_HEADER => SegmentType::Text,
             output_section_id::LOAD_COMMANDS => SegmentType::LoadCommands,
-            output_section_id::TEXT | output_section_id::CSTRING | output_section_id::PLT_GOT => {
-                SegmentType::TextSections
-            }
+            output_section_id::TEXT
+            | output_section_id::CSTRING
+            | output_section_id::CONST
+            | output_section_id::PLT_GOT => SegmentType::TextSections,
             output_section_id::DATA => SegmentType::DataSections,
             output_section_id::GOT => SegmentType::DataConstSections,
             output_section_id::CHAINED_FIXUP_TABLE
@@ -1603,6 +1604,7 @@ impl platform::Platform for MachO {
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::CSTRING);
+        builder.add_section(output_section_id::CONST);
         builder.add_section(output_section_id::PLT_GOT);
         builder.add_section(output_section_id::DATA);
         builder.add_section(output_section_id::GOT);
@@ -1759,6 +1761,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         section_flags: macho::S_CSTRING_LITERALS.to_flags(),
         ..DEFAULT_DEFS
     };
+    defs[output_section_id::CONST.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"__const")),
+        section_flags: macho::S_REGULAR.to_flags(),
+        ..DEFAULT_DEFS
+    };
     defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"__data")),
         section_flags: macho::S_REGULAR.to_flags(),
@@ -1806,6 +1813,7 @@ fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
 const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact_section_keep(b"__text", crate::output_section_id::TEXT),
     SectionRule::exact_section_keep(b"__cstring", crate::output_section_id::CSTRING),
+    SectionRule::exact_section_keep(b"__const", crate::output_section_id::CONST),
     SectionRule::exact_section_keep(b"__data", crate::output_section_id::DATA),
     // SectionRule::exact_section_keep(b"__compact_unwind", crate::output_section_id::EH_FRAME),
 ];
