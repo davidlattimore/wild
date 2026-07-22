@@ -98,10 +98,14 @@ pub(crate) mod reloc_type {
     pub(crate) const SECTION_OFFSET_I32: u8 = 9;
     pub(crate) const EVENT_INDEX_LEB: u8 = 10;
     pub(crate) const MEMORY_ADDR_REL_SLEB: u8 = 11;
+    pub(crate) const TABLE_INDEX_REL_SLEB: u8 = 12;
     pub(crate) const GLOBAL_INDEX_I32: u8 = 13;
     pub(crate) const TABLE_NUMBER_LEB: u8 = 20;
     pub(crate) const FUNCTION_INDEX_I32: u8 = 26;
 }
+
+/// Default `__table_base` for non-PIC executables.
+const DEFAULT_TABLE_BASE: u32 = 1;
 
 /// `R_WASM_TYPE_INDEX_LEB` from the Wasm Tool Conventions. The only reloc whose `index` field
 /// refers to a type index rather than a symbol index.
@@ -321,6 +325,7 @@ impl WasmRelocation {
         match self.ty {
             reloc_type::FUNCTION_INDEX_LEB
             | reloc_type::TABLE_INDEX_SLEB
+            | reloc_type::TABLE_INDEX_REL_SLEB
             | reloc_type::MEMORY_ADDR_LEB
             | reloc_type::MEMORY_ADDR_SLEB
             | reloc_type::MEMORY_ADDR_REL_SLEB
@@ -392,6 +397,7 @@ pub(crate) fn apply_relocation(
             write_uleb128_5(buf, value);
         }
         reloc_type::TABLE_INDEX_SLEB
+        | reloc_type::TABLE_INDEX_REL_SLEB
         | reloc_type::MEMORY_ADDR_SLEB
         | reloc_type::MEMORY_ADDR_REL_SLEB => {
             let buf: &mut [u8; 5] = slot.try_into().expect("slot_size returned 5");
@@ -2147,7 +2153,9 @@ impl WasmObjectIndexMap {
                     Ok(addr)
                 }
             }
-            reloc_type::TABLE_INDEX_SLEB | reloc_type::TABLE_INDEX_I32 => {
+            reloc_type::TABLE_INDEX_SLEB
+            | reloc_type::TABLE_INDEX_I32
+            | reloc_type::TABLE_INDEX_REL_SLEB => {
                 ensure!(
                     sym.kind == WasmSymbolKind::Func,
                     "R_WASM_TABLE_INDEX_* references non-function symbol"
@@ -2161,7 +2169,14 @@ impl WasmObjectIndexMap {
                     slot != u32::MAX,
                     "function {func_out} has no indirect table slot"
                 );
-                Ok(slot)
+                if reloc.ty == reloc_type::TABLE_INDEX_REL_SLEB {
+                    let relative = slot.checked_sub(DEFAULT_TABLE_BASE).ok_or_else(|| {
+                        crate::error!("Wasm TABLE_INDEX_REL_SLEB relocation out of range")
+                    })?;
+                    Ok(relative)
+                } else {
+                    Ok(slot)
+                }
             }
             reloc_type::EVENT_INDEX_LEB => {
                 bail!("event index relocations are not supported yet");
@@ -3728,7 +3743,9 @@ where
 fn is_table_index_relocation(ty: u8) -> bool {
     matches!(
         ty,
-        reloc_type::TABLE_INDEX_SLEB | reloc_type::TABLE_INDEX_I32
+        reloc_type::TABLE_INDEX_SLEB
+            | reloc_type::TABLE_INDEX_I32
+            | reloc_type::TABLE_INDEX_REL_SLEB
     )
 }
 
@@ -3865,9 +3882,12 @@ pub(crate) fn reloc_value_with_addend(base: u32, addend: i64) -> Result<u32> {
     u32::try_from(value).map_err(|_| crate::error!("Wasm relocation value out of range"))
 }
 
-/// Apply addend policy. `R_WASM_MEMORY_ADDR_REL_SLEB` bases already include the addend.
+/// Apply addend policy. Relative table/memory bases already include the addend.
 pub(crate) fn finalize_reloc_value(reloc: &WasmRelocation, base: u32) -> Result<u32> {
-    if reloc.ty == reloc_type::MEMORY_ADDR_REL_SLEB {
+    if matches!(
+        reloc.ty,
+        reloc_type::MEMORY_ADDR_REL_SLEB | reloc_type::TABLE_INDEX_REL_SLEB
+    ) {
         Ok(base)
     } else {
         reloc_value_with_addend(base, reloc.addend)
