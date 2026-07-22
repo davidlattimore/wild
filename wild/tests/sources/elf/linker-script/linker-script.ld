@@ -7,7 +7,7 @@ SECTIONS {
         start_aaa = .;
         KEEP(*(.data.aaa));
         end_bar = .;
-    }
+    },
     sections_end = 0xcdef;
 }
 defsym_start_aaa = start_aaa;
