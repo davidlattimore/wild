@@ -111,6 +111,8 @@ use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
 pub use fs::make_executable;
 use hashbrown::HashSet;
+use rayon::iter::IntoParallelRefIterator as _;
+use rayon::iter::ParallelIterator as _;
 use input_data::FileLoader;
 use input_data::InputFile;
 use input_data::InputLinkerScript;
@@ -272,17 +274,20 @@ impl Linker {
                     last_build_time: Some(std::time::SystemTime::now()),
                     ..Default::default()
                 };
-                for input in &file_loader.loaded_files {
-                    if !input.modifiers.temporary {
+                let file_records: Vec<_> = file_loader
+                    .loaded_files
+                    .par_iter()
+                    .filter(|input| !input.modifiers.temporary)
+                    .map(|input| {
                         let data = input.data();
+                        let mtime = input.modification_time();
                         let hash = incremental::compute_input_hash(data);
-                        state.record_input(
-                            input.filename.clone(),
-                            data.len() as u64,
-                            input.modification_time(),
-                            hash,
-                        );
-                    }
+                        (input.filename.clone(), data.len() as u64, mtime, hash)
+                    })
+                    .collect();
+
+                for (path, len, mtime, hash) in file_records {
+                    state.record_input(path, len, mtime, hash);
                 }
                 if let Err(e) = state.save(&cache_dir) {
                     (args.common().warning_callback)(crate::error::Warning::new(
@@ -337,11 +342,18 @@ impl Linker {
         if let Some(ref state) = cached_state {
             let file_tuples: Vec<(&std::path::Path, u64, Option<std::time::SystemTime>, u64)> = file_loader
                 .loaded_files
-                .iter()
+                .par_iter()
                 .filter(|f| !f.modifiers.temporary)
                 .map(|f| {
                     let d = f.data();
-                    (f.filename.as_path(), d.len() as u64, f.modification_time(), incremental::compute_input_hash(d))
+                    let mtime = f.modification_time();
+                    let len = d.len() as u64;
+                    let hash = if state.is_mtime_unchanged(&f.filename, len, mtime) {
+                        state.cached_inputs.get(&f.filename).map(|c| c.hash).unwrap_or(0)
+                    } else {
+                        incremental::compute_input_hash(d)
+                    };
+                    (f.filename.as_path(), len, mtime, hash)
                 })
                 .collect();
             let summary = state.evaluate_summary(file_tuples);

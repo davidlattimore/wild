@@ -122,6 +122,22 @@ impl IncrementalState {
         }
     }
 
+    /// Fast-path check: returns `true` if file size and modification time match cached entries.
+    pub fn is_mtime_unchanged(
+        &self,
+        path: &Path,
+        size_bytes: u64,
+        mtime: Option<SystemTime>,
+    ) -> bool {
+        if let (Some(cached), Some(mtime)) = (self.cached_inputs.get(path), mtime) {
+            cached.size_bytes == size_bytes
+                && cached.modification_time.is_some()
+                && cached.modification_time == Some(mtime)
+        } else {
+            false
+        }
+    }
+
     /// Record symbols associated with an input file.
     pub fn record_symbols(&mut self, path: PathBuf, symbols: Vec<CachedSymbolInfo>) {
         self.cached_symbols.insert(path, symbols);
