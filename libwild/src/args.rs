@@ -344,12 +344,12 @@ impl CommonArgs {
         should_trace.then(|| tracing::trace_span!(crate::debug_trace::TRACE_SPAN_NAME).entered())
     }
 
-    /// Sets up the thread pool, using the explicit number of threads if specified,
+    /// Builds up the thread pool, using the explicit number of threads if specified,
     /// or falling back to the jobserver protocol if available.
     ///
     /// <https://www.gnu.org/software/make/manual/html_node/POSIX-Jobserver.html>
-    pub fn activate_thread_pool(&mut self) -> Result<ThreadPool> {
-        timing_phase!("Activate thread pool");
+    pub(crate) fn build_thread_pool(&mut self) -> Result<ThreadPool> {
+        timing_phase!("Build thread pool");
 
         let mut tokens = Vec::new();
         self.available_threads = self.num_threads.unwrap_or_else(|| {
@@ -365,19 +365,15 @@ impl CommonArgs {
             }
         });
 
-        // The pool might be already initialized, suppress the error intentionally.
-        if self.available_threads.get() == 1 {
-            let _ = ThreadPoolBuilder::new()
-                .use_current_thread()
-                .num_threads(1)
-                .build_global();
-        } else {
-            let _ = ThreadPoolBuilder::new()
-                .num_threads(self.available_threads.get())
-                .build_global();
-        }
+        // Always let Rayon spawn the pool's workers, even when only one thread is requested.
+        // Reusing the current thread would fail if it already belonged to another pool; instead,
+        // it blocks in `install` until linking finishes.
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(self.available_threads.get())
+            .build()?;
 
         Ok(ThreadPool {
+            pool,
             _jobserver_tokens: tokens,
         })
     }
@@ -498,10 +494,10 @@ pub(crate) enum FileReplacementMode {
     UpdateInPlaceWithFallback,
 }
 
-/// A type that indicates that the global thread pool has been created. Currently, you should only
-/// create one of these at a time. If a jobserver is being used, then dropping this instance will
+/// The thread pool used by the linker. If a jobserver is being used, dropping this instance will
 /// release jobserver tokens.
 pub struct ThreadPool {
+    pub(crate) pool: rayon::ThreadPool,
     _jobserver_tokens: Vec<Acquired>,
 }
 

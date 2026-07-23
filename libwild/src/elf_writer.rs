@@ -132,6 +132,7 @@ use object::from_bytes_mut;
 use object::read::elf::Crel;
 use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
+use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator as _;
 use rayon::iter::IntoParallelRefMutIterator as _;
 use rayon::iter::ParallelBridge as _;
@@ -274,6 +275,7 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
     let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
     groups_and_buffers
         .into_par_iter()
+        .with_max_len(1)
         .try_for_each(|(group, mut buffers)| -> Result {
             verbose_timing_phase!("Write group");
 

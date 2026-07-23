@@ -125,14 +125,19 @@ use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-/// Runs the linker and cleans up associated resources. Only use this function if you've OK with
+/// Runs the linker in a Rayon thread pool configured from the supplied arguments or the available
+/// jobserver tokens, then cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
 pub fn run(mut args: Args) -> error::Result {
-    let thread_pool = args.common_mut().activate_thread_pool()?;
-    let linker = Linker::new();
-    linker.run(&args, &thread_pool)?;
-    drop(linker);
-    timing::finalise_perfetto_trace()?;
+    let thread_pool = args.common_mut().build_thread_pool()?;
+    thread_pool.pool.install(move || -> error::Result {
+        let linker = Linker::new();
+        linker.run(&args)?;
+        drop(linker);
+        timing::finalise_perfetto_trace()?;
+        Ok(())
+    })?;
+
     Ok(())
 }
 
@@ -203,13 +208,15 @@ impl Linker {
     /// Runs the linker. The returned value isn't useful for anything, but is somewhat expensive to
     /// drop, so we leave it up to the caller to decide when to drop it. At the point at which we
     /// return, the output file should be usable.
+    ///
+    /// This method runs in whatever Rayon thread pool is currently installed. If no thread pool is
+    /// installed, then Rayon's default global thread pool will be created and used. In either case,
+    /// the value of `--threads` in `args` has no effect. If you want a thread pool configured from
+    /// the supplied arguments, use the top-level [`run`] function instead, which creates such a
+    /// pool, runs the linker in it, then tears it down together with other associated resources.
     pub fn run<'layout_inputs>(
         &'layout_inputs self,
         args: &'layout_inputs Args,
-        // We don't actually use this, but take it as an argument to ensure that the caller has
-        // created it. We may decide to actually use it in future, if we stop using rayon's global
-        // thread pool.
-        _thread_pool: &crate::args::ThreadPool,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
         let identity = args.common().linker_identity();
         match args.common().version_mode {
@@ -451,8 +458,4 @@ pub fn init_timing() -> Result {
 
 pub fn should_fork(args: &Args) -> bool {
     args.common().should_fork()
-}
-
-pub fn activate_thread_pool(args: &mut Args) -> Result<crate::args::ThreadPool> {
-    args.common_mut().activate_thread_pool()
 }
