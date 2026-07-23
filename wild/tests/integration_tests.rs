@@ -1134,6 +1134,7 @@ struct Config {
     requires_rust_musl: bool,
     requires_linker_plugin: bool,
     test_update_in_place: bool,
+    test_incremental: bool,
     test_config: TestConfig,
     tracked_files: Vec<PathBuf>,
     so_single_linker: Option<Linker>,
@@ -1824,6 +1825,7 @@ impl Config {
             rustc_channel: RustcChannel::Default,
             requires_rust_musl: false,
             test_update_in_place: false,
+            test_incremental: false,
             test_config: test_config.clone(),
             tracked_files: Default::default(),
             available_linkers: available_linkers.to_owned(),
@@ -2322,6 +2324,9 @@ fn process_directive(
         "TestUpdateInPlace" => {
             config.test_update_in_place = arg.to_lowercase().parse()?;
         }
+        "TestIncremental" => {
+            config.test_incremental = arg.to_lowercase().parse()?;
+        }
         "DriverMode" => {
             config.driver_mode = Some(DriverMode::from_str(arg).map_err(|_| {
                 error!(
@@ -2389,6 +2394,10 @@ impl ProgramInputs {
 
         if config.test_update_in_place && matches!(linker, Linker::Wild) {
             self.run_update_in_place_test(&inputs, config, cross_arch, &link_output)?;
+        }
+
+        if config.test_incremental && matches!(linker, Linker::Wild) {
+            self.run_incremental_test(&inputs, config, cross_arch, &link_output)?;
         }
 
         let shared_objects = inputs
@@ -2473,6 +2482,38 @@ impl ProgramInputs {
                 final_len = final_content.len(),
                 cmd = updated_link_output.command,
             );
+        }
+
+        Ok(())
+    }
+
+    fn run_incremental_test(
+        &self,
+        inputs: &[LinkerInput],
+        config: &Config,
+        cross_arch: Option<Architecture>,
+        _reference_output: &LinkOutput,
+    ) -> Result {
+        let mut config_incremental = config.clone();
+        let args: &[&str] = match config.linker_driver {
+            LinkerDriver::Compiler(_) => &["-Wl,--incremental"],
+            LinkerDriver::Direct(_) => &["--incremental"],
+        };
+        config_incremental
+            .wild_extra_linker_args
+            .args
+            .extend(args.iter().map(|a| a.to_string()));
+
+        let updated_link_output =
+            Linker::Wild.link(self.name(), inputs, &config_incremental, cross_arch)?;
+
+        let cache_dir = libwild::incremental::IncrementalState::get_cache_dir(
+            &updated_link_output.binary,
+            None,
+        );
+        let state_file = libwild::incremental::IncrementalState::state_file_path(&cache_dir);
+        if !state_file.exists() {
+            bail!("Incremental state file `{}` was not created", state_file.display());
         }
 
         Ok(())

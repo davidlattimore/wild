@@ -157,6 +157,10 @@ impl InputFile {
             data: None,
         }
     }
+
+    pub(crate) fn modification_time(&self) -> Option<std::time::SystemTime> {
+        self.data.as_ref().map(|d| d.modification_time)
+    }
 }
 
 #[derive(Debug)]

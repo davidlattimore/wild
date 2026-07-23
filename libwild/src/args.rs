@@ -87,6 +87,8 @@ pub struct CommonArgs {
     pub(crate) sym_info: Option<String>,
     pub(crate) numeric_experiments: Vec<Option<u64>>,
     pub(crate) version_mode: VersionMode,
+    pub(crate) incremental: bool,
+    pub(crate) incremental_dir: Option<PathBuf>,
 
     /// If `Some`, then we'll time how long each phase takes. We'll also measure the specified
     /// counters, if any.
@@ -310,6 +312,8 @@ impl Default for CommonArgs {
             should_fork: true,
             demangle: true,
             version_mode: VersionMode::None,
+            incremental: false,
+            incremental_dir: None,
             validate_output: env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
             verify_allocation_consistency: env::var(WRITE_VERIFY_ALLOCATIONS_ENV)
                 .is_ok_and(|v| v == "1"),
@@ -1397,6 +1401,31 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
         .help("Update file in place")
         .execute(|args, _modifier_stack| {
             args.common_mut().file_replacement_mode = Some(FileReplacementMode::UpdateInPlace);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("incremental")
+        .help("Enable incremental linking")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().incremental = true;
+            if args.common().file_replacement_mode.is_none() {
+                args.common_mut().file_replacement_mode = Some(FileReplacementMode::UpdateInPlace);
+            }
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("incremental-dir")
+        .help("Specify cache directory for incremental linking state")
+        .execute(|args, _modifier_stack, value| {
+            args.common_mut().incremental = true;
+            args.common_mut().incremental_dir = Some(PathBuf::from(value));
+            if args.common().file_replacement_mode.is_none() {
+                args.common_mut().file_replacement_mode = Some(FileReplacementMode::UpdateInPlace);
+            }
             Ok(())
         });
 

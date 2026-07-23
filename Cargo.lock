@@ -866,6 +866,7 @@ dependencies = [
  "object 0.39.1",
  "perf-event",
  "perfetto-recorder",
+ "postcard",
  "rayon",
  "serde",
  "serde_yaml",

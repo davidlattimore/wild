@@ -29,6 +29,7 @@ pub(crate) mod grouping;
 pub(crate) mod hash;
 pub(crate) mod input_data;
 pub(crate) mod input_section_id;
+pub mod incremental;
 pub(crate) mod layout;
 pub(crate) mod layout_rules;
 #[cfg_attr(
@@ -259,8 +260,37 @@ impl Linker {
 
         file_loader.verify_inputs_unchanged()?;
 
-        // Write the dependency file and inputs trace after successful linking.
+        // Write the dependency file, inputs trace, and incremental state after successful linking.
         if result.is_ok() {
+            if args.common().incremental {
+                let cache_dir = incremental::IncrementalState::get_cache_dir(
+                    args.output(),
+                    args.common().incremental_dir.as_deref(),
+                );
+                let mut state = incremental::IncrementalState {
+                    output_path: args.output().to_path_buf(),
+                    last_build_time: Some(std::time::SystemTime::now()),
+                    ..Default::default()
+                };
+                for input in &file_loader.loaded_files {
+                    if !input.modifiers.temporary {
+                        let data = input.data();
+                        let hash = incremental::compute_input_hash(data);
+                        state.record_input(
+                            input.filename.clone(),
+                            data.len() as u64,
+                            input.modification_time(),
+                            hash,
+                        );
+                    }
+                }
+                if let Err(e) = state.save(&cache_dir) {
+                    (args.common().warning_callback)(crate::error::Warning::new(
+                        format!("Failed to save incremental state: {e:?}").into(),
+                    ));
+                }
+            }
+
             if let Some(dep_file_path) = &args.dependency_file() {
                 write_dependency_file(dep_file_path, args.output(), &file_loader.loaded_files)
                     .with_context(|| {
@@ -288,11 +318,41 @@ impl Linker {
     ) -> error::Result<LinkerOutput<'data>> {
         let mut plugin = P::maybe_init_linker_plugin(args, &self.linker_plugin_arena, &self.herd)?;
 
+        let cached_state = if args.common().incremental {
+            let cache_dir = incremental::IncrementalState::get_cache_dir(
+                args.output(),
+                args.common().incremental_dir.as_deref(),
+            );
+            incremental::IncrementalState::load(&cache_dir)
+        } else {
+            None
+        };
+
         let loaded = file_loader.load_inputs::<P>(&args.common().inputs, args, &mut plugin);
 
         args.common().save_dir.finish(file_loader, args)?;
 
         let loaded = loaded?;
+
+        if let Some(ref state) = cached_state {
+            let mut unchanged_count = 0;
+            let mut total_count = 0;
+            for input in &file_loader.loaded_files {
+                if !input.modifiers.temporary {
+                    total_count += 1;
+                    let data = input.data();
+                    let hash = incremental::compute_input_hash(data);
+                    if state.is_input_unchanged(&input.filename, data.len() as u64, input.modification_time(), hash) {
+                        unchanged_count += 1;
+                    }
+                }
+            }
+            tracing::info!(
+                "Incremental build: {}/{} input files unchanged",
+                unchanged_count,
+                total_count
+            );
+        }
 
         let output_kind = OutputKind::new(args, file_loader);
 

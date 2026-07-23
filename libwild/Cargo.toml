@@ -38,6 +38,7 @@ memchr.workspace = true
 memmap2.workspace = true
 object.workspace = true
 perfetto-recorder.workspace = true
+postcard.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
