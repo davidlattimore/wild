@@ -1,4 +1,9 @@
+//#Config:stack-size
 //#LinkArgs: -z stack-size=1048576
+
+//#Config:invalid-stack-size
+//#LinkArgs:-z stack-size=3
+//#ExpectError: stack size must be 16-byte aligned
 
 extern char __data_end;
 extern char __heap_base;

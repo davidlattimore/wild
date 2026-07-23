@@ -37,6 +37,7 @@ pub struct WasmArgs {
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) export_symbols: Vec<String>,
     pub(crate) z_stack_size: u32,
+    pub(crate) stack_first: bool,
 }
 
 impl WasmArgs {
@@ -55,6 +56,7 @@ impl Default for WasmArgs {
             lib_search_path: Vec::new(),
             export_symbols: Vec::new(),
             z_stack_size: DEFAULT_STACK_SIZE,
+            stack_first: false,
         }
     }
 }
@@ -219,6 +221,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         )
         .execute(|args, _modifier_stack, value| {
             args.warn_unsupported(&(format!("-z {value}")))?;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("stack-first")
+        .help("Place stack at start of linear memory rather than after data")
+        .execute(|args, _modifier_stack| {
+            args.stack_first = true;
             Ok(())
         });
 
