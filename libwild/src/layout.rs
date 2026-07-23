@@ -1955,6 +1955,15 @@ fn compute_segment_layout<'data, P: Platform>(
                             continue;
                         };
 
+                        // No-bits TLS sections neither exist in the file nor in the normal address
+                        // space. They shouldn't affect the extent of LOAD or RELRO segments.
+                        if section_info.section_attributes.is_tls()
+                            && section_info.section_attributes.is_no_bits()
+                            && !program_segments.is_tls_segment(rec.segment_id)
+                        {
+                            continue;
+                        }
+
                         rec.file_start = rec.file_start.min(section_layout.file_offset);
                         rec.mem_start = rec.mem_start.min(section_layout.mem_offset);
                         rec.lma_start = rec.lma_start.min(section_layout.lma_offset);
