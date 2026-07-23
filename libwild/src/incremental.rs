@@ -14,10 +14,30 @@ pub struct CachedInputFile {
     pub hash: u64,
 }
 
+/// Information about a symbol exported by a cached input file.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct CachedSymbolInfo {
+    pub name: String,
+    pub section_index: Option<u32>,
+    pub value: u64,
+    pub is_weak: bool,
+    pub is_global: bool,
+}
+
+/// Metrics summary for an incremental linking pass.
+#[derive(Debug, Default, Clone)]
+pub struct IncrementalSummary {
+    pub total_inputs: usize,
+    pub unchanged_inputs: usize,
+    pub modified_inputs: usize,
+    pub reused_symbols: usize,
+}
+
 /// The state of an incremental build saved to disk.
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct IncrementalState {
     pub cached_inputs: HashMap<PathBuf, CachedInputFile>,
+    pub cached_symbols: HashMap<PathBuf, Vec<CachedSymbolInfo>>,
     pub output_path: PathBuf,
     pub last_build_time: Option<SystemTime>,
 }
@@ -100,6 +120,36 @@ impl IncrementalState {
         } else {
             false
         }
+    }
+
+    /// Record symbols associated with an input file.
+    pub fn record_symbols(&mut self, path: PathBuf, symbols: Vec<CachedSymbolInfo>) {
+        self.cached_symbols.insert(path, symbols);
+    }
+
+    /// Retrieve symbols associated with an input file if cached.
+    pub fn get_cached_symbols(&self, path: &Path) -> Option<&[CachedSymbolInfo]> {
+        self.cached_symbols.get(path).map(|v| v.as_slice())
+    }
+
+    /// Computes summary stats for loaded input files.
+    pub fn evaluate_summary<'a, I>(&self, loaded_files: I) -> IncrementalSummary
+    where
+        I: IntoIterator<Item = (&'a Path, u64, Option<SystemTime>, u64)>,
+    {
+        let mut summary = IncrementalSummary::default();
+        for (path, len, mtime, hash) in loaded_files {
+            summary.total_inputs += 1;
+            if self.is_input_unchanged(path, len, mtime, hash) {
+                summary.unchanged_inputs += 1;
+                if let Some(symbols) = self.get_cached_symbols(path) {
+                    summary.reused_symbols += symbols.len();
+                }
+            } else {
+                summary.modified_inputs += 1;
+            }
+        }
+        summary
     }
 }
 

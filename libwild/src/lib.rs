@@ -335,22 +335,22 @@ impl Linker {
         let loaded = loaded?;
 
         if let Some(ref state) = cached_state {
-            let mut unchanged_count = 0;
-            let mut total_count = 0;
-            for input in &file_loader.loaded_files {
-                if !input.modifiers.temporary {
-                    total_count += 1;
-                    let data = input.data();
-                    let hash = incremental::compute_input_hash(data);
-                    if state.is_input_unchanged(&input.filename, data.len() as u64, input.modification_time(), hash) {
-                        unchanged_count += 1;
-                    }
-                }
-            }
+            let file_tuples: Vec<(&std::path::Path, u64, Option<std::time::SystemTime>, u64)> = file_loader
+                .loaded_files
+                .iter()
+                .filter(|f| !f.modifiers.temporary)
+                .map(|f| {
+                    let d = f.data();
+                    (f.filename.as_path(), d.len() as u64, f.modification_time(), incremental::compute_input_hash(d))
+                })
+                .collect();
+            let summary = state.evaluate_summary(file_tuples);
             tracing::info!(
-                "Incremental build: {}/{} input files unchanged",
-                unchanged_count,
-                total_count
+                "Incremental build: {}/{} inputs unchanged (modified: {}, reused symbols: {})",
+                summary.unchanged_inputs,
+                summary.total_inputs,
+                summary.modified_inputs,
+                summary.reused_symbols
             );
         }
 
