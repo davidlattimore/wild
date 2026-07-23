@@ -1,6 +1,5 @@
 //#AbstractConfig:default
 //#Object:runtime.c
-//#DiffIgnore:section.__const
 //#DiffIgnore:section.__unwind_info
 // TODO: Add support for fat objects to linker-diff.
 //#DiffEnabled:false

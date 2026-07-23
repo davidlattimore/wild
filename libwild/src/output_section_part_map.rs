@@ -227,7 +227,7 @@ fn test_merge_parts() {
     );
 
     // Subtract the Mach-O specific sections.
-    let num_regular_sections = output_sections.num_regular_sections() - 1;
+    let num_regular_sections = output_sections.num_regular_sections() - 2;
     let mut num_sections_with_17 = 0;
 
     let mut sum_of_1s = output_sections.new_section_map::<u32>();
@@ -239,6 +239,7 @@ fn test_merge_parts() {
     const SKIP_SECTIONS: &[OutputSectionId] = &[
         crate::part_id::UNMAPPED.output_section_id(),
         output_section_id::CSTRING,
+        output_section_id::CONST,
         output_section_id::LINK_EDIT_SEGMENT,
         output_section_id::LOAD_COMMANDS,
         output_section_id::CHAINED_FIXUP_TABLE,
