@@ -2494,6 +2494,10 @@ impl ProgramInputs {
         cross_arch: Option<Architecture>,
         _reference_output: &LinkOutput,
     ) -> Result {
+        let t0 = std::time::Instant::now();
+        let _std_output = Linker::Wild.link(self.name(), inputs, config, cross_arch)?;
+        let duration_non_incremental = t0.elapsed();
+
         let mut config_incremental = config.clone();
         let args: &[&str] = match config.linker_driver {
             LinkerDriver::Compiler(_) => &["-Wl,--incremental"],
@@ -2504,8 +2508,10 @@ impl ProgramInputs {
             .args
             .extend(args.iter().map(|a| a.to_string()));
 
+        let t1 = std::time::Instant::now();
         let updated_link_output =
             Linker::Wild.link(self.name(), inputs, &config_incremental, cross_arch)?;
+        let duration_inc_initial = t1.elapsed();
 
         let cache_dir = libwild::incremental::IncrementalState::get_cache_dir(
             &updated_link_output.binary,
@@ -2515,6 +2521,19 @@ impl ProgramInputs {
         if !state_file.exists() {
             bail!("Incremental state file `{}` was not created", state_file.display());
         }
+
+        let t2 = std::time::Instant::now();
+        let _subsequent_output =
+            Linker::Wild.link(self.name(), inputs, &config_incremental, cross_arch)?;
+        let duration_inc_subsequent = t2.elapsed();
+
+        println!(
+            "[Incremental Test Matrix - {}]\n  Non-incremental: {:?}\n  Incremental Initial: {:?}\n  Incremental Subsequent: {:?}",
+            self.name(),
+            duration_non_incremental,
+            duration_inc_initial,
+            duration_inc_subsequent,
+        );
 
         Ok(())
     }
