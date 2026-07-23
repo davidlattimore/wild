@@ -83,7 +83,7 @@ impl crate::platform::Arch for ElfLoongArch64 {
     }
 
     fn tp_offset_start(layout: &crate::layout::Layout<Elf>) -> u64 {
-        layout.tls_start_address()
+        layout.tls_start_address_aligned()
     }
 
     fn get_property_class(_property_type: u32) -> Option<crate::elf::PropertyClass> {

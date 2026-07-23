@@ -2349,20 +2349,15 @@ impl<'data> RelaxationTester<'data> {
                                     // relative to the TCB (thread control block), which is
                                     // immediately after the TLS segment, possibly with padding to
                                     // align it to the platforms pointer size.
-                                    elf_symbol.address().wrapping_sub(
-                                        self.bin
-                                            .address_index
-                                            .tls_segment_size
-                                            .next_multiple_of(size_of::<u64>() as u64),
-                                    )
+                                    elf_symbol
+                                        .address()
+                                        .wrapping_sub(self.bin.address_index.tls_tp_offset)
                                 }
                                 OutputKind::SharedObject => elf_symbol.address(),
                             }
                         }
                         ValueKind::Unwrapped(BasicValueKind::Aarch64TlsOffset) => {
-                            // Two words are reserved at the start of the TLS segment for the
-                            // runtime.
-                            elf_symbol.address() + 2 * 8
+                            elf_symbol.address() + self.bin.address_index.aarch64_tls_offset_bias
                         }
                         _ => elf_symbol.address(),
                     };
@@ -3083,7 +3078,8 @@ pub(crate) struct AddressIndex<'data> {
     dynamic_segment_address: Option<u64>,
     dynamic_relocations_by_address: HashMap<u64, object::Relocation>,
     dynamic_relocations_by_symbol_index: HashMap<object::SymbolIndex, Vec<object::Relocation>>,
-    tls_segment_size: u64,
+    tls_tp_offset: u64,
+    aarch64_tls_offset_bias: u64,
 
     /// GOT addresses for each JMPREL relocation by their index.
     jmprel_got_addresses: Vec<u64>,
@@ -3176,7 +3172,8 @@ impl<'data> AddressIndex<'data> {
             versym_address: None,
             dynamic_segment_address: None,
             got_base_address: None,
-            tls_segment_size: get_tls_segment_size(file),
+            tls_tp_offset: get_tls_tp_offset(file),
+            aarch64_tls_offset_bias: get_aarch64_tls_offset_bias(file),
             plt_indexes: Default::default(),
             got_tables: Default::default(),
             verdef: Default::default(),
@@ -3562,7 +3559,7 @@ impl<'data> AddressIndex<'data> {
     }
 }
 
-fn get_tls_segment_size(file: &object::File) -> u64 {
+fn get_tls_tp_offset(file: &object::File) -> u64 {
     match file {
         object::File::Elf64(elf_file) => {
             let e = elf_file.endian();
@@ -3571,11 +3568,46 @@ fn get_tls_segment_size(file: &object::File) -> u64 {
                 .elf_program_headers()
                 .iter()
                 .find_map(|header| {
-                    (header.p_type(e) == object::elf::PT_TLS).then(|| header.p_memsz(e))
+                    (header.p_type(e) == object::elf::PT_TLS).then(|| {
+                        let address = header.p_vaddr(e);
+                        let memory_size = header.p_memsz(e);
+                        let pointer_alignment = size_of::<u64>() as u64;
+                        let segment_alignment = header.p_align(e);
+                        if segment_alignment > pointer_alignment {
+                            let segment_end = address + memory_size;
+                            segment_end.next_multiple_of(segment_alignment) - address
+                        } else {
+                            memory_size.next_multiple_of(pointer_alignment)
+                        }
+                    })
                 })
                 .unwrap_or(0)
         }
         _ => 0,
+    }
+}
+
+fn get_aarch64_tls_offset_bias(file: &object::File) -> u64 {
+    use linker_utils::aarch64::TLS_TCB_SIZE;
+
+    match file {
+        object::File::Elf64(elf_file) => {
+            let e = elf_file.endian();
+            elf_file
+                .elf_program_headers()
+                .iter()
+                .find_map(|header| {
+                    (header.p_type(e) == object::elf::PT_TLS).then(|| {
+                        let address = header.p_vaddr(e);
+                        let alignment = header.p_align(e).max(1);
+                        let allocation_start =
+                            address.wrapping_sub(TLS_TCB_SIZE) & !(alignment - 1);
+                        address.wrapping_sub(allocation_start)
+                    })
+                })
+                .unwrap_or(TLS_TCB_SIZE)
+        }
+        _ => TLS_TCB_SIZE,
     }
 }
 
