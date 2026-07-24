@@ -95,6 +95,9 @@ pub trait FileSystem: Send + Sync + 'static {
     /// Resolves symbolic links and returns the canonical absolute path.
     fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf>;
 
+    /// Removes a file.
+    fn remove_file(&self, path: &Path) -> std::io::Result<()>;
+
     /// Rename an existing file out of the way and remove it in a background task. Failures are
     /// ignored because the subsequent output creation will report any relevant error.
     fn remove_in_separate_thread(&self, path: &Path);
@@ -298,6 +301,10 @@ impl FileSystem for OsFileSystem {
 
     fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
         std::fs::canonicalize(path)
+    }
+
+    fn remove_file(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::remove_file(path)
     }
 
     fn remove_in_separate_thread(&self, path: &Path) {

@@ -178,6 +178,7 @@ impl<F: FileSystem> Output<F> {
                 wait_for_sized_output(sized_output_recv)?
             }
             FileCreator::Regular { file_size } => {
+                delete_old_output(self.file_system.as_ref(), &self.path);
                 let file_size = file_size.context("set_size was never called")?;
                 self.create_file_non_lazily(file_size)?
             }
@@ -217,6 +218,12 @@ fn default_file_replacement_mode(
     }
 
     FileReplacementMode::UpdateInPlaceWithFallback
+}
+
+/// Delete the old output file. Note, this is only used when running from a single thread.
+fn delete_old_output(file_system: &impl FileSystem, path: &Path) {
+    timing_phase!("Delete old output");
+    let _ = file_system.remove_file(path);
 }
 
 fn wait_for_sized_output<O: OutputFileData>(
