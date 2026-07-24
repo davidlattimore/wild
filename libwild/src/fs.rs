@@ -225,7 +225,7 @@ impl FileSystem for OsFileSystem {
     fn open_input(
         &self,
         path: &Path,
-        prepopulate_maps: bool,
+        #[allow(unused_variables)] prepopulate_maps: bool,
     ) -> Result<(Self::Input, Option<Arc<File>>)> {
         #[allow(unused_mut)]
         let mut file = File::open(path)
@@ -275,7 +275,7 @@ impl FileSystem for OsFileSystem {
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes)
                 .with_context(|| format!("Failed to read file `{}`", path.display()))?;
-            OsInputBytes::Vec(bytes)
+            OsInputBytes(bytes)
         };
 
         Ok((
