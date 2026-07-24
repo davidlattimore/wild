@@ -2177,7 +2177,7 @@ fn process_directive(
         "EnableLinker" => {
             config.enabled_linkers.insert(arg.to_owned());
         }
-        "Cross" => config.cross_enabled = arg.to_lowercase().parse()?,
+        "Cross" => config.cross_enabled = arg.parse()?,
         "ExpectError" => {
             config.expect_stderr.push(ErrorMatcher::new(arg)?);
             config.should_error = true;
@@ -2214,7 +2214,7 @@ fn process_directive(
                 .ok_or_else(|| error!("DiffIgnore missing '='"))
                 .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
         ),
-        "AutoAddObjects" => config.auto_add_objects = arg.to_lowercase().parse()?,
+        "AutoAddObjects" => config.auto_add_objects = arg.parse()?,
         input_type @ ("Object"
         | "Relocatable"
         | "Archive"
@@ -2294,13 +2294,13 @@ fn process_directive(
                 .filter(|arch| !skipped.contains(arch))
                 .collect();
         }
-        "RequiresGlibc" => config.requires_glibc = arg.to_lowercase().parse()?,
+        "RequiresGlibc" => config.requires_glibc = arg.parse()?,
         "RequiresGlibcVersion" => {
             config.requires_glibc = true;
             config.requires_glibc_version = Some(arg.to_owned())
         }
         "RequiresSFrameBacktrace" => {
-            config.requires_sframe_backtrace = arg.to_lowercase().parse()?;
+            config.requires_sframe_backtrace = arg.parse()?;
         }
         "RequiresCompilerFlags" => {
             config
@@ -2313,22 +2313,22 @@ fn process_directive(
                 .extend(arg.split(' ').map(str::to_owned));
         }
         "RequiresNightlyRustc" => {
-            config.requires_nightly_rustc = arg.to_lowercase().parse()?;
+            config.requires_nightly_rustc = arg.parse()?;
         }
         "RequiresRustMusl" => {
-            config.requires_rust_musl = arg.to_lowercase().parse()?;
+            config.requires_rust_musl = arg.parse()?;
         }
         "RequiresLinkerPlugin" => {
-            config.requires_linker_plugin = arg.to_lowercase().parse()?;
+            config.requires_linker_plugin = arg.parse()?;
         }
         "RequiresWasiLibc" => {
-            config.requires_wasi_libc = arg.to_lowercase().parse()?;
+            config.requires_wasi_libc = arg.parse()?;
         }
         "RequiresZstdCompression" => {
-            config.requires_zstd_compression = arg.to_lowercase().parse()?;
+            config.requires_zstd_compression = arg.parse()?;
         }
         "TestUpdateInPlace" => {
-            config.test_update_in_place = arg.to_lowercase().parse()?;
+            config.test_update_in_place = arg.parse()?;
         }
         "DriverMode" => {
             config.driver_mode = Some(DriverMode::from_str(arg).map_err(|_| {
