@@ -85,7 +85,9 @@ pub(crate) trait Arch: Send + Sync + 'static {
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier;
 
     /// Get dynamic relocation value specific for the architecture.
-    fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32;
+    fn get_dynamic_relocation_type(
+        relocation: DynamicRelocationKind,
+    ) -> <Self::Platform as Platform>::RelocationInfo;
 
     /// Write PLT entry for the architecture.
     fn write_plt_entry(plt_entry: &mut [u8], got_address: u64, plt_address: u64) -> Result;
@@ -96,7 +98,9 @@ pub(crate) trait Arch: Send + Sync + 'static {
     ) -> Result<RelocationKindInfo>;
 
     /// Get string representation of a relocation specific for the architecture.
-    fn rel_type_to_string(r_type: u32) -> Cow<'static, str>;
+    fn rel_type_to_string(
+        r_type: <Self::Platform as Platform>::RelocationInfo,
+    ) -> Cow<'static, str>;
 
     /// Get DTV OFFSET.
     fn get_dtv_offset() -> u64 {
@@ -118,7 +122,7 @@ pub(crate) trait Arch: Send + Sync + 'static {
     ) -> Result<<Self::Platform as Platform>::FileFlags>;
 
     /// A list of high-part relocations that need to be tracked in a relocation cache
-    fn high_part_relocations() -> &'static [u32];
+    fn high_part_relocations() -> &'static [<Self::Platform as Platform>::RelocationInfo];
 
     /// Whether the platform supports relaxations that reduce the sizes of function.
     fn supports_size_reduction_relaxations() -> bool {
@@ -128,7 +132,7 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// Returns true if the given relocation type cannot be used when making a shared object.
     /// On 64-bit architectures, sub-pointer-size absolute relocations cannot be represented
     /// as dynamic relocations and must be rejected. Default is false (allow).
-    fn is_illegal_in_shared_object(_r_type: u32) -> bool {
+    fn is_illegal_in_shared_object(_r_type: <Self::Platform as Platform>::RelocationInfo) -> bool {
         false
     }
 
@@ -176,7 +180,7 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// Tries to create a relaxation for the relocation of the specified kind, to be applied at the
     /// specified offset in the supplied section.
     fn new_relaxation(
-        relocation_kind: u32,
+        relocation_kind: <Self::Platform as Platform>::RelocationInfo,
         section_bytes: &[u8],
         offset_in_section: u64,
         flags: ValueFlags,
@@ -1170,11 +1174,12 @@ pub(crate) struct CommonSymbol {
 }
 
 pub(crate) trait Relocation: Send + Sync + Copy + 'static {
-    type Sequence<'data>: RelocationSequence<'data>;
+    type Sequence<'data>: RelocationSequence<'data, Rel = Self>;
+    type Platform: Platform;
 
     fn symbol(&self) -> Option<object::SymbolIndex>;
 
-    fn raw_type(&self) -> u32;
+    fn raw_type(&self) -> <Self::Platform as Platform>::RelocationInfo;
 
     fn offset(&self) -> u64;
 

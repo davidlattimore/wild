@@ -2353,7 +2353,7 @@ fn write_symbols<'data>(
 fn apply_relocations<
     'data,
     A: Arch<Platform = Elf>,
-    R: Relocation,
+    R: Relocation<Platform = Elf>,
     I: Iterator<Item = object::Result<R>> + Clone,
 >(
     object: &ObjectLayout<'data, Elf>,
@@ -2439,7 +2439,7 @@ fn apply_relocations<
 pub(crate) fn apply_debug_relocations<
     'data,
     A: Arch<Platform = Elf>,
-    R: Relocation,
+    R: Relocation<Platform = Elf>,
     I: Iterator<Item = object::Result<R>> + Clone,
 >(
     object: &ObjectLayout<'data, Elf>,
@@ -2526,7 +2526,7 @@ fn write_eh_frame_data<'data, A: Arch<Platform = Elf>>(
     }
 }
 
-fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation>(
+fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation<Platform = Elf>>(
     object: &ObjectLayout<'data, Elf>,
     layout: &ElfLayout<'data>,
     table_writer: &mut TableWriter<'_, '_>,
@@ -2725,7 +2725,7 @@ struct DisplayRelocation<'a, 'data, A: Arch<Platform = Elf>, R: Relocation> {
     phantom: PhantomData<A>,
 }
 
-impl<'a, 'data, A: Arch<Platform = Elf>, R: Relocation> Display
+impl<'a, 'data, A: Arch<Platform = Elf>, R: Relocation<Platform = Elf>> Display
     for DisplayRelocation<'a, 'data, A, R>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2912,7 +2912,11 @@ fn adjust_relocation_based_on_value(
 }
 
 #[inline(always)]
-fn get_pair_subtraction_relocation_value<'data, A: Arch<Platform = Elf>, R: Relocation>(
+fn get_pair_subtraction_relocation_value<
+    'data,
+    A: Arch<Platform = Elf>,
+    R: Relocation<Platform = Elf>,
+>(
     object_layout: &ObjectLayout<'data, Elf>,
     rel: &R,
     layout: &ElfLayout,
@@ -2960,7 +2964,7 @@ fn get_pair_subtraction_relocation_value<'data, A: Arch<Platform = Elf>, R: Relo
 fn apply_relocation<
     'data,
     A: Arch<Platform = Elf>,
-    R: Relocation,
+    R: Relocation<Platform = Elf>,
     I: Iterator<Item = object::Result<R>> + Clone,
 >(
     object_layout: &ObjectLayout<'data, Elf>,
@@ -3544,7 +3548,7 @@ fn maybe_get_thunk_for_relocation<A: Arch<Platform = Elf>>(
     );
 }
 
-fn apply_debug_relocation<'data, A: Arch<Platform = Elf>, R: Relocation>(
+fn apply_debug_relocation<'data, A: Arch<Platform = Elf>, R: Relocation<Platform = Elf>>(
     object_layout: &ObjectLayout<'data, Elf>,
     offset_in_section: u64,
     rel: &R,

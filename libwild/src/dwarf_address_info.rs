@@ -130,7 +130,10 @@ fn section_data_with_relocations<A: Arch<Platform = crate::elf::Elf>>(
     Ok(data)
 }
 
-fn apply_section_relocations<A: Arch<Platform = crate::elf::Elf>, R: Relocation>(
+fn apply_section_relocations<
+    A: Arch<Platform = crate::elf::Elf>,
+    R: Relocation<Platform = crate::elf::Elf>,
+>(
     object: &File<'_>,
     section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
     section_data: &mut [u8],

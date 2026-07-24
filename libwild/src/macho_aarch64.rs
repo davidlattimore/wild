@@ -64,7 +64,9 @@ impl crate::platform::Arch for MachOAArch64 {
         todo!()
     }
 
-    fn get_dynamic_relocation_type(relocation: linker_utils::elf::DynamicRelocationKind) -> u32 {
+    fn get_dynamic_relocation_type(
+        relocation: linker_utils::elf::DynamicRelocationKind,
+    ) -> object::macho::RelocationInfo {
         todo!()
     }
 
@@ -172,8 +174,9 @@ impl crate::platform::Arch for MachOAArch64 {
         })
     }
 
-    fn rel_type_to_string(r_type: u32) -> Cow<'static, str> {
-        if let Some(name) = object::macho::NAMES_ARM64_RELOC.name(r_type as u8) {
+    fn rel_type_to_string(info: object::macho::RelocationInfo) -> Cow<'static, str> {
+        let r_type = info.r_type;
+        if let Some(name) = object::macho::NAMES_ARM64_RELOC.name(r_type) {
             Cow::Borrowed(name)
         } else {
             Cow::Owned(format!("Unknown arm64 relocation type 0x{r_type:x}"))
@@ -192,7 +195,7 @@ impl crate::platform::Arch for MachOAArch64 {
         todo!()
     }
 
-    fn high_part_relocations() -> &'static [u32] {
+    fn high_part_relocations() -> &'static [object::macho::RelocationInfo] {
         todo!()
     }
 
@@ -206,7 +209,7 @@ impl crate::platform::Arch for MachOAArch64 {
     }
 
     fn new_relaxation(
-        relocation_kind: u32,
+        relocation_kind: object::macho::RelocationInfo,
         section_bytes: &[u8],
         offset_in_section: u64,
         flags: crate::value_flags::ValueFlags,
