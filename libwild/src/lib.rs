@@ -189,7 +189,7 @@ pub struct Linker<F: FileSystem = OsFileSystem> {
     #[allow(dyn_drop)]
     _link_scope: Vec<Box<dyn Drop>>,
 
-    // File system used for reading of the inputs and writting of the output file(s).
+    // File system used for reading of the inputs and writing of the output file(s).
     file_system: std::sync::Arc<F>,
 }
 

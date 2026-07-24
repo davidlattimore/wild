@@ -50,7 +50,7 @@ pub(crate) struct FileLoader<'data, F: FileSystem> {
 
     inputs_arena: &'data Arena<InputFile<F::Input>>,
 
-    // File system used for reading and writting of the data.
+    // File system used for reading and writing of the data.
     file_system: Arc<F>,
 }
 
