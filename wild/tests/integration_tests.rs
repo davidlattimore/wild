@@ -1880,6 +1880,7 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 &mut configs,
                 is_rust,
             )
+            .with_context(|| format!("problematic directive line: '{}'", rest))
             .with_context(|| {
                 format!(
                     "Failed to process test directive {}:{}",
@@ -2176,7 +2177,7 @@ fn process_directive(
         "EnableLinker" => {
             config.enabled_linkers.insert(arg.to_owned());
         }
-        "Cross" => config.cross_enabled = parse_bool(arg, "Cross")?,
+        "Cross" => config.cross_enabled = arg.to_lowercase().parse()?,
         "ExpectError" => {
             config.expect_stderr.push(ErrorMatcher::new(arg)?);
             config.should_error = true;
@@ -2213,7 +2214,7 @@ fn process_directive(
                 .ok_or_else(|| error!("DiffIgnore missing '='"))
                 .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
         ),
-        "AutoAddObjects" => config.auto_add_objects = parse_bool(arg, "AutoAddObjects")?,
+        "AutoAddObjects" => config.auto_add_objects = arg.to_lowercase().parse()?,
         input_type @ ("Object"
         | "Relocatable"
         | "Archive"
@@ -2299,7 +2300,7 @@ fn process_directive(
             config.requires_glibc_version = Some(arg.to_owned())
         }
         "RequiresSFrameBacktrace" => {
-            config.requires_sframe_backtrace = parse_bool(arg, "RequiresSFrameBacktrace")?;
+            config.requires_sframe_backtrace = arg.to_lowercase().parse()?;
         }
         "RequiresCompilerFlags" => {
             config
@@ -2321,7 +2322,7 @@ fn process_directive(
             config.requires_linker_plugin = arg.to_lowercase().parse()?;
         }
         "RequiresWasiLibc" => {
-            config.requires_wasi_libc = parse_bool(arg, "RequiresWasiLibc")?;
+            config.requires_wasi_libc = arg.to_lowercase().parse()?;
         }
         "RequiresZstdCompression" => {
             config.requires_zstd_compression = arg.to_lowercase().parse()?;
@@ -2344,14 +2345,6 @@ fn process_directive(
     }
 
     Ok(())
-}
-
-fn parse_bool(arg: &str, opt_name: &str) -> Result<bool> {
-    match arg {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        other => bail!("Unsupported value for {opt_name} '{other}'"),
-    }
 }
 
 impl ProgramInputs {
