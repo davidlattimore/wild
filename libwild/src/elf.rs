@@ -196,6 +196,7 @@ pub(crate) struct File<'data> {
 
 impl Relocation for Rela {
     type Sequence<'data> = &'data [Rela];
+    type Platform = Elf;
 
     fn symbol(&self) -> Option<object::SymbolIndex> {
         object::read::elf::Rela::symbol(self, LittleEndian, false)
@@ -216,6 +217,7 @@ impl Relocation for Rela {
 
 impl Relocation for Crel {
     type Sequence<'data> = Vec<Crel>;
+    type Platform = Elf;
 
     fn symbol(&self) -> Option<object::SymbolIndex> {
         object::read::elf::Crel::symbol(self)
@@ -2834,7 +2836,12 @@ impl DynamicLayoutStateExt<'_> {
     }
 }
 
-fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
+fn process_eh_frame_relocations<
+    'data,
+    'scope,
+    A: Arch<Platform = Elf>,
+    R: Relocation<Platform = Elf>,
+>(
     object: &mut layout::ObjectLayoutState<'data, Elf>,
     common: &mut layout::CommonGroupState<'data, Elf>,
     resources: &'scope layout::GraphResources<'data, '_, Elf>,
@@ -2970,7 +2977,12 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
 }
 
 /// Processes the exception frames for a section that we're loading.
-fn process_section_exception_frames<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
+fn process_section_exception_frames<
+    'data,
+    'scope,
+    A: Arch<Platform = Elf>,
+    R: Relocation<Platform = Elf>,
+>(
     object: &layout::ObjectLayoutState<'data, Elf>,
     frame_index: Option<FrameIndex>,
     common: &mut layout::CommonGroupState<'data, Elf>,
@@ -5054,7 +5066,12 @@ pub(crate) struct DynamicSymbolDefinitionExt {
     pub(crate) version: object::elf::VersymIndex,
 }
 
-fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocation>(
+fn load_section_relocations<
+    'scope,
+    'data,
+    A: Arch<Platform = Elf>,
+    R: Relocation<Platform = Elf>,
+>(
     state: &layout::ObjectLayoutState<'data, Elf>,
     common: &mut CommonGroupState<'data, Elf>,
     queue: &mut layout::LocalWorkQueue,
@@ -5218,7 +5235,7 @@ impl RelrEncoder {
 }
 
 #[inline(always)]
-fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
+fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation<Platform = Elf>>(
     object: &ObjectLayoutState<'data, Elf>,
     common: &mut CommonGroupState<'data, Elf>,
     rel: &R,

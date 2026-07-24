@@ -665,7 +665,7 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
         .with_context(|| {
             format!(
                 "Failed to apply relocation {} to {}",
-                A::rel_type_to_string(rel.r_type.into()),
+                A::rel_type_to_string(rel),
                 layout.symbol_debug(local_symbol_id)
             )
         })?;

@@ -389,7 +389,7 @@ impl crate::platform::Relaxation for Relaxation {
 /// `section_output_address` is the output address of the section being scanned. `existing_deltas`,
 /// if present, is used to skip calls that were already relaxed in a previous pass. `resolve_symbol`
 /// returns the output address and interposability of a symbol.
-fn collect_relaxation_deltas<R: Relocation>(
+fn collect_relaxation_deltas<R: Relocation<Platform = Elf>>(
     section_output_address: u64,
     section_bytes: &[u8],
     relocations: impl Iterator<Item = R>,
