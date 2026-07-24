@@ -2,6 +2,7 @@
 //! referenced. Determines which sections need to be linked, sums their sizes decides what goes
 //! where in the output file then allocates addresses for each symbol.
 
+use crate::FileSystem;
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
@@ -108,12 +109,12 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
-pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
+pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
     symbol_db: SymbolDb<'data, A::Platform>,
     mut per_symbol_flags: PerSymbolFlags,
     mut groups: Vec<ResolvedGroup<'data, A::Platform>>,
     mut output_sections: OutputSections<'data, P>,
-    output: &mut file_writer::Output,
+    output: &mut file_writer::Output<F>,
 ) -> Result<Layout<'data, A::Platform>> {
     timing_phase!("Layout");
 
@@ -1658,7 +1659,7 @@ impl<'data, P: Platform> Layout<'data, P> {
             .flat_map(|group| {
                 group.files.iter().filter_map(|file| match file {
                     FileLayout::Object(obj) => Some(linker_layout::InputFile {
-                        path: obj.input.file.filename.clone(),
+                        path: obj.input.file.filename.to_owned(),
                         archive_entry: obj.input.entry.as_ref().map(|e| {
                             linker_layout::ArchiveEntryInfo {
                                 range: e.byte_range(),
@@ -5860,6 +5861,7 @@ impl<'data, P: Platform> ObjectLayout<'data, P> {
 /// overlap and that sections don't overlap.
 #[test]
 fn test_no_disallowed_overlaps() {
+    use crate::OsFileSystem;
     use crate::elf::Elf;
     use crate::output_section_id::OrderEvent;
 
@@ -5897,7 +5899,7 @@ fn test_no_disallowed_overlaps() {
         crate::args::RelocationModel::NonRelocatable,
     );
     let arena = colosseum::sync::Arena::new();
-    let auxiliary = crate::input_data::AuxiliaryFiles::new(&args, &arena).unwrap();
+    let auxiliary = crate::input_data::AuxiliaryFiles::new(&args, &arena, &OsFileSystem).unwrap();
     let herd = Default::default();
     let symbol_db =
         crate::symbol_db::SymbolDb::<Elf>::new(&args, output_kind, &auxiliary, &herd).unwrap();

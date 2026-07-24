@@ -1,3 +1,4 @@
+use crate::OutputFileData;
 use crate::bail;
 use crate::ensure;
 use crate::error::Context as _;
@@ -47,7 +48,7 @@ fn apply_resolved_reloc(
 }
 
 pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
-    sized_output: &mut SizedOutput,
+    sized_output: &mut SizedOutput<impl OutputFileData>,
     layout: &Layout<'data, Wasm>,
 ) -> Result<()> {
     timing_phase!("Write Wasm output");

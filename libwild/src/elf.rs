@@ -1,3 +1,4 @@
+use crate::FileSystem;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
@@ -345,8 +346,8 @@ impl platform::Platform for Elf {
     type SymtabShndxEntry = SymtabShndxEntry;
     type ResolvedObjectExt<'data> = ResolvedObjectExt<'data>;
 
-    fn link_for_arch<'data>(
-        linker: &'data crate::Linker,
+    fn link_for_arch<'data, F: FileSystem>(
+        linker: &'data crate::Linker<F>,
         args: &'data Self::Args,
     ) -> Result<crate::LinkerOutput<'data>> {
         match args.arch {
@@ -374,8 +375,8 @@ impl platform::Platform for Elf {
         }
     }
 
-    fn write_output_file<'data, A: Arch<Platform = Self>>(
-        output: &crate::file_writer::Output,
+    fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
+        output: &crate::file_writer::Output<F>,
         layout: &layout::Layout<'data, Self>,
     ) -> Result {
         output.write(layout, elf_writer::write::<A>)
@@ -395,11 +396,11 @@ impl platform::Platform for Elf {
         crate::linker_plugins::LinkerPlugin::from_args(args, linker_plugin_arena, herd)
     }
 
-    fn plugin_all_symbols_read<'data>(
+    fn plugin_all_symbols_read<'data, F: FileSystem>(
         plugin: &mut crate::linker_plugins::LinkerPlugin<'data>,
         symbol_db: &mut SymbolDb<'data, Self>,
         resolver: &mut crate::resolution::Resolver<'data, Self>,
-        file_loader: &mut crate::input_data::FileLoader<'data>,
+        file_loader: &mut crate::input_data::FileLoader<'data, F>,
         per_symbol_flags: &mut crate::value_flags::PerSymbolFlags,
         output_sections: &mut OutputSections<'data, Self>,
         layout_rules_builder: &mut crate::layout_rules::LayoutRulesBuilder<'data>,

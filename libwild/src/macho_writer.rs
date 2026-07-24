@@ -1,3 +1,4 @@
+use crate::OutputFileData;
 use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::bail;
 use crate::elf::get_page_mask;
@@ -130,7 +131,7 @@ type MachOLayout<'data> = Layout<'data, MachO>;
 type SymtabEntry = object::macho::Nlist64<Endianness>;
 
 pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
-    sized_output: &mut SizedOutput,
+    sized_output: &mut SizedOutput<impl OutputFileData>,
     layout: &MachOLayout<'data>,
 ) -> Result {
     timing_phase!("Write data to file");
@@ -1001,7 +1002,7 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
     Ok(())
 }
 
-fn write_uuid(layout: &MachOLayout, sized_output: &mut SizedOutput) -> Result {
+fn write_uuid(layout: &MachOLayout, sized_output: &mut SizedOutput<impl OutputFileData>) -> Result {
     verbose_timing_phase!("Write UUID");
 
     let hash = blake3::Hasher::new()
@@ -1036,7 +1037,10 @@ fn write_uuid(layout: &MachOLayout, sized_output: &mut SizedOutput) -> Result {
     bail!("Missing LC_UUID");
 }
 
-fn write_code_signature_metadata(layout: &MachOLayout, sized_output: &mut SizedOutput) -> Result {
+fn write_code_signature_metadata(
+    layout: &MachOLayout,
+    sized_output: &mut SizedOutput<impl OutputFileData>,
+) -> Result {
     verbose_timing_phase!("Write code signature metadata");
 
     let code_signature_section = layout
@@ -1118,7 +1122,10 @@ fn write_code_signature_metadata(layout: &MachOLayout, sized_output: &mut SizedO
     Ok(())
 }
 
-fn write_code_signature_hashes(layout: &MachOLayout, sized_output: &mut SizedOutput) -> Result {
+fn write_code_signature_hashes(
+    layout: &MachOLayout,
+    sized_output: &mut SizedOutput<impl OutputFileData>,
+) -> Result {
     verbose_timing_phase!("Write code signature hashes");
 
     let code_signature_section = layout
@@ -1140,20 +1147,13 @@ fn write_code_signature_hashes(layout: &MachOLayout, sized_output: &mut SizedOut
 
     hashes.copy_from_slice(&calculated_hashes);
 
-    #[cfg(target_os = "macos")]
-    if let crate::file_writer::OutputBuffer::Mmap(output) = &mut sized_output.out {
-        // Match lld's workaround for the macOS kernel caching signature-verification
-        // data before the final code signature has been written:
-        //
-        // https://openradar.appspot.com/FB8914231
-        unsafe {
-            libc::msync(
-                output.as_mut_ptr().cast(),
-                code_signature_section.file_offset + code_signature_section.file_size,
-                libc::MS_INVALIDATE,
-            );
-        }
-    }
+    // Match lld's workaround for the macOS kernel caching signature-verification
+    // data before the final code signature has been written:
+    //
+    // https://openradar.appspot.com/FB8914231
+    sized_output
+        .out
+        .invalidate(code_signature_section.file_offset + code_signature_section.file_size);
 
     Ok(())
 }

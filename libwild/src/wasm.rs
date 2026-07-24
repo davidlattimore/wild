@@ -1,6 +1,7 @@
 // TODO
 #![allow(unused)]
 
+use crate::FileSystem;
 use crate::alignment::Alignment;
 use crate::args::wasm::WasmArgs;
 use crate::bail;
@@ -4327,8 +4328,8 @@ impl platform::Platform for Wasm {
     type VerneedTable<'data> = VerneedTable<'data>;
     type ResolvedObjectExt<'data> = WasmObjectLayout<'data>;
 
-    fn link_for_arch<'data>(
-        linker: &'data crate::Linker,
+    fn link_for_arch<'data, F: FileSystem>(
+        linker: &'data crate::Linker<F>,
         args: &'data Self::Args,
     ) -> crate::error::Result<crate::LinkerOutput<'data>> {
         if !cfg!(feature = "wasm") {
@@ -4340,8 +4341,8 @@ impl platform::Platform for Wasm {
         linker.link_for_arch::<Wasm, crate::wasm_wasm32::WasmWasm32>(args)
     }
 
-    fn write_output_file<'data, A: platform::Arch<Platform = Self>>(
-        output: &crate::file_writer::Output,
+    fn write_output_file<'data, A: platform::Arch<Platform = Self>, F: FileSystem>(
+        output: &crate::file_writer::Output<F>,
         layout: &crate::layout::Layout<'data, Self>,
     ) -> crate::error::Result {
         output.write(layout, crate::wasm_writer::write::<A>)

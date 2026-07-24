@@ -1,6 +1,7 @@
 //! Sets up a tracing layer for recording diagnostics associated with particular addresses in the
 //! output file.
 
+use crate::FileSystem;
 use crate::error::Result;
 use linker_trace::AddressTrace;
 use std::mem::take;
@@ -45,11 +46,12 @@ impl TraceOutput {
         }
     }
 
-    pub(crate) fn close(&self) -> Result {
+    pub(crate) fn close(&self, file_system: &impl FileSystem) -> Result {
         if let Some(state) = self.state.as_ref() {
-            let mut file = std::io::BufWriter::new(std::fs::File::create(&state.trace_path)?);
+            let mut bytes = Vec::new();
             let data = take(state.data.lock().unwrap().deref_mut());
-            data.write(&mut file)?;
+            data.write(&mut bytes)?;
+            file_system.write_auxiliary(&state.trace_path, &bytes)?;
         }
 
         Ok(())

@@ -1,10 +1,14 @@
+use crate::FileSystem;
+use crate::OutputFileData;
 use crate::OutputKind;
-use crate::args::FileReplacementMode;
+use crate::OutputOptions;
 use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
 use crate::env;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::fs::FileReplacementMode;
+use crate::fs::FileWriteMode;
 use crate::layout::GroupLayout;
 use crate::layout::Layout;
 use crate::output_section_id::OutputSectionId;
@@ -17,13 +21,10 @@ use crate::platform::Platform;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use anyhow::anyhow;
-use memmap2::MmapOptions;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSlice;
 use rayon::slice::ParallelSliceMut;
-use std::io::ErrorKind;
-use std::io::Write;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::path::Path;
@@ -31,10 +32,11 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 
-pub struct Output {
+pub struct Output<F: FileSystem> {
     path: Arc<Path>,
-    creator: FileCreator,
+    creator: FileCreator<F::Output>,
     config: OutputConfig,
+    file_system: Arc<F>,
 }
 
 #[derive(Clone, Copy)]
@@ -44,105 +46,44 @@ struct OutputConfig {
     file_write_mode: Option<FileWriteMode>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum FileWriteMode {
-    Mmap,
-    BufferThenWrite,
-}
-
-enum FileCreator {
+enum FileCreator<O: OutputFileData> {
     Background {
-        sized_output_sender: Option<Sender<Result<SizedOutput>>>,
-        sized_output_recv: Receiver<Result<SizedOutput>>,
+        sized_output_sender: Option<Sender<Result<SizedOutput<O>>>>,
+        sized_output_recv: Receiver<Result<SizedOutput<O>>>,
     },
     Regular {
         file_size: Option<u64>,
     },
 }
 
-pub(crate) struct SizedOutput {
-    file: std::fs::File,
-    pub(crate) out: OutputBuffer,
-    path: Arc<Path>,
+pub(crate) struct SizedOutput<O: OutputFileData> {
+    pub(crate) out: OutputBuffer<O>,
     pub(crate) trace: TraceOutput,
 }
 
-pub(crate) enum OutputBuffer {
-    Mmap(memmap2::MmapMut),
-    InMemory(Vec<u8>),
-}
+pub(crate) struct OutputBuffer<O: OutputFileData>(O);
 
-impl OutputBuffer {
-    fn new(file: &std::fs::File, file_size: u64, output_config: OutputConfig) -> Self {
-        let file_write_mode = output_config
-            .file_write_mode
-            .unwrap_or_else(|| default_file_write_mode_for_file(file));
-
-        match file_write_mode {
-            FileWriteMode::Mmap => {
-                // For some types of output file (e.g. character devices) we can't mmap, so we try
-                // to mmap the file and if it fails, fall back to non-mmapped output.
-                Self::new_mmapped(file, file_size)
-                    .unwrap_or_else(|| Self::InMemory(vec![0; file_size as usize]))
-            }
-            FileWriteMode::BufferThenWrite => {
-                // Try to set the length of the file. We ignore failures here because it's expected
-                // to fail for some types of files, e.g. /dev/null. If there's actually a problem
-                // writing to the file, we'll discover that when we go to write the content later
-                // on.
-                let _ = file.set_len(file_size);
-                Self::InMemory(vec![0; file_size as usize])
-            }
-        }
+impl<O: OutputFileData> OutputBuffer<O> {
+    pub(crate) fn invalidate(&mut self, len: usize) {
+        self.0.invalidate(len);
     }
 
-    fn new_mmapped(file: &std::fs::File, file_size: u64) -> Option<Self> {
-        file.set_len(file_size).ok()?;
-        let mmap = unsafe { MmapOptions::new().map_mut(file) }.ok()?;
-        Some(Self::Mmap(mmap))
+    fn finish(&mut self) -> Result {
+        self.0.finish()
     }
 }
 
-fn default_file_write_mode_for_file(file: &std::fs::File) -> FileWriteMode {
-    #[cfg(any(target_os = "android", target_os = "linux"))]
-    {
-        match nix::sys::statfs::fstatfs(file)
-            .map(|stat| stat.filesystem_type())
-            .ok()
-        {
-            // Multi-threaded write performance with BTRFS is terrible. It's substantially faster to
-            // just buffer it all in memory then write it afterwards.
-            Some(nix::sys::statfs::BTRFS_SUPER_MAGIC) => FileWriteMode::BufferThenWrite,
-            // vfat isn't quite as bad as BTRFS in this regard, but it's still at least 4-10% faster
-            // if we avoid mmap.
-            Some(nix::sys::statfs::MSDOS_SUPER_MAGIC) => FileWriteMode::BufferThenWrite,
-            _ => FileWriteMode::Mmap,
-        }
-    }
-    #[cfg(not(any(target_os = "android", target_os = "linux")))]
-    {
-        let _ = file;
-        FileWriteMode::Mmap
-    }
-}
-
-impl Deref for OutputBuffer {
+impl<O: OutputFileData> Deref for OutputBuffer<O> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        match self {
-            OutputBuffer::Mmap(mmap) => mmap.deref(),
-            OutputBuffer::InMemory(vec) => vec.deref(),
-        }
+        self.0.bytes()
     }
 }
 
-impl DerefMut for OutputBuffer {
+impl<O: OutputFileData> DerefMut for OutputBuffer<O> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            OutputBuffer::Mmap(mmap) => mmap.deref_mut(),
-            OutputBuffer::InMemory(vec) => vec.deref_mut(),
-        }
+        self.0.bytes_mut()
     }
 }
 
@@ -153,12 +94,15 @@ struct SectionAllocation {
     size: usize,
 }
 
-impl Output {
-    pub(crate) fn new(args: &impl platform::Args, output_kind: OutputKind) -> Output {
-        let file_replacement_mode = args
-            .common()
-            .file_replacement_mode
-            .unwrap_or_else(|| default_file_replacement_mode(args, output_kind));
+impl<F: FileSystem> Output<F> {
+    pub(crate) fn new(
+        args: &impl platform::Args,
+        output_kind: OutputKind,
+        file_system: Arc<F>,
+    ) -> Output<F> {
+        let file_replacement_mode = args.common().file_replacement_mode.unwrap_or_else(|| {
+            default_file_replacement_mode(args, output_kind, file_system.as_ref())
+        });
 
         let creator = if args.common().available_threads.get() > 1 {
             let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
@@ -172,6 +116,7 @@ impl Output {
 
         Output {
             path: args.output().clone(),
+            file_system,
             creator,
             config: OutputConfig {
                 file_replacement_mode,
@@ -193,35 +138,18 @@ impl Output {
                 let path = self.path.clone();
 
                 let output_config = self.config;
+                let file_system = Arc::clone(&self.file_system);
 
                 rayon::spawn(move || {
                     verbose_timing_phase!("Create output file");
 
                     if output_config.file_replacement_mode == FileReplacementMode::UnlinkAndReplace
                     {
-                        // Rename the old output file so that we can create a new file in its place.
-                        // Reusing the existing file would also be an option, but that wouldn't
-                        // error if the file is currently being executed.
-                        let renamed_old_file = path.with_extension("delete");
-                        let rename_status = std::fs::rename(&path, &renamed_old_file);
-
-                        // If there was an old output file that we renamed, then delete it. We do so
-                        // from a separate task so that it can run in the background while other
-                        // threads continue working. Deleting can take a while for large files.
-                        if rename_status.is_ok() {
-                            rayon::spawn(move || {
-                                let _ = std::fs::remove_file(renamed_old_file);
-                                // Note, we don't currently signal when we've finished deleting the
-                                // file. Based on experiments run on Linux 6.9.3, if we exit while
-                                // an unlink syscall is in progress on a separate thread, Linux will
-                                // wait for the unlink syscall to complete before terminating the
-                                // process.
-                            });
-                        }
+                        file_system.remove_in_separate_thread(&path);
                     }
 
                     // Create the output file.
-                    let sized_output = SizedOutput::new(path, output_config, size);
+                    let sized_output = SizedOutput::new(&file_system, &path, output_config, size);
 
                     // Pass it to the main thread, so that it can start writing it once layout
                     // finishes.
@@ -235,11 +163,11 @@ impl Output {
     pub fn write<'data, 'layout, P: Platform>(
         &self,
         layout: &'layout Layout<'data, P>,
-        write_fn: impl FnOnce(&mut SizedOutput, &'layout Layout<'data, P>) -> Result,
+        write_fn: impl FnOnce(&mut SizedOutput<F::Output>, &'layout Layout<'data, P>) -> Result,
     ) -> Result {
         timing_phase!("Write output file");
         if layout.args().common().write_layout {
-            write_layout(layout)?;
+            write_layout(layout, self.file_system.as_ref())?;
         }
         let mut sized_output = match &self.creator {
             FileCreator::Background {
@@ -250,14 +178,13 @@ impl Output {
                 wait_for_sized_output(sized_output_recv)?
             }
             FileCreator::Regular { file_size } => {
-                delete_old_output(&self.path);
                 let file_size = file_size.context("set_size was never called")?;
                 self.create_file_non_lazily(file_size)?
             }
         };
         write_fn(&mut sized_output, layout)?;
         sized_output.flush()?;
-        sized_output.trace.close()?;
+        sized_output.trace.close(self.file_system.as_ref())?;
 
         // While we have the output file mmapped with write permission, the file will be locked and
         // unusable, so we can't really say that we've finished writing it until we've unmapped it.
@@ -269,9 +196,9 @@ impl Output {
         Ok(())
     }
 
-    fn create_file_non_lazily(&self, file_size: u64) -> Result<SizedOutput> {
+    fn create_file_non_lazily(&self, file_size: u64) -> Result<SizedOutput<F::Output>> {
         timing_phase!("Create output file");
-        SizedOutput::new(self.path.clone(), self.config, file_size)
+        SizedOutput::new(&self.file_system, &self.path, self.config, file_size)
     }
 }
 
@@ -279,89 +206,50 @@ impl Output {
 fn default_file_replacement_mode(
     args: &impl platform::Args,
     output_kind: OutputKind,
+    file_system: &impl FileSystem,
 ) -> FileReplacementMode {
     if output_kind.is_shared_object() {
         return FileReplacementMode::UnlinkAndReplace;
     }
 
-    if std::fs::metadata(args.output()).is_err() {
+    if file_system.file_type(args.output()).is_err() {
         return FileReplacementMode::UnlinkAndReplace;
     }
 
     FileReplacementMode::UpdateInPlaceWithFallback
 }
 
-/// Delete the old output file. Note, this is only used when running from a single thread.
-fn delete_old_output(path: &Path) {
-    timing_phase!("Delete old output");
-    let _ = std::fs::remove_file(path);
-}
-
-fn wait_for_sized_output(sized_output_recv: &Receiver<Result<SizedOutput>>) -> Result<SizedOutput> {
+fn wait_for_sized_output<O: OutputFileData>(
+    sized_output_recv: &Receiver<Result<SizedOutput<O>>>,
+) -> Result<SizedOutput<O>> {
     timing_phase!("Wait for output file creation");
     sized_output_recv.recv()?
 }
 
-impl SizedOutput {
-    fn new(path: Arc<Path>, output_config: OutputConfig, file_size: u64) -> Result<SizedOutput> {
-        let mut open_options = std::fs::OpenOptions::new();
-
-        match output_config.file_replacement_mode {
-            FileReplacementMode::UnlinkAndReplace => {
-                open_options.truncate(true);
-            }
-            FileReplacementMode::UpdateInPlace | FileReplacementMode::UpdateInPlaceWithFallback => {
-                open_options.truncate(false);
-            }
-        }
-
-        let file = match open_options.read(true).write(true).create(true).open(&path) {
-            Ok(file) => file,
-            Err(error) => {
-                // Retry open operation with UnlinkAndReplace if it's an ETXTBSY error and
-                // falllback is permitted.
-                if error.kind() == ErrorKind::ExecutableFileBusy
-                    && matches!(
-                        output_config.file_replacement_mode,
-                        FileReplacementMode::UpdateInPlaceWithFallback
-                    )
-                {
-                    // If the file is being executed, we can't modify it, but we can delete it.
-                    std::fs::remove_file(&path)?;
-                    open_options.create(true).open(&path)?
-                } else {
-                    return Err(error)
-                        .with_context(|| format!("Failed to open `{}`", path.display()));
-                }
-            }
-        };
-
-        let out = OutputBuffer::new(&file, file_size, output_config);
-
-        let trace = TraceOutput::new(output_config.should_write_trace, &path);
-
+impl<O: OutputFileData> SizedOutput<O> {
+    fn new<F: FileSystem<Output = O>>(
+        file_system: &Arc<F>,
+        path: &Arc<Path>,
+        output_config: OutputConfig,
+        file_size: u64,
+    ) -> Result<SizedOutput<O>> {
+        let output = file_system.create_output(
+            path.clone(),
+            OutputOptions {
+                size: file_size,
+                file_replacement_mode: output_config.file_replacement_mode,
+                write_mode: output_config.file_write_mode,
+            },
+        )?;
+        let trace = TraceOutput::new(output_config.should_write_trace, path);
         Ok(SizedOutput {
-            file,
-            out,
-            path,
+            out: OutputBuffer(output),
             trace,
         })
     }
 
     fn flush(&mut self) -> Result {
-        match &self.out {
-            OutputBuffer::Mmap(_) => {}
-            OutputBuffer::InMemory(bytes) => self
-                .file
-                .write_all(bytes)
-                .with_context(|| format!("Failed to write to {}", self.path.display()))?,
-        }
-
-        // Making the file executable is best-effort only. For example if we're writing to a pipe or
-        // something, it isn't going to work and that's OK.
-        let _ = crate::fs::make_executable(&self.file);
-
-        Ok(())
+        self.out.finish()
     }
 }
 
@@ -499,16 +387,20 @@ pub(crate) fn split_buffers_by_alignment<'out, 'data, P: Platform>(
     )
 }
 
-fn write_layout<P: Platform>(layout: &Layout<P>) -> Result {
+fn write_layout<P: Platform>(layout: &Layout<P>, file_system: &impl FileSystem) -> Result {
     let layout_path = linker_layout::layout_path(layout.args().output());
-    write_layout_to(layout, &layout_path)
+    write_layout_to(layout, &layout_path, file_system)
         .with_context(|| format!("Failed to write layout to `{}`", layout_path.display()))
 }
 
-fn write_layout_to<'data, P: Platform>(layout: &Layout<'data, P>, path: &Path) -> Result {
-    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-    layout.layout_data().write(&mut file)?;
-    Ok(())
+fn write_layout_to<'data, P: Platform>(
+    layout: &Layout<'data, P>,
+    path: &Path,
+    file_system: &impl FileSystem,
+) -> Result {
+    let mut bytes = Vec::new();
+    layout.layout_data().write(&mut bytes)?;
+    file_system.write_auxiliary(path, &bytes)
 }
 
 /// Copies section bytes from `data` into `out`.

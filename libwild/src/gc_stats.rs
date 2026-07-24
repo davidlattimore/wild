@@ -84,7 +84,7 @@ fn write_gc_stats<'data, P: Platform>(
             let file_record = files
                 .entry(&obj.input.file.filename)
                 .or_insert_with(|| InputFile {
-                    path: obj.input.file.filename.clone(),
+                    path: obj.input.file.filename.to_owned(),
                     kept: 0,
                     discarded: 0,
                     discarded_names: Default::default(),

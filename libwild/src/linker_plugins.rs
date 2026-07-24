@@ -9,6 +9,7 @@
 //! up having to make quite a bit of use of thread locals in order to get state to where it needs to
 //! be.
 
+use crate::FileSystem;
 use crate::args::Input;
 use crate::args::Modifiers;
 use crate::args::elf::ElfArgs;
@@ -196,11 +197,11 @@ impl<'data> LinkerPlugin<'data> {
 
     /// Notify the plugin that all symbols have now been read. This will cause it to build
     /// additional object files that it will then pass to us for processing.
-    pub(crate) fn all_symbols_read<P: Platform>(
+    pub(crate) fn all_symbols_read<P: Platform, F: FileSystem>(
         &mut self,
         symbol_db: &mut SymbolDb<'data, P>,
         resolver: &mut Resolver<'data, P>,
-        file_loader: &mut FileLoader<'data>,
+        file_loader: &mut FileLoader<'data, F>,
         per_symbol_flags: &mut PerSymbolFlags,
         output_sections: &mut OutputSections<'data, P>,
         layout_rules_builder: &mut LayoutRulesBuilder<'data>,

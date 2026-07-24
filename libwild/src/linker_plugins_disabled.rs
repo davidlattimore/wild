@@ -6,6 +6,7 @@
 use crate::args::elf::ElfArgs;
 use crate::elf::Elf;
 use crate::error::Result;
+use crate::fs::FileSystem;
 use crate::input_data::FileLoader;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSections;
@@ -50,11 +51,11 @@ impl<'data> LinkerPlugin<'data> {
         false
     }
 
-    pub(crate) fn all_symbols_read(
+    pub(crate) fn all_symbols_read<F: FileSystem>(
         &mut self,
         _symbol_db: &mut SymbolDb<'data, Elf>,
         _resolver: &mut Resolver<'data, Elf>,
-        _file_loader: &mut FileLoader<'data>,
+        _file_loader: &mut FileLoader<'data, F>,
         _per_symbol_flags: &mut PerSymbolFlags,
         _output_sections: &mut OutputSections<'data, Elf>,
         _layout_rules_builder: &mut LayoutRulesBuilder<'data>,

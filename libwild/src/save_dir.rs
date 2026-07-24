@@ -1,5 +1,6 @@
 //! Support for saving inputs for later use.
 
+use crate::FileSystem;
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
 use crate::args::Modifiers;
@@ -8,9 +9,9 @@ use crate::env;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_kind::FileKind;
-use crate::input_data::FileData;
 use crate::input_data::FileLoader;
 use crate::linker_script::LinkerScript;
+use crate::make_executable;
 use crate::platform;
 use foldhash::HashSet;
 use std::borrow::Cow;
@@ -52,7 +53,7 @@ impl SaveDir {
 
     pub(crate) fn finish(
         &self,
-        input_data: &FileLoader,
+        input_data: &FileLoader<'_, impl FileSystem>,
         parsed_args: &impl platform::Args,
     ) -> Result {
         if let Some(state) = self.0.as_ref() {
@@ -189,7 +190,7 @@ impl SaveDirState {
         }
 
         drop(out);
-        crate::fs::make_executable(&file)?;
+        make_executable(&file)?;
         Ok(())
     }
 
@@ -374,7 +375,7 @@ impl SaveDirState {
                 }
             }
         } else {
-            if let Ok(data) = FileData::new(source_path, false) {
+            if let Ok(data) = std::fs::read(source_path) {
                 match FileKind::identify_bytes(&data) {
                     Ok(FileKind::ThinArchive) => {
                         self.handle_thin_archive(source_path, parsed_args)?;

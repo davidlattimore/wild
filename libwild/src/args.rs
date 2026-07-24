@@ -17,6 +17,8 @@ use crate::ensure;
 use crate::env;
 use crate::error::Context;
 use crate::error::Result;
+use crate::fs::FileReplacementMode;
+use crate::fs::FileWriteMode;
 use crate::input_data::FileId;
 use crate::save_dir::SaveDir;
 use hashbrown::HashMap;
@@ -37,7 +39,6 @@ pub mod macho;
 pub mod wasm;
 
 use crate::error::Warning;
-use crate::file_writer::FileWriteMode;
 use crate::platform;
 use crate::platform::Args as _;
 use crate::timing_phase;
@@ -476,22 +477,6 @@ pub(crate) enum Experiment {
     GroupsPerThread = 2,
 
     MinGroups = 3,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FileReplacementMode {
-    /// The existing output file, if any, will be unlinked (deleted) and a new file with the same
-    /// name put in its place. Any hard links to the file will not be affected.
-    UnlinkAndReplace,
-
-    /// The existing output file, if any, will be edited in-place. Any hard links to the file will
-    /// update accordingly. If the file is locked due to currently being executed, then our write
-    /// will fail.
-    UpdateInPlace,
-
-    /// As for `UpdateInPlace`, but if we get an error opening the file for write, fallback to
-    /// unlinking and replacing.
-    UpdateInPlaceWithFallback,
 }
 
 /// The thread pool used by the linker. If a jobserver is being used, dropping this instance will

@@ -1,5 +1,7 @@
 //! Code for figuring out what input files we need to read then mapping them into memory.
 
+use crate::FileSystem;
+use crate::InputFileData;
 use crate::archive;
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
@@ -27,15 +29,11 @@ use colosseum::sync::Arena;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
-#[cfg(not(target_family = "wasm"))]
-use memmap2::Mmap;
 use rayon::Scope;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use std::fmt::Display;
-use std::fs::File;
-use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,14 +41,17 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-pub(crate) struct FileLoader<'data> {
+pub(crate) struct FileLoader<'data, F: FileSystem> {
     /// The files that we've loaded so far.
-    pub(crate) loaded_files: Vec<&'data InputFile>,
+    pub(crate) loaded_files: Vec<&'data InputFile<F::Input>>,
 
     /// Whether we have at least one input file that is a dynamic object.
     pub(crate) has_dynamic: bool,
 
-    inputs_arena: &'data Arena<InputFile>,
+    inputs_arena: &'data Arena<InputFile<F::Input>>,
+
+    // File system used for reading and writting of the data.
+    file_system: Arc<F>,
 }
 
 #[derive(Default)]
@@ -92,7 +93,7 @@ pub(crate) struct FileId(u32);
 pub(crate) const PRELUDE_FILE_ID: FileId = FileId::new(0, 0);
 
 #[derive(Debug)]
-pub(crate) struct InputFile {
+pub(crate) struct InputFile<D: InputFileData> {
     pub(crate) filename: PathBuf,
 
     /// The filename prior to path search. If this is absolute, then `filename` will be the same.
@@ -100,37 +101,39 @@ pub(crate) struct InputFile {
 
     pub(crate) modifiers: Modifiers,
 
-    data: Option<FileData>,
+    data: Option<D>,
 }
 
-#[derive(Debug)]
-pub(crate) struct FileData {
-    bytes: FileBytes,
-
-    /// The modification timestamp of the input file just before we opened it. We expect our input
-    /// files not to change while we're running.
-    modification_time: std::time::SystemTime,
+// A type used for Type-erasure reasons.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InputFileRef<'data> {
+    pub(crate) filename: &'data Path,
+    original_filename: &'data Path,
+    pub(crate) modifiers: Modifiers,
 }
 
-#[cfg(not(target_family = "wasm"))]
-#[derive(Debug)]
-struct FileBytes(Mmap);
-
-#[cfg(target_family = "wasm")]
-struct FileBytes(Vec<u8>);
-
-#[cfg(target_family = "wasm")]
-impl std::fmt::Debug for FileBytes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("FileBytes").finish_non_exhaustive()
+impl InputFileRef<'_> {
+    #[cfg(test)]
+    pub(crate) fn for_testing() -> Self {
+        Self {
+            filename: Path::new(""),
+            original_filename: Path::new(""),
+            modifiers: Modifiers::default(),
+        }
     }
 }
 
-impl Deref for FileBytes {
-    type Target = [u8];
+impl<I: InputFileData> InputFile<I> {
+    fn data(&self) -> &[u8] {
+        self.data.as_ref().map_or(&[], InputFileData::bytes)
+    }
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    fn as_ref(&self) -> InputFileRef<'_> {
+        InputFileRef {
+            filename: &self.filename,
+            original_filename: &self.original_filename,
+            modifiers: self.modifiers,
+        }
     }
 }
 
@@ -138,25 +141,9 @@ impl Deref for FileBytes {
 /// archive.
 #[derive(Clone, Copy)]
 pub(crate) struct InputRef<'data> {
-    pub(crate) file: &'data InputFile,
+    pub(crate) file: InputFileRef<'data>,
     pub(crate) data: &'data [u8],
     pub(crate) entry: Option<archive::EntryMeta<'data>>,
-}
-
-impl InputFile {
-    pub(crate) fn data(&self) -> &[u8] {
-        self.data.as_deref().unwrap_or_default()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_testing() -> Self {
-        Self {
-            filename: std::path::PathBuf::new(),
-            original_filename: std::path::PathBuf::new(),
-            modifiers: crate::args::Modifiers::default(),
-            data: None,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -172,12 +159,12 @@ struct InputPath {
 #[derive(Debug)]
 pub(crate) struct InputLinkerScript<'data> {
     pub(crate) script: LinkerScript<'data>,
-    pub(crate) input_file: &'data InputFile,
+    pub(crate) input_file: InputFileRef<'data>,
     /// Raw bytes of the script file. Used to compute line numbers from `AssertCommand::remainder`.
     pub(crate) script_bytes: &'data [u8],
 }
 
-struct TemporaryState<'data, P: Platform> {
+struct TemporaryState<'data, P: Platform, F: FileSystem> {
     args: &'data P::Args,
 
     /// Mapping from paths to the index in `files` at which we'll place the result.
@@ -185,22 +172,24 @@ struct TemporaryState<'data, P: Platform> {
 
     next_file_load_index: AtomicUsize,
 
-    files: SegQueue<LoadedFile<'data, P>>,
+    files: SegQueue<LoadedFile<'data, P, F::Input>>,
 
-    inputs_arena: &'data Arena<InputFile>,
+    inputs_arena: &'data Arena<InputFile<F::Input>>,
+
+    file_system: Arc<F>,
 }
 
-struct LoadedFile<'data, P: Platform> {
+struct LoadedFile<'data, P: Platform, I: InputFileData> {
     index: FileLoadIndex,
-    state: LoadedFileState<'data, P>,
+    state: LoadedFileState<'data, P, I>,
 }
 
-enum LoadedFileState<'data, P: Platform> {
-    Loaded(&'data InputFile, InputRecord<'data, P>),
-    Archive(&'data InputFile, Vec<InputRecord<'data, P>>),
-    ThinArchive(Vec<&'data InputFile>, Vec<InputRecord<'data, P>>),
-    LinkerScript(LoadedLinkerScriptState<'data>),
-    StubLibrary(&'data InputFile, DefinedStubLibrary<'data>),
+enum LoadedFileState<'data, P: Platform, I: InputFileData> {
+    Loaded(&'data InputFile<I>, InputRecord<'data, P>),
+    Archive(&'data InputFile<I>, Vec<InputRecord<'data, P>>),
+    ThinArchive(Vec<&'data InputFile<I>>, Vec<InputRecord<'data, P>>),
+    LinkerScript(&'data InputFile<I>, LoadedLinkerScriptState<'data>),
+    StubLibrary(&'data InputFile<I>, DefinedStubLibrary<'data>),
     Error(Error),
 }
 
@@ -211,7 +200,7 @@ enum InputRecord<'data, P: Platform> {
 
 struct UnclaimedLtoInput<'data> {
     input_ref: InputRef<'data>,
-    file: Arc<std::fs::File>,
+    file: Option<Arc<std::fs::File>>,
     kind: FileKind,
 }
 
@@ -254,14 +243,17 @@ pub(crate) struct AuxiliaryFiles<'data> {
 }
 
 impl<'data> AuxiliaryFiles<'data> {
-    pub(crate) fn new(
+    pub(crate) fn new<F: FileSystem>(
         args: &'data impl platform::Args,
-        inputs_arena: &'data Arena<InputFile>,
+        inputs_arena: &'data Arena<InputFile<F::Input>>,
+        file_system: &F,
     ) -> Result<Self> {
         let resolve_script_path = |path: &Path| -> PathBuf {
-            if path.exists() {
+            if file_system.file_type(path).is_ok() {
                 path.to_owned()
-            } else if let Some(found) = search_for_file(args.lib_search_path(), None, path) {
+            } else if let Some(found) =
+                search_for_file(file_system, args.lib_search_path(), None, path)
+            {
                 found
             } else {
                 path.to_owned()
@@ -271,21 +263,25 @@ impl<'data> AuxiliaryFiles<'data> {
         Ok(Self {
             version_script_data: args
                 .version_script_path()
-                .map(|path| read_script_data(&resolve_script_path(path), inputs_arena))
+                .map(|path| read_script_data(&resolve_script_path(path), inputs_arena, file_system))
                 .transpose()?,
             export_list_data: args
                 .export_list_path()
-                .map(|path| read_script_data(&resolve_script_path(path), inputs_arena))
+                .map(|path| read_script_data(&resolve_script_path(path), inputs_arena, file_system))
                 .transpose()?,
         })
     }
 }
 
-impl<'data> FileLoader<'data> {
-    pub(crate) fn new(inputs_arena: &'data Arena<InputFile>) -> Self {
+impl<'data, F: FileSystem> FileLoader<'data, F> {
+    pub(crate) fn new(
+        inputs_arena: &'data Arena<InputFile<F::Input>>,
+        file_system: Arc<F>,
+    ) -> Self {
         Self {
             loaded_files: Vec::new(),
             inputs_arena,
+            file_system,
             has_dynamic: false,
         }
     }
@@ -302,7 +298,7 @@ impl<'data> FileLoader<'data> {
 
         let mut initial_work = Vec::with_capacity(inputs.len());
         for input in inputs {
-            let path = input.path(args)?;
+            let path = input.path(args, self.file_system.as_ref())?;
             path_to_load_index
                 .entry(path.absolute.clone())
                 .or_insert_with(|| {
@@ -325,6 +321,7 @@ impl<'data> FileLoader<'data> {
             next_file_load_index: AtomicUsize::new(initial_work.len()),
             files: SegQueue::new(),
             inputs_arena: self.inputs_arena,
+            file_system: Arc::clone(&self.file_system),
         };
 
         // Open files, mmap them and identify their type from separate threads.
@@ -360,22 +357,13 @@ impl<'data> FileLoader<'data> {
         timing_phase!("Verify inputs unchanged");
 
         self.loaded_files.par_iter().try_for_each(|file| {
-            let Some(file_data) = &file.data else {
+            let Some(data) = &file.data else {
                 return Ok(());
             };
-
-            let metadata = std::fs::metadata(&file.filename).with_context(|| {
-                format!("Failed to read metadata for `{}`", file.filename.display())
-            })?;
-
-            let new_modified = metadata.modified().with_context(|| {
-                format!(
-                    "Failed to get modification time for `{}`",
-                    file.filename.display()
-                )
-            })?;
-
-            if file_data.modification_time != new_modified {
+            if !data
+                .verify_unchanged()
+                .with_context(|| format!("Failed to verify input `{}`", file.filename.display()))?
+            {
                 bail!(
                     "The file `{}` was changed while we were running",
                     file.filename.display()
@@ -394,7 +382,7 @@ impl<'data> FileLoader<'data> {
     /// later.
     fn extract_all<P: Platform>(
         &mut self,
-        files: &mut [Option<LoadedFileState<'data, P>>],
+        files: &mut [Option<LoadedFileState<'data, P, F::Input>>],
         plugin: &mut Option<LinkerPlugin<'data>>,
     ) -> Result<LoadedInputs<'data, P>> {
         let mut loaded = LoadedInputs {
@@ -414,7 +402,7 @@ impl<'data> FileLoader<'data> {
     fn extract_file<P: Platform>(
         &mut self,
         index: FileLoadIndex,
-        files: &mut [Option<LoadedFileState<'data, P>>],
+        files: &mut [Option<LoadedFileState<'data, P, F::Input>>],
         loaded: &mut LoadedInputs<'data, P>,
         plugin: &mut Option<LinkerPlugin<'data>>,
     ) -> Result {
@@ -435,9 +423,8 @@ impl<'data> FileLoader<'data> {
                 loaded.add_records(parsed_parts, plugin);
                 self.loaded_files.append(&mut input_files);
             }
-            Some(LoadedFileState::LinkerScript(loaded_linker_script_state)) => {
-                self.loaded_files
-                    .push(loaded_linker_script_state.script.input_file);
+            Some(LoadedFileState::LinkerScript(input_file, loaded_linker_script_state)) => {
+                self.loaded_files.push(input_file);
 
                 loaded
                     .linker_scripts
@@ -451,7 +438,7 @@ impl<'data> FileLoader<'data> {
                 self.has_dynamic = true;
                 loaded.stub_libraries.push(LoadedStubLibrary {
                     input: InputRef {
-                        file: input_file,
+                        file: input_file.as_ref(),
                         data: input_file.data(),
                         entry: None,
                     },
@@ -469,14 +456,15 @@ impl<'data> FileLoader<'data> {
     }
 }
 
-fn process_linker_script<'data>(
-    input_file: &'data InputFile,
+fn process_linker_script<'data, I: InputFileData>(
+    input_file: &'data InputFile<I>,
     args: &impl platform::Args,
+    file_system: &impl FileSystem,
 ) -> Result<LoadedLinkerScript<'data>> {
     let bytes = input_file.data();
     let script = LinkerScript::parse(bytes, &input_file.filename)?;
 
-    let script_path = std::fs::canonicalize(&input_file.filename)?;
+    let script_path = file_system.canonicalize(&input_file.filename)?;
     let directory = script_path.parent().expect("expected an absolute path");
 
     let mut extra_inputs = Vec::new();
@@ -499,18 +487,19 @@ fn process_linker_script<'data>(
     Ok(LoadedLinkerScript {
         script: InputLinkerScript {
             script,
-            input_file,
+            input_file: input_file.as_ref(),
             script_bytes: bytes,
         },
         extra_inputs,
     })
 }
 
-fn process_archive<'data, P: Platform>(
+fn process_archive<'data, P: Platform, F: FileSystem>(
+    opened: &'data InputFile<F::Input>,
     input_ref: &InputRef<'data>,
-    file: &Arc<std::fs::File>,
-    state: &TemporaryState<'data, P>,
-) -> Result<LoadedFileState<'data, P>> {
+    file: Option<&Arc<std::fs::File>>,
+    state: &TemporaryState<'data, P, F>,
+) -> Result<LoadedFileState<'data, P, F::Input>> {
     let mut outputs = Vec::new();
 
     for entry in ArchiveIterator::from_archive_bytes(input_ref.data())? {
@@ -538,13 +527,13 @@ fn process_archive<'data, P: Platform>(
         }
     }
 
-    Ok(LoadedFileState::Archive(input_ref.file, outputs))
+    Ok(LoadedFileState::Archive(opened, outputs))
 }
 
-fn process_thin_archive<'data, P: Platform>(
-    input_file: &InputFile,
-    state: &TemporaryState<'data, P>,
-) -> Result<LoadedFileState<'data, P>> {
+fn process_thin_archive<'data, P: Platform, F: FileSystem>(
+    input_file: &'data InputFile<F::Input>,
+    state: &TemporaryState<'data, P, F>,
+) -> Result<LoadedFileState<'data, P, F::Input>> {
     let absolute_path = &input_file.filename;
     let parent_path = absolute_path.parent().unwrap();
     let mut files = Vec::new();
@@ -556,14 +545,15 @@ fn process_thin_archive<'data, P: Platform>(
                 let path = entry.ident.as_path();
                 let entry_path = parent_path.join(path);
 
-                let (file_data, file) =
-                    FileData::open(&entry_path, state.args.common().prepopulate_maps)
-                        .with_context(|| {
-                            format!(
-                                "Failed to open file referenced by thin archive `{}`",
-                                input_file.filename.display()
-                            )
-                        })?;
+                let (input, file) = state
+                    .file_system
+                    .open_input(&entry_path, state.args.common().prepopulate_maps)
+                    .with_context(|| {
+                        format!(
+                            "Failed to open file referenced by thin archive `{}`",
+                            input_file.filename.display()
+                        )
+                    })?;
 
                 let input_file = InputFile {
                     filename: entry_path.clone(),
@@ -572,13 +562,13 @@ fn process_thin_archive<'data, P: Platform>(
                         archive_semantics: true,
                         ..input_file.modifiers
                     },
-                    data: Some(file_data),
+                    data: Some(input),
                 };
 
                 let input_file = &*state.inputs_arena.alloc(input_file);
 
                 let input_ref = InputRef {
-                    file: input_file,
+                    file: input_file.as_ref(),
                     data: input_file.data(),
                     entry: None,
                 };
@@ -586,7 +576,7 @@ fn process_thin_archive<'data, P: Platform>(
                 let kind = FileKind::identify_bytes(input_ref.data())
                     .with_context(|| format!("Failed process input `{input_ref}`"))?;
 
-                parsed_files.push(state.process_input(input_ref, &Arc::new(file), kind)?);
+                parsed_files.push(state.process_input(input_ref, file.as_ref(), kind)?);
                 files.push(input_file);
             }
             ArchiveEntry::Regular(_) => {}
@@ -596,11 +586,12 @@ fn process_thin_archive<'data, P: Platform>(
     Ok(LoadedFileState::ThinArchive(files, parsed_files))
 }
 
-fn process_fat_macho_object<'data, P: Platform>(
+fn process_fat_macho_object<'data, P: Platform, F: FileSystem>(
+    file: &'data InputFile<F::Input>,
     input_ref: InputRef<'data>,
-    file: &Arc<std::fs::File>,
-    state: &TemporaryState<'data, P>,
-) -> Result<LoadedFileState<'data, P>> {
+    native_file: Option<&Arc<std::fs::File>>,
+    state: &TemporaryState<'data, P, F>,
+) -> Result<LoadedFileState<'data, P, F::Input>> {
     let data = select_fat_entry_for_cpu_type(input_ref.data(), object::macho::CPU_TYPE_ARM64)
         .with_context(|| format!("Failed to parse FAT object {input_ref}"))?;
 
@@ -613,16 +604,16 @@ fn process_fat_macho_object<'data, P: Platform>(
     };
 
     match kind {
-        FileKind::Archive => process_archive(&input_ref, file, state),
+        FileKind::Archive => process_archive(file, &input_ref, native_file, state),
         FileKind::MachOObject | FileKind::MachODylib => {
-            let parsed = state.process_input(input_ref, file, kind)?;
-            Ok(LoadedFileState::Loaded(input_ref.file, parsed))
+            let parsed = state.process_input(input_ref, native_file, kind)?;
+            Ok(LoadedFileState::Loaded(file, parsed))
         }
         _ => bail!("Unsupported file type {kind} found in FAT object"),
     }
 }
 
-impl<'data, P: Platform> TemporaryState<'data, P> {
+impl<'data, P: Platform, F: FileSystem> TemporaryState<'data, P, F> {
     fn process_and_record_open_file_request<'scope>(
         &'scope self,
         request: OpenFileRequest,
@@ -642,14 +633,16 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         &'scope self,
         request: OpenFileRequest,
         scope: &Scope<'scope>,
-    ) -> Result<LoadedFileState<'data, P>> {
+    ) -> Result<LoadedFileState<'data, P, F::Input>> {
         let absolute_path = &request.paths.absolute;
         verbose_timing_phase!(
             "Open file",
             path = absolute_path.to_string_lossy().to_string()
         );
 
-        let result = FileData::open(absolute_path.as_path(), self.args.common().prepopulate_maps);
+        let result = self
+            .file_system
+            .open_input(absolute_path.as_path(), self.args.common().prepopulate_maps);
         let (data, file) = match request.referenced_by.as_ref() {
             Some(referenced_by) => {
                 result.with_context(|| format!("Failed to process `{}`", referenced_by.display()))
@@ -665,20 +658,20 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         });
 
         let input_ref = InputRef {
-            file: input_file,
+            file: input_file.as_ref(),
             data: input_file.data(),
             entry: None,
         };
 
-        let data = input_ref.file.data.as_ref().unwrap();
-        let kind = FileKind::identify_bytes(&data.bytes)
+        let kind = FileKind::identify_bytes(input_ref.data())
             .with_context(|| format!("Failed to identify {input_ref}"))?;
 
         match kind {
-            FileKind::Archive => process_archive(&input_ref, &Arc::new(file), self),
+            FileKind::Archive => process_archive(input_file, &input_ref, file.as_ref(), self),
             FileKind::ThinArchive => process_thin_archive(input_file, self),
             FileKind::Text => {
-                let script = process_linker_script(input_file, self.args)?;
+                let script =
+                    process_linker_script(input_file, self.args, self.file_system.as_ref())?;
 
                 let file_indexes = script
                     .extra_inputs
@@ -687,15 +680,18 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
                         self.load_input(
                             &input,
                             scope,
-                            Some(script.script.input_file.filename.clone()),
+                            Some(script.script.input_file.filename.to_owned()),
                         )
                     })
                     .collect::<Result<Vec<FileLoadIndex>>>()?;
 
-                Ok(LoadedFileState::LinkerScript(LoadedLinkerScriptState {
-                    file_indexes,
-                    script: script.script,
-                }))
+                Ok(LoadedFileState::LinkerScript(
+                    input_file,
+                    LoadedLinkerScriptState {
+                        file_indexes,
+                        script: script.script,
+                    },
+                ))
             }
             FileKind::MachOStubLibrary => {
                 let defined_library = parse_defined_library(str::from_utf8(input_file.data())?)
@@ -704,9 +700,15 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
                     weak_symbols = defined_library.weak_symbols.len(), "loaded TBD library");
                 Ok(LoadedFileState::StubLibrary(input_file, defined_library))
             }
-            FileKind::FatMachOObject => process_fat_macho_object(input_ref, &Arc::new(file), self),
+            FileKind::FatMachOObject => {
+                process_fat_macho_object(input_file, input_ref, file.as_ref(), self)
+            }
             _ => {
-                let parsed = self.process_input(input_ref, &Arc::new(file), kind)?;
+                verbose_timing_phase!(
+                    "Process input",
+                    path = absolute_path.to_string_lossy().to_string()
+                );
+                let parsed = self.process_input(input_ref, file.as_ref(), kind)?;
                 Ok(LoadedFileState::Loaded(input_file, parsed))
             }
         }
@@ -720,7 +722,7 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         scope: &Scope<'scope>,
         referenced_by: Option<PathBuf>,
     ) -> Result<FileLoadIndex> {
-        let paths = input.path(self.args)?;
+        let paths = input.path(self.args, self.file_system.as_ref())?;
 
         let mut path_to_load_index = self.path_to_load_index.lock().unwrap();
 
@@ -754,7 +756,7 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
     fn process_input(
         &self,
         input_ref: InputRef<'data>,
-        file: &Arc<std::fs::File>,
+        file: Option<&Arc<std::fs::File>>,
         kind: FileKind,
     ) -> Result<InputRecord<'data, P>> {
         let data = input_ref.data();
@@ -770,7 +772,7 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         if kind.is_compiler_ir() {
             return Ok(InputRecord::LtoInput(Box::new(UnclaimedLtoInput {
                 input_ref,
-                file: Arc::clone(file),
+                file: file.cloned(),
                 kind,
             })));
         }
@@ -836,28 +838,32 @@ fn select_fat_entry_for_cpu_type_arch<A: object::read::macho::FatArch>(
     Ok(&data[offset..offset + size])
 }
 
-fn read_script_data<'data>(
+fn read_script_data<'data, F: FileSystem>(
     path: &Path,
-    inputs_arena: &'data Arena<InputFile>,
+    inputs_arena: &'data Arena<InputFile<F::Input>>,
+    file_system: &F,
 ) -> Result<ScriptData<'data>> {
-    let data = FileData::new(path, false).context("Failed to read script")?;
+    let (input, _) = file_system
+        .open_input(path, false)
+        .context("Failed to read script")?;
 
     let file = inputs_arena.alloc(InputFile {
         filename: path.to_owned(),
         original_filename: path.to_owned(),
         modifiers: Default::default(),
-        data: Some(data),
+        data: Some(input),
     });
 
     Ok(ScriptData { raw: file.data() })
 }
 
 impl Input {
-    fn path(&self, args: &impl platform::Args) -> Result<InputPath> {
+    fn path(&self, args: &impl platform::Args, file_system: &impl FileSystem) -> Result<InputPath> {
         match &self.spec {
             InputSpec::File(p) => {
                 if self.search_first.is_some()
                     && let Some(path) = search_for_file(
+                        file_system,
                         args.lib_search_path(),
                         self.search_first.as_ref(),
                         p.as_ref(),
@@ -877,6 +883,7 @@ impl Input {
                 if self.modifiers.allow_shared {
                     let filename = format!("lib{lib_name}.so");
                     if let Some(path) = search_for_file(
+                        file_system,
                         args.lib_search_path(),
                         self.search_first.as_ref(),
                         &filename,
@@ -889,6 +896,7 @@ impl Input {
                 }
                 let filename = format!("lib{lib_name}.a");
                 if let Some(path) = search_for_file(
+                    file_system,
                     args.lib_search_path(),
                     self.search_first.as_ref(),
                     &filename,
@@ -900,6 +908,7 @@ impl Input {
                 }
                 let filename = format!("lib{lib_name}.tbd");
                 if let Some(path) = search_for_file(
+                    file_system,
                     args.lib_search_path(),
                     self.search_first.as_ref(),
                     &filename,
@@ -913,6 +922,7 @@ impl Input {
             }
             InputSpec::Search(filename) => {
                 if let Some(path) = search_for_file(
+                    file_system,
                     args.lib_search_path(),
                     self.search_first.as_ref(),
                     filename.as_ref(),
@@ -928,75 +938,8 @@ impl Input {
     }
 }
 
-impl FileData {
-    pub(crate) fn new(path: &Path, prepopulate_maps: bool) -> Result<Self> {
-        Self::open(path, prepopulate_maps).map(|(file_data, _file)| file_data)
-    }
-
-    fn open(path: &Path, prepopulate_maps: bool) -> Result<(Self, std::fs::File)> {
-        let mut file = std::fs::File::open(path)
-            .with_context(|| format!("Failed to open input file `{}`", path.display()))?;
-
-        let modification_time = file
-            .metadata()
-            .and_then(|meta| meta.modified())
-            .with_context(|| {
-                format!("Failed to read file modification time `{}`", path.display())
-            })?;
-
-        Ok((
-            FileData {
-                bytes: FileBytes::read(&mut file, path, prepopulate_maps)?,
-                modification_time,
-            },
-            file,
-        ))
-    }
-}
-
-impl FileBytes {
-    #[cfg(not(target_family = "wasm"))]
-    fn read(file: &mut File, path: &Path, prepopulate_maps: bool) -> Result<Self> {
-        // Safety: Unfortunately, this is a bit of a compromise. Basically this is only safe if
-        // our users manage to avoid editing the input files while we've got them
-        // mapped. It'd be great if there were a way to protect against unsoundness
-        // when the input files were modified externally, but there isn't - at least
-        // on Linux. Not only could the bytes change without notice, but the mapped
-        // file could be truncated causing any access to result in a SIGBUS.
-        //
-        // For our use case, mmap just has too many advantages. There are likely large parts of
-        // our input files that we don't need to read, so reading all our input
-        // files up front isn't really an option. Reading just the parts we need
-        // might be an option, but would add substantial complexity. Also, using
-        // mmap means that if the system needs to reclaim memory, it can just
-        // release some of our pages.
-
-        let mut mmap_options = memmap2::MmapOptions::new();
-
-        // Prepopulating maps generally slows things down, so is off by default, however it's
-        // useful when profiling, since it means that you don't see false positive
-        // slowness in the parts of the code that first read a bit of memory.
-        if prepopulate_maps {
-            mmap_options.populate();
-        }
-
-        let bytes = unsafe { mmap_options.map(&*file) }
-            .with_context(|| format!("Failed to mmap input file `{}`", path.display()))?;
-
-        Ok(FileBytes(bytes))
-    }
-
-    #[cfg(target_family = "wasm")]
-    fn read(file: &mut File, path: &Path, _prepopulate_maps: bool) -> Result<Self> {
-        use std::io::Read;
-        let mut bytes = vec![];
-        file.read_to_end(&mut bytes)
-            .with_context(|| format!("Failed to read file `{}`", path.display()))?;
-        Ok(FileBytes(bytes))
-    }
-}
-
 fn search_for_file(
+    file_system: &impl FileSystem,
     lib_search_path: &[Box<Path>],
     search_first: Option<&PathBuf>,
     filename: impl AsRef<Path>,
@@ -1004,25 +947,17 @@ fn search_for_file(
     let filename = filename.as_ref();
     if let Some(search_first) = search_first {
         let path = search_first.join(filename);
-        if path.exists() {
+        if file_system.file_type(&path).is_ok() {
             return Some(path);
         }
     }
     for dir in lib_search_path {
         let path = dir.join(filename);
-        if path.exists() {
+        if file_system.file_type(&path).is_ok() {
             return Some(path);
         }
     }
     None
-}
-
-impl Deref for FileData {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &self.bytes
-    }
 }
 
 const FILE_INDEX_BITS: u32 = 8;
@@ -1117,7 +1052,12 @@ impl<'data, P: Platform> LoadedInputs<'data, P> {
                             "Input file {input_ref} contains {kind}, but linker plugin was not supplied"
                         )
                     })
-                    .and_then(|plugin| plugin.process_input(input_ref, &file, kind));
+                    .and_then(|plugin| {
+                        let file = file
+                            .as_deref()
+                            .context("Linker plugins require a native filesystem input")?;
+                        plugin.process_input(input_ref, file, kind)
+                    });
                 match plugin_result {
                     Ok(Some(info)) => self.lto_objects.push(Ok(info)),
                     Ok(None) => {} // Skipped, e.g. unclaimed IR member inside an archive

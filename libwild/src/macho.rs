@@ -1,3 +1,4 @@
+use crate::FileSystem;
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
@@ -958,8 +959,8 @@ impl platform::Platform for MachO {
 
     const HAS_NULL_SYMBOL_ENTRY: bool = true;
 
-    fn link_for_arch<'data>(
-        linker: &'data crate::Linker,
+    fn link_for_arch<'data, F: FileSystem>(
+        linker: &'data crate::Linker<F>,
         args: &'data Self::Args,
     ) -> crate::error::Result<crate::LinkerOutput<'data>> {
         if !cfg!(feature = "macho") {
@@ -971,8 +972,8 @@ impl platform::Platform for MachO {
         linker.link_for_arch::<MachO, crate::macho_aarch64::MachOAArch64>(args)
     }
 
-    fn write_output_file<'data, A: platform::Arch<Platform = Self>>(
-        output: &crate::file_writer::Output,
+    fn write_output_file<'data, A: platform::Arch<Platform = Self>, F: FileSystem>(
+        output: &crate::file_writer::Output<F>,
         layout: &crate::layout::Layout<'data, Self>,
     ) -> crate::error::Result {
         output.write(layout, macho_writer::write::<A>)
