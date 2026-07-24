@@ -181,6 +181,8 @@
 //! expanded to the wasi-libc sysroot. The sysroot is taken from the `WASI_SYSROOT` environment
 //! variable if set, otherwise `/usr` when `/usr/lib/wasm32-wasi/libc.a` exists.
 //!
+//! RequiresZstdCompression:{bool} Requires the ZSTD compression being enabled in the Wild linker.
+//!
 //! AutoAddObjects:{bool} Whether to automatically add input objects for the test to the command
 //! line. Defaults to true.
 //!
@@ -1128,6 +1130,7 @@ struct Config {
     requires_linker_flags: Vec<String>,
     requires_nightly_rustc: bool,
     requires_wasi_libc: bool,
+    requires_zstd_compression: bool,
     auto_add_objects: bool,
     remove_sections: Vec<String>,
     rustc_channel: RustcChannel,
@@ -1820,6 +1823,7 @@ impl Config {
             requires_nightly_rustc: false,
             requires_linker_plugin: false,
             requires_wasi_libc: false,
+            requires_zstd_compression: false,
             auto_add_objects: true,
             rustc_channel: RustcChannel::Default,
             requires_rust_musl: false,
@@ -2318,6 +2322,9 @@ fn process_directive(
         }
         "RequiresWasiLibc" => {
             config.requires_wasi_libc = parse_bool(arg, "RequiresWasiLibc")?;
+        }
+        "RequiresZstdCompression" => {
+            config.requires_zstd_compression = arg.to_lowercase().parse()?;
         }
         "TestUpdateInPlace" => {
             config.test_update_in_place = arg.to_lowercase().parse()?;
@@ -6454,6 +6461,12 @@ fn run_integration_test(
         }
         return Ok(libtest_mimic::Completion::ignored_with(
             "wasi-libc not found (install wasi-libc or set WASI_SYSROOT)",
+        ));
+    }
+
+    if config.requires_zstd_compression && !cfg!(feature = "zstd") {
+        return Ok(libtest_mimic::Completion::ignored_with(
+            "The `zstd` feature is disabled",
         ));
     }
 

@@ -11,6 +11,7 @@
 
 //#Config:zstd:default
 //#RequiresLinkerFlags:--compress-debug-sections=zstd
+//#RequiresZstdCompression:true
 //#LinkArgs:--compress-debug-sections=zstd
 
 //#Config:none:default
