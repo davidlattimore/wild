@@ -10,6 +10,7 @@
 
 //#Config:zstd:default
 //#RequiresLinkerFlags:--compress-debug-sections=zstd
+//#RequiresZstdCompression:true
 //#CompArgs:-g -Clink-arg=-Wl,--compress-debug-sections=zstd
 
 #![debugger_visualizer(gdb_script_file = "compressed-debug-gdb-scripts.gdb")]

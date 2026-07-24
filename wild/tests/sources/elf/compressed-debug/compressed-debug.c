@@ -2,13 +2,14 @@
 //#CompArgs:-g
 //#Object:runtime.c
 //#DiffIgnore:section.debug_*
-//#ExpectSym:_start line=54
+//#ExpectSym:_start line=55
 
 //#Config:zlib:default
 //#LinkArgs:--compress-debug-sections=zlib
 
 //#Config:zstd:default
 //#RequiresLinkerFlags:--compress-debug-sections=zstd
+//#RequiresZstdCompression:true
 //#LinkArgs:--compress-debug-sections=zstd
 
 //#Config:none:default
