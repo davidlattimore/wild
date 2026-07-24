@@ -477,7 +477,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
         let data = section
-            .data(LE, self.data)
+            .data(LE, self.data, section.offset(LE).into())
             .map_err(|_e| error!("cannot get section data"))?;
         copy_section_data(data, out);
 

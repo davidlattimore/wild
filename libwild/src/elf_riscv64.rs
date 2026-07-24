@@ -56,7 +56,7 @@ impl crate::platform::Arch for ElfRiscV64 {
     }
 
     #[inline(always)]
-    fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
+    fn relocation_from_raw(r_type: object::elf::RelocationType) -> Result<RelocationKindInfo> {
         linker_utils::riscv64::relocation_type_from_raw(r_type).ok_or_else(|| {
             error!(
                 "Unsupported relocation type {}",
@@ -65,15 +65,17 @@ impl crate::platform::Arch for ElfRiscV64 {
         })
     }
 
-    fn is_disallowed_for_interposable_symbols(r_type: u32) -> bool {
+    fn is_disallowed_for_interposable_symbols(r_type: object::elf::RelocationType) -> bool {
         matches!(r_type, object::elf::R_RISCV_32)
     }
 
-    fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
+    fn get_dynamic_relocation_type(
+        relocation: DynamicRelocationKind,
+    ) -> object::elf::RelocationType {
         relocation.riscv64_r_type()
     }
 
-    fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
+    fn rel_type_to_string(r_type: object::elf::RelocationType) -> std::borrow::Cow<'static, str> {
         riscv64_rel_type_to_string(r_type)
     }
 
@@ -146,7 +148,7 @@ impl crate::platform::Arch for ElfRiscV64 {
         Ok(or_eflags)
     }
 
-    fn high_part_relocations() -> &'static [u32] {
+    fn high_part_relocations() -> &'static [object::elf::RelocationType] {
         &[
             object::elf::R_RISCV_HI20,
             object::elf::R_RISCV_PCREL_HI20,
@@ -183,7 +185,7 @@ impl crate::platform::Arch for ElfRiscV64 {
 
     #[inline(always)]
     fn new_relaxation(
-        relocation_kind: u32,
+        relocation_kind: object::elf::RelocationType,
         section_bytes: &[u8],
         offset_in_section: u64,
         flags: crate::value_flags::ValueFlags,

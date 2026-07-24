@@ -21,7 +21,7 @@ impl crate::platform::Arch for ElfPpc64 {
     }
 
     #[inline(always)]
-    fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
+    fn relocation_from_raw(r_type: object::elf::RelocationType) -> Result<RelocationKindInfo> {
         linker_utils::ppc64::relocation_type_from_raw(r_type).ok_or_else(|| {
             error!(
                 "Unsupported relocation type {}",
@@ -30,15 +30,17 @@ impl crate::platform::Arch for ElfPpc64 {
         })
     }
 
-    fn is_disallowed_for_interposable_symbols(r_type: u32) -> bool {
+    fn is_disallowed_for_interposable_symbols(r_type: object::elf::RelocationType) -> bool {
         matches!(r_type, object::elf::R_PPC64_ADDR32)
     }
 
-    fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
+    fn get_dynamic_relocation_type(
+        relocation: DynamicRelocationKind,
+    ) -> object::elf::RelocationType {
         relocation.ppc64_r_type()
     }
 
-    fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
+    fn rel_type_to_string(r_type: object::elf::RelocationType) -> std::borrow::Cow<'static, str> {
         ppc64_rel_type_to_string(r_type)
     }
 
@@ -70,7 +72,7 @@ impl crate::platform::Arch for ElfPpc64 {
         Ok(eflags.fold(object::elf::FileFlags(0), |merged, flags| merged | flags))
     }
 
-    fn high_part_relocations() -> &'static [u32] {
+    fn high_part_relocations() -> &'static [object::elf::RelocationType] {
         &[]
     }
 
@@ -85,7 +87,7 @@ impl crate::platform::Arch for ElfPpc64 {
     #[allow(unused_variables)]
     #[inline(always)]
     fn new_relaxation(
-        relocation_kind: u32,
+        relocation_kind: object::elf::RelocationType,
         section_bytes: &[u8],
         offset_in_section: u64,
         flags: crate::value_flags::ValueFlags,

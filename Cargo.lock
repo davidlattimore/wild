@@ -863,7 +863,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "nix",
- "object 0.39.1",
+ "object 0.40.0",
  "perf-event",
  "perfetto-recorder",
  "rayon",
@@ -905,7 +905,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "object 0.39.1",
+ "object 0.40.0",
  "symbolic-demangle",
  "tabled",
  "tempfile",
@@ -939,7 +939,7 @@ version = "0.9.0"
 dependencies = [
  "anyhow",
  "leb128",
- "object 0.39.1",
+ "object 0.40.0",
  "paste",
 ]
 
@@ -1229,8 +1229,9 @@ dependencies = [
 
 [[package]]
 name = "object"
-version = "0.39.1"
-source = "git+https://github.com/gimli-rs/object?rev=a0bfa322#a0bfa322b6b01bcd4dc8c24eacaac1e8fad80d1d"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
 dependencies = [
  "crc32fast",
  "flate2",
@@ -1554,9 +1555,9 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "ruzstd"
-version = "0.8.2"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5ff0cc5e135c8870a775d3320910cd9b564ec036b4dc0b8741629020be63f01"
+checksum = "a252f5e20f038fe7b4ea53e073e65398d652c864cc162fc77c56c2f13717b888"
 dependencies = [
  "twox-hash",
 ]
@@ -2170,7 +2171,7 @@ dependencies = [
  "linker-diff",
  "linker-layout",
  "mimalloc",
- "object 0.39.1",
+ "object 0.40.0",
  "os_info",
  "rand",
  "regex",

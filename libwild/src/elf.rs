@@ -412,7 +412,7 @@ impl Relocation for Rela {
         object::read::elf::Rela::symbol(self, LittleEndian, false)
     }
 
-    fn raw_type(&self) -> u32 {
+    fn raw_type(&self) -> object::elf::RelocationType {
         object::read::elf::Rela::r_type(self, LittleEndian, false)
     }
 
@@ -433,7 +433,7 @@ impl Relocation for Crel {
         object::read::elf::Crel::symbol(self)
     }
 
-    fn raw_type(&self) -> u32 {
+    fn raw_type(&self) -> object::elf::RelocationType {
         self.r_type
     }
 
@@ -593,7 +593,7 @@ impl platform::Platform for Elf {
     type RelocationSections = RelocationSections;
     type DynamicEntry = DynamicEntry;
     type DynamicSymbolDefinitionExt = DynamicSymbolDefinitionExt;
-    type RelocationInfo = u32;
+    type RelocationInfo = object::elf::RelocationType;
     type FinaliseSizesExt<'data> = LayoutExt;
     type LayoutExt<'data> = LayoutExt;
     type SymbolVersionIndex = Versym;
@@ -998,7 +998,7 @@ impl platform::Platform for Elf {
                 .version_script
                 .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)?
         {
-            version = object::elf::VersymIndex::new(v, !is_default);
+            version = v.versym(!is_default);
         }
         Ok(layout::DynamicSymbolDefinition {
             symbol_id,
@@ -5674,7 +5674,7 @@ struct ClassifiedSymbolRelocation {
     flags: ValueFlags,
     flags_to_add: ValueFlags,
     rel_offset: u64,
-    r_type: u32,
+    r_type: object::elf::RelocationType,
     rel_kind: linker_utils::elf::RelocationKind,
     next_modifier: RelocationModifier,
     section_is_writable: bool,

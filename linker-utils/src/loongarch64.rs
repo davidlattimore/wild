@@ -45,7 +45,9 @@ impl RelaxationKind {
 }
 
 #[must_use]
-pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
+pub const fn relocation_type_from_raw(
+    r_type: object::elf::RelocationType,
+) -> Option<RelocationKindInfo> {
     // The relocation listing following the order defined in the standard:
     // https://github.com/loongson/la-abi-specs/blob/release/laelf.adoc#relocation-types
     let (kind, size, mask, range, alignment, bias) = match r_type {

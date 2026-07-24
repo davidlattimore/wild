@@ -147,7 +147,7 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
 }
 
 pub(crate) trait RType: Copy + Debug + Display + Eq + PartialEq {
-    fn from_raw(raw: u32) -> Self;
+    fn from_raw(raw: object::elf::RelocationType) -> Self;
 
     fn from_dynamic_relocation_kind(kind: DynamicRelocationKind) -> Self;
 

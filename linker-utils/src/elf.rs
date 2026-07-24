@@ -122,7 +122,7 @@ elf_constant_newtype!(
 elf_constant_newtype!(SymbolType, object::elf::SymbolType, stt, STT, NOTYPE, TLS);
 
 #[must_use]
-pub fn x86_64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
+pub fn x86_64_rel_type_to_string(r_type: object::elf::RelocationType) -> Cow<'static, str> {
     if let Some(name) = object::elf::NAMES_R_X86_64.name(r_type) {
         Cow::Borrowed(name)
     } else {
@@ -131,7 +131,7 @@ pub fn x86_64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
 }
 
 #[must_use]
-pub fn aarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
+pub fn aarch64_rel_type_to_string(r_type: object::elf::RelocationType) -> Cow<'static, str> {
     if let Some(name) = object::elf::NAMES_R_AARCH64.name(r_type) {
         Cow::Borrowed(name)
     } else {
@@ -140,7 +140,7 @@ pub fn aarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
 }
 
 #[must_use]
-pub fn riscv64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
+pub fn riscv64_rel_type_to_string(r_type: object::elf::RelocationType) -> Cow<'static, str> {
     if let Some(name) = object::elf::NAMES_R_RISCV.name(r_type) {
         Cow::Borrowed(name)
     } else {
@@ -149,7 +149,7 @@ pub fn riscv64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
 }
 
 #[must_use]
-pub fn loongarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
+pub fn loongarch64_rel_type_to_string(r_type: object::elf::RelocationType) -> Cow<'static, str> {
     if let Some(name) = object::elf::NAMES_R_LARCH.name(r_type) {
         Cow::Borrowed(name)
     } else {
@@ -158,7 +158,7 @@ pub fn loongarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
 }
 
 #[must_use]
-pub fn ppc64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
+pub fn ppc64_rel_type_to_string(r_type: object::elf::RelocationType) -> Cow<'static, str> {
     if let Some(name) = object::elf::NAMES_R_PPC64.name(r_type) {
         Cow::Borrowed(name)
     } else {
@@ -441,7 +441,7 @@ pub enum RelocationKind {
     /// R_RISCV_SET_ULEB128 and R_RISCV_SUB_ULEB128 relocation pair and fill the space with a
     /// single ULEB128-encoded value. This is achieved by prepending the redundant 0x80 byte as
     /// necessary. The linker must not alter the length of the ULEB128-encoded value.
-    PairSubtractionULEB128(u32),
+    PairSubtractionULEB128(object::elf::RelocationType),
 
     /// The address of the symbol, relative to the place of the relocation.
     Relative,
@@ -587,7 +587,7 @@ pub enum DynamicRelocationKind {
 
 impl DynamicRelocationKind {
     #[must_use]
-    pub fn from_x86_64_r_type(r_type: u32) -> Option<Self> {
+    pub fn from_x86_64_r_type(r_type: object::elf::RelocationType) -> Option<Self> {
         let kind = match r_type {
             object::elf::R_X86_64_COPY => DynamicRelocationKind::Copy,
             object::elf::R_X86_64_IRELATIVE => DynamicRelocationKind::Irelative,
@@ -606,7 +606,7 @@ impl DynamicRelocationKind {
     }
 
     #[must_use]
-    pub fn x86_64_r_type(self) -> u32 {
+    pub fn x86_64_r_type(self) -> object::elf::RelocationType {
         match self {
             DynamicRelocationKind::Copy => object::elf::R_X86_64_COPY,
             DynamicRelocationKind::Irelative => object::elf::R_X86_64_IRELATIVE,
@@ -622,7 +622,7 @@ impl DynamicRelocationKind {
     }
 
     #[must_use]
-    pub fn from_aarch64_r_type(r_type: u32) -> Option<Self> {
+    pub fn from_aarch64_r_type(r_type: object::elf::RelocationType) -> Option<Self> {
         let kind = match r_type {
             object::elf::R_AARCH64_COPY => DynamicRelocationKind::Copy,
             object::elf::R_AARCH64_IRELATIVE => DynamicRelocationKind::Irelative,
@@ -641,7 +641,7 @@ impl DynamicRelocationKind {
     }
 
     #[must_use]
-    pub fn aarch64_r_type(&self) -> u32 {
+    pub fn aarch64_r_type(&self) -> object::elf::RelocationType {
         match self {
             DynamicRelocationKind::Copy => object::elf::R_AARCH64_COPY,
             DynamicRelocationKind::Irelative => object::elf::R_AARCH64_IRELATIVE,
@@ -657,7 +657,7 @@ impl DynamicRelocationKind {
     }
 
     #[must_use]
-    pub fn from_riscv64_r_type(r_type: u32) -> Option<Self> {
+    pub fn from_riscv64_r_type(r_type: object::elf::RelocationType) -> Option<Self> {
         let kind = match r_type {
             object::elf::R_RISCV_COPY => DynamicRelocationKind::Copy,
             object::elf::R_RISCV_IRELATIVE => DynamicRelocationKind::Irelative,
@@ -674,7 +674,7 @@ impl DynamicRelocationKind {
     }
 
     #[must_use]
-    pub fn riscv64_r_type(&self) -> u32 {
+    pub fn riscv64_r_type(&self) -> object::elf::RelocationType {
         match self {
             DynamicRelocationKind::Copy => object::elf::R_RISCV_COPY,
             DynamicRelocationKind::Irelative => object::elf::R_RISCV_IRELATIVE,
@@ -690,7 +690,7 @@ impl DynamicRelocationKind {
     }
 
     #[must_use]
-    pub fn from_loongarch64_r_type(r_type: u32) -> Option<Self> {
+    pub fn from_loongarch64_r_type(r_type: object::elf::RelocationType) -> Option<Self> {
         let kind = match r_type {
             object::elf::R_LARCH_COPY => DynamicRelocationKind::Copy,
             object::elf::R_LARCH_IRELATIVE => DynamicRelocationKind::Irelative,
@@ -707,7 +707,7 @@ impl DynamicRelocationKind {
     }
 
     #[must_use]
-    pub fn loongarch64_r_type(&self) -> u32 {
+    pub fn loongarch64_r_type(&self) -> object::elf::RelocationType {
         match self {
             DynamicRelocationKind::Copy => object::elf::R_LARCH_COPY,
             DynamicRelocationKind::Irelative => object::elf::R_LARCH_IRELATIVE,
@@ -723,7 +723,7 @@ impl DynamicRelocationKind {
     }
 
     #[must_use]
-    pub fn ppc64_r_type(&self) -> u32 {
+    pub fn ppc64_r_type(&self) -> object::elf::RelocationType {
         match self {
             DynamicRelocationKind::Copy => object::elf::R_PPC64_COPY,
             DynamicRelocationKind::Irelative => object::elf::R_PPC64_IRELATIVE,
@@ -740,7 +740,7 @@ impl DynamicRelocationKind {
     }
 
     #[must_use]
-    pub fn from_ppc64_r_type(r_type: u32) -> Option<Self> {
+    pub fn from_ppc64_r_type(r_type: object::elf::RelocationType) -> Option<Self> {
         let kind = match r_type {
             object::elf::R_PPC64_COPY => DynamicRelocationKind::Copy,
             object::elf::R_PPC64_IRELATIVE => DynamicRelocationKind::Irelative,
@@ -1161,12 +1161,12 @@ mod tests {
             stringify!(R_X86_64_GOTPC32_TLSDESC)
         );
         assert_eq!(
-            &x86_64_rel_type_to_string(64),
+            &x86_64_rel_type_to_string(object::elf::RelocationType(64)),
             "Unknown x86_64 relocation type 0x40"
         );
 
         assert_eq!(
-            &aarch64_rel_type_to_string(64),
+            &aarch64_rel_type_to_string(object::elf::RelocationType(64)),
             "Unknown aarch64 relocation type 0x40"
         );
     }

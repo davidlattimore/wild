@@ -1098,11 +1098,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             .context("Missing GOT entry for ifunc")?
             .get();
         out.r_offset.set(e, got_address);
-        out.r_info.set(
+        out.set_r_info(
             e,
-            u64::from(A::get_dynamic_relocation_type(
-                DynamicRelocationKind::Irelative,
-            )),
+            false,
+            0,
+            A::get_dynamic_relocation_type(DynamicRelocationKind::Irelative),
         );
         Ok(())
     }
@@ -1188,9 +1188,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 .ok_or_else(|| insufficient_allocation(".rela.dyn (relative)"))?;
             rela.r_offset.set(e, place);
             rela.r_addend.set(e, relative_address as i64);
-            rela.r_info.set(
+            rela.set_r_info(
                 e,
-                A::get_dynamic_relocation_type(DynamicRelocationKind::Relative).into(),
+                false,
+                0,
+                A::get_dynamic_relocation_type(DynamicRelocationKind::Relative),
             );
             Ok(0)
         }
@@ -1240,9 +1242,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 .ok_or_else(|| insufficient_allocation(".rela.dyn (relative)"))?;
             rela.r_offset.set(e, place);
             rela.r_addend.set(e, relative_address as i64);
-            rela.r_info.set(
+            rela.set_r_info(
                 e,
-                A::get_dynamic_relocation_type(DynamicRelocationKind::Relative).into(),
+                false,
+                0,
+                A::get_dynamic_relocation_type(DynamicRelocationKind::Relative),
             );
             Ok(0)
         }
@@ -1292,7 +1296,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
-        r_type: u32,
+        r_type: object::elf::RelocationType,
         addend: i64,
     ) -> Result {
         debug_assert_bail!(
@@ -1960,7 +1964,10 @@ fn write_rela_sections<'data>(
         let out_relas: &mut [elf::Rela] = slice_from_all_bytes_mut(out_buf);
         let mut rela_iter = out_relas.iter_mut();
 
-        let mut write_one = |offset: u64, sym: Option<SymbolIndex>, r_type: u32, addend: i64| {
+        let mut write_one = |offset: u64,
+                             sym: Option<SymbolIndex>,
+                             r_type: object::elf::RelocationType,
+                             addend: i64| {
             let Some(out) = rela_iter.next() else {
                 return;
             };
@@ -2966,7 +2973,7 @@ fn get_pair_subtraction_relocation_value<
     symbol_index: SymbolIndex,
     addend: i64,
     set_rel: &R,
-    expected_r_type: u32,
+    expected_r_type: object::elf::RelocationType,
 ) -> Result<u64> {
     ensure!(
         set_rel.offset() == rel.offset(),
