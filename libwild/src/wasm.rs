@@ -289,12 +289,29 @@ pub(crate) struct WasmSegmentInfo<'data> {
     pub(crate) flags: SegmentFlags,
 }
 
-/// All relocations read from a single `reloc.*` custom section.
+/// A `reloc.*` custom section header.
 #[derive(Debug, Clone)]
 pub(crate) struct WasmRelocSection {
     /// Index (into [`File::sections`]) of the section that the relocations apply to.
     pub(crate) target_section_index: u32,
-    pub(crate) entries: Vec<WasmRelocation>,
+    /// Byte range of the section's contents (after the section name) within the module bytes.
+    pub(crate) payload_range: Range<u32>,
+}
+
+impl WasmRelocSection {
+    pub(crate) fn decode_entries(&self, data: &[u8]) -> Result<Vec<WasmRelocation>> {
+        let start = self.payload_range.start as usize;
+        let end = self.payload_range.end as usize;
+        let payload = data
+            .get(start..end)
+            .ok_or_else(|| crate::error!("Wasm reloc section payload range out of bounds"))?;
+        let reader = wasmparser::RelocSectionReader::new(BinaryReader::new(payload, start))?;
+        reader
+            .entries()
+            .into_iter()
+            .map(|entry| Ok(WasmRelocation::from_entry(entry?)))
+            .collect()
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -989,7 +1006,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             .reloc_sections
             .iter()
             .find(|s| s.target_section_index == target)
-            .map(|s| s.entries.clone())
+            .map(|s| s.decode_entries(self.data))
+            .transpose()?
             .unwrap_or_default();
         Ok(RelocationList {
             entries,
@@ -2319,7 +2337,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
                     .iter()
                     .find(|s| s.target_section_index == code_idx)
             })
-            .map(|s| s.entries.clone())
+            .map(|s| s.decode_entries(file.data))
+            .transpose()?
             .unwrap_or_default();
 
         let data_section_index = file.standard_section_index[section_id::DATA as usize];
@@ -2329,7 +2348,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
                     .iter()
                     .find(|s| s.target_section_index == data_idx)
             })
-            .map(|s| s.entries.clone())
+            .map(|s| s.decode_entries(file.data))
+            .transpose()?
             .unwrap_or_default();
 
         // TODO(wasm): Currently relocs targeting `.debug*` are ignored (not applied, not emitted).
@@ -4764,14 +4784,9 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
                 }
             } else if section_name.starts_with(RELOC_SECTION_PREFIX) {
                 if let KnownCustom::Reloc(reloc) = reader.as_known() {
-                    let target_section_index = reloc.section_index();
-                    let mut entries = Vec::new();
-                    for entry in reloc.entries() {
-                        entries.push(WasmRelocation::from_entry(entry?));
-                    }
                     reloc_sections.push(WasmRelocSection {
-                        target_section_index,
-                        entries,
+                        target_section_index: reloc.section_index(),
+                        payload_range: name_end as u32..range.end as u32,
                     });
                 }
             } else if section_name == TARGET_FEATURES_SECTION_NAME {
