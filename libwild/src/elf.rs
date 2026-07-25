@@ -2136,14 +2136,16 @@ impl platform::Platform for Elf {
             }
         }
 
-        if first_load.is_some() {
-            for &hdr_id in &[
-                output_section_id::FILE_HEADER,
-                output_section_id::PROGRAM_HEADERS,
-                output_section_id::SECTION_HEADERS,
-            ] {
-                builder.push_event(OrderEvent::Section(hdr_id));
-            }
+        if first_load.is_none() {
+            bail!("Final Link failed: bad value");
+        }
+
+        for &hdr_id in &[
+            output_section_id::FILE_HEADER,
+            output_section_id::PROGRAM_HEADERS,
+            output_section_id::SECTION_HEADERS,
+        ] {
+            builder.push_event(OrderEvent::Section(hdr_id));
         }
 
         let update_flags = |builder: &mut OutputOrderBuilder<Self>,

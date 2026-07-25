@@ -33,6 +33,10 @@
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-single-load-with-flag.ld
 //#ExpectProgramHeader:LOAD flags=RX,sections=[.text,.rodata,.dynamic,*]
 
+//#Config:no-load:default
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs-no-load.ld
+//#ExpectError:(?i-u)final link failed: bad value
+
 const char message[] = "Hello PHDRS";
 char message2[10];
 
