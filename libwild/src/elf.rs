@@ -2099,9 +2099,9 @@ impl platform::Platform for Elf {
         let mut first_load = None;
         let mut starts = vec![None; num_phdrs];
         let mut ends = vec![None; num_phdrs];
-        let mut first_exec: Option<ProgramSegmentId> = None;
-        let mut first_rw: Option<ProgramSegmentId> = None;
-        let mut first_ro: Option<ProgramSegmentId> = None;
+        let mut first_exec: Option<&SegmentEntry> = None;
+        let mut first_rw: Option<&SegmentEntry> = None;
+        let mut first_ro: Option<&SegmentEntry> = None;
 
         for (pos, id) in ordered_sections.iter().enumerate() {
             let phdrs = &output_sections.section_infos.get(*id).phdrs;
@@ -2118,12 +2118,16 @@ impl platform::Platform for Elf {
                 }
                 ends[seg_idx] = Some(pos);
                 if entry.ptype == pt::LOAD.0 {
-                    if (entry.flags & pf::EXECUTABLE.0) != 0 {
-                        first_exec = Some(entry.id);
-                    } else if (entry.flags & pf::WRITABLE.0) != 0 {
-                        first_rw = Some(entry.id);
-                    } else {
-                        first_ro = Some(entry.id);
+                    if (entry.flags & pf::EXECUTABLE.0) != 0
+                        && first_exec.map_or(true, |e| e.flags & pf::WRITABLE.0 != 0)
+                    {
+                        first_exec = Some(entry);
+                    } else if (entry.flags & pf::WRITABLE.0) != 0
+                        && first_rw.map_or(true, |e| e.flags & pf::EXECUTABLE.0 != 0)
+                    {
+                        first_rw = Some(entry);
+                    } else if first_ro.map_or(true, |e| e.flags != pf::READABLE.0) {
+                        first_ro = Some(entry);
                     }
                 }
             }
@@ -2166,11 +2170,11 @@ impl platform::Platform for Elf {
             for (seg_idx, segment) in ends.iter().enumerate().take(num_phdrs) {
                 if *segment == Some(pos) {
                     let seg_id = ProgramSegmentId::new(seg_idx);
-                    if Some(seg_id) == first_exec.or(first_load) {
+                    if Some(seg_id) == first_exec.map_or(first_load, |e| Some(e.id)) {
                         update_flags(&mut builder, &custom.exec, seg_id);
                         builder.add_sections(&custom.exec);
                     }
-                    if Some(seg_id) == first_rw.or(first_load) {
+                    if Some(seg_id) == first_rw.map_or(first_load, |e| Some(e.id)) {
                         update_flags(&mut builder, &custom.tdata, seg_id);
                         update_flags(&mut builder, &custom.tbss, seg_id);
                         update_flags(&mut builder, &custom.data, seg_id);
@@ -2180,7 +2184,7 @@ impl platform::Platform for Elf {
                         builder.add_sections(&custom.data);
                         builder.add_sections(&custom.bss);
                     }
-                    if Some(seg_id) == first_ro.or(first_load) {
+                    if Some(seg_id) == first_ro.map_or(first_load, |e| Some(e.id)) {
                         update_flags(&mut builder, &custom.ro, seg_id);
                         builder.add_sections(&custom.ro);
                     }
