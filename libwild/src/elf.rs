@@ -2122,14 +2122,14 @@ impl platform::Platform for Elf {
                 ends[seg_idx] = Some(pos);
                 if entry.ptype == pt::LOAD.0 {
                     if (entry.flags & pf::EXECUTABLE.0) != 0
-                        && first_exec.map_or(true, |e| e.flags & pf::WRITABLE.0 != 0)
+                        && first_exec.is_none_or(|e| e.flags & pf::WRITABLE.0 != 0)
                     {
                         first_exec = Some(entry);
                     } else if (entry.flags & pf::WRITABLE.0) != 0
-                        && first_rw.map_or(true, |e| e.flags & pf::EXECUTABLE.0 != 0)
+                        && first_rw.is_none_or(|e| e.flags & pf::EXECUTABLE.0 != 0)
                     {
                         first_rw = Some(entry);
-                    } else if first_ro.map_or(true, |e| e.flags != pf::READABLE.0) {
+                    } else if first_ro.is_none_or(|e| e.flags != pf::READABLE.0) {
                         first_ro = Some(entry);
                     }
                 }
