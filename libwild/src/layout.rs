@@ -2015,13 +2015,24 @@ fn compute_segment_layout<'data, P: Platform>(
         .map(|&id| {
             let r = &complete[id.as_usize()];
 
-            let sizes = OutputRecordLayout {
-                file_size: r.file_end - r.file_start,
-                mem_size: r.mem_end - r.mem_start,
-                alignment: r.alignment,
-                file_offset: r.file_start,
-                mem_offset: r.mem_start,
-                lma_offset: r.lma_start,
+            let sizes = if r.file_start <= r.file_end {
+                OutputRecordLayout {
+                    file_size: r.file_end - r.file_start,
+                    mem_size: r.mem_end - r.mem_start,
+                    alignment: r.alignment,
+                    file_offset: r.file_start,
+                    mem_offset: r.mem_start,
+                    lma_offset: r.lma_start,
+                }
+            } else {
+                OutputRecordLayout {
+                    file_size: 0,
+                    mem_size: 0,
+                    alignment: r.alignment,
+                    file_offset: 0,
+                    mem_offset: 0,
+                    lma_offset: 0,
+                }
             };
 
             if program_segments.is_tls_segment(id) {
@@ -3402,34 +3413,41 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         output_sections.output_section_indexes = output_section_indexes;
 
         // Determine which program segments contain sections that we're keeping.
-        let mut keep_segments = program_segments
-            .iter()
-            .map(|details| details.always_keep())
-            .collect_vec();
-        let mut active_segments = Vec::with_capacity(4);
-        for event in output_order {
-            match event {
-                OrderEvent::SegmentStart(segment_id) => active_segments.push(segment_id),
-                OrderEvent::SegmentEnd(segment_id) => active_segments.retain(|a| *a != segment_id),
-                OrderEvent::Section(section_id) => {
-                    if *keep_sections.get(section_id) {
-                        for segment_id in &active_segments {
-                            keep_segments[segment_id.as_usize()] = true;
-                        }
-                        active_segments.clear();
+        let mut keep_segments = if program_segments.has_custom_phdrs() {
+            vec![true; program_segments.len()]
+        } else {
+            let mut keep_segments = program_segments
+                .iter()
+                .map(|details| details.always_keep())
+                .collect_vec();
+            let mut active_segments = Vec::with_capacity(4);
+            for event in output_order {
+                match event {
+                    OrderEvent::SegmentStart(segment_id) => active_segments.push(segment_id),
+                    OrderEvent::SegmentEnd(segment_id) => {
+                        active_segments.retain(|a| *a != segment_id);
                     }
+                    OrderEvent::Section(section_id) => {
+                        if *keep_sections.get(section_id) {
+                            for segment_id in &active_segments {
+                                keep_segments[segment_id.as_usize()] = true;
+                            }
+                            active_segments.clear();
+                        }
+                    }
+                    OrderEvent::SetLocation(..)
+                    | OrderEvent::SetLocationRelative(..)
+                    | OrderEvent::SetSectionAddress(_) => {}
                 }
-                OrderEvent::SetLocation(..)
-                | OrderEvent::SetLocationRelative(..)
-                | OrderEvent::SetSectionAddress(_) => {}
             }
-        }
 
-        if !resources.symbol_db.args.should_output_partial_object() {
-            // Always keep the program headers segment even though we don't emit any sections in it.
-            keep_segments[0] = true;
-        }
-
+            if !resources.symbol_db.args.should_output_partial_object() {
+                // Always keep the program headers segment even though we don't emit any sections in
+                // it.
+                keep_segments[0] = true;
+            }
+            keep_segments
+        };
         P::update_segment_keep_list(
             program_segments,
             &mut keep_segments,

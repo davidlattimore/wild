@@ -215,7 +215,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
     ) -> Self {
         Self {
             events: Vec::new(),
-            program_segments: ProgramSegments::empty(),
+            program_segments: ProgramSegments::empty(has_custom_phdrs),
             output_sections,
             active_segment_kinds: vec![None; P::program_segment_defs().len()],
             active_segment_regions: vec![None; P::program_segment_defs().len()],

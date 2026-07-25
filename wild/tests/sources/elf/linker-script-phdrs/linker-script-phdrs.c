@@ -8,6 +8,7 @@
 //#ExpectProgramHeader:DYNAMIC flags=RW,sections=[.dynamic,*]
 //#ExpectProgramHeader:LOAD flags=RW,sections=[*]
 //#ExpectProgramHeader:LOAD flags=R,sections=[.rodata,.dynamic,*]
+//#ExpectProgramHeader:LOAD sections=[]
 //#NoProgramHeader:PHDR
 //#NoProgramHeader:NOTE
 //#NoProgramHeader:GNU_STACK

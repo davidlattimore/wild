@@ -832,6 +832,11 @@ impl platform::Platform for Elf {
             if segment_def.segment_type == pt::PHDR {
                 *keep = !args.nmagic;
             }
+            if segment_def.segment_type == pt::RISCV_ATTRIBUTES
+                && args.arch != Architecture::RiscV64
+            {
+                *keep = false;
+            }
         }
     }
 
@@ -2061,6 +2066,7 @@ impl platform::Platform for Elf {
                         ptype,
                         flags,
                         has_explicit_flags: phdr.flags.is_some(),
+                        is_emitted: false,
                     },
                 );
             }
@@ -2075,6 +2081,7 @@ impl platform::Platform for Elf {
                             String::from_utf8_lossy(phdr)
                         )
                     })?;
+                    segment.is_emitted = true;
                     if segment.has_explicit_flags {
                         continue;
                     }
@@ -2162,6 +2169,13 @@ impl platform::Platform for Elf {
         for &id in &custom.nonalloc {
             if id != output_section_id::RISCV_ATTRIBUTES {
                 builder.add_section(id);
+            }
+        }
+
+        for segment in segments_map.values() {
+            if !segment.is_emitted {
+                builder.push_event(OrderEvent::SegmentStart(segment.id));
+                builder.push_event(OrderEvent::SegmentEnd(segment.id));
             }
         }
 

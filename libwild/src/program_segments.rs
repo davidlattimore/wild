@@ -7,12 +7,14 @@ pub(crate) struct ProgramSegmentId(u8);
 #[derive(Debug)]
 pub(crate) struct ProgramSegments<T: platform::ProgramSegmentDef> {
     program_segment_details: Vec<T>,
+    has_custom_phdrs: bool,
 }
 
 impl<T: platform::ProgramSegmentDef> ProgramSegments<T> {
-    pub(crate) fn empty() -> ProgramSegments<T> {
+    pub(crate) fn empty(has_custom_phdrs: bool) -> ProgramSegments<T> {
         Self {
             program_segment_details: Vec::new(),
+            has_custom_phdrs,
         }
     }
 
@@ -57,6 +59,10 @@ impl<T: platform::ProgramSegmentDef> ProgramSegments<T> {
     pub(crate) fn iter(&self) -> impl Iterator<Item = T> {
         self.program_segment_details.iter().copied()
     }
+
+    pub(crate) fn has_custom_phdrs(&self) -> bool {
+        self.has_custom_phdrs
+    }
 }
 
 impl ProgramSegmentId {
@@ -96,4 +102,5 @@ pub(crate) struct SegmentEntry {
     pub(crate) ptype: u32,
     pub(crate) flags: u32,
     pub(crate) has_explicit_flags: bool,
+    pub(crate) is_emitted: bool,
 }
