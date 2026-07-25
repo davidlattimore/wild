@@ -10,7 +10,7 @@
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs.ld --defsym=is_riscv=0
 //#ExpectProgramHeader:LOAD flags=RX,sections=[.text]
 //#ExpectProgramHeader:DYNAMIC flags=RW,sections=[.dynamic,*]
-//#ExpectProgramHeader:LOAD flags=RW,sections=[*]
+//#ExpectProgramHeader:LOAD flags=RW,sections=[.bss,*]
 //#ExpectProgramHeader:LOAD flags=R,sections=[.rodata,.dynamic,*]
 //#ExpectProgramHeader:LOAD sections=[]
 //#NoProgramHeader:PHDR
@@ -27,10 +27,16 @@
 
 //#Config:single-load:default
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-single-load.ld
+//#ExpectProgramHeader:LOAD flags=RWX,sections=[.text,.rodata,.dynamic,*]
+
+//#Config:single-load-with-flag:default
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs-single-load-with-flag.ld
+//#ExpectProgramHeader:LOAD flags=RX,sections=[.text,.rodata,.dynamic,*]
 
 const char message[] = "Hello PHDRS";
+char message2[10];
 
-int foo(void) { return 42; }
+int foo(void) { return message2[0] + 42; }
 
 const char* bar() { return &message[0]; }
 

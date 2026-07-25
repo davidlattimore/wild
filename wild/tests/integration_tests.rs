@@ -5046,9 +5046,7 @@ impl Assertions {
 
             let sh_addr = section.address();
             let sh_size = section.size();
-            let Some((sh_offset, sh_filesz)) = section.file_range() else {
-                continue;
-            };
+            let (sh_offset, sh_filesz) = section.file_range().unwrap_or((0, 0));
 
             let is_alloc = match section.flags() {
                 object::SectionFlags::Elf { sh_flags, .. } => {
