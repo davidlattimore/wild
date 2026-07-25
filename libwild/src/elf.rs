@@ -2043,6 +2043,8 @@ impl platform::Platform for Elf {
 
         let mut num_phdrs = 0;
 
+        let mut segment_has_explicit_flags = Vec::with_capacity(num_phdrs);
+
         for script in linker_scripts {
             num_phdrs += script.parsed.program_headers.len();
             for phdr in &script.parsed.program_headers {
@@ -2059,13 +2061,13 @@ impl platform::Platform for Elf {
                         ptype, flags,
                     ),
                 );
+                segment_has_explicit_flags.push(phdr.flags.is_some());
                 segments_map.insert(
                     phdr.name,
                     SegmentEntry {
                         id,
                         ptype,
                         flags,
-                        has_explicit_flags: phdr.flags.is_some(),
                         is_emitted: false,
                     },
                 );
@@ -2082,7 +2084,7 @@ impl platform::Platform for Elf {
                         )
                     })?;
                     segment.is_emitted = true;
-                    if segment.has_explicit_flags {
+                    if segment_has_explicit_flags[segment.id.as_usize()] {
                         continue;
                     }
                     segment.flags |=
@@ -2094,7 +2096,7 @@ impl platform::Platform for Elf {
             }
         }
 
-        let mut first_load_idx = None;
+        let mut first_load = None;
         let mut starts = vec![None; num_phdrs];
         let mut ends = vec![None; num_phdrs];
         let mut first_exec: Option<ProgramSegmentId> = None;
@@ -2108,8 +2110,8 @@ impl platform::Platform for Elf {
                     continue;
                 };
                 let seg_idx = entry.id.as_usize();
-                if entry.ptype == pt::LOAD.0 && first_load_idx.is_none() {
-                    first_load_idx = Some(pos);
+                if entry.ptype == pt::LOAD.0 && first_load.is_none() {
+                    first_load = Some(entry.id);
                 }
                 if ends[seg_idx].is_none() {
                     starts[seg_idx] = Some(pos);
@@ -2127,7 +2129,7 @@ impl platform::Platform for Elf {
             }
         }
 
-        if first_load_idx.is_some() {
+        if first_load.is_some() {
             for &hdr_id in &[
                 output_section_id::FILE_HEADER,
                 output_section_id::PROGRAM_HEADERS,
@@ -2136,6 +2138,19 @@ impl platform::Platform for Elf {
                 builder.push_event(OrderEvent::Section(hdr_id));
             }
         }
+
+        let update_flags = |builder: &mut OutputOrderBuilder<Self>,
+                            sections: &[OutputSectionId],
+                            segment: ProgramSegmentId| {
+            if segment_has_explicit_flags[segment.as_usize()] {
+                return;
+            }
+            for &section_id in sections {
+                let info = output_sections.section_infos.get(section_id);
+                let flags = Self::get_segment_flags_for_section(&info.section_attributes.flags);
+                builder.get_segment_mut(segment).segment_flags |= SegmentFlags(flags);
+            }
+        };
 
         for (pos, section_id) in ordered_sections.iter().enumerate() {
             let section_id = *section_id;
@@ -2151,14 +2166,22 @@ impl platform::Platform for Elf {
             for (seg_idx, segment) in ends.iter().enumerate().take(num_phdrs) {
                 if *segment == Some(pos) {
                     let seg_id = ProgramSegmentId::new(seg_idx);
-                    if Some(seg_id) == first_exec {
+                    if Some(seg_id) == first_exec.or(first_load) {
+                        update_flags(&mut builder, &custom.exec, seg_id);
                         builder.add_sections(&custom.exec);
-                    } else if Some(seg_id) == first_rw {
+                    }
+                    if Some(seg_id) == first_rw.or(first_load) {
+                        update_flags(&mut builder, &custom.tdata, seg_id);
+                        update_flags(&mut builder, &custom.tbss, seg_id);
+                        update_flags(&mut builder, &custom.data, seg_id);
+                        update_flags(&mut builder, &custom.bss, seg_id);
                         builder.add_sections(&custom.tdata);
                         builder.add_sections(&custom.tbss);
                         builder.add_sections(&custom.data);
                         builder.add_sections(&custom.bss);
-                    } else if Some(seg_id) == first_ro {
+                    }
+                    if Some(seg_id) == first_ro.or(first_load) {
+                        update_flags(&mut builder, &custom.ro, seg_id);
                         builder.add_sections(&custom.ro);
                     }
                     builder.push_event(OrderEvent::SegmentEnd(seg_id));

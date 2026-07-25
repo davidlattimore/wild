@@ -101,6 +101,5 @@ pub(crate) struct SegmentEntry {
     pub(crate) id: crate::program_segments::ProgramSegmentId,
     pub(crate) ptype: u32,
     pub(crate) flags: u32,
-    pub(crate) has_explicit_flags: bool,
     pub(crate) is_emitted: bool,
 }

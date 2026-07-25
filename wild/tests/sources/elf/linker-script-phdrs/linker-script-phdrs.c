@@ -1,9 +1,11 @@
-//#Config:default
+//#AbstractConfig:default
 //#Mode:dynamic
 //#RunEnabled:false
 //#CompArgs:-fPIE -fPIC
-//#LinkArgs:-shared -z now -T ./linker-script-phdrs.ld --defsym=is_riscv=0
 //#DiffIgnore:section.got
+
+//#Config:nophdrs:default
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs.ld --defsym=is_riscv=0
 //#ExpectProgramHeader:LOAD flags=RX,sections=[.text]
 //#ExpectProgramHeader:DYNAMIC flags=RW,sections=[.dynamic,*]
 //#ExpectProgramHeader:LOAD flags=RW,sections=[*]
@@ -16,10 +18,13 @@
 //#NoProgramHeader:GNU_PROPERTY
 //#SkipArch:riscv64
 
-//#Config:riscv:default
+//#Config:riscv:nophdrs
 //#Arch:riscv64
 //#ExpectProgramHeader:RISCV_ATTRIBUTES flags=R,sections=[.riscv.attributes]
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs.ld --defsym=is_riscv=1
+
+//#Config:single-load:default
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs-single-load.ld
 
 const char message[] = "Hello PHDRS";
 
