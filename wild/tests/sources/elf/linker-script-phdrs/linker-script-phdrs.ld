@@ -21,13 +21,17 @@ SECTIONS {
         *(.bss*)
     }
 
+    .custom : {
+        *(.custom)
+    } :NONE
+
     .dynamic : {
         *(.dynamic)
     } :rodata :dynamic
 
     .rodata : {
         *(.rodata*)
-    } :rodata
+    } :rodata :NONE
 }
 
 ASSERT(start_of_sections == 0x40 + ((5 + is_riscv) * 0x38), "Wrong start of sections");

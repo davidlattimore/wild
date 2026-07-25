@@ -2076,6 +2076,9 @@ impl platform::Platform for Elf {
             for id in &script.parsed.ordered_sections {
                 let info = output_sections.section_infos.get(*id);
                 for phdr in &info.phdrs {
+                    if phdr == b"NONE" {
+                        continue;
+                    }
                     let segment = segments_map.get_mut(phdr).with_context(|| {
                         format!(
                             "Section {} assigned to non-existent phdr `{}`",

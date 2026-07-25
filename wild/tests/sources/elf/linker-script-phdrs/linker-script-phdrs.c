@@ -3,6 +3,8 @@
 //#RunEnabled:false
 //#CompArgs:-fPIE -fPIC
 //#DiffIgnore:section.got
+// Skip the .custom section, since it is forcefully excluded from any segments.
+//#DiffIgnore:section-diff-failed..custom
 
 //#Config:nophdrs:default
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs.ld --defsym=is_riscv=0
@@ -31,3 +33,5 @@ const char message[] = "Hello PHDRS";
 int foo(void) { return 42; }
 
 const char* bar() { return &message[0]; }
+
+__attribute__((used, section(".custom"))) int baz() { return 42; }

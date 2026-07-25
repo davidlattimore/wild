@@ -1937,16 +1937,10 @@ fn compute_segment_layout<'data, P: Platform>(
                 let section_flags = output_sections.section_flags(merge_target);
                 let section_info = output_sections.output_info(section_id);
 
-                let is_header_section = matches!(
-                    section_id,
-                    output_section_id::FILE_HEADER
-                        | output_section_id::PROGRAM_HEADERS
-                        | output_section_id::SECTION_HEADERS
-                );
-
-                if active_segments.iter().all(|s| s.is_none())
-                    && !(is_header_section && output_order.has_custom_phdrs())
-                {
+                if active_segments.iter().all(|s| s.is_none()) {
+                    if output_order.has_custom_phdrs() {
+                        continue;
+                    }
                     ensure!(
                         section_layout.mem_offset == 0,
                         "Expected zero address for section {} not present in any program segment.",
