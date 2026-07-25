@@ -58,7 +58,7 @@ end lists the features required to link the Linux kernel.
 | `BYTE(expr)`, `SHORT(expr)`, `LONG(expr)`, `QUAD(expr)` output data | ❌ | |
 | `SUBALIGN(n)` forced input alignment | ❌ | |
 | `ONLY_IF_RO` / `ONLY_IF_RW` output section constraints | ❌ | |
-| `:phdr` output section phdrs | 🧪 | Only a single `:phdr` specifier is supported per output section. |
+| `:phdr` output section phdrs | ✅ | |
 
 ## Expressions and Functions
 
