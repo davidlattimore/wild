@@ -5042,9 +5042,7 @@ impl Assertions {
 
             let sh_addr = section.address();
             let sh_size = section.size();
-            let Some((sh_offset, sh_filesz)) = section.file_range() else {
-                continue;
-            };
+            let (sh_offset, sh_filesz) = section.file_range().unwrap_or((0, 0));
 
             let is_alloc = match section.flags() {
                 object::SectionFlags::Elf { sh_flags, .. } => {
@@ -5062,7 +5060,7 @@ impl Assertions {
                 && sh_addr + sh_size <= p_vaddr + p_memsz
                 && p_memsz > 0;
             let in_file = sh_offset >= p_offset
-                && sh_offset + sh_filesz <= p_offset + p_filesz
+                && sh_offset.saturating_add(sh_filesz) <= p_offset.saturating_add(p_filesz)
                 && p_filesz > 0
                 && sh_filesz > 0;
 

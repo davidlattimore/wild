@@ -58,6 +58,7 @@ pub(crate) struct ProcessedLinkerScript<'data, P: Platform> {
     pub(crate) memory_regions: Vec<crate::linker_script::MemoryRegion<'data>>,
     pub(crate) program_headers: Vec<crate::linker_script::Phdr<'data>>,
     pub(crate) location_counters: Vec<LocationCounter<'data>>,
+    pub(crate) ordered_sections: Vec<OutputSectionId>,
 }
 
 #[derive(Debug)]

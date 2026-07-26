@@ -169,6 +169,8 @@ pub(crate) struct OutputSections<'data, P: Platform> {
     init_fini_by_priority: HashMap<(OutputSectionId, u16), OutputSectionId>,
 
     rosegment: bool,
+
+    output_kind: OutputKind,
 }
 
 /// Encodes the order of output sections and the start and end of each program segment. This struct
@@ -177,6 +179,7 @@ pub(crate) struct OutputSections<'data, P: Platform> {
 pub(crate) struct OutputOrder<'data> {
     events: Vec<OrderEvent<'data>>,
     num_location_counters: usize,
+    has_custom_phdrs: bool,
 }
 
 pub(crate) struct OutputOrderDisplay<'a, 'data, P: Platform> {
@@ -212,7 +215,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
     ) -> Self {
         Self {
             events: Vec::new(),
-            program_segments: ProgramSegments::empty(),
+            program_segments: ProgramSegments::empty(has_custom_phdrs),
             output_sections,
             active_segment_kinds: vec![None; P::program_segment_defs().len()],
             active_segment_regions: vec![None; P::program_segment_defs().len()],
@@ -438,51 +441,19 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         (stop, start)
     }
 
-    pub(crate) fn add_segment_with_sections(
+    pub(crate) fn push_event(&mut self, event: OrderEvent<'data>) {
+        self.events.push(event);
+    }
+
+    pub(crate) fn add_custom_segment(
         &mut self,
-        ptype: u32,
-        pflags: u32,
-        sections: &[OutputSectionId],
-        output_sections: &OutputSections<'data, P>,
+        segment_def: P::ProgramSegmentDef,
     ) -> ProgramSegmentId {
-        let segment_id = self
-            .program_segments
-            .add_segment(P::ProgramSegmentDef::from_linker_script(ptype, pflags));
-        self.events.push(OrderEvent::SegmentStart(segment_id));
-        for section in sections {
-            let section_info = output_sections.section_infos.get(*section);
-            if let Some(ref loc_info) = section_info.location_info {
-                let (lc_start, lc_stop) = loc_info.location_counters;
-                self.emit_location_counters(lc_start, lc_stop);
-            }
-            self.events.push(OrderEvent::Section(*section));
+        self.program_segments.add_segment(segment_def)
+    }
 
-            let secondaries: &Vec<OutputSectionId> = self.secondary.get(*section);
-            let mut keyed: Vec<(u16, OutputSectionId)> = secondaries
-                .iter()
-                .map(|&sid| {
-                    let key_pri = match output_sections.secondary_order(sid) {
-                        Some(crate::output_section_id::SecondaryOrder::InitFini { priority }) => {
-                            priority
-                        }
-                        None => u16::MAX,
-                    };
-                    (key_pri, sid)
-                })
-                .collect();
-            keyed.sort_by_key(|(pri, _sid)| *pri);
-
-            for (_pri, sid) in keyed {
-                let sec_info = output_sections.output_info(sid);
-                if let Some(ref loc_info) = sec_info.location_info {
-                    let (lc_start, lc_stop) = loc_info.location_counters;
-                    self.emit_location_counters(lc_start, lc_stop);
-                }
-                self.events.push(OrderEvent::Section(sid));
-            }
-        }
-        self.events.push(OrderEvent::SegmentEnd(segment_id));
-        segment_id
+    pub(crate) fn get_segment_mut(&mut self, id: ProgramSegmentId) -> &mut P::ProgramSegmentDef {
+        self.program_segments.segment_def_mut(id)
     }
 
     pub(crate) fn add_sections(&mut self, sections: &[OutputSectionId]) {
@@ -512,6 +483,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             OutputOrder {
                 events: self.events,
                 num_location_counters: self.location_counters.len(),
+                has_custom_phdrs: self.has_custom_phdrs,
             },
             self.program_segments,
         )
@@ -594,9 +566,9 @@ pub(crate) struct SectionOutputInfo<'data, P: Platform> {
     pub(crate) min_alignment: Alignment,
     pub(crate) location_info: Option<SectionLocationInfo<'data>>,
     pub(crate) secondary_order: Option<SecondaryOrder>,
-    pub(crate) phdr_name: Option<&'data [u8]>,
     pub(crate) region_name: Option<&'data [u8]>,
     pub(crate) fill: Option<[u8; 4]>,
+    pub(crate) phdrs: Vec<&'data [u8]>,
 }
 
 impl OutputSectionId {
@@ -755,12 +727,17 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 custom.name,
                 custom.alignment,
                 None,
+                location_info.as_ref(),
                 None,
-                location_info,
-                None,
+                Vec::new(),
             );
 
-            section_part_ids[custom.index.0] = section_id.part_id_with_alignment(custom.alignment);
+            let part_id = if section_id.is_regular() {
+                section_id.part_id_with_alignment(custom.alignment)
+            } else {
+                section_id.base_part_id()
+            };
+            section_part_ids[custom.index.0] = part_id;
         }
     }
 
@@ -793,25 +770,61 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         &mut self,
         name: SectionName<'data>,
         min_alignment: Alignment,
-        phdr_name: Option<&'data [u8]>,
         region_name: Option<&'data [u8]>,
-        location_info: Option<SectionLocationInfo<'data>>,
+        location_info: Option<&SectionLocationInfo<'data>>,
         fill: Option<[u8; 4]>,
+        phdrs: Vec<&'data [u8]>,
     ) -> OutputSectionId {
-        *self.custom_by_name.entry(name).or_insert_with(|| {
-            self.section_infos.add_new(SectionOutputInfo {
-                kind: SectionKind::Primary(name),
-                // Section flags and type will be filled in based on the attributes of the sections
-                // that get placed into this output section.
-                section_attributes: Default::default(),
-                min_alignment,
-                location_info,
-                secondary_order: None,
-                phdr_name,
-                region_name,
-                fill,
+        let mut resolved_id = None;
+        if !self.output_kind.is_partial_object()
+            && let Some(builtin_id) = (0..NUM_SINGLE_PART_SECTIONS as usize)
+                .map(OutputSectionId::from_usize)
+                .find(|&bid| self.name(bid) == Some(name))
+        {
+            resolved_id = Some(builtin_id);
+        }
+
+        *self
+            .custom_by_name
+            .entry(name)
+            .and_modify(|s| {
+                let info = self.section_infos.get_mut(*s);
+                info.min_alignment = info.min_alignment.max(min_alignment);
+                info.region_name = region_name.or(info.region_name);
+                if location_info.is_some() {
+                    info.location_info = location_info.cloned();
+                }
+                info.fill = fill.or(info.fill);
+                if !phdrs.is_empty() {
+                    info.phdrs = phdrs.clone();
+                }
             })
-        })
+            .or_insert_with(|| {
+                if let Some(builtin_id) = resolved_id {
+                    let info = self.section_infos.get_mut(builtin_id);
+                    info.min_alignment = info.min_alignment.max(min_alignment);
+                    info.region_name = region_name.or(info.region_name);
+                    if location_info.is_some() {
+                        info.location_info = location_info.cloned();
+                    }
+                    info.fill = fill.or(info.fill);
+                    if !phdrs.is_empty() {
+                        info.phdrs = phdrs.clone();
+                    }
+                    builtin_id
+                } else {
+                    self.section_infos.add_new(SectionOutputInfo {
+                        kind: SectionKind::Primary(name),
+                        section_attributes: Default::default(),
+                        min_alignment,
+                        location_info: location_info.cloned(),
+                        secondary_order: None,
+                        region_name,
+                        fill,
+                        phdrs,
+                    })
+                }
+            })
     }
 
     pub(crate) fn add_secondary_section(
@@ -830,13 +843,13 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             min_alignment,
             location_info,
             secondary_order,
-            phdr_name: None,
             region_name: primary_info.region_name,
             fill: primary_info.fill,
+            phdrs: Vec::new(),
         })
     }
 
-    pub(crate) fn with_base_address(base_address: u64) -> Self {
+    pub(crate) fn with_base_address(base_address: u64, output_kind: OutputKind) -> Self {
         let section_infos = P::built_in_section_infos();
         let base_address = Expression::Number(base_address);
 
@@ -847,6 +860,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             output_section_indexes: Default::default(),
             init_fini_by_priority: HashMap::new(),
             rosegment: true,
+            output_kind,
         }
     }
 
@@ -898,9 +912,6 @@ impl<'data, P: Platform> OutputSections<'data, P> {
 
         let mut secondary: OutputSectionMap<Vec<OutputSectionId>> = self.new_section_map();
 
-        let mut phdr_map: Option<HashMap<&[u8], Vec<OutputSectionId>>> =
-            has_custom_phdrs.then(HashMap::new);
-
         self.section_infos.for_each(|id, info| {
             if let SectionKind::Secondary(primary) = info.kind {
                 secondary.get_mut(primary).push(id);
@@ -908,20 +919,15 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             }
 
             if has_custom_phdrs {
-                if let Some(phdr_name) = info.phdr_name {
-                    phdr_map
-                        .as_mut()
-                        .unwrap()
-                        .entry(phdr_name)
-                        .or_default()
-                        .push(id);
+                if !info.phdrs.is_empty() {
                     return;
                 }
 
-                if id == FILE_HEADER
-                    || id == PROGRAM_HEADERS
-                    || id == SECTION_HEADERS
-                    || id == RISCV_ATTRIBUTES
+                if matches!(id, FILE_HEADER | PROGRAM_HEADERS | SECTION_HEADERS) {
+                    return;
+                } else if id.as_usize() < NUM_BUILT_IN_SECTIONS
+                    && let Some(name) = self.name(id)
+                    && self.custom_name_to_id(name).is_some()
                 {
                     return;
                 }
@@ -929,21 +935,22 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 return;
             }
 
-            if info.section_attributes.is_executable() {
+            let attr = info.section_attributes;
+            if attr.is_executable() {
                 custom.exec.push(id);
-            } else if info.section_attributes.is_tls() {
-                if info.section_attributes.is_no_bits() {
+            } else if attr.is_tls() {
+                if attr.is_no_bits() {
                     custom.tbss.push(id);
                 } else {
                     custom.tdata.push(id);
                 }
-            } else if !info.section_attributes.is_writable() {
-                if info.section_attributes.is_alloc() {
+            } else if !attr.is_writable() {
+                if attr.is_alloc() {
                     custom.ro.push(id);
                 } else {
                     custom.nonalloc.push(id);
                 }
-            } else if info.section_attributes.is_no_bits() {
+            } else if attr.is_no_bits() {
                 custom.bss.push(id);
             } else {
                 custom.data.push(id);
@@ -957,7 +964,6 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 self,
                 &secondary,
                 linker_scripts,
-                &mut phdr_map.unwrap(),
                 location_counters,
             )
         } else {
@@ -1087,7 +1093,10 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     pub(crate) fn for_testing() -> OutputSections<'static, crate::elf::Elf> {
         use crate::elf::Elf;
 
-        let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000);
+        let output_kind = crate::output_kind::OutputKind::StaticExecutable(
+            crate::args::RelocationModel::NonRelocatable,
+        );
+        let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000, output_kind);
         let mut add_name = |name: &'static str| {
             output_sections.add_named_section(
                 SectionName(name.as_bytes()),
@@ -1095,7 +1104,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 None,
                 None,
                 None,
-                None,
+                Vec::new(),
             )
         };
         add_name("ro");
@@ -1131,6 +1140,10 @@ impl<'data, 'a> IntoIterator for &'a OutputOrder<'data> {
 impl<'data> OutputOrder<'data> {
     pub(crate) fn num_location_counters(&self) -> usize {
         self.num_location_counters
+    }
+
+    pub(crate) fn has_custom_phdrs(&self) -> bool {
+        self.has_custom_phdrs
     }
 
     pub(crate) fn display<'a, P: Platform>(

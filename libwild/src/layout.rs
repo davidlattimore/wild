@@ -1938,6 +1938,9 @@ fn compute_segment_layout<'data, P: Platform>(
                 let section_info = output_sections.output_info(section_id);
 
                 if active_segments.iter().all(|s| s.is_none()) {
+                    if output_order.has_custom_phdrs() {
+                        continue;
+                    }
                     ensure!(
                         section_layout.mem_offset == 0,
                         "Expected zero address for section {} not present in any program segment.",
@@ -2006,13 +2009,24 @@ fn compute_segment_layout<'data, P: Platform>(
         .map(|&id| {
             let r = &complete[id.as_usize()];
 
-            let sizes = OutputRecordLayout {
-                file_size: r.file_end - r.file_start,
-                mem_size: r.mem_end - r.mem_start,
-                alignment: r.alignment,
-                file_offset: r.file_start,
-                mem_offset: r.mem_start,
-                lma_offset: r.lma_start,
+            let sizes = if r.file_start <= r.file_end {
+                OutputRecordLayout {
+                    file_size: r.file_end - r.file_start,
+                    mem_size: r.mem_end - r.mem_start,
+                    alignment: r.alignment,
+                    file_offset: r.file_start,
+                    mem_offset: r.mem_start,
+                    lma_offset: r.lma_start,
+                }
+            } else {
+                OutputRecordLayout {
+                    file_size: 0,
+                    mem_size: 0,
+                    alignment: r.alignment,
+                    file_offset: 0,
+                    mem_offset: 0,
+                    lma_offset: 0,
+                }
             };
 
             if program_segments.is_tls_segment(id) {
@@ -2023,7 +2037,11 @@ fn compute_segment_layout<'data, P: Platform>(
         })
         .collect_vec();
 
-    segments.sort_by_key(|s| program_segments.order_key(s.id, s.sizes.mem_offset));
+    if output_order.has_custom_phdrs() {
+        segments.sort_by_key(|s| s.id);
+    } else {
+        segments.sort_by_key(|s| program_segments.order_key(s.id, s.sizes.mem_offset));
+    }
 
     Ok(SegmentLayouts {
         segments,
@@ -3389,34 +3407,41 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         output_sections.output_section_indexes = output_section_indexes;
 
         // Determine which program segments contain sections that we're keeping.
-        let mut keep_segments = program_segments
-            .iter()
-            .map(|details| details.always_keep())
-            .collect_vec();
-        let mut active_segments = Vec::with_capacity(4);
-        for event in output_order {
-            match event {
-                OrderEvent::SegmentStart(segment_id) => active_segments.push(segment_id),
-                OrderEvent::SegmentEnd(segment_id) => active_segments.retain(|a| *a != segment_id),
-                OrderEvent::Section(section_id) => {
-                    if *keep_sections.get(section_id) {
-                        for segment_id in &active_segments {
-                            keep_segments[segment_id.as_usize()] = true;
-                        }
-                        active_segments.clear();
+        let mut keep_segments = if program_segments.has_custom_phdrs() {
+            vec![true; program_segments.len()]
+        } else {
+            let mut keep_segments = program_segments
+                .iter()
+                .map(|details| details.always_keep())
+                .collect_vec();
+            let mut active_segments = Vec::with_capacity(4);
+            for event in output_order {
+                match event {
+                    OrderEvent::SegmentStart(segment_id) => active_segments.push(segment_id),
+                    OrderEvent::SegmentEnd(segment_id) => {
+                        active_segments.retain(|a| *a != segment_id);
                     }
+                    OrderEvent::Section(section_id) => {
+                        if *keep_sections.get(section_id) {
+                            for segment_id in &active_segments {
+                                keep_segments[segment_id.as_usize()] = true;
+                            }
+                            active_segments.clear();
+                        }
+                    }
+                    OrderEvent::SetLocation(..)
+                    | OrderEvent::SetLocationRelative(..)
+                    | OrderEvent::SetSectionAddress(_) => {}
                 }
-                OrderEvent::SetLocation(..)
-                | OrderEvent::SetLocationRelative(..)
-                | OrderEvent::SetSectionAddress(_) => {}
             }
-        }
 
-        if !resources.symbol_db.args.should_output_partial_object() {
-            // Always keep the program headers segment even though we don't emit any sections in it.
-            keep_segments[0] = true;
-        }
-
+            if !resources.symbol_db.args.should_output_partial_object() {
+                // Always keep the program headers segment even though we don't emit any sections in
+                // it.
+                keep_segments[0] = true;
+            }
+            keep_segments
+        };
         P::update_segment_keep_list(
             program_segments,
             &mut keep_segments,
@@ -5838,16 +5863,12 @@ fn test_no_disallowed_overlaps() {
     use crate::elf::Elf;
     use crate::output_section_id::OrderEvent;
 
-    let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000);
-    let (output_order, program_segments) = output_sections
-        .output_order(
-            crate::output_kind::OutputKind::StaticExecutable(
-                crate::args::RelocationModel::NonRelocatable,
-            ),
-            &[],
-            &[],
-        )
-        .unwrap();
+    let output_kind = crate::output_kind::OutputKind::StaticExecutable(
+        crate::args::RelocationModel::NonRelocatable,
+    );
+    let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000, output_kind);
+    let (output_order, program_segments) =
+        output_sections.output_order(output_kind, &[], &[]).unwrap();
     let mut args = crate::args::elf::ElfArgs::default();
     if args.arch == crate::arch::Architecture::Unsupported {
         args.arch = crate::arch::Architecture::X86_64;
@@ -5992,7 +6013,7 @@ fn verify_consistent_allocation_handling<P: Platform>(
     output_kind: OutputKind,
     args: &P::Args,
 ) -> Result {
-    let output_sections = OutputSections::with_base_address(0);
+    let output_sections = OutputSections::with_base_address(0, output_kind);
     let (output_order, _program_segments) = output_sections.output_order(output_kind, &[], &[])?;
     let mut mem_sizes = output_sections.new_part_map();
     P::allocate_resolution(flags, &mut mem_sizes, output_kind, args);

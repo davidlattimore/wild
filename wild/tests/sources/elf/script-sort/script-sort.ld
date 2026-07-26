@@ -14,7 +14,7 @@ SECTIONS
 
     /* Ensure valid alignment for subsequent sections */
 
-    . = 0x410000;
+    . = 0x420000;
 
     .eh_frame : { *(.eh_frame) }
     .note.gnu.property : { *(.note.gnu.property) }

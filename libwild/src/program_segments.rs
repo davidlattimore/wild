@@ -7,12 +7,14 @@ pub(crate) struct ProgramSegmentId(u8);
 #[derive(Debug)]
 pub(crate) struct ProgramSegments<T: platform::ProgramSegmentDef> {
     program_segment_details: Vec<T>,
+    has_custom_phdrs: bool,
 }
 
 impl<T: platform::ProgramSegmentDef> ProgramSegments<T> {
-    pub(crate) fn empty() -> ProgramSegments<T> {
+    pub(crate) fn empty(has_custom_phdrs: bool) -> ProgramSegments<T> {
         Self {
             program_segment_details: Vec::new(),
+            has_custom_phdrs,
         }
     }
 
@@ -22,6 +24,10 @@ impl<T: platform::ProgramSegmentDef> ProgramSegments<T> {
 
     pub(crate) fn segment_def(&self, segment_id: ProgramSegmentId) -> &T {
         &self.program_segment_details[segment_id.as_usize()]
+    }
+
+    pub(crate) fn segment_def_mut(&mut self, segment_id: ProgramSegmentId) -> &mut T {
+        &mut self.program_segment_details[segment_id.as_usize()]
     }
 
     pub(crate) fn add_segment(&mut self, segment_def: T) -> ProgramSegmentId {
@@ -52,6 +58,10 @@ impl<T: platform::ProgramSegmentDef> ProgramSegments<T> {
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = T> {
         self.program_segment_details.iter().copied()
+    }
+
+    pub(crate) fn has_custom_phdrs(&self) -> bool {
+        self.has_custom_phdrs
     }
 }
 
@@ -84,4 +94,12 @@ impl<'a, T: platform::ProgramSegmentDef> IntoIterator for &'a ProgramSegments<T>
     fn into_iter(self) -> Self::IntoIter {
         self.program_segment_details.iter()
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SegmentEntry {
+    pub(crate) id: crate::program_segments::ProgramSegmentId,
+    pub(crate) ptype: u32,
+    pub(crate) flags: u32,
+    pub(crate) is_emitted: bool,
 }
