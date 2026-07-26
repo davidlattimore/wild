@@ -75,7 +75,12 @@ impl crate::platform::Arch for ElfAArch64 {
     fn is_illegal_in_shared_object(r_type: u32) -> bool {
         matches!(
             r_type,
-            object::elf::R_AARCH64_ABS32 | object::elf::R_AARCH64_ABS16
+            object::elf::R_AARCH64_ABS32
+                | object::elf::R_AARCH64_ABS16
+                | object::elf::R_AARCH64_ADD_ABS_LO12_NC
+                | object::elf::R_AARCH64_LDST8_ABS_LO12_NC
+                | object::elf::R_AARCH64_LDST32_ABS_LO12_NC
+                | object::elf::R_AARCH64_LDST64_ABS_LO12_NC
         )
     }
 
