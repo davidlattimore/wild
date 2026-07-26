@@ -1,8 +1,10 @@
 //#Config:export-functions
 //#LinkArgs: --export=foo
-//#Contains: foo
 //#ExpectSection: name
-// TODO(wasm): verify that `not_exported` is actually not exported
+//#ExpectSym: foo
+//#ExpectSym: _start
+//#ExpectSym: memory
+//#NoSym: not_exported
 
 //#Config:missing-export
 //#LinkArgs: --export does_not_exist

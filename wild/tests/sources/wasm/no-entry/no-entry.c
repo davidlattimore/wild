@@ -1,17 +1,26 @@
 //#Config:no-entry
 //#LinkArgs: --no-entry --export=foo
 //#RunEnabled:false
-//#Contains: foo
+//#ExpectSym: foo
+//#ExpectSym: memory
+//#NoSym: _start
+//#NoSym: custom_entry
 
 //#Config:custom-entry
 //#LinkArgs: --entry=custom_entry
 //#RunEnabled:false
-//#Contains: custom_entry
+//#ExpectSym: custom_entry
+//#ExpectSym: memory
+//#NoSym: _start
+//#NoSym: foo
 
 //#Config:entry-then-no-entry
 //#LinkArgs: --entry=custom_entry --no-entry --export=foo
 //#RunEnabled:false
-//#Contains: foo
+//#ExpectSym: foo
+//#ExpectSym: memory
+//#NoSym: _start
+//#NoSym: custom_entry
 
 int foo(void) { return 7; }
 

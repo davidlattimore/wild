@@ -40,11 +40,13 @@
 //!
 //! ExpectSym:symbol-name [Symbol properties...] Checks that the specified symbol is defined in the
 //! output file. Can also assert some properties of that symbol. See Symbol properties below.
+//! For Wasm modules, this checks that the name is present in the export section. Symbol properties
+//! are not yet supported for Wasm.
 //!
 //! ExpectDynSym:symbol-name As for ExpectSym, but for dynamic symbols.
 //!
 //! NoSym:symbol-name Checks that the specified symbol name is not defined in either .symtab or
-//! .dynsym.
+//! .dynsym. For Wasm modules, checks that the name is not present in the export section.
 //!
 //! NoDynSym:symbol-name Checks that the specified symbol name is not defined in .dynsym.
 //!
@@ -556,6 +558,67 @@ fn wasm_section_names(wasm_file: &Path) -> Result<HashSet<String>> {
         }
     }
     Ok(sections)
+}
+
+fn wasm_export_names(wasm_file: &Path) -> Result<HashSet<String>> {
+    use wasmparser::Parser;
+    use wasmparser::Payload;
+
+    let bytes = std::fs::read(wasm_file)
+        .with_context(|| format!("Failed to read Wasm file {}", wasm_file.display()))?;
+    let mut exports = HashSet::new();
+    for payload in Parser::new(0).parse_all(&bytes) {
+        let Payload::ExportSection(section) = payload? else {
+            continue;
+        };
+        for export in section {
+            let export = export
+                .with_context(|| format!("Invalid export entry in {}", wasm_file.display()))?;
+            exports.insert(export.name.to_owned());
+        }
+    }
+    Ok(exports)
+}
+
+fn ensure_wasm_exports(
+    wasm_file: &Path,
+    expected: &[ExpectedSymtabEntry],
+    absent: &HashSet<String>,
+    linker_name: &str,
+) -> Result<()> {
+    for exp in expected {
+        ensure!(
+            exp.assertions == SymtabAssertions::default(),
+            "Symbol property assertions are not supported for Wasm (on `{}`)",
+            exp.name
+        );
+    }
+
+    let exports = wasm_export_names(wasm_file)?;
+    let format_exports = || {
+        let mut names: Vec<_> = exports.iter().cloned().collect();
+        names.sort();
+        names.join(", ")
+    };
+
+    for exp in expected {
+        ensure!(
+            exports.contains(&exp.name),
+            "Expected export `{}` in {linker_name} output ({}), found: [{}]",
+            exp.name,
+            wasm_file.display(),
+            format_exports()
+        );
+    }
+    for name in absent {
+        ensure!(
+            !exports.contains(name),
+            "Export `{name}` should not exist in {linker_name} output ({}), found: [{}]",
+            wasm_file.display(),
+            format_exports()
+        );
+    }
+    Ok(())
 }
 
 fn ensure_wasm_sections(
@@ -4452,6 +4515,8 @@ impl Assertions {
             does_not_contain: self.does_not_contain.clone(),
             contains_strings: self.contains_strings.clone(),
             output_file_matches: self.output_file_matches.clone(),
+            expected_symtab_entries: self.expected_symtab_entries.clone(),
+            no_sym: self.no_sym.clone(),
             ..Default::default()
         };
         ensure!(
@@ -4473,6 +4538,12 @@ impl Assertions {
             .collect();
         ensure_wasm_sections(path, &section_names, linker_used.name())?;
         ensure_wasm_func_types_unique(path, linker_used.name())?;
+        ensure_wasm_exports(
+            path,
+            &self.expected_symtab_entries,
+            &self.no_sym,
+            linker_used.name(),
+        )?;
 
         let sections = wasm_section_names(path)?;
         for name in &self.absent_sections {
