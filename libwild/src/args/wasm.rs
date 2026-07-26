@@ -31,6 +31,9 @@ pub(crate) const WASM_PAGE_SIZE: u64 = WASM_PAGE_ALIGNMENT.value();
 /// Default main stack size.
 pub(crate) const DEFAULT_STACK_SIZE: u32 = 64 * 1024;
 
+/// Default entry symbol for Wasm command modules.
+pub(crate) const DEFAULT_ENTRY: &str = "_start";
+
 #[derive(Debug)]
 pub struct WasmArgs {
     pub(crate) common: super::CommonArgs,
@@ -38,6 +41,8 @@ pub struct WasmArgs {
     pub(crate) export_symbols: Vec<String>,
     pub(crate) z_stack_size: u32,
     pub(crate) stack_first: bool,
+    // Entry symbol name. Defaults to `DEFAULT_ENTRY`.
+    pub(crate) entry: Option<String>,
 }
 
 impl WasmArgs {
@@ -57,6 +62,7 @@ impl Default for WasmArgs {
             export_symbols: Vec::new(),
             z_stack_size: DEFAULT_STACK_SIZE,
             stack_first: false,
+            entry: Some(DEFAULT_ENTRY.to_owned()),
         }
     }
 }
@@ -78,10 +84,8 @@ impl platform::Args for WasmArgs {
         false
     }
 
-    fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> &'a [u8] {
-        // TODO: probably add option. wasm-ld defaults to `_start` for command
-        // modules and no entry for reactor modules.
-        b"_start"
+    fn entry_symbol_name<'a>(&'a self, _linker_script_entry: Option<&'a [u8]>) -> &'a [u8] {
+        self.entry.as_deref().map_or(b"", str::as_bytes)
     }
 
     fn force_export_symbol_names(&self) -> &[String] {
@@ -202,6 +206,25 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Force a symbol to be exported")
         .execute(|args, _modifier_stack, value| {
             args.export_symbols.push(value.to_owned());
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-entry")
+        .help("Do not output any entry point (reactor module)")
+        .execute(|args, _modifier_stack| {
+            args.entry = None;
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("entry")
+        .short("e")
+        .help("Name of entry point symbol")
+        .execute(|args, _modifier_stack, value| {
+            args.entry = Some(value.to_owned());
             Ok(())
         });
 
