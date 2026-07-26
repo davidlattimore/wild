@@ -2007,6 +2007,39 @@ fn stack_high_after_data(data_end: u32, stack_size: u32) -> Result<u32> {
         .ok_or_else(|| crate::error!("Wasm stack pointer overflow"))
 }
 
+/// Align the end of static data for `__heap_base`.
+fn heap_base_after_data(data_end: u32) -> Result<u32> {
+    u32::try_from(crate::alignment::STACK_ALIGNMENT.align_up(u64::from(data_end)))
+        .map_err(|_| crate::error!("Wasm heap base overflow"))
+}
+
+/// Initial `__stack_pointer` value for the chosen stack layout.
+fn stack_pointer_init(data_end: u32, stack_size: u32, stack_first: bool) -> Result<u32> {
+    ensure_stack_size_aligned(stack_size)?;
+    if stack_first {
+        Ok(stack_size)
+    } else {
+        stack_high_after_data(data_end, stack_size)
+    }
+}
+
+fn heap_base_address(data_end: u32, stack_size: u32, stack_first: bool) -> Result<u32> {
+    if stack_first {
+        heap_base_after_data(data_end)
+    } else {
+        stack_high_after_data(data_end, stack_size)
+    }
+}
+
+fn ensure_stack_size_aligned(stack_size: u32) -> Result {
+    let align = crate::alignment::STACK_ALIGNMENT.value();
+    ensure!(
+        u64::from(stack_size).is_multiple_of(align),
+        "stack size must be {align}-byte aligned"
+    );
+    Ok(())
+}
+
 fn layout_object_data<'data>(
     input: &WasmObjectLayoutInput<'data>,
     index_map: &WasmObjectIndexMap,
@@ -3342,11 +3375,11 @@ fn wasm_page_size() -> u64 {
 fn ensure_memory_covers(
     layout: &mut WasmLayout<'_>,
     stack_size: u32,
-    reserve_post_data_stack: bool,
+    stack_first: bool,
 ) -> Result<u64> {
     let page = wasm_page_size();
     let mut bytes_needed = u64::from(layout.data_end.max(layout.memory_base));
-    if reserve_post_data_stack && stack_size > 0 {
+    if !stack_first && stack_size > 0 {
         bytes_needed = bytes_needed.max(u64::from(stack_high_after_data(
             layout.data_end,
             stack_size,
@@ -3372,11 +3405,12 @@ fn fill_stack_pointer_init(
     layout: &mut WasmLayout<'_>,
     indices: &LinkerDefinedIndices,
     stack_size: u32,
+    stack_first: bool,
 ) -> Result {
     let Some(defined_slot) = indices.stack_pointer_defined_slot else {
         return Ok(());
     };
-    let sp = stack_high_after_data(layout.data_end, stack_size)?;
+    let sp = stack_pointer_init(layout.data_end, stack_size, stack_first)?;
     let global = layout
         .globals
         .get_mut(defined_slot as usize)
@@ -3645,6 +3679,11 @@ where
     };
 
     let linker_memory = any_object_needs_linker_memory(&layout_inputs);
+    let stack_size = symbol_db.args.z_stack_size;
+    let stack_first = symbol_db.args.stack_first;
+    if stack_size > 0 {
+        ensure_stack_size_aligned(stack_size)?;
+    }
     let mut layout = WasmLayout {
         memory_base: if linker_memory || indices.memory_base_global.is_some() {
             LINKER_MEMORY_BASE
@@ -3653,7 +3692,11 @@ where
         },
         ..WasmLayout::default()
     };
-    let mut memory_cursor = layout.memory_base;
+    let mut memory_cursor = if stack_first {
+        stack_size
+    } else {
+        layout.memory_base
+    };
     let mut section_cursor = 0u32;
     {
         timing_phase!("Merge Wasm object layouts");
@@ -3757,8 +3800,7 @@ where
             ensure_memory_export(&mut layout.exports);
         }
         layout.data_end = memory_cursor;
-        let stack_size = symbol_db.args.z_stack_size;
-        let initial_pages = ensure_memory_covers(&mut layout, stack_size, stack_size > 0)?;
+        let initial_pages = ensure_memory_covers(&mut layout, stack_size, stack_first)?;
         // wasm-ld only defines `__heap_end` when linear memory exists (end of `memory.initial`).
         let heap_end = if layout.memories.is_empty() {
             None
@@ -3774,8 +3816,9 @@ where
             layout.data_end,
             stack_size,
             heap_end,
+            stack_first,
         )?;
-        fill_stack_pointer_init(&mut layout, &indices, stack_size)?;
+        fill_stack_pointer_init(&mut layout, &indices, stack_size, stack_first)?;
         ensure_entry_export(
             &mut layout.exports,
             entry.as_ref(),
@@ -4036,10 +4079,11 @@ impl WasmLinkerSymbol {
         data_end: u32,
         stack_size: u32,
         heap_end: Option<u32>,
+        stack_first: bool,
     ) -> Result<Option<u32>> {
         Ok(match self {
             Self::DataEnd => Some(data_end),
-            Self::HeapBase => Some(stack_high_after_data(data_end, stack_size)?),
+            Self::HeapBase => Some(heap_base_address(data_end, stack_size, stack_first)?),
             Self::WasmFirstPageEnd => Some(u32::try_from(wasm_page_size())?),
             Self::HeapEnd => heap_end,
             Self::MemoryBase
@@ -4057,12 +4101,13 @@ fn linker_defined_data_symbol_address(
     data_end: u32,
     stack_size: u32,
     heap_end: Option<u32>,
+    stack_first: bool,
 ) -> Result<Option<LinkerDefinedDataAddress>> {
     let Some(sym) = WasmLinkerSymbol::parse_bytes(name) else {
         return Ok(None);
     };
     Ok(sym
-        .data_address(data_end, stack_size, heap_end)?
+        .data_address(data_end, stack_size, heap_end, stack_first)?
         .map(|address| LinkerDefinedDataAddress { address }))
 }
 
@@ -4075,6 +4120,7 @@ fn compute_data_addresses(
     data_end: u32,
     stack_size: u32,
     heap_end: Option<u32>,
+    stack_first: bool,
 ) -> Result {
     let file_id_to_index: HashMap<crate::input_data::FileId, usize> = layout_inputs
         .iter()
@@ -4117,7 +4163,8 @@ fn compute_data_addresses(
             if let Some(def_info) = symbol_db.prelude_symbol_def(def_id)
                 && let crate::parsing::SymbolPlacement::PlatformSpecific(known) =
                     &def_info.placement
-                && let Some(address) = known.data_address(data_end, stack_size, heap_end)?
+                && let Some(address) =
+                    known.data_address(data_end, stack_size, heap_end, stack_first)?
             {
                 data_addresses[sym_idx] = address;
             }
@@ -5015,6 +5062,7 @@ mod tests {
             data_end,
             DEFAULT_STACK_SIZE,
             Some(heap_end),
+            false,
         )
         .unwrap()
         .expect("__data_end");
@@ -5025,6 +5073,7 @@ mod tests {
             data_end,
             DEFAULT_STACK_SIZE,
             Some(heap_end),
+            false,
         )
         .unwrap()
         .expect("__heap_base");
@@ -5038,6 +5087,7 @@ mod tests {
             data_end,
             DEFAULT_STACK_SIZE,
             Some(heap_end),
+            false,
         )
         .unwrap()
         .expect("__wasm_first_page_end");
@@ -5048,6 +5098,7 @@ mod tests {
             data_end,
             DEFAULT_STACK_SIZE,
             Some(heap_end),
+            false,
         )
         .unwrap()
         .expect("__heap_end");
@@ -5057,9 +5108,15 @@ mod tests {
 
         // If there is no output memory, `__heap_end` is not synthesised.
         assert!(
-            linker_defined_data_symbol_address(b"__heap_end", data_end, DEFAULT_STACK_SIZE, None,)
-                .unwrap()
-                .is_none()
+            linker_defined_data_symbol_address(
+                b"__heap_end",
+                data_end,
+                DEFAULT_STACK_SIZE,
+                None,
+                false,
+            )
+            .unwrap()
+            .is_none()
         );
         assert!(
             linker_defined_data_symbol_address(
@@ -5067,10 +5124,46 @@ mod tests {
                 data_end,
                 DEFAULT_STACK_SIZE,
                 None,
+                false,
             )
             .unwrap()
             .is_some()
         );
+    }
+
+    #[test]
+    fn stack_first_heap_base_follows_data_not_stack() {
+        let data_end = 1_048_576 + 100;
+        let stack_size = 1_048_576u32;
+        let hb = linker_defined_data_symbol_address(
+            b"__heap_base",
+            data_end,
+            stack_size,
+            Some(2 * 65_536),
+            true,
+        )
+        .unwrap()
+        .expect("__heap_base");
+        assert_eq!(hb.address, heap_base_after_data(data_end).unwrap());
+        assert!(hb.address - data_end < 16);
+        // Without stack-first, heap would be roughly data_end + stack_size.
+        let post_data = stack_high_after_data(data_end, stack_size).unwrap();
+        assert!(post_data > hb.address + stack_size / 2);
+    }
+
+    #[test]
+    fn stack_pointer_init_stack_first_is_stack_size() {
+        let sp = stack_pointer_init(2_000_000, 1_048_576, true).unwrap();
+        assert_eq!(sp, 1_048_576);
+        let sp = stack_pointer_init(1024, DEFAULT_STACK_SIZE, false).unwrap();
+        assert_eq!(sp, stack_high_after_data(1024, DEFAULT_STACK_SIZE).unwrap());
+    }
+
+    #[test]
+    fn unaligned_stack_size_is_rejected() {
+        assert!(ensure_stack_size_aligned(1000).is_err());
+        assert!(ensure_stack_size_aligned(1024).is_ok());
+        assert!(stack_pointer_init(0, 1000, true).is_err());
     }
 
     #[test]
@@ -5098,11 +5191,11 @@ mod tests {
             ..Default::default()
         };
 
-        let pages = ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, false).unwrap();
+        let pages = ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, true).unwrap();
         assert_eq!(pages, 1);
         assert_eq!(layout.memories[0].initial, 1);
 
-        let pages = ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, true).unwrap();
+        let pages = ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, false).unwrap();
         let expected_pages = (u64::from(data_end) + u64::from(DEFAULT_STACK_SIZE))
             .div_ceil(wasm_page_size())
             .max(1);
