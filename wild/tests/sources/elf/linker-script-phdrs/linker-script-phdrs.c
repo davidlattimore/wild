@@ -35,7 +35,7 @@
 
 //#Config:no-load:default
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-no-load.ld
-//#ExpectError:(?i-u)final link failed: bad value
+//#ExpectErrorWild:Missing LOAD PHDR in linker script
 
 const char message[] = "Hello PHDRS";
 char message2[10];

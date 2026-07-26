@@ -2043,7 +2043,7 @@ impl platform::Platform for Elf {
 
         let mut num_phdrs = 0;
 
-        let mut segment_has_explicit_flags = Vec::with_capacity(num_phdrs);
+        let mut segment_has_explicit_flags = Vec::new();
 
         for script in linker_scripts {
             num_phdrs += script.parsed.program_headers.len();
@@ -2137,7 +2137,7 @@ impl platform::Platform for Elf {
         }
 
         if first_load.is_none() {
-            bail!("Final Link failed: bad value");
+            bail!("Missing LOAD PHDR in linker script");
         }
 
         for &hdr_id in &[
