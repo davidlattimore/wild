@@ -27,14 +27,13 @@ use crate::macho_object::CodeSignatureSuperBlob;
 use crate::macho_object::DyldChainedFixupsHeader;
 use crate::macho_object::DyldChainedStartsInSegment;
 use crate::macho_writer;
-use crate::output_section_id;
-use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrderBuilder;
+use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_part_map::OutputSectionPartMap;
-use crate::part_id;
+use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
@@ -66,6 +65,72 @@ use std::num::NonZeroU64;
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct MachO;
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum SinglePartSectionId {
+    Strtab = crate::output_section_id::NUM_COMMON_SINGLE_PART_SECTIONS,
+    Got,
+    PltGot,
+    SymtabGlobal,
+    LinkEditSegment,
+    LoadCommands,
+    CodeSignature,
+    ChainedFixupTable,
+
+    // Must be last.
+    Count,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum RegularSectionId {
+    Text,
+    Cstring,
+    Const,
+    Data,
+
+    // Must be last.
+    Count,
+}
+
+pub(crate) mod part_id {
+    use super::SinglePartSectionId;
+    use crate::part_id::PartId;
+
+    pub(crate) const STRTAB: PartId = SinglePartSectionId::Strtab.part_id();
+    pub(crate) const GOT: PartId = SinglePartSectionId::Got.part_id();
+    pub(crate) const PLT_GOT: PartId = SinglePartSectionId::PltGot.part_id();
+    pub(crate) const SYMTAB_GLOBAL: PartId = SinglePartSectionId::SymtabGlobal.part_id();
+    pub(crate) const LOAD_COMMANDS: PartId = SinglePartSectionId::LoadCommands.part_id();
+    pub(crate) const CODE_SIGNATURE: PartId = SinglePartSectionId::CodeSignature.part_id();
+    pub(crate) const CHAINED_FIXUP_TABLE: PartId = SinglePartSectionId::ChainedFixupTable.part_id();
+}
+
+pub(crate) mod output_section_id {
+    use super::RegularSectionId;
+    use super::SinglePartSectionId;
+    use crate::output_section_id::OutputSectionId;
+
+    pub(crate) const STRTAB: OutputSectionId = SinglePartSectionId::Strtab.output_section_id();
+    pub(crate) const GOT: OutputSectionId = SinglePartSectionId::Got.output_section_id();
+    pub(crate) const PLT_GOT: OutputSectionId = SinglePartSectionId::PltGot.output_section_id();
+    pub(crate) const SYMTAB_GLOBAL: OutputSectionId =
+        SinglePartSectionId::SymtabGlobal.output_section_id();
+    pub(crate) const LINK_EDIT_SEGMENT: OutputSectionId =
+        SinglePartSectionId::LinkEditSegment.output_section_id();
+    pub(crate) const LOAD_COMMANDS: OutputSectionId =
+        SinglePartSectionId::LoadCommands.output_section_id();
+    pub(crate) const CODE_SIGNATURE: OutputSectionId =
+        SinglePartSectionId::CodeSignature.output_section_id();
+    pub(crate) const CHAINED_FIXUP_TABLE: OutputSectionId =
+        SinglePartSectionId::ChainedFixupTable.output_section_id();
+
+    pub(crate) const TEXT: OutputSectionId = RegularSectionId::Text.output_section_id();
+    pub(crate) const CSTRING: OutputSectionId = RegularSectionId::Cstring.output_section_id();
+    pub(crate) const CONST: OutputSectionId = RegularSectionId::Const.output_section_id();
+    pub(crate) const DATA: OutputSectionId = RegularSectionId::Data.output_section_id();
+}
 
 const LE: Endianness = Endianness::Little;
 
@@ -811,7 +876,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
         _rosegment: bool,
     ) -> bool {
         let mapped_segment = match section_id {
-            output_section_id::FILE_HEADER => SegmentType::Text,
+            crate::output_section_id::FILE_HEADER => SegmentType::Text,
             output_section_id::LOAD_COMMANDS => SegmentType::LoadCommands,
             output_section_id::TEXT
             | output_section_id::CSTRING
@@ -913,6 +978,28 @@ impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
 }
 
 impl platform::Platform for MachO {
+    const NUM_SINGLE_PART_SECTIONS: u32 = SinglePartSectionId::Count as u32;
+    const NUM_BUILT_IN_REGULAR_SECTIONS: usize = RegularSectionId::Count as usize;
+
+    const TEXT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::TEXT);
+    const DATA_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::DATA);
+    const STRTAB_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::STRTAB);
+    const SYMTAB_GLOBAL_SECTION_ID: Option<OutputSectionId> =
+        Some(output_section_id::SYMTAB_GLOBAL);
+    const GOT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::GOT);
+    const PLT_GOT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::PLT_GOT);
+
+    const VERIFY_IGNORE_ALIGNMENT_SECTION_IDS: &'static [OutputSectionId] =
+        &[output_section_id::CODE_SIGNATURE, output_section_id::STRTAB];
+
+    const VERIFY_IGNORE_SECTION_IDS: &'static [OutputSectionId] = &[
+        crate::output_section_id::FILE_HEADER,
+        output_section_id::LINK_EDIT_SEGMENT,
+        output_section_id::LOAD_COMMANDS,
+        output_section_id::CHAINED_FIXUP_TABLE,
+        output_section_id::CODE_SIGNATURE,
+    ];
+
     type File<'data> = File<'data>;
     type FileFlags = u32;
     type SymtabEntry = SymtabEntry;
@@ -1367,7 +1454,7 @@ impl platform::Platform for MachO {
         resources: &layout::FinaliseSizesResources<'data, '_, Self>,
         args: &Self::Args,
     ) {
-        sizes.increment(part_id::FILE_HEADER, size_of::<FileHeader>() as u64);
+        sizes.increment(crate::part_id::FILE_HEADER, size_of::<FileHeader>() as u64);
 
         let mut allocate_load_cmd = |command_size| {
             sizes.increment(part_id::LOAD_COMMANDS, command_size as u64);
@@ -1602,7 +1689,7 @@ impl platform::Platform for MachO {
             OutputOrderBuilder::<Self>::new(output_kind, output_sections, secondary, false, &[]);
 
         // File header and all load commands.
-        builder.add_section(output_section_id::FILE_HEADER);
+        builder.add_section(crate::output_section_id::FILE_HEADER);
         builder.add_section(output_section_id::LOAD_COMMANDS);
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
@@ -1650,7 +1737,7 @@ impl platform::Platform for MachO {
 
     fn last_part_size_to_extend(
         record: &OutputRecordLayout,
-        last_part_id: part_id::PartId,
+        last_part_id: PartId,
     ) -> Result<usize> {
         ensure!(
             last_part_id == part_id::CODE_SIGNATURE,
@@ -1699,11 +1786,12 @@ fn create_dynamic_layout_ext<'data>(
     }))
 }
 
-const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
-    let mut defs: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] =
-        [DEFAULT_DEFS; NUM_BUILT_IN_SECTIONS];
+const NUM_BUILT_IN_SECTIONS: usize = crate::output_section_id::num_built_in_sections::<MachO>();
 
-    defs[output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
+const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
+    let mut defs = [DEFAULT_DEFS; NUM_BUILT_IN_SECTIONS];
+
+    defs[crate::output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"FILE_HEADER")),
         ..DEFAULT_DEFS
     };
@@ -1814,11 +1902,11 @@ fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
 
 // TODO: sort properly
 const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
-    SectionRule::exact_section_keep(b"__text", crate::output_section_id::TEXT),
-    SectionRule::exact_section_keep(b"__cstring", crate::output_section_id::CSTRING),
-    SectionRule::exact_section_keep(b"__const", crate::output_section_id::CONST),
-    SectionRule::exact_section_keep(b"__data", crate::output_section_id::DATA),
-    // SectionRule::exact_section_keep(b"__compact_unwind", crate::output_section_id::EH_FRAME),
+    SectionRule::exact_section_keep(b"__text", output_section_id::TEXT),
+    SectionRule::exact_section_keep(b"__cstring", output_section_id::CSTRING),
+    SectionRule::exact_section_keep(b"__const", output_section_id::CONST),
+    SectionRule::exact_section_keep(b"__data", output_section_id::DATA),
+    // TODO: Add a Mach-O output section ID and rule for `__compact_unwind`.
 ];
 
 pub(crate) const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
@@ -2010,5 +2098,21 @@ impl DynamicLayoutStateExt {
             imported_symbols: Default::default(),
             loaded: !args.dead_strip_dylibs,
         }
+    }
+}
+
+impl SinglePartSectionId {
+    const fn part_id(self) -> PartId {
+        PartId::from_u32(self as u32)
+    }
+
+    const fn output_section_id(self) -> OutputSectionId {
+        OutputSectionId::from_u32(self as u32)
+    }
+}
+
+impl RegularSectionId {
+    const fn output_section_id(self) -> OutputSectionId {
+        crate::output_section_id::regular_section_base::<MachO>().offset(self as usize)
     }
 }

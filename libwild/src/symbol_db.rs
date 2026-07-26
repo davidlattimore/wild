@@ -22,7 +22,6 @@ use crate::input_data::FileId;
 use crate::input_data::LoadedInputs;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::LayoutRulesBuilder;
-use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::parsing;
@@ -32,7 +31,6 @@ use crate::parsing::Redirect;
 use crate::parsing::SymbolLoc;
 use crate::parsing::SymbolPlacement;
 use crate::parsing::SyntheticSymbols;
-use crate::part_id;
 use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Args;
@@ -1055,10 +1053,10 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         let file_id = self.file_id_for_symbol(symbol_id);
         let file = self.file(file_id);
         if file.is_dynamic() {
-            return part_id::UNMAPPED;
+            return crate::part_id::UNMAPPED;
         }
         let Some(input_section_id) = file.input_section_id_for_symbol(symbol_id) else {
-            return part_id::UNMAPPED;
+            return crate::part_id::UNMAPPED;
         };
         self.section_part_ids[input_section_id.as_usize()]
     }
@@ -2129,7 +2127,7 @@ impl<P: Platform> InternalSymDefInfo<'_, P> {
             // The other linkers attach to the closest section, but the address is nonetheless
             // outside of the selected section. It's tricky for us to find the closest section
             // at this point in the code, so we pick an arbitrary section.
-            SymbolPlacement::LoadBaseAddress => Some(output_section_id::TEXT),
+            SymbolPlacement::LoadBaseAddress => P::TEXT_SECTION_ID,
         }
     }
 }

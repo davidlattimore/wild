@@ -51,6 +51,8 @@ use crate::macho::code_signature_identifier;
 use crate::macho::code_signature_padded_identifier_size;
 use crate::macho::get_segment_sections;
 use crate::macho::load_dylib_command_size;
+use crate::macho::output_section_id;
+use crate::macho::part_id;
 use crate::macho_object::CS_ADHOC;
 use crate::macho_object::CS_EXECSEG_MAIN_BINARY;
 use crate::macho_object::CS_HASHTYPE_SHA256;
@@ -65,12 +67,12 @@ use crate::macho_object::CodeSignatureSuperBlob;
 use crate::macho_object::DYLD_CHAINED_IMPORT;
 use crate::macho_object::DYLD_CHAINED_PTR_64_OFFSET;
 use crate::macho_object::DyldChainedStartsInSegment;
-use crate::output_section_id;
+use crate::output_section_id::OrderEvent;
+use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionName;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
-use crate::part_id;
 use crate::platform::Arch;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
@@ -213,7 +215,7 @@ fn write_prelude<'data>(
         prelude.format_specific.load_dylib_command_sizes.len()
     );
 
-    let header_buffer = buffers.get_mut(part_id::FILE_HEADER);
+    let header_buffer = buffers.get_mut(crate::part_id::FILE_HEADER);
     populate_file_header(layout, prelude, take_mut(header_buffer)?)?;
     ensure!(header_buffer.is_empty(), "Excess FILE_HEADER allocation");
 
@@ -685,7 +687,7 @@ fn write_section_raw<'out, 'data>(
     let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
     if layout
         .output_sections
-        .has_data_in_file(part_id.output_section_id())
+        .has_data_in_file(part_id.output_section_id::<MachO>())
     {
         let section_buffer = buffers.get_mut(part_id);
         let allocation_size = sec.capacity(part_id, &layout.output_sections) as usize;
@@ -756,7 +758,7 @@ fn write_entry_point_command(layout: &MachOLayout, command: &mut EntryPointComma
 
     let image_base = layout
         .section_layouts
-        .get(output_section_id::FILE_HEADER)
+        .get(crate::output_section_id::FILE_HEADER)
         .mem_offset;
 
     let entry_offset = entry_address
@@ -1260,7 +1262,7 @@ fn write_symbols<'data>(
                 let section_id = match &object.sections[section_index.0] {
                     SectionSlot::Loaded(_) => object
                         .section_part_id(section_index, &layout.symbol_db.section_part_ids)
-                        .output_section_id(),
+                        .output_section_id::<MachO>(),
                     _ => bail!(
                         "Tried to copy a symbol in a section we didn't load. {}",
                         layout.symbol_debug(symbol_id)
@@ -1296,16 +1298,13 @@ fn write_symbols<'data>(
 
 // TODO: This is inefficient; simplify it once load commands use a table allocator instead of
 // being modeled as a section.
-fn macho_section_index(
-    layout: &MachOLayout<'_>,
-    section_id: output_section_id::OutputSectionId,
-) -> Result<u8> {
+fn macho_section_index(layout: &MachOLayout<'_>, section_id: OutputSectionId) -> Result<u8> {
     // The section index is one-based.
     let mut section_idx = 1u8;
     let mut in_section_segment = false;
     for event in &layout.output_order {
         match event {
-            output_section_id::OrderEvent::SegmentStart(segment_id) => {
+            OrderEvent::SegmentStart(segment_id) => {
                 let segment_type = layout.program_segments.segment_def(segment_id).segment_type;
                 // TODO: Right now, the various load commands are mapped as "sections", so we can't
                 // just take the mapped index of the output "section".
@@ -1316,10 +1315,10 @@ fn macho_section_index(
                         | SegmentType::DataConstSections
                 );
             }
-            output_section_id::OrderEvent::SegmentEnd(_) => {
+            OrderEvent::SegmentEnd(_) => {
                 in_section_segment = false;
             }
-            output_section_id::OrderEvent::Section(current) if in_section_segment => {
+            OrderEvent::Section(current) if in_section_segment => {
                 if current == section_id {
                     return Ok(section_idx);
                 }

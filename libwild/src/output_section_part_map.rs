@@ -117,7 +117,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
                 continue;
             };
 
-            let part_id_range = section_id.part_id_range();
+            let part_id_range = section_id.part_id_range::<P>();
             let max_alignment = self.max_alignment(part_id_range.clone(), output_sections);
             output[part_id_range.clone()]
                 .iter_mut()
@@ -150,7 +150,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             .max(
                 range
                     .start
-                    .output_section_id()
+                    .output_section_id::<P>()
                     .min_alignment(output_sections),
             )
     }
@@ -202,9 +202,6 @@ impl<'out> OutputSectionPartMap<&'out mut [u8]> {
 
 #[test]
 fn test_merge_parts() {
-    use crate::output_section_id;
-    use crate::output_section_id::OutputSectionId;
-
     let output_sections =
         crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
     let (output_order, _program_segments) = output_sections
@@ -226,46 +223,29 @@ fn test_merge_parts() {
         },
     );
 
-    // Subtract the Mach-O specific sections.
-    let num_regular_sections = output_sections.num_regular_sections() - 2;
+    let num_regular_sections = output_sections.num_regular_sections();
     let mut num_sections_with_17 = 0;
 
     let mut sum_of_1s = output_sections.new_section_map::<u32>();
     sum_of_1s.for_each_mut(|section_id, sum| {
-        let range = section_id.part_id_range();
+        if !section_id.is_regular::<crate::elf::Elf>()
+            && <crate::elf::Elf as crate::platform::Platform>::single_part_id(section_id).is_none()
+        {
+            return;
+        }
+        let range = section_id.part_id_range::<crate::elf::Elf>();
         *sum = all_1[range].iter().sum();
     });
 
-    const SKIP_SECTIONS: &[OutputSectionId] = &[
-        crate::part_id::UNMAPPED.output_section_id(),
-        output_section_id::CSTRING,
-        output_section_id::CONST,
-        output_section_id::LINK_EDIT_SEGMENT,
-        output_section_id::LOAD_COMMANDS,
-        output_section_id::CHAINED_FIXUP_TABLE,
-        output_section_id::CODE_SIGNATURE,
-        // Wasm specific sections.
-        output_section_id::WASM_TYPE,
-        output_section_id::WASM_IMPORT,
-        output_section_id::WASM_FUNCTION,
-        output_section_id::WASM_TABLE,
-        output_section_id::WASM_MEMORY,
-        output_section_id::WASM_GLOBAL,
-        output_section_id::WASM_EXPORT,
-        output_section_id::WASM_START,
-        output_section_id::WASM_ELEMENT,
-        output_section_id::WASM_DATA_COUNT,
-        output_section_id::WASM_CODE,
-        output_section_id::WASM_DATA,
-        output_section_id::WASM_NAME,
-    ];
     let mut sum_of_sums = 0;
     sum_of_1s.for_each(|section_id, sum| {
         sum_of_sums += *sum;
         if *sum == 17 {
             num_sections_with_17 += 1;
         }
-        if SKIP_SECTIONS.contains(&section_id) {
+        let unsupported_single_part = !section_id.is_regular::<crate::elf::Elf>()
+            && <crate::elf::Elf as crate::platform::Platform>::single_part_id(section_id).is_none();
+        if section_id == crate::output_section_id::UNMAPPED || unsupported_single_part {
             assert!(*sum == 0, "Expected zero sum for section {section_id:?}");
         } else {
             assert!(*sum > 0, "Expected non-zero sum for section {section_id:?}");
@@ -279,13 +259,18 @@ fn test_merge_parts() {
 
     let mut merged = output_sections.new_section_map::<u32>();
     merged.for_each_mut(|section_id, sum| {
-        let range = section_id.part_id_range();
+        if !section_id.is_regular::<crate::elf::Elf>()
+            && <crate::elf::Elf as crate::platform::Platform>::single_part_id(section_id).is_none()
+        {
+            return;
+        }
+        let range = section_id.part_id_range::<crate::elf::Elf>();
         *sum = headers_only[range].iter().sum();
     });
 
     assert_eq!(*merged.get(crate::output_section_id::FILE_HEADER), 42);
-    assert_eq!(*merged.get(crate::output_section_id::TEXT), 0);
-    assert_eq!(*merged.get(crate::output_section_id::BSS), 0);
+    assert_eq!(*merged.get(crate::elf::output_section_id::TEXT), 0);
+    assert_eq!(*merged.get(crate::elf::output_section_id::BSS), 0);
 }
 
 #[test]
@@ -344,7 +329,8 @@ fn test_output_order_map_consistent() {
 
     // First, make sure that all our built-in part-ids are here. If they're not, we'd fail anyway,
     // but we can give a much better failure message if we check first.
-    let mut missing: hashbrown::HashSet<PartId> = crate::part_id::built_in_part_ids().collect();
+    let mut missing: hashbrown::HashSet<PartId> =
+        crate::part_id::built_in_part_ids::<crate::elf::Elf>().collect();
     part_map.map(|part_id, _| {
         missing.remove(&part_id);
     });
@@ -356,7 +342,7 @@ fn test_output_order_map_consistent() {
             .iter()
             .map(|id| format!(
                 "{id} (in {})",
-                output_sections.display_name(id.output_section_id())
+                output_sections.display_name(id.output_section_id::<crate::elf::Elf>())
             ))
             .collect_vec()
             .join(", ")
@@ -364,7 +350,7 @@ fn test_output_order_map_consistent() {
 
     let mut ordering_a = Vec::new();
     part_map.output_order_map(&output_order, &output_sections, |part_id, _, _| {
-        let section_id = part_id.output_section_id();
+        let section_id = part_id.output_section_id::<crate::elf::Elf>();
         if ordering_a.last() != Some(&section_id.as_usize()) {
             ordering_a.push(section_id.as_usize());
         }
@@ -385,7 +371,7 @@ fn test_output_order_map_consistent() {
 
 #[test]
 fn test_output_order_map() {
-    use crate::output_section_id;
+    use crate::elf::output_section_id;
 
     let output_sections =
         crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
@@ -400,10 +386,12 @@ fn test_output_order_map() {
         .unwrap();
     let mut part_map = output_sections.new_part_map::<u32>();
 
-    const PART_ID1: PartId = output_section_id::DATA.part_id_with_alignment(alignment::USIZE);
+    const PART_ID1: PartId =
+        output_section_id::DATA.part_id_with_alignment::<crate::elf::Elf>(alignment::USIZE);
     *part_map.get_mut(PART_ID1) += 32;
 
-    const PART_ID2: PartId = output_section_id::DATA.part_id_with_alignment(alignment::MIN);
+    const PART_ID2: PartId =
+        output_section_id::DATA.part_id_with_alignment::<crate::elf::Elf>(alignment::MIN);
     *part_map.get_mut(PART_ID2) += 5;
 
     part_map.output_order_map(
@@ -419,7 +407,7 @@ fn test_output_order_map() {
                 assert_eq!(value, 5);
             }
             _ => {
-                if part_id.output_section_id() == output_section_id::DATA {
+                if part_id.output_section_id::<crate::elf::Elf>() == output_section_id::DATA {
                     assert!(
                         alignment <= alignment::USIZE,
                         "Unexpected alignment {alignment}"
@@ -433,25 +421,33 @@ fn test_output_order_map() {
 
 #[test]
 fn test_max_alignment() {
-    use crate::output_section_id;
+    use crate::elf::output_section_id;
 
     let output_sections =
         crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
     let mut part_map = output_sections.new_part_map::<u32>();
 
     assert_eq!(
-        part_map.max_alignment(output_section_id::DATA.part_id_range(), &output_sections),
+        part_map.max_alignment(
+            output_section_id::DATA.part_id_range::<crate::elf::Elf>(),
+            &output_sections,
+        ),
         alignment::MIN
     );
 
-    const PART_ID1: PartId = output_section_id::DATA.part_id_with_alignment(alignment::USIZE);
+    const PART_ID1: PartId =
+        output_section_id::DATA.part_id_with_alignment::<crate::elf::Elf>(alignment::USIZE);
     *part_map.get_mut(PART_ID1) += 32;
 
-    const PART_ID2: PartId = output_section_id::DATA.part_id_with_alignment(alignment::MIN);
+    const PART_ID2: PartId =
+        output_section_id::DATA.part_id_with_alignment::<crate::elf::Elf>(alignment::MIN);
     *part_map.get_mut(PART_ID2) += 5;
 
     assert_eq!(
-        part_map.max_alignment(output_section_id::DATA.part_id_range(), &output_sections),
+        part_map.max_alignment(
+            output_section_id::DATA.part_id_range::<crate::elf::Elf>(),
+            &output_sections,
+        ),
         alignment::USIZE
     );
 }

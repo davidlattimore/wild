@@ -37,8 +37,6 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Redirect;
 use crate::parsing::SymbolLoc;
 use crate::parsing::SymbolPlacement;
-use crate::part_id;
-use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
 use crate::platform::Arch;
 use crate::platform::Args as _;
@@ -242,7 +240,10 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         &finalise_sizes_resources,
     )?;
 
-    let got_relr_n = *section_part_sizes.get(part_id::GOT_RELR) / 8;
+    let got_relr_n = A::Platform::GOT_RELR_SECTION_ID
+        .and_then(A::Platform::single_part_id)
+        .map_or(0, |part_id| *section_part_sizes.get(part_id) / 8);
+
     let thunk_blocks = thunk_layout_builder
         .map(|builder| {
             builder.build(
@@ -323,7 +324,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         .iter()
         .max_by_key(|(_, record)| record.file_end())
     {
-        let last_part_id = PartId::from_usize(last_section_id.part_id_range().end.as_usize() - 1);
+        let last_part_id =
+            PartId::from_usize(last_section_id.part_id_range::<P>().end.as_usize() - 1);
         let extra_file_size = A::Platform::last_part_size_to_extend(
             section_part_layouts.get(last_part_id),
             last_part_id,
@@ -1032,7 +1034,8 @@ pub(crate) fn compute_allocations<P: Platform>(
     output_kind: OutputKind,
     args: &P::Args,
 ) -> OutputSectionPartMap<u64> {
-    let mut sizes = OutputSectionPartMap::with_size(NUM_SINGLE_PART_SECTIONS as usize);
+    let mut sizes =
+        OutputSectionPartMap::with_size(crate::part_id::regular_part_base::<P>().as_usize());
     P::allocate_resolution(resolution.flags, &mut sizes, output_kind, args);
     sizes
 }
@@ -1259,35 +1262,33 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
         memory_offsets: &mut OutputSectionPartMap<u64>,
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
     ) -> u32 {
-        // strtab
-        let offset = memory_offsets.get_mut(part_id::STRTAB);
-        let strtab_offset_start = (*offset
-            - section_layouts.get(output_section_id::STRTAB).mem_offset)
-            .try_into()
-            .expect("Symbol string table overflowed 32 bits");
-        *offset += self.mem_sizes.get(part_id::STRTAB);
+        let mut strtab_offset_start = 0;
+        if let Some((strtab_section_id, strtab_part_id)) =
+            P::STRTAB_SECTION_ID.and_then(|section_id| {
+                P::single_part_id(section_id).map(|part_id| (section_id, part_id))
+            })
+        {
+            let offset = memory_offsets.get_mut(strtab_part_id);
+            strtab_offset_start = (*offset - section_layouts.get(strtab_section_id).mem_offset)
+                .try_into()
+                .expect("Symbol string table overflowed 32 bits");
+            *offset += self.mem_sizes.get(strtab_part_id);
+        }
 
-        // symtab
-        memory_offsets.increment(
-            part_id::SYMTAB_LOCAL,
-            *self.mem_sizes.get(part_id::SYMTAB_LOCAL),
-        );
-        memory_offsets.increment(
-            part_id::SYMTAB_GLOBAL,
-            *self.mem_sizes.get(part_id::SYMTAB_GLOBAL),
-        );
-
-        memory_offsets.increment(
-            part_id::SYMTAB_SHNDX_LOCAL,
-            *self.mem_sizes.get(part_id::SYMTAB_SHNDX_LOCAL),
-        );
-
-        memory_offsets.increment(
-            part_id::SYMTAB_SHNDX_GLOBAL,
-            *self.mem_sizes.get(part_id::SYMTAB_SHNDX_GLOBAL),
-        );
-
-        memory_offsets.increment(part_id::GDB_INDEX, *self.mem_sizes.get(part_id::GDB_INDEX));
+        for section_id in [
+            P::SYMTAB_LOCAL_SECTION_ID,
+            P::SYMTAB_GLOBAL_SECTION_ID,
+            P::SYMTAB_SHNDX_LOCAL_SECTION_ID,
+            P::SYMTAB_SHNDX_GLOBAL_SECTION_ID,
+            P::GDB_INDEX_SECTION_ID,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(part_id) = P::single_part_id(section_id) {
+                memory_offsets.increment(part_id, *self.mem_sizes.get(part_id));
+            }
+        }
 
         strtab_offset_start
     }
@@ -1297,7 +1298,9 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
     }
 
     fn store_section_attributes(&mut self, part_id: PartId, header: &P::SectionHeader) {
-        let existing_attributes = self.section_attributes.get_mut(part_id.output_section_id());
+        let existing_attributes = self
+            .section_attributes
+            .get_mut(part_id.output_section_id::<P>());
 
         let new_attributes = P::section_attributes(header);
 
@@ -1696,16 +1699,20 @@ impl<'data, P: Platform> Layout<'data, P> {
     /// Returns the base address of the global offset table. This needs to be consistent with the
     /// symbol `_GLOBAL_OFFSET_TABLE_`.
     pub(crate) fn got_base(&self) -> u64 {
-        let got_layout = self.section_layouts.get(output_section_id::GOT);
+        let got_layout = self
+            .section_layouts
+            .get(P::GOT_SECTION_ID.expect("platform has no GOT section"));
         got_layout.mem_offset
     }
 
     /// Returns whether we're going to output the .gnu.version section.
     pub(crate) fn gnu_version_enabled(&self) -> bool {
-        self.section_part_layouts
-            .get(part_id::GNU_VERSION)
-            .file_size
-            > 0
+        P::GNU_VERSION_SECTION_ID.is_some_and(|section_id| {
+            self.section_part_layouts
+                .get(section_id.base_part_id::<P>())
+                .file_size
+                > 0
+        })
     }
 }
 
@@ -1810,14 +1817,14 @@ fn compute_symbols_and_layouts<'data, P: Platform>(
             verbose_timing_phase!("Assign addresses for group");
 
             if cfg!(debug_assertions) {
-                let offset_verifier = crate::verification::OffsetVerifier::new(
+                let offset_verifier = crate::verification::OffsetVerifier::new::<P>(
                     &memory_offsets,
                     &state.common.mem_sizes,
                 );
 
                 // Make sure that ignored offsets really aren't used by `finalise_layout` by setting
                 // them to an arbitrary value. If they are used, we'll quickly notice.
-                crate::verification::clear_ignored(&mut memory_offsets);
+                crate::verification::clear_ignored::<P>(&mut memory_offsets);
 
                 let layout = state.finalise_layout(&mut memory_offsets, symbols_out, resources)?;
 
@@ -2052,12 +2059,14 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         (0, None)
     };
     if gdb_index_size > 0 {
+        let gdb_index = P::GDB_INDEX_SECTION_ID
+            .expect("platform produced a GDB index without a GDB-index section");
         let first_group = group_states.first_mut().unwrap();
         first_group
             .common
             .mem_sizes
-            .increment(part_id::GDB_INDEX, gdb_index_size);
-        total_sizes.increment(part_id::GDB_INDEX, gdb_index_size);
+            .increment(gdb_index.base_part_id::<P>(), gdb_index_size);
+        total_sizes.increment(gdb_index.base_part_id::<P>(), gdb_index_size);
     }
 
     // We need to apply late-stage adjustments for the epilogue before we do so for the prelude,
@@ -2470,28 +2479,39 @@ impl<'data, P: Platform> GroupState<'data, P> {
             .collect::<Result<Vec<_>>>()?;
 
         let entry_size = size_of::<P::SymtabEntry>() as u64;
-        let symtab_local_start_index = ((memory_offsets.get(part_id::SYMTAB_LOCAL)
-            - resources
-                .section_layouts
-                .get(output_section_id::SYMTAB_LOCAL)
-                .mem_offset)
-            / entry_size) as u32;
-        let symtab_global_start_index = ((memory_offsets.get(part_id::SYMTAB_GLOBAL)
-            - resources
-                .section_layouts
-                .get(output_section_id::SYMTAB_GLOBAL)
-                .mem_offset)
-            / entry_size) as u32;
+        let symtab_local_start_index = P::SYMTAB_LOCAL_SECTION_ID
+            .and_then(|section_id| {
+                P::single_part_id(section_id).map(|part_id| (section_id, part_id))
+            })
+            .map_or(0, |(section_id, part_id)| {
+                ((memory_offsets.get(part_id)
+                    - resources.section_layouts.get(section_id).mem_offset)
+                    / entry_size) as u32
+            });
+        let symtab_global_start_index = P::SYMTAB_GLOBAL_SECTION_ID
+            .and_then(|section_id| {
+                P::single_part_id(section_id).map(|part_id| (section_id, part_id))
+            })
+            .map_or(0, |(section_id, part_id)| {
+                ((memory_offsets.get(part_id)
+                    - resources.section_layouts.get(section_id).mem_offset)
+                    / entry_size) as u32
+            });
 
         let strtab_start_offset = self
             .common
             .finalise_layout(memory_offsets, resources.section_layouts);
-        let dynstr_start_offset = (memory_offsets.get(part_id::DYNSTR)
-            - resources
-                .section_layouts
-                .get(output_section_id::DYNSTR)
-                .mem_offset) as u32;
-        memory_offsets.increment(part_id::DYNSTR, *self.common.mem_sizes.get(part_id::DYNSTR));
+        let dynstr_start_offset = P::DYNSTR_SECTION_ID
+            .and_then(|section_id| {
+                P::single_part_id(section_id).map(|part_id| (section_id, part_id))
+            })
+            .map_or(0, |(section_id, part_id)| {
+                let start = (memory_offsets.get(part_id)
+                    - resources.section_layouts.get(section_id).mem_offset)
+                    as u32;
+                memory_offsets.increment(part_id, *self.common.mem_sizes.get(part_id));
+                start
+            });
 
         Ok(GroupLayout {
             files,
@@ -2828,7 +2848,7 @@ fn compute_file_sizes<P: Platform>(
     output_sections: &OutputSections<'_, P>,
 ) -> OutputSectionPartMap<usize> {
     mem_sizes.map(|part_id, size| {
-        if output_sections.has_data_in_file(part_id.output_section_id()) {
+        if output_sections.has_data_in_file(part_id.output_section_id::<P>()) {
             *size as usize
         } else {
             0
@@ -2982,7 +3002,7 @@ impl Section {
         part_id: PartId,
         output_sections: &OutputSections<P>,
     ) -> u64 {
-        if part_id.should_pack() {
+        if part_id.should_pack::<P>() {
             self.size
         } else {
             part_id.alignment(output_sections).align_up(self.size)
@@ -3058,10 +3078,12 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
-        if resources.symbol_db.args.should_write_linker_identity() {
+        if resources.symbol_db.args.should_write_linker_identity()
+            && let Some(comment_section_id) = P::COMMENT_SECTION_ID
+        {
             // Allocate space to store the identity of the linker in the .comment section.
             common.allocate(
-                output_section_id::COMMENT.part_id_with_alignment(alignment::MIN),
+                comment_section_id.part_id_with_alignment::<P>(alignment::MIN),
                 self.identity.len() as u64,
             );
         }
@@ -3079,8 +3101,10 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 .transpose()?;
         }
         if let Some(dynamic_linker) = self.dynamic_linker.as_ref() {
+            let interp_section_id = P::INTERP_SECTION_ID
+                .expect("platform specified a dynamic linker without an interpreter section");
             common.allocate(
-                part_id::INTERP,
+                interp_section_id.base_part_id::<P>(),
                 dynamic_linker.as_bytes_with_nul().len() as u64,
             );
         }
@@ -3157,7 +3181,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         merged_strings.for_each(|section_id, merged| {
             if merged.len() > 0 {
                 common.allocate(
-                    section_id.part_id_with_alignment(alignment::MIN),
+                    section_id.part_id_with_alignment::<P>(alignment::MIN),
                     merged.len(),
                 );
             }
@@ -3221,8 +3245,18 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                     }
                 }
             }
-            extra_sizes.increment(part_id::SYMTAB_LOCAL, num_section_syms * entry_size);
-            extra_sizes.increment(part_id::STRTAB, section_names_size);
+            extra_sizes.increment(
+                P::SYMTAB_LOCAL_SECTION_ID
+                    .expect("partial objects require a local symbol table")
+                    .base_part_id::<P>(),
+                num_section_syms * entry_size,
+            );
+            extra_sizes.increment(
+                P::STRTAB_SECTION_ID
+                    .expect("partial objects require a string table")
+                    .base_part_id::<P>(),
+                section_names_size,
+            );
         }
 
         // We need to allocate both our own size record and the group totals, since they've already
@@ -3306,7 +3340,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         // Next, keep any sections for which we've recorded a non-zero size.
         total_sizes.map(|part_id, size| {
             if *size > 0 {
-                *keep_sections.get_mut(part_id.output_section_id()) = true;
+                *keep_sections.get_mut(part_id.output_section_id::<P>()) = true;
             }
         });
 
@@ -3345,9 +3379,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             // should still be emitted if something references it.
             let section_info = output_sections.section_infos.get(section_id);
             if section_info.section_attributes.is_null()
-                && section_id != output_section_id::FILE_HEADER
+                && section_id != crate::output_section_id::FILE_HEADER
             {
-                if section_id.is_custom() {
+                if section_id.is_custom::<P>() {
                     output_sections
                         .section_infos
                         .get_mut(section_id)
@@ -3361,7 +3395,10 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
         let mut num_sections = keep_sections.values_iter().filter(|p| **p).count();
         if P::requires_symtab_shndx(num_sections) {
-            *keep_sections.get_mut(output_section_id::SYMTAB_SHNDX_LOCAL) = true;
+            *keep_sections.get_mut(
+                P::SYMTAB_SHNDX_LOCAL_SECTION_ID
+                    .expect("platform requires a symbol-table section-index table"),
+            ) = true;
             num_sections += 1;
         }
 
@@ -3463,7 +3500,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
     ) -> Result<PreludeLayout<'data, P>> {
         let header_layout = resources
             .section_layouts
-            .get(output_section_id::FILE_HEADER);
+            .get(crate::output_section_id::FILE_HEADER);
         assert_eq!(header_layout.file_offset, 0);
 
         let format_specific = P::finalise_prelude_layout(&self, memory_offsets, resources)?;
@@ -3471,9 +3508,11 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)?;
 
-        if resources.symbol_db.args.should_write_linker_identity() {
+        if resources.symbol_db.args.should_write_linker_identity()
+            && let Some(comment_section_id) = P::COMMENT_SECTION_ID
+        {
             memory_offsets.increment(
-                output_section_id::COMMENT.part_id_with_alignment(alignment::MIN),
+                comment_section_id.part_id_with_alignment::<P>(alignment::MIN),
                 self.identity.len() as u64,
             );
         }
@@ -3481,7 +3520,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         resources.merged_strings.for_each(|section_id, merged| {
             if merged.len() > 0 {
                 memory_offsets.increment(
-                    section_id.part_id_with_alignment(alignment::MIN),
+                    section_id.part_id_with_alignment::<P>(alignment::MIN),
                     merged.len(),
                 );
             }
@@ -3908,14 +3947,19 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result<EpilogueLayout<P>> {
-        let dynsym_start_index = ((memory_offsets.get(part_id::DYNSYM)
-            - resources
-                .section_layouts
-                .get(output_section_id::DYNSYM)
-                .mem_offset)
-            / size_of::<P::SymtabEntry>() as u64)
-            .try_into()
-            .context("Too many dynamic symbols")?;
+        let dynsym_start_index = P::DYNSYM_SECTION_ID
+            .and_then(|section_id| {
+                P::single_part_id(section_id).map(|part_id| (section_id, part_id))
+            })
+            .map(|(section_id, part_id)| {
+                ((memory_offsets.get(part_id)
+                    - resources.section_layouts.get(section_id).mem_offset)
+                    / size_of::<P::SymtabEntry>() as u64)
+                    .try_into()
+                    .context("Too many dynamic symbols")
+            })
+            .transpose()?
+            .unwrap_or(0);
 
         P::finalise_layout_epilogue(
             &mut self.format_specific,
@@ -4025,7 +4069,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                         );
                         resources
                             .start_stop_sections
-                            .get(part_id.output_section_id())
+                            .get(part_id.output_section_id::<P>())
                             .push(SectionLoadRequest {
                                 file_id: self.file_id,
                                 section_index: i as u32,
@@ -4192,7 +4236,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             self.post_gc_primary_bytes += section.size;
         }
 
-        let section_id = part_id.output_section_id();
+        let section_id = part_id.output_section_id::<P>();
 
         if section.size > 0 {
             P::non_empty_section_loaded::<A>(self, common, queue, unloaded, resources, scope)?;
@@ -4283,10 +4327,9 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             .trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
 
-        let sframe_start_address = resources
-            .section_layouts
-            .get(output_section_id::SFRAME)
-            .mem_offset;
+        let sframe_section_id = P::SFRAME_SECTION_ID;
+        let sframe_start_address = sframe_section_id
+            .map(|section_id| resources.section_layouts.get(section_id).mem_offset);
         let mut sframe_ranges = Vec::new();
 
         let mut section_resolutions = Vec::with_capacity(self.sections.len());
@@ -4304,8 +4347,8 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                         sec.capacity(part_id, resources.output_sections);
 
                     // Collect SFrame section ranges while we're already iterating
-                    if part_id.output_section_id() == output_section_id::SFRAME {
-                        let offset = (address - sframe_start_address) as usize;
+                    if Some(part_id.output_section_id::<P>()) == sframe_section_id {
+                        let offset = (address - sframe_start_address.unwrap()) as usize;
                         let len = sec.size as usize;
                         sframe_ranges.push(offset..offset + len);
                     }
@@ -5331,7 +5374,7 @@ fn compute_layout_sections<'data, P: Platform>(
                     mem_offset = tls_memsave;
                 }
 
-                let part_id_range = section_id.part_id_range();
+                let part_id_range = section_id.part_id_range::<P>();
                 let max_alignment = sizes.max_alignment(part_id_range.clone(), output_sections);
                 let region = section_info
                     .region_name
@@ -5386,7 +5429,7 @@ fn compute_layout_sections<'data, P: Platform>(
                         let alignment = part_id.alignment(output_sections).min(max_alignment);
                         let merge_target = output_sections.primary_output_section(section_id);
                         let section_flags = output_sections.section_flags(merge_target);
-                        let mem_size = if section_id == output_section_id::RELRO_PADDING {
+                        let mem_size = if Some(section_id) == P::RELRO_PADDING_SECTION_ID {
                             let page_alignment = args.loadable_segment_alignment();
                             let aligned_offset = page_alignment.align_up(mem_offset);
                             aligned_offset - mem_offset
@@ -5409,7 +5452,7 @@ fn compute_layout_sections<'data, P: Platform>(
                                     0
                                 };
 
-                                let section_id = part_id.output_section_id();
+                                let section_id = part_id.output_section_id::<P>();
                                 let part_mem_offset =
                                     alignment.align_up(*reloc_alloc_mem_offsets.get(section_id));
                                 *reloc_alloc_mem_offsets.get_mut(section_id) =
@@ -5449,7 +5492,7 @@ fn compute_layout_sections<'data, P: Platform>(
                                 lma_offset += mem_size;
                             }
                         } else {
-                            let section_id = part_id.output_section_id();
+                            let section_id = part_id.output_section_id::<P>();
                             let mem_offset =
                                 alignment.align_up(*nonalloc_mem_offsets.get(section_id));
 
@@ -5536,11 +5579,11 @@ fn validate_all_non_empty_sections_emitted<P: Platform>(
 
     let mut error = None;
     sizes.map(|part_id, &size| {
-        if size > 0 && !emitted_sections.get(part_id.output_section_id()) {
+        if size > 0 && !emitted_sections.get(part_id.output_section_id::<P>()) {
             error = Some(error!(
                 "Internal error: Section {section} has non-zero allocation, \
                 but isn't in output order",
-                section = output_sections.section_debug(part_id.output_section_id()),
+                section = output_sections.section_debug(part_id.output_section_id::<P>()),
             ));
         }
     });
@@ -5579,7 +5622,7 @@ fn compute_segment_alignments<'data, P: Platform>(
                 active_load_segments.retain(|&id| id != segment_id);
             }
             OrderEvent::Section(section_id) => {
-                let part_id_range = section_id.part_id_range();
+                let part_id_range = section_id.part_id_range::<P>();
                 let max_alignment = sizes.max_alignment(part_id_range, output_sections);
 
                 // Update the alignment for all active LOAD segments
@@ -5864,7 +5907,7 @@ fn test_no_disallowed_overlaps() {
         .collect();
 
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|part_id, _| {
-        if sections_to_output.contains(&part_id.output_section_id()) {
+        if sections_to_output.contains(&part_id.output_section_id::<crate::elf::Elf>()) {
             7
         } else {
             0
@@ -5896,7 +5939,7 @@ fn test_no_disallowed_overlaps() {
     let mut last_mem_start = 0;
     let mut last_file_end = 0;
     let mut last_mem_end = 0;
-    let mut last_section_id = output_section_id::FILE_HEADER;
+    let mut last_section_id = crate::output_section_id::FILE_HEADER;
 
     for event in &output_order {
         let OrderEvent::Section(section_id) = event else {
@@ -5996,9 +6039,15 @@ fn verify_consistent_allocation_handling<P: Platform>(
     let mut mem_sizes = output_sections.new_part_map();
     P::allocate_resolution(flags, &mut mem_sizes, output_kind, args);
     let mut memory_offsets = output_sections.new_part_map();
-    *memory_offsets.get_mut(part_id::GOT) = 0x10;
-    *memory_offsets.get_mut(part_id::GOT_RELR) = 0x10;
-    *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;
+    if let Some(section_id) = P::GOT_SECTION_ID {
+        *memory_offsets.get_mut(section_id.base_part_id::<P>()) = 0x10;
+    }
+    if let Some(section_id) = P::GOT_RELR_SECTION_ID {
+        *memory_offsets.get_mut(section_id.base_part_id::<P>()) = 0x10;
+    }
+    if let Some(section_id) = P::PLT_GOT_SECTION_ID {
+        *memory_offsets.get_mut(section_id.base_part_id::<P>()) = 0x10;
+    }
     let has_dynamic_symbol =
         flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
     let dynamic_symbol_index = has_dynamic_symbol.then(|| NonZeroU32::new(1).unwrap());

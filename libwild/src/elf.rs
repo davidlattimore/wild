@@ -36,9 +36,7 @@ use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::output_kind::OutputKind;
-use crate::output_section_id;
 use crate::output_section_id::CustomSectionIds;
-use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputOrderBuilder;
@@ -50,7 +48,7 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
-use crate::part_id;
+use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Arch;
 use crate::platform::Args as _;
@@ -169,6 +167,179 @@ type SymbolTable<'data> = object::read::elf::SymbolTable<'data, FileHeader>;
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Elf;
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum SinglePartSectionId {
+    ProgramHeaders = crate::output_section_id::NUM_COMMON_SINGLE_PART_SECTIONS,
+    SectionHeaders,
+    Shstrtab,
+    Strtab,
+    Got,
+    GotRelr,
+    PltGot,
+    RelaPlt,
+    EhFrame,
+    EhFrameHdr,
+    Sframe,
+    Dynamic,
+    SysvHash,
+    GnuHash,
+    Dynsym,
+    Dynstr,
+    Interp,
+    GnuVersion,
+    GnuVersionD,
+    GnuVersionR,
+    NoteGnuProperty,
+    NoteGnuBuildId,
+    SymtabLocal,
+    SymtabGlobal,
+    RelaDynRelative,
+    RelaDynGeneral,
+    RiscvAttributes,
+    RelroPadding,
+    RelrDyn,
+    SymtabShndxLocal,
+    SymtabShndxGlobal,
+    GdbIndex,
+
+    // Must be last.
+    Count,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum RegularSectionId {
+    Rodata,
+    InitArray,
+    FiniArray,
+    PreinitArray,
+    Text,
+    Init,
+    Fini,
+    Data,
+    Tdata,
+    Tbss,
+    Bss,
+    Comment,
+    GccExceptTable,
+    NoteAbiTag,
+    DataRelRo,
+
+    // Must be last.
+    Count,
+}
+
+pub(crate) mod part_id {
+    use super::SinglePartSectionId;
+    use crate::part_id::PartId;
+
+    pub(crate) const PROGRAM_HEADERS: PartId = SinglePartSectionId::ProgramHeaders.part_id();
+    pub(crate) const SECTION_HEADERS: PartId = SinglePartSectionId::SectionHeaders.part_id();
+    pub(crate) const SHSTRTAB: PartId = SinglePartSectionId::Shstrtab.part_id();
+    pub(crate) const STRTAB: PartId = SinglePartSectionId::Strtab.part_id();
+    pub(crate) const GOT: PartId = SinglePartSectionId::Got.part_id();
+    pub(crate) const GOT_RELR: PartId = SinglePartSectionId::GotRelr.part_id();
+    pub(crate) const PLT_GOT: PartId = SinglePartSectionId::PltGot.part_id();
+    pub(crate) const RELA_PLT: PartId = SinglePartSectionId::RelaPlt.part_id();
+    pub(crate) const EH_FRAME: PartId = SinglePartSectionId::EhFrame.part_id();
+    pub(crate) const EH_FRAME_HDR: PartId = SinglePartSectionId::EhFrameHdr.part_id();
+    pub(crate) const DYNAMIC: PartId = SinglePartSectionId::Dynamic.part_id();
+    pub(crate) const SYSV_HASH: PartId = SinglePartSectionId::SysvHash.part_id();
+    pub(crate) const GNU_HASH: PartId = SinglePartSectionId::GnuHash.part_id();
+    pub(crate) const DYNSYM: PartId = SinglePartSectionId::Dynsym.part_id();
+    pub(crate) const DYNSTR: PartId = SinglePartSectionId::Dynstr.part_id();
+    pub(crate) const INTERP: PartId = SinglePartSectionId::Interp.part_id();
+    pub(crate) const GNU_VERSION: PartId = SinglePartSectionId::GnuVersion.part_id();
+    pub(crate) const GNU_VERSION_D: PartId = SinglePartSectionId::GnuVersionD.part_id();
+    pub(crate) const GNU_VERSION_R: PartId = SinglePartSectionId::GnuVersionR.part_id();
+    pub(crate) const NOTE_GNU_PROPERTY: PartId = SinglePartSectionId::NoteGnuProperty.part_id();
+    pub(crate) const NOTE_GNU_BUILD_ID: PartId = SinglePartSectionId::NoteGnuBuildId.part_id();
+    pub(crate) const SYMTAB_LOCAL: PartId = SinglePartSectionId::SymtabLocal.part_id();
+    pub(crate) const SYMTAB_GLOBAL: PartId = SinglePartSectionId::SymtabGlobal.part_id();
+    pub(crate) const RELA_DYN_RELATIVE: PartId = SinglePartSectionId::RelaDynRelative.part_id();
+    pub(crate) const RELA_DYN_GENERAL: PartId = SinglePartSectionId::RelaDynGeneral.part_id();
+    pub(crate) const RISCV_ATTRIBUTES: PartId = SinglePartSectionId::RiscvAttributes.part_id();
+    pub(crate) const RELR_DYN: PartId = SinglePartSectionId::RelrDyn.part_id();
+    pub(crate) const SYMTAB_SHNDX_LOCAL: PartId = SinglePartSectionId::SymtabShndxLocal.part_id();
+    pub(crate) const SYMTAB_SHNDX_GLOBAL: PartId = SinglePartSectionId::SymtabShndxGlobal.part_id();
+    pub(crate) const GDB_INDEX: PartId = SinglePartSectionId::GdbIndex.part_id();
+}
+
+pub(crate) mod output_section_id {
+    use super::RegularSectionId;
+    use super::SinglePartSectionId;
+    use crate::output_section_id::OutputSectionId;
+
+    pub(crate) const PROGRAM_HEADERS: OutputSectionId =
+        SinglePartSectionId::ProgramHeaders.output_section_id();
+    pub(crate) const SECTION_HEADERS: OutputSectionId =
+        SinglePartSectionId::SectionHeaders.output_section_id();
+    pub(crate) const SHSTRTAB: OutputSectionId = SinglePartSectionId::Shstrtab.output_section_id();
+    pub(crate) const STRTAB: OutputSectionId = SinglePartSectionId::Strtab.output_section_id();
+    pub(crate) const GOT: OutputSectionId = SinglePartSectionId::Got.output_section_id();
+    pub(crate) const GOT_RELR: OutputSectionId = SinglePartSectionId::GotRelr.output_section_id();
+    pub(crate) const PLT_GOT: OutputSectionId = SinglePartSectionId::PltGot.output_section_id();
+    pub(crate) const RELA_PLT: OutputSectionId = SinglePartSectionId::RelaPlt.output_section_id();
+    pub(crate) const EH_FRAME: OutputSectionId = SinglePartSectionId::EhFrame.output_section_id();
+    pub(crate) const EH_FRAME_HDR: OutputSectionId =
+        SinglePartSectionId::EhFrameHdr.output_section_id();
+    pub(crate) const SFRAME: OutputSectionId = SinglePartSectionId::Sframe.output_section_id();
+    pub(crate) const DYNAMIC: OutputSectionId = SinglePartSectionId::Dynamic.output_section_id();
+    pub(crate) const HASH: OutputSectionId = SinglePartSectionId::SysvHash.output_section_id();
+    pub(crate) const GNU_HASH: OutputSectionId = SinglePartSectionId::GnuHash.output_section_id();
+    pub(crate) const DYNSYM: OutputSectionId = SinglePartSectionId::Dynsym.output_section_id();
+    pub(crate) const DYNSTR: OutputSectionId = SinglePartSectionId::Dynstr.output_section_id();
+    pub(crate) const INTERP: OutputSectionId = SinglePartSectionId::Interp.output_section_id();
+    pub(crate) const GNU_VERSION: OutputSectionId =
+        SinglePartSectionId::GnuVersion.output_section_id();
+    pub(crate) const GNU_VERSION_D: OutputSectionId =
+        SinglePartSectionId::GnuVersionD.output_section_id();
+    pub(crate) const GNU_VERSION_R: OutputSectionId =
+        SinglePartSectionId::GnuVersionR.output_section_id();
+    pub(crate) const NOTE_GNU_PROPERTY: OutputSectionId =
+        SinglePartSectionId::NoteGnuProperty.output_section_id();
+    pub(crate) const NOTE_GNU_BUILD_ID: OutputSectionId =
+        SinglePartSectionId::NoteGnuBuildId.output_section_id();
+    pub(crate) const SYMTAB_LOCAL: OutputSectionId =
+        SinglePartSectionId::SymtabLocal.output_section_id();
+    pub(crate) const SYMTAB_GLOBAL: OutputSectionId =
+        SinglePartSectionId::SymtabGlobal.output_section_id();
+    pub(crate) const RELA_DYN_RELATIVE: OutputSectionId =
+        SinglePartSectionId::RelaDynRelative.output_section_id();
+    pub(crate) const RELA_DYN_GENERAL: OutputSectionId =
+        SinglePartSectionId::RelaDynGeneral.output_section_id();
+    pub(crate) const RISCV_ATTRIBUTES: OutputSectionId =
+        SinglePartSectionId::RiscvAttributes.output_section_id();
+    pub(crate) const RELRO_PADDING: OutputSectionId =
+        SinglePartSectionId::RelroPadding.output_section_id();
+    pub(crate) const RELR_DYN: OutputSectionId = SinglePartSectionId::RelrDyn.output_section_id();
+    pub(crate) const SYMTAB_SHNDX_LOCAL: OutputSectionId =
+        SinglePartSectionId::SymtabShndxLocal.output_section_id();
+    pub(crate) const SYMTAB_SHNDX_GLOBAL: OutputSectionId =
+        SinglePartSectionId::SymtabShndxGlobal.output_section_id();
+    pub(crate) const GDB_INDEX: OutputSectionId = SinglePartSectionId::GdbIndex.output_section_id();
+
+    pub(crate) const RODATA: OutputSectionId = RegularSectionId::Rodata.output_section_id();
+    pub(crate) const INIT_ARRAY: OutputSectionId = RegularSectionId::InitArray.output_section_id();
+    pub(crate) const FINI_ARRAY: OutputSectionId = RegularSectionId::FiniArray.output_section_id();
+    pub(crate) const PREINIT_ARRAY: OutputSectionId =
+        RegularSectionId::PreinitArray.output_section_id();
+    pub(crate) const TEXT: OutputSectionId = RegularSectionId::Text.output_section_id();
+    pub(crate) const INIT: OutputSectionId = RegularSectionId::Init.output_section_id();
+    pub(crate) const FINI: OutputSectionId = RegularSectionId::Fini.output_section_id();
+    pub(crate) const DATA: OutputSectionId = RegularSectionId::Data.output_section_id();
+    pub(crate) const TDATA: OutputSectionId = RegularSectionId::Tdata.output_section_id();
+    pub(crate) const TBSS: OutputSectionId = RegularSectionId::Tbss.output_section_id();
+    pub(crate) const BSS: OutputSectionId = RegularSectionId::Bss.output_section_id();
+    pub(crate) const COMMENT: OutputSectionId = RegularSectionId::Comment.output_section_id();
+    pub(crate) const GCC_EXCEPT_TABLE: OutputSectionId =
+        RegularSectionId::GccExceptTable.output_section_id();
+    pub(crate) const NOTE_ABI_TAG: OutputSectionId =
+        RegularSectionId::NoteAbiTag.output_section_id();
+    pub(crate) const DATA_REL_RO: OutputSectionId = RegularSectionId::DataRelRo.output_section_id();
+}
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -301,6 +472,76 @@ pub(crate) fn symtab_name_for_strtab(raw_name: &[u8]) -> &[u8] {
 }
 
 impl platform::Platform for Elf {
+    const NUM_SINGLE_PART_SECTIONS: u32 = SinglePartSectionId::Count as u32;
+    const NUM_BUILT_IN_REGULAR_SECTIONS: usize = RegularSectionId::Count as usize;
+
+    const TEXT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::TEXT);
+    const DATA_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::DATA);
+    const BSS_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::BSS);
+    const RODATA_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::RODATA);
+    const TDATA_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::TDATA);
+    const TBSS_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::TBSS);
+    const STRTAB_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::STRTAB);
+    const SYMTAB_GLOBAL_SECTION_ID: Option<OutputSectionId> =
+        Some(output_section_id::SYMTAB_GLOBAL);
+    const GOT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::GOT);
+    const PLT_GOT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::PLT_GOT);
+    const SYMTAB_LOCAL_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::SYMTAB_LOCAL);
+    const SYMTAB_SHNDX_LOCAL_SECTION_ID: Option<OutputSectionId> =
+        Some(output_section_id::SYMTAB_SHNDX_LOCAL);
+    const SYMTAB_SHNDX_GLOBAL_SECTION_ID: Option<OutputSectionId> =
+        Some(output_section_id::SYMTAB_SHNDX_GLOBAL);
+    const GDB_INDEX_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::GDB_INDEX);
+    const DYNSTR_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::DYNSTR);
+    const DYNSYM_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::DYNSYM);
+    const EH_FRAME_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::EH_FRAME);
+    const NOTE_GNU_PROPERTY_SECTION_ID: Option<OutputSectionId> =
+        Some(output_section_id::NOTE_GNU_PROPERTY);
+    const RISCV_ATTRIBUTES_SECTION_ID: Option<OutputSectionId> =
+        Some(output_section_id::RISCV_ATTRIBUTES);
+    const GOT_RELR_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::GOT_RELR);
+    const GNU_VERSION_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::GNU_VERSION);
+    const COMMENT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::COMMENT);
+    const INTERP_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::INTERP);
+    const SFRAME_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::SFRAME);
+    const RELRO_PADDING_SECTION_ID: Option<OutputSectionId> =
+        Some(output_section_id::RELRO_PADDING);
+
+    const CUSTOM_PHDR_EXCLUDED_SECTION_IDS: &'static [OutputSectionId] = &[
+        output_section_id::PROGRAM_HEADERS,
+        output_section_id::SECTION_HEADERS,
+    ];
+
+    /// The `.init` section `crti.o` contains the start of a function and `crtn.o` contains the end
+    /// of that function. If `.init` has say alignment = 4 and we add padding after it to bring it
+    /// up to a multiple of 4 bytes, then we'll break the function, since the padding bytes won't be
+    /// valid instructions. Same thing applies to `.fini`.
+    const PACKED_SECTION_IDS: &'static [OutputSectionId] =
+        &[output_section_id::INIT, output_section_id::FINI];
+
+    const VERIFY_IGNORE_ALIGNMENT_SECTION_IDS: &'static [OutputSectionId] = &[
+        output_section_id::GNU_HASH,
+        output_section_id::EH_FRAME,
+        output_section_id::GNU_VERSION_D,
+        output_section_id::STRTAB,
+    ];
+
+    const VERIFY_IGNORE_SECTION_IDS: &'static [OutputSectionId] = &[
+        output_section_id::RELA_PLT,
+        output_section_id::EH_FRAME_HDR,
+        output_section_id::RELA_DYN_GENERAL,
+        output_section_id::RELA_DYN_RELATIVE,
+        output_section_id::RELR_DYN,
+        output_section_id::GNU_VERSION,
+        output_section_id::GNU_HASH,
+        output_section_id::DYNAMIC,
+        output_section_id::INTERP,
+        crate::output_section_id::FILE_HEADER,
+        output_section_id::PROGRAM_HEADERS,
+        output_section_id::SECTION_HEADERS,
+        output_section_id::SHSTRTAB,
+    ];
+
     const HAS_NULL_SYMBOL_ENTRY: bool = true;
 
     type File<'data> = File<'data>;
@@ -429,7 +670,7 @@ impl platform::Platform for Elf {
         // yet. e.g. we don't allocate space for section headers until we know which sections we're
         // keeping, which by inherently needs to be after this method is called.
         const FORCE_KEEP_SECTIONS: &[OutputSectionId] = &[
-            output_section_id::FILE_HEADER,
+            crate::output_section_id::FILE_HEADER,
             output_section_id::PROGRAM_HEADERS,
             output_section_id::SECTION_HEADERS,
             output_section_id::SHSTRTAB,
@@ -764,7 +1005,7 @@ impl platform::Platform for Elf {
     }
 
     fn validate_section<'data>(
-        section_info: &output_section_id::SectionOutputInfo<Elf>,
+        section_info: &SectionOutputInfo<Elf>,
         section_flags: SectionFlags,
         section_layout: &OutputRecordLayout,
         merge_target: OutputSectionId,
@@ -783,7 +1024,8 @@ impl platform::Platform for Elf {
             // All segments should only cover sections that are allocated and have a non-zero
             // address.
             ensure!(
-                section_layout.mem_offset != 0 || merge_target == output_section_id::FILE_HEADER,
+                section_layout.mem_offset != 0
+                    || merge_target == crate::output_section_id::FILE_HEADER,
                 "Missing memory offset for section {} present in a program segment.",
                 output_sections.section_debug(section_id),
             );
@@ -800,7 +1042,7 @@ impl platform::Platform for Elf {
 
     fn verify_resolution_allocation(
         output_sections: &OutputSections<Elf>,
-        output_order: &output_section_id::OutputOrder,
+        output_order: &OutputOrder,
         output_kind: OutputKind,
         mem_sizes: &OutputSectionPartMap<u64>,
         resolution: &layout::Resolution<Elf>,
@@ -876,7 +1118,7 @@ impl platform::Platform for Elf {
             .hide();
 
         symbols
-            .section_start(output_section_id::FILE_HEADER, "__ehdr_start")
+            .section_start(crate::output_section_id::FILE_HEADER, "__ehdr_start")
             .hide();
 
         symbols.section_start(output_section_id::GOT, "_GLOBAL_OFFSET_TABLE_");
@@ -1883,7 +2125,10 @@ impl platform::Platform for Elf {
         _resources: &layout::FinaliseSizesResources<'data, '_, Self>,
         _args: &Self::Args,
     ) {
-        sizes.increment(part_id::FILE_HEADER, u64::from(elf::FILE_HEADER_SIZE));
+        sizes.increment(
+            crate::part_id::FILE_HEADER,
+            u64::from(elf::FILE_HEADER_SIZE),
+        );
         sizes.increment(part_id::PROGRAM_HEADERS, program_headers_size(header_info));
         sizes.increment(part_id::SECTION_HEADERS, section_headers_size(header_info));
         prelude.format_specific.shstrtab_size = output_sections
@@ -1965,7 +2210,7 @@ impl platform::Platform for Elf {
             location_counters,
         );
 
-        builder.add_section(output_section_id::FILE_HEADER);
+        builder.add_section(crate::output_section_id::FILE_HEADER);
         builder.add_section(output_section_id::PROGRAM_HEADERS);
         builder.add_section(output_section_id::SECTION_HEADERS);
         builder.add_section(output_section_id::NOTE_GNU_PROPERTY);
@@ -2144,7 +2389,7 @@ impl platform::Platform for Elf {
         }
 
         for &hdr_id in &[
-            output_section_id::FILE_HEADER,
+            crate::output_section_id::FILE_HEADER,
             output_section_id::PROGRAM_HEADERS,
             output_section_id::SECTION_HEADERS,
         ] {
@@ -2237,7 +2482,7 @@ impl platform::Platform for Elf {
 
         if matches!(
             section_id,
-            output_section_id::FILE_HEADER
+            crate::output_section_id::FILE_HEADER
                 | output_section_id::PROGRAM_HEADERS
                 | output_section_id::SECTION_HEADERS
         ) {
@@ -2271,7 +2516,7 @@ impl platform::Platform for Elf {
         }
 
         if section_name.is_empty() {
-            return crate::layout_rules::unnamed_section_output(section);
+            return crate::layout_rules::unnamed_section_output::<Elf>(section);
         }
 
         match section_name {
@@ -3021,7 +3266,7 @@ fn process_eh_frame_relocations<
                     common,
                     rel,
                     eh_frame_section,
-                    output_section_id::EH_FRAME.base_part_id(),
+                    output_section_id::EH_FRAME.base_part_id::<Elf>(),
                     resources,
                     queue,
                     false,
@@ -3132,7 +3377,7 @@ fn process_section_exception_frames<
                 common,
                 &rel,
                 eh_frame_section,
-                output_section_id::EH_FRAME.base_part_id(),
+                output_section_id::EH_FRAME.base_part_id::<Elf>(),
                 resources,
                 queue,
                 true,
@@ -3290,7 +3535,7 @@ impl platform::Symbol for SymtabEntry {
             output_section_id::BSS
         };
 
-        let part_id = output_section_id.part_id_with_alignment(alignment);
+        let part_id = output_section_id.part_id_with_alignment::<Elf>(alignment);
 
         Some(CommonSymbol { size, part_id })
     }
@@ -4834,12 +5079,13 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     target_segment_type: None,
 };
 
+const NUM_BUILT_IN_SECTIONS: usize = crate::output_section_id::num_built_in_sections::<Elf>();
+
 const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
-    let mut defs: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] =
-        [DEFAULT_DEFS; NUM_BUILT_IN_SECTIONS];
+    let mut defs = [DEFAULT_DEFS; NUM_BUILT_IN_SECTIONS];
 
     // A section into which we write headers.
-    defs[output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
+    defs[crate::output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"")),
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
@@ -5361,7 +5607,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation<Plat
     common: &mut CommonGroupState<'data, Elf>,
     rel: &R,
     section: &<A::Platform as Platform>::SectionHeader,
-    section_part_id: crate::part_id::PartId,
+    section_part_id: PartId,
     resources: &'scope layout::GraphResources<'data, '_, Elf>,
     queue: &mut layout::LocalWorkQueue,
     is_debug_section: bool,
@@ -5675,7 +5921,7 @@ impl Resolution<Elf> {
         addend: i64,
         symbol_index: object::SymbolIndex,
         object_layout: &ObjectLayout<'data, Elf>,
-        section_part_ids: &[crate::part_id::PartId],
+        section_part_ids: &[PartId],
         merged_strings: &OutputSectionMap<MergedStringsSection>,
         merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<u64> {
@@ -5925,7 +6171,7 @@ fn allocate_for_copy_relocations<'data>(
         // Allocate space in BSS for the copy of the symbol.
         let size = symbol.size();
         common.allocate(
-            output_section_id::BSS.part_id_with_alignment(alignment),
+            output_section_id::BSS.part_id_with_alignment::<Elf>(alignment),
             alignment.align_up(size),
         );
 
@@ -5970,7 +6216,8 @@ fn assign_copy_relocation_address(
     size: u64,
     memory_offsets: &mut OutputSectionPartMap<u64>,
 ) -> u64 {
-    let bss = memory_offsets.get_mut(output_section_id::BSS.part_id_with_alignment(alignment));
+    let bss =
+        memory_offsets.get_mut(output_section_id::BSS.part_id_with_alignment::<Elf>(alignment));
     let a = *bss;
     *bss += alignment.align_up(size);
     a
@@ -6006,5 +6253,21 @@ fn thunk_config_for_object(file: &File) -> Option<ThunkConfig> {
     match file.arch {
         crate::arch::Architecture::AArch64 => crate::elf_aarch64::ElfAArch64::thunk_config(),
         _ => None,
+    }
+}
+
+impl SinglePartSectionId {
+    const fn part_id(self) -> PartId {
+        PartId::from_u32(self as u32)
+    }
+
+    const fn output_section_id(self) -> OutputSectionId {
+        OutputSectionId::from_u32(self as u32)
+    }
+}
+
+impl RegularSectionId {
+    const fn output_section_id(self) -> OutputSectionId {
+        crate::output_section_id::regular_section_base::<Elf>().offset(self as usize)
     }
 }

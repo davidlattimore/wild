@@ -488,7 +488,7 @@ fn resolve_sections<'data, P: Platform>(
                         }
                         ResolvedFile::NotLoaded(n) => {
                             for _ in 0..n.section_id_range.len() {
-                                shard.push(part_id::UNMAPPED);
+                                shard.push(crate::part_id::UNMAPPED);
                             }
                         }
                         _ => {}
@@ -1214,7 +1214,7 @@ fn apply_init_fini_secondaries<'data, P: Platform>(
 
         let sid =
             output_sections.get_or_create_init_fini_secondary(d.primary, d.priority, d.alignment);
-        section_part_ids[d.index as usize] = sid.part_id_with_alignment(d.alignment);
+        section_part_ids[d.index as usize] = sid.part_id_with_alignment::<P>(d.alignment);
     }
 }
 
@@ -1330,15 +1330,17 @@ fn resolve_section<'data, P: Platform>(
     let rule_outcome = if args.should_output_partial_object() {
         P::lookup_for_partial_link(section_name, input_section, args)
     } else {
-        rules.lookup(section_name, file_name, input_section)
+        rules.lookup::<P>(section_name, file_name, input_section)
     };
 
     match rule_outcome {
         SectionRuleOutcome::Section(output_info) => {
-            part_id = if output_info.section_id.is_regular() {
-                output_info.section_id.part_id_with_alignment(alignment)
+            part_id = if output_info.section_id.is_regular::<P>() {
+                output_info
+                    .section_id
+                    .part_id_with_alignment::<P>(alignment)
             } else {
-                output_info.section_id.base_part_id()
+                output_info.section_id.base_part_id::<P>()
             };
 
             must_load |= output_info.must_keep;
@@ -1347,10 +1349,12 @@ fn resolve_section<'data, P: Platform>(
             unloaded_section.needs_sorting = output_info.sorted || args.sort_sections_by_name();
         }
         SectionRuleOutcome::SortedSection(output_info) => {
-            part_id = if output_info.section_id.is_regular() {
-                output_info.section_id.part_id_with_alignment(alignment)
+            part_id = if output_info.section_id.is_regular::<P>() {
+                output_info
+                    .section_id
+                    .part_id_with_alignment::<P>(alignment)
             } else {
-                output_info.section_id.base_part_id()
+                output_info.section_id.base_part_id::<P>()
             };
             if let Some(priority) = P::init_section_priority(section_name) {
                 obj.init_fini_sections.push(InitFiniSectionDetail {
@@ -1365,31 +1369,33 @@ fn resolve_section<'data, P: Platform>(
 
             unloaded_section = UnloadedSection::new();
         }
-        SectionRuleOutcome::Discard => return Ok((SectionSlot::Discard, part_id::UNMAPPED)),
+        SectionRuleOutcome::Discard => {
+            return Ok((SectionSlot::Discard, crate::part_id::UNMAPPED));
+        }
         SectionRuleOutcome::NoteGnuStack => {
             P::validate_stack_section(input_section, obj, args)?;
-            return Ok((SectionSlot::Discard, part_id::UNMAPPED));
+            return Ok((SectionSlot::Discard, crate::part_id::UNMAPPED));
         }
         SectionRuleOutcome::EhFrame => {
             return Ok((
                 SectionSlot::FrameData(input_section_index),
-                part_id::UNMAPPED,
+                crate::part_id::UNMAPPED,
             ));
         }
         SectionRuleOutcome::NoteGnuProperty => {
             return Ok((
                 SectionSlot::NoteGnuProperty(input_section_index),
-                part_id::UNMAPPED,
+                crate::part_id::UNMAPPED,
             ));
         }
         SectionRuleOutcome::Debug => {
             if args.should_strip_debug() && !input_section.is_alloc() {
-                return Ok((SectionSlot::Discard, part_id::UNMAPPED));
+                return Ok((SectionSlot::Discard, crate::part_id::UNMAPPED));
             }
 
             is_debug_info = !input_section.is_alloc();
 
-            part_id = part_id::CUSTOM_PLACEHOLDER;
+            part_id = PartId::CUSTOM_PLACEHOLDER;
             unloaded_section = UnloadedSection::new();
         }
         SectionRuleOutcome::DebugIndex => {
@@ -1400,22 +1406,22 @@ fn resolve_section<'data, P: Platform>(
                 allocator,
                 loaded_metrics,
             )?;
-            return Ok((SectionSlot::Discard, part_id::UNMAPPED));
+            return Ok((SectionSlot::Discard, crate::part_id::UNMAPPED));
         }
         SectionRuleOutcome::Custom => {
-            part_id = part_id::CUSTOM_PLACEHOLDER;
+            part_id = PartId::CUSTOM_PLACEHOLDER;
             unloaded_section = UnloadedSection::new();
             unloaded_section.start_stop_eligible = !section_name.starts_with(b".");
         }
         SectionRuleOutcome::RiscVAttribute => {
             return Ok((
                 SectionSlot::RiscvVAttributes(input_section_index),
-                part_id::UNMAPPED,
+                crate::part_id::UNMAPPED,
             ));
         }
     }
 
-    if part_id == part_id::CUSTOM_PLACEHOLDER {
+    if part_id == PartId::CUSTOM_PLACEHOLDER {
         let custom_section = CustomSectionDetails {
             name: SectionName(section_name),
             alignment,
@@ -1432,7 +1438,7 @@ fn resolve_section<'data, P: Platform>(
                 .section_data(input_section, allocator, loaded_metrics)?;
 
         if section_data.is_empty() {
-            return Ok((SectionSlot::Discard, part_id::UNMAPPED));
+            return Ok((SectionSlot::Discard, crate::part_id::UNMAPPED));
         }
 
         obj.string_merge_extras.push(StringMergeSectionExtra {

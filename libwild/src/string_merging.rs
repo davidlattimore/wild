@@ -316,7 +316,7 @@ fn group_merge_string_sections_by_output<'data, P: Platform>(
 
                 let part_id =
                     section_part_ids[obj.section_id_range.start().as_usize() + extra.index.0];
-                let section_id = part_id.output_section_id();
+                let section_id = part_id.output_section_id::<P>();
                 let starting_offset = starting_offsets.get_mut(section_id);
                 sec.start_input_offset = *starting_offset;
 
@@ -1040,7 +1040,7 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
     }
 
     let part_id = section_part_ids[input_section_id.as_usize()];
-    let section_id = part_id.output_section_id();
+    let section_id = part_id.output_section_id::<P>();
     let strings_section = merged_strings.get(section_id);
     let string_offset = find_string(*merge_slot, input_offset, strings_section)?;
     let bucket_base =
@@ -1109,13 +1109,13 @@ impl MergedStringStartAddresses {
         let mut addresses = output_sections.new_section_map_with(|| [0; MERGE_STRING_BUCKETS]);
         let internal_start_offsets = starting_mem_offsets_by_group.first().unwrap();
         merge_string_sections.for_each(|section_id, sec| {
-            if !section_id.is_regular() {
+            if !section_id.is_regular::<P>() {
                 return;
             }
             // We already have the offsets of each bucket relative to the start of the section. So
             // now we just need to add the section's start address to all of these.
             let base =
-                *internal_start_offsets.get(section_id.part_id_with_alignment(alignment::MIN));
+                *internal_start_offsets.get(section_id.part_id_with_alignment::<P>(alignment::MIN));
             let bucket_offsets_out = addresses.get_mut(section_id);
             *bucket_offsets_out = sec.bucket_offsets;
             for offset in bucket_offsets_out {

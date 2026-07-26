@@ -18,6 +18,7 @@ use crate::wasm::WasmRelocation;
 use crate::wasm::WasmSymbol;
 use crate::wasm::apply_relocation;
 use crate::wasm::finalize_reloc_value;
+use crate::wasm::output_section_id;
 use crate::wasm::section_id;
 use crate::wasm::write_uleb128;
 use leb128::write::unsigned_len as uleb128_size;
@@ -75,14 +76,14 @@ pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
         timing_phase!("Write Wasm code section");
         write_code_section(
             &layout.format_specific,
-            section_buffers.get_mut(crate::output_section_id::WASM_CODE),
+            section_buffers.get_mut(output_section_id::WASM_CODE),
         )?;
     }
     {
         timing_phase!("Write Wasm data section");
         write_data_section(
             &layout.format_specific,
-            section_buffers.get_mut(crate::output_section_id::WASM_DATA),
+            section_buffers.get_mut(output_section_id::WASM_DATA),
         )?;
     }
 
@@ -96,39 +97,39 @@ fn copy_metadata_sections(
     let encoded = &layout.encoded_sections;
     copy_encoded_section(
         encoded.ty.as_ref(),
-        section_buffers.get_mut(crate::output_section_id::WASM_TYPE),
+        section_buffers.get_mut(output_section_id::WASM_TYPE),
     )?;
     copy_encoded_section(
         encoded.import.as_ref(),
-        section_buffers.get_mut(crate::output_section_id::WASM_IMPORT),
+        section_buffers.get_mut(output_section_id::WASM_IMPORT),
     )?;
     copy_encoded_section(
         encoded.function.as_ref(),
-        section_buffers.get_mut(crate::output_section_id::WASM_FUNCTION),
+        section_buffers.get_mut(output_section_id::WASM_FUNCTION),
     )?;
     copy_encoded_section(
         encoded.table.as_ref(),
-        section_buffers.get_mut(crate::output_section_id::WASM_TABLE),
+        section_buffers.get_mut(output_section_id::WASM_TABLE),
     )?;
     copy_encoded_section(
         encoded.memory.as_ref(),
-        section_buffers.get_mut(crate::output_section_id::WASM_MEMORY),
+        section_buffers.get_mut(output_section_id::WASM_MEMORY),
     )?;
     copy_encoded_section(
         encoded.global.as_ref(),
-        section_buffers.get_mut(crate::output_section_id::WASM_GLOBAL),
+        section_buffers.get_mut(output_section_id::WASM_GLOBAL),
     )?;
     copy_encoded_section(
         encoded.export.as_ref(),
-        section_buffers.get_mut(crate::output_section_id::WASM_EXPORT),
+        section_buffers.get_mut(output_section_id::WASM_EXPORT),
     )?;
     copy_encoded_section(
         encoded.element.as_ref(),
-        section_buffers.get_mut(crate::output_section_id::WASM_ELEMENT),
+        section_buffers.get_mut(output_section_id::WASM_ELEMENT),
     )?;
     copy_encoded_section(
         encoded.name.as_ref(),
-        section_buffers.get_mut(crate::output_section_id::WASM_NAME),
+        section_buffers.get_mut(output_section_id::WASM_NAME),
     )?;
     Ok(())
 }
