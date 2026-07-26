@@ -3,7 +3,7 @@
 // GNU ld cross linker silently succeeds so we skip it.
 //#Arch:aarch64
 //#Mode:dynamic
-//#SkipLinker:ld
+//#ReferenceLinkers:lld
 //#LinkArgs:-shared --no-gc-sections
 //#ExpectError:recompile with -fPIC
 //#RunEnabled:false
