@@ -3356,6 +3356,12 @@ fn add_cross_args(
         let target = get_target(compiler_args)
             .unwrap_or_else(|_| arch.default_target_triple(platform).to_owned());
         command.arg(format!("--target={target}"));
+
+        // Debian sets sysroot to `/` and uses real paths for libraries in linker scripts.
+        // So using real sysroot path breaks linking.
+        if !is_host_debian_based() {
+            command.arg(format!("--sysroot={}", arch.get_cross_sysroot_path()));
+        }
     }
 }
 
