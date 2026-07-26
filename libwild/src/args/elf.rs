@@ -1914,14 +1914,16 @@ impl platform::Args for ElfArgs {
         &self.wrap
     }
 
-    fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> &'a [u8] {
+    fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> Option<&'a [u8]> {
         // The --entry flag is used first, falling back to what the linker script says, or otherwise
         // defaults to `_start`.
-        self.entry
-            .as_ref()
-            .map(|n| n.as_bytes())
-            .or(linker_script_entry)
-            .unwrap_or(b"_start")
+        Some(
+            self.entry
+                .as_ref()
+                .map(|n| n.as_bytes())
+                .or(linker_script_entry)
+                .unwrap_or(b"_start"),
+        )
     }
 
     fn start_address_for_section(&self, section_name: SectionName) -> Option<u64> {

@@ -2973,7 +2973,9 @@ fn entry_is_defined_function(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
 ) -> bool {
-    let entry_name = symbol_db.entry_symbol_name();
+    let Some(entry_name) = symbol_db.entry_symbol_name() else {
+        return false;
+    };
     let Some(symbol_id) = symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(entry_name))
     else {
         return false;
@@ -3498,7 +3500,9 @@ fn resolve_entry_function<'data>(
     object_index_maps: &[WasmObjectIndexMap],
     symbol_db: &SymbolDb<'data, Wasm>,
 ) -> Result<Option<ResolvedEntry<'data>>> {
-    let entry_name_bytes = symbol_db.entry_symbol_name();
+    let Some(entry_name_bytes) = symbol_db.entry_symbol_name() else {
+        return Ok(None);
+    };
     let Some(symbol_id) =
         symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(entry_name_bytes))
     else {

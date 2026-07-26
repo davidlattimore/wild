@@ -1360,7 +1360,7 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         &[]
     }
 
-    fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> &'a [u8];
+    fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> Option<&'a [u8]>;
 
     fn version_script_path(&self) -> Option<&Path> {
         None
