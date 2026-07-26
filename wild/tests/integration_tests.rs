@@ -505,193 +505,183 @@ fn for_each_test_dir(platform_name: &str, mut cb: impl FnMut(&str, PathBuf) -> R
     Ok(())
 }
 
-/// Section names present in a Wasm module for `ExpectSection` / `NoSection`.
-fn wasm_section_names(wasm_file: &Path) -> Result<HashSet<String>> {
-    use wasmparser::Parser;
-    use wasmparser::Payload;
-
-    let bytes = std::fs::read(wasm_file)
-        .with_context(|| format!("Failed to read wasm file {}", wasm_file.display()))?;
-    let mut sections = HashSet::new();
-    for payload in Parser::new(0).parse_all(&bytes) {
-        match payload? {
-            Payload::TypeSection(_) => {
-                sections.insert("Type".to_owned());
-            }
-            Payload::ImportSection(_) => {
-                sections.insert("Import".to_owned());
-            }
-            Payload::FunctionSection(_) => {
-                sections.insert("Function".to_owned());
-            }
-            Payload::TableSection(_) => {
-                sections.insert("Table".to_owned());
-            }
-            Payload::MemorySection(_) => {
-                sections.insert("Memory".to_owned());
-            }
-            Payload::GlobalSection(_) => {
-                sections.insert("Global".to_owned());
-            }
-            Payload::ExportSection(_) => {
-                sections.insert("Export".to_owned());
-            }
-            Payload::StartSection { .. } => {
-                sections.insert("Start".to_owned());
-            }
-            Payload::ElementSection(_) => {
-                sections.insert("Element".to_owned());
-            }
-            Payload::CodeSectionStart { .. } => {
-                sections.insert("Code".to_owned());
-            }
-            Payload::DataSection(_) => {
-                sections.insert("Data".to_owned());
-            }
-            Payload::DataCountSection { .. } => {
-                sections.insert("DataCount".to_owned());
-            }
-            Payload::CustomSection(reader) => {
-                sections.insert(reader.name().to_owned());
-            }
-            _ => {}
-        }
-    }
-    Ok(sections)
+struct WasmModuleInfo {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    section_names: HashSet<String>,
+    export_names: HashSet<String>,
+    func_types: Vec<wasmparser::FuncType>,
 }
 
-fn wasm_export_names(wasm_file: &Path) -> Result<HashSet<String>> {
-    use wasmparser::Parser;
-    use wasmparser::Payload;
+impl WasmModuleInfo {
+    fn parse(path: &Path) -> Result<Self> {
+        use wasmparser::CompositeInnerType;
+        use wasmparser::Parser;
+        use wasmparser::Payload;
 
-    let bytes = std::fs::read(wasm_file)
-        .with_context(|| format!("Failed to read Wasm file {}", wasm_file.display()))?;
-    let mut exports = HashSet::new();
-    for payload in Parser::new(0).parse_all(&bytes) {
-        let Payload::ExportSection(section) = payload? else {
-            continue;
-        };
-        for export in section {
-            let export = export
-                .with_context(|| format!("Invalid export entry in {}", wasm_file.display()))?;
-            exports.insert(export.name.to_owned());
-        }
-    }
-    Ok(exports)
-}
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("Failed to read Wasm file {}", path.display()))?;
+        let mut section_names = HashSet::new();
+        let mut export_names = HashSet::new();
+        let mut func_types = Vec::new();
 
-fn ensure_wasm_exports(
-    wasm_file: &Path,
-    expected: &[ExpectedSymtabEntry],
-    absent: &HashSet<String>,
-    linker_name: &str,
-) -> Result<()> {
-    for exp in expected {
-        ensure!(
-            exp.assertions == SymtabAssertions::default(),
-            "Symbol property assertions are not supported for Wasm (on `{}`)",
-            exp.name
-        );
-    }
-
-    let exports = wasm_export_names(wasm_file)?;
-    let format_exports = || {
-        let mut names: Vec<_> = exports.iter().cloned().collect();
-        names.sort();
-        names.join(", ")
-    };
-
-    for exp in expected {
-        ensure!(
-            exports.contains(&exp.name),
-            "Expected export `{}` in {linker_name} output ({}), found: [{}]",
-            exp.name,
-            wasm_file.display(),
-            format_exports()
-        );
-    }
-    for name in absent {
-        ensure!(
-            !exports.contains(name),
-            "Export `{name}` should not exist in {linker_name} output ({}), found: [{}]",
-            wasm_file.display(),
-            format_exports()
-        );
-    }
-    Ok(())
-}
-
-fn ensure_wasm_sections(
-    wasm_file: &Path,
-    section_names: &[String],
-    linker_name: &str,
-) -> Result<()> {
-    let sections = wasm_section_names(wasm_file)?;
-    for section_name in section_names {
-        ensure!(
-            sections.contains(section_name),
-            "Expected section `{section_name}` in {linker_name} output ({}), found: {}",
-            wasm_file.display(),
-            {
-                let mut names: Vec<_> = sections.iter().cloned().collect();
-                names.sort();
-                names.join(", ")
-            }
-        );
-    }
-    Ok(())
-}
-
-/// Collect function types from a linked Wasm module's type section, in section order.
-fn wasm_func_types(wasm_file: &Path) -> Result<Vec<wasmparser::FuncType>> {
-    use wasmparser::CompositeInnerType;
-    use wasmparser::Parser;
-    use wasmparser::Payload;
-
-    let bytes = std::fs::read(wasm_file)
-        .with_context(|| format!("Failed to read wasm file {}", wasm_file.display()))?;
-    let mut types = Vec::new();
-    for payload in Parser::new(0).parse_all(&bytes) {
-        let Payload::TypeSection(section) = payload? else {
-            continue;
-        };
-        for group in section {
-            for ty in group
-                .with_context(|| format!("Invalid type group in {}", wasm_file.display()))?
-                .into_types()
-            {
-                match ty.composite_type.inner {
-                    CompositeInnerType::Func(func) => types.push(func),
-                    other => bail!(
-                        "Unsupported non-function type in {}: {other:?}",
-                        wasm_file.display()
-                    ),
+        for payload in Parser::new(0).parse_all(&bytes) {
+            match payload? {
+                Payload::TypeSection(section) => {
+                    section_names.insert("Type".to_owned());
+                    for group in section {
+                        for ty in group
+                            .with_context(|| format!("Invalid type group in {}", path.display()))?
+                            .into_types()
+                        {
+                            match ty.composite_type.inner {
+                                CompositeInnerType::Func(func) => func_types.push(func),
+                                other => bail!(
+                                    "Unsupported non-function type in {}: {other:?}",
+                                    path.display()
+                                ),
+                            }
+                        }
+                    }
                 }
+                Payload::ImportSection(_) => {
+                    section_names.insert("Import".to_owned());
+                }
+                Payload::FunctionSection(_) => {
+                    section_names.insert("Function".to_owned());
+                }
+                Payload::TableSection(_) => {
+                    section_names.insert("Table".to_owned());
+                }
+                Payload::MemorySection(_) => {
+                    section_names.insert("Memory".to_owned());
+                }
+                Payload::GlobalSection(_) => {
+                    section_names.insert("Global".to_owned());
+                }
+                Payload::ExportSection(section) => {
+                    section_names.insert("Export".to_owned());
+                    for export in section {
+                        let export = export.with_context(|| {
+                            format!("Invalid export entry in {}", path.display())
+                        })?;
+                        export_names.insert(export.name.to_owned());
+                    }
+                }
+                Payload::StartSection { .. } => {
+                    section_names.insert("Start".to_owned());
+                }
+                Payload::ElementSection(_) => {
+                    section_names.insert("Element".to_owned());
+                }
+                Payload::CodeSectionStart { .. } => {
+                    section_names.insert("Code".to_owned());
+                }
+                Payload::DataSection(_) => {
+                    section_names.insert("Data".to_owned());
+                }
+                Payload::DataCountSection { .. } => {
+                    section_names.insert("DataCount".to_owned());
+                }
+                Payload::CustomSection(reader) => {
+                    section_names.insert(reader.name().to_owned());
+                }
+                _ => {}
             }
         }
-    }
-    Ok(types)
-}
 
-/// Linked modules must not repeat identical function types.
-fn ensure_wasm_func_types_unique(wasm_file: &Path, linker_name: &str) -> Result {
-    let types = wasm_func_types(wasm_file)?;
-    let mut seen = HashSet::new();
-    for (index, ty) in types.iter().enumerate() {
-        ensure!(
-            seen.insert(ty.clone()),
-            "Duplicate Wasm function type at type index {index} in {linker_name} output ({}): {ty}\n\
-             All entries: [{}]",
-            wasm_file.display(),
-            types
-                .iter()
-                .enumerate()
-                .map(|(i, t)| format!("{i}:{t}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        Ok(Self {
+            path: path.to_owned(),
+            bytes,
+            section_names,
+            export_names,
+            func_types,
+        })
     }
-    Ok(())
+
+    fn format_sorted(names: &HashSet<String>) -> String {
+        let mut sorted: Vec<_> = names.iter().cloned().collect();
+        sorted.sort();
+        sorted.join(", ")
+    }
+
+    fn ensure_sections(&self, expected: &[String], linker_name: &str) -> Result {
+        for section_name in expected {
+            ensure!(
+                self.section_names.contains(section_name),
+                "Expected section `{section_name}` in {linker_name} output ({}), found: {}",
+                self.path.display(),
+                Self::format_sorted(&self.section_names)
+            );
+        }
+        Ok(())
+    }
+
+    fn ensure_absent_sections(&self, absent: &[String], linker_name: &str) -> Result {
+        for name in absent {
+            ensure!(
+                !self.section_names.contains(name),
+                "Section `{name}` should not exist but was found in {linker_name} output ({})",
+                self.path.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn ensure_exports(
+        &self,
+        expected: &[ExpectedSymtabEntry],
+        absent: &HashSet<String>,
+        linker_name: &str,
+    ) -> Result {
+        for exp in expected {
+            ensure!(
+                exp.assertions == SymtabAssertions::default(),
+                "Symbol property assertions are not supported for Wasm (on `{}`)",
+                exp.name
+            );
+        }
+
+        let found = || Self::format_sorted(&self.export_names);
+        for exp in expected {
+            ensure!(
+                self.export_names.contains(&exp.name),
+                "Expected export `{}` in {linker_name} output ({}), found: [{}]",
+                exp.name,
+                self.path.display(),
+                found()
+            );
+        }
+        for name in absent {
+            ensure!(
+                !self.export_names.contains(name),
+                "Export `{name}` should not exist in {linker_name} output ({}), found: [{}]",
+                self.path.display(),
+                found()
+            );
+        }
+        Ok(())
+    }
+
+    // Linked modules must not repeat identical function types.
+    fn ensure_func_types_unique(&self, linker_name: &str) -> Result {
+        let mut seen = HashSet::new();
+        for (index, ty) in self.func_types.iter().enumerate() {
+            ensure!(
+                seen.insert(ty.clone()),
+                "Duplicate Wasm function type at type index {index} in {linker_name} output ({}): {ty}\n\
+                 All entries: [{}]",
+                self.path.display(),
+                self.func_types
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| format!("{i}:{t}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        Ok(())
+    }
 }
 
 fn validate_wasm(wasm_file: &Path, linker_name: &str) -> Result {
@@ -4531,33 +4521,19 @@ impl Assertions {
                 .all(|s| s.assertions == SectionAssertions::default()),
             "Section property assertions are not supported for Wasm"
         );
-        let section_names: Vec<String> = self
+
+        let info = WasmModuleInfo::parse(path)?;
+        let linker_name = linker_used.name();
+        let expected_sections: Vec<String> = self
             .expected_sections
             .iter()
             .map(|s| s.section_name.clone())
             .collect();
-        ensure_wasm_sections(path, &section_names, linker_used.name())?;
-        ensure_wasm_func_types_unique(path, linker_used.name())?;
-        ensure_wasm_exports(
-            path,
-            &self.expected_symtab_entries,
-            &self.no_sym,
-            linker_used.name(),
-        )?;
-
-        let sections = wasm_section_names(path)?;
-        for name in &self.absent_sections {
-            ensure!(
-                !sections.contains(name),
-                "Section `{name}` should not exist but was found in {} output ({})",
-                linker_used.name(),
-                path.display()
-            );
-        }
-
-        let bytes =
-            std::fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
-        self.verify_strings(&bytes)?;
+        info.ensure_sections(&expected_sections, linker_name)?;
+        info.ensure_absent_sections(&self.absent_sections, linker_name)?;
+        info.ensure_func_types_unique(linker_name)?;
+        info.ensure_exports(&self.expected_symtab_entries, &self.no_sym, linker_name)?;
+        self.verify_strings(&info.bytes)?;
         Ok(())
     }
 
