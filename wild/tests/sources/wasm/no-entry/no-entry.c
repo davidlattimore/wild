@@ -22,6 +22,10 @@
 //#NoSym: _start
 //#NoSym: custom_entry
 
+//#Config:missing-entry
+//#LinkArgs: --entry=does_not_exist
+//#ExpectError: entry symbol not defined
+
 int foo(void) { return 7; }
 
 void custom_entry(void) {}

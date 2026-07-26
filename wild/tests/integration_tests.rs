@@ -3887,15 +3887,15 @@ impl LinkCommand {
                             }
                         }
                         PlatformKind::Wasm => {
-                            // TODO(wasm): Drop once Wild accepts the same flags as wasm-ld.
                             let primary_wat = config
                                 .test_src_dir
                                 .join(format!("{}.wat", config.test_name));
-                            if !linker.is_wild() && primary_wat.exists() {
-                                command
-                                    .arg("--no-entry")
-                                    .arg("--export-all")
-                                    .arg("--no-check-features");
+                            if primary_wat.exists() {
+                                command.arg("--no-entry");
+                                if !linker.is_wild() {
+                                    // TODO(wasm): Support these options
+                                    command.arg("--export-all").arg("--no-check-features");
+                                }
                             }
                         }
                     }
