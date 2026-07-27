@@ -79,6 +79,9 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: docker/build-push-action@v7
         with:
+          context: .
+          file: ${{ matrix.file }}
+          platforms: ${{ matrix.platform }}
           tags: ghcr.io/${{ github.repository }}/${{ matrix.container }}:latest
           outputs: type=docker,dest=${{ runner.temp }}/base_image.tar
 
