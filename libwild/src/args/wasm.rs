@@ -40,6 +40,7 @@ pub struct WasmArgs {
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) export_symbols: Vec<String>,
     pub(crate) z_stack_size: u32,
+    // Since LLVM 22, the default option is true.
     pub(crate) stack_first: bool,
     // Entry symbol name. Defaults to `DEFAULT_ENTRY`.
     pub(crate) entry: Option<String>,
@@ -61,7 +62,7 @@ impl Default for WasmArgs {
             lib_search_path: Vec::new(),
             export_symbols: Vec::new(),
             z_stack_size: DEFAULT_STACK_SIZE,
-            stack_first: false,
+            stack_first: true,
             entry: Some(DEFAULT_ENTRY.to_owned()),
         }
     }
@@ -253,6 +254,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Place stack at start of linear memory rather than after data")
         .execute(|args, _modifier_stack| {
             args.stack_first = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-stack-first")
+        .help("Place stack at the end of linear memory after data")
+        .execute(|args, _modifier_stack| {
+            args.stack_first = false;
             Ok(())
         });
 
