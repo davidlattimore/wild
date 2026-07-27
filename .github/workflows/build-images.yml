@@ -85,6 +85,13 @@ jobs:
           tags: ghcr.io/${{ github.repository }}/${{ matrix.container }}:latest
           outputs: type=docker,dest=${{ runner.temp }}/base_image.tar
 
+      - name: Upload base image archive
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: myimage
+          path: ${{ runner.temp }}/myimage.tar
+
   # Build images that depend on other images.
   build-dependent:
     name: ${{ matrix.container }}
@@ -128,7 +135,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Load base image
+      - name: Download base image archive
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@v4
+        with:
+          name: base_image
+          path: ${{ runner.temp }}
+
+      - name: Load base image archive
         if: github.event_name == 'pull_request'
         run: |
           docker load --input ${{ runner.temp }}/base_image.tar
