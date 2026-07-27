@@ -28,6 +28,10 @@ jobs:
             container: ci-alpine-amd64
             runs-on: ubuntu-24.04
             platform: linux/amd64
+          - file: docker/ci/arch.Dockerfile
+            container: ci-arch-cross-amd64
+            runs-on: ubuntu-24.04
+            platform: linux/amd64
           - file: docker/ci/opensuse.Dockerfile
             container: ci-opensuse-amd64
             runs-on: ubuntu-24.04
