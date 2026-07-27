@@ -114,7 +114,7 @@ jobs:
           - file: docker/ci/ubuntu-cross.Dockerfile
             container: ci-ubuntu-cross-amd64
             platform: linux/amd64
-            runs-on: ubuntu-24.04-arm
+            runs-on: ubuntu-24.04
             base_image: ghcr.io/${{ github.repository }}/ci-ubuntu-base-amd64:sha-${{ github.sha }}
             base_image_container: ci-ubuntu-base-amd64
 
