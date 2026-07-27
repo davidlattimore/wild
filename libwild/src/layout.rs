@@ -3144,12 +3144,12 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) {
-        let Some(symbol_id) =
-            resources
-                .symbol_db
-                .get_unversioned(&UnversionedSymbolName::prehashed(
-                    resources.symbol_db.entry_symbol_name(),
-                ))
+        let Some(entry_name) = resources.symbol_db.entry_symbol_name() else {
+            return;
+        };
+        let Some(symbol_id) = resources
+            .symbol_db
+            .get_unversioned(&UnversionedSymbolName::prehashed(entry_name))
         else {
             // We'll emit a warning when writing the file if it's an executable.
             return;

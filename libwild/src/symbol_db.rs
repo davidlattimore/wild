@@ -944,7 +944,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         header.is_group()
     }
 
-    pub(crate) fn entry_symbol_name(&self) -> &[u8] {
+    pub(crate) fn entry_symbol_name(&self) -> Option<&[u8]> {
         self.args.entry_symbol_name(self.entry)
     }
 

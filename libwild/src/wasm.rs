@@ -2973,7 +2973,9 @@ fn entry_is_defined_function(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
 ) -> bool {
-    let entry_name = symbol_db.entry_symbol_name();
+    let Some(entry_name) = symbol_db.entry_symbol_name() else {
+        return false;
+    };
     let Some(symbol_id) = symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(entry_name))
     else {
         return false;
@@ -3498,11 +3500,17 @@ fn resolve_entry_function<'data>(
     object_index_maps: &[WasmObjectIndexMap],
     symbol_db: &SymbolDb<'data, Wasm>,
 ) -> Result<Option<ResolvedEntry<'data>>> {
-    let entry_name_bytes = symbol_db.entry_symbol_name();
+    let Some(entry_name_bytes) = symbol_db.entry_symbol_name() else {
+        return Ok(None);
+    };
+    let entry_display = String::from_utf8_lossy(entry_name_bytes);
+    let not_defined =
+        || crate::error!("entry symbol not defined (pass --no-entry to suppress): {entry_display}");
+
     let Some(symbol_id) =
         symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(entry_name_bytes))
     else {
-        return Ok(None);
+        return Err(not_defined());
     };
     let def_id = symbol_db.definition(symbol_id);
     let def_file_id = symbol_db.file_id_for_symbol(def_id);
@@ -3511,12 +3519,12 @@ fn resolve_entry_function<'data>(
         .iter()
         .position(|input| input.file_id == def_file_id)
     else {
-        return Ok(None);
+        return Err(not_defined());
     };
     let def_input = &layout_inputs[def_obj_idx];
     let def_sym = &def_input.symbols[def_input.symbol_id_range.id_to_offset(def_id)];
     if def_sym.is_undefined() || def_sym.kind != WasmSymbolKind::Func {
-        return Ok(None);
+        return Err(not_defined());
     }
 
     let index_map = object_index_maps

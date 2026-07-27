@@ -108,9 +108,9 @@ impl platform::Args for MachOArgs {
         false
     }
 
-    fn entry_symbol_name<'a>(&'a self, _linker_script_entry: Option<&'a [u8]>) -> &'a [u8] {
+    fn entry_symbol_name<'a>(&'a self, _linker_script_entry: Option<&'a [u8]>) -> Option<&'a [u8]> {
         // TODO: probably add option
-        b"_main"
+        Some(b"_main")
     }
 
     fn lib_search_path(&self) -> &[Box<std::path::Path>] {

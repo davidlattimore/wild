@@ -940,19 +940,16 @@ fn load_prelude<'scope, 'data, P: Platform>(
 ) {
     // The start symbol could be defined within an archive entry. If it is, then we need to load
     // it. We don't currently store the resulting SymbolId, but instead look it up again during
-    // layout.
-    let symbol_id = load_symbol_named(
-        resources,
-        &mut SymbolId::undefined(),
-        resources.symbol_db.entry_symbol_name(),
-        scope,
-    );
+    // layout. Skip when there is no entry (e.g. Wasm `--no-entry`).
+    if let Some(entry_name) = resources.symbol_db.entry_symbol_name() {
+        let symbol_id = load_symbol_named(resources, &mut SymbolId::undefined(), entry_name, scope);
 
-    if let Some(symbol_id) = symbol_id {
-        resources
-            .per_symbol_flags
-            .get_atomic(symbol_id)
-            .fetch_or(ValueFlags::HAS_NON_IR_REF);
+        if let Some(symbol_id) = symbol_id {
+            resources
+                .per_symbol_flags
+                .get_atomic(symbol_id)
+                .fetch_or(ValueFlags::HAS_NON_IR_REF);
+        }
     }
 
     // Try to resolve any symbols that the user requested be undefined (e.g. via --undefined). If an
