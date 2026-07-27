@@ -85,8 +85,15 @@ impl platform::Args for WasmArgs {
         false
     }
 
-    fn entry_symbol_name<'a>(&'a self, _linker_script_entry: Option<&'a [u8]>) -> Option<&'a [u8]> {
-        self.entry.as_deref().map(str::as_bytes)
+    fn entry_point<'a>(
+        &'a self,
+        _linker_script_entry: Option<&'a [u8]>,
+    ) -> platform::EntryPoint<'a> {
+        self.entry
+            .as_deref()
+            .map_or(platform::EntryPoint::None, |entry| {
+                platform::EntryPoint::Symbol(entry.as_bytes())
+            })
     }
 
     fn force_export_symbol_names(&self) -> &[String] {

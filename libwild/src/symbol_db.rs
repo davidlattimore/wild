@@ -944,8 +944,15 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         header.is_group()
     }
 
+    pub(crate) fn entry_point(&self) -> crate::platform::EntryPoint<'_> {
+        self.args.entry_point(self.entry)
+    }
+
     pub(crate) fn entry_symbol_name(&self) -> Option<&[u8]> {
-        self.args.entry_symbol_name(self.entry)
+        match self.entry_point() {
+            crate::platform::EntryPoint::Symbol(name) => Some(name),
+            crate::platform::EntryPoint::None | crate::platform::EntryPoint::Address(_) => None,
+        }
     }
 
     fn apply_linker_script(&mut self, script: &InputLinkerScript<'data>) {

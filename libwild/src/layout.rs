@@ -1574,34 +1574,10 @@ impl<'data, P: Platform> Layout<'data, P> {
             .map(move |(i, res)| (range.offset_to_id(i), res.as_ref()))
     }
 
-    pub(crate) fn entry_symbol_address(&self) -> Result<u64> {
-        if self.symbol_db.args.should_output_partial_object() {
-            return Ok(0);
-        }
+    pub(crate) fn resolved_entry_symbol_address(&self) -> Result<Option<u64>> {
         let Some(symbol_id) = self.prelude().entry_symbol_id else {
-            if self.symbol_db.output_kind == OutputKind::SharedObject {
-                // Shared objects don't have an implicit entry point.
-                return Ok(0);
-            }
-
-            // There's no entry point specified, set it to the start of .text. This is pretty weird,
-            // but it's what GNU ld does.
-            let text_layout = self.section_layouts.get(output_section_id::TEXT);
-            if text_layout.mem_size == 0 {
-                self.symbol_db.warning(
-                    "cannot find entry symbol `_start` and .text is empty, not setting entry point",
-                );
-
-                return Ok(0);
-            }
-
-            self.symbol_db.warning(format!(
-                "cannot find entry symbol `_start`, defaulting to 0x{}",
-                text_layout.mem_offset
-            ));
-            return Ok(text_layout.mem_offset);
+            return Ok(None);
         };
-
         let resolution = self.local_symbol_resolution(symbol_id).with_context(|| {
             format!(
                 "Entry point symbol was defined, but didn't get loaded. {}",
@@ -1616,7 +1592,7 @@ impl<'data, P: Platform> Layout<'data, P> {
             );
         }
 
-        Ok(resolution.value())
+        Ok(Some(resolution.value()))
     }
 
     pub(crate) fn tls_start_address(&self) -> u64 {

@@ -1320,6 +1320,13 @@ pub(crate) trait ProgramSegmentDef: Copy + Send + Sync + Display + 'static {
 
 pub(crate) trait BuiltInSectionDetails: Send + Sync + 'static {}
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EntryPoint<'a> {
+    None,
+    Symbol(&'a [u8]),
+    Address(u64),
+}
+
 pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     fn parse<S, I>(&mut self, input: I) -> Result
     where
@@ -1361,7 +1368,7 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         &[]
     }
 
-    fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> Option<&'a [u8]>;
+    fn entry_point<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> EntryPoint<'a>;
 
     fn version_script_path(&self) -> Option<&Path> {
         None

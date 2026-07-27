@@ -50,6 +50,10 @@
 //!
 //! NoDynSym:symbol-name Checks that the specified symbol name is not defined in .dynsym.
 //!
+//! ExpectEntry:symbol-name|address Checks that the executable entry point refers to the specified
+//! symbol or numeric address. Symbols are supported for ELF and Mach-O. Numeric addresses are
+//! supported for ELF.
+//!
 //! ExpectDynamic:tag-name Checks that the specified dynamic entry (e.g. DT_RUNPATH, DT_FLAGS) is
 //! present in the .dynamic section.
 //!
@@ -1648,6 +1652,7 @@ struct Dep {
 struct Assertions {
     expected_symtab_entries: Vec<ExpectedSymtabEntry>,
     expected_dynsym_entries: Vec<ExpectedSymtabEntry>,
+    expected_entry: Option<String>,
     expected_comments: Vec<String>,
     no_sym: HashSet<String>,
     no_dynsym: HashSet<String>,
@@ -2061,6 +2066,7 @@ fn process_directive(
         "ExpectDynSym" => config.assertions.expected_dynsym_entries.push(
             ExpectedSymtabEntry::parse(arg).context("Failed to parse ExpectDynSym arguments")?,
         ),
+        "ExpectEntry" => config.assertions.expected_entry = Some(arg.to_owned()),
         "ExpectComment" => config.assertions.expected_comments.push(arg.to_owned()),
         "NoSym" => {
             config.assertions.no_sym.insert(arg.to_owned());
@@ -2155,16 +2161,8 @@ fn process_directive(
             .push(arg.to_owned()),
         "ExpectLoadAlignment" => {
             let alignment_strs = arg.split(" ").map(str::trim);
-            let alignments = alignment_strs.map(|alignment_str| {
-                if let Some(hex) = alignment_str.strip_prefix("0x") {
-                    u64::from_str_radix(hex, 16)
-                        .with_context(|| format!("Invalid hex alignment: {alignment_str}"))
-                } else {
-                    alignment_str
-                        .parse::<u64>()
-                        .with_context(|| format!("Invalid alignment: {alignment_str}"))
-                }
-            });
+            let alignments = alignment_strs
+                .map(|alignment_str| parse_number(alignment_str).context("Invalid alignment"));
             config.assertions.expected_load_alignments =
                 alignments.collect::<Result<Vec<u64>>>()?;
         }
@@ -4428,6 +4426,7 @@ impl Assertions {
             obj.dynamic_symbols(),
             "dynsym",
         )?;
+        self.verify_elf_entry(&obj)?;
         self.verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
         self.verify_expected_sections(&obj)?;
         self.verify_absent_sections(&obj)?;
@@ -4465,6 +4464,7 @@ impl Assertions {
         let supported = Assertions {
             expected_symtab_entries: self.expected_symtab_entries.clone(),
             expected_dynsym_entries: self.expected_dynsym_entries.clone(),
+            expected_entry: self.expected_entry.clone(),
             no_sym: self.no_sym.clone(),
             does_not_contain: self.does_not_contain.clone(),
             contains_strings: self.contains_strings.clone(),
@@ -4488,6 +4488,7 @@ impl Assertions {
             obj.dynamic_symbols(),
             "dynsym",
         )?;
+        self.verify_macho_entry(obj)?;
         self.verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
         self.verify_expected_sections(obj)?;
         self.verify_absent_sections(obj)?;
@@ -4540,6 +4541,100 @@ impl Assertions {
         info.ensure_func_types_unique(linker_name)?;
         info.ensure_exports(&self.expected_symtab_entries, &self.no_sym, linker_name)?;
         self.verify_strings(&info.bytes)?;
+        Ok(())
+    }
+
+    fn expected_entry_address(&self, obj: &object::File) -> Result<Option<u64>> {
+        let Some(expected_entry) = &self.expected_entry else {
+            return Ok(None);
+        };
+
+        if let Ok(num) = parse_number(expected_entry) {
+            return Ok(Some(num));
+        }
+
+        let symbol = obj
+            .symbols()
+            .find(|symbol| symbol.name() == Ok(expected_entry))
+            .with_context(|| format!("Entry symbol `{expected_entry}` is not defined"))?;
+
+        Ok(Some(symbol.address()))
+    }
+
+    fn verify_elf_entry(&self, obj: &object::File) -> Result {
+        let Some(expected_address) = self.expected_entry_address(obj)? else {
+            return Ok(());
+        };
+
+        let object::File::Elf64(file) = obj else {
+            bail!("ExpectEntry is only supported for 64-bit ELF and Mach-O");
+        };
+
+        let actual_address = file.elf_header().e_entry.get(file.endianness());
+        ensure!(
+            actual_address == expected_address,
+            "Expected entry point `{}` at {expected_address:#x}, but ELF e_entry was {actual_address:#x}",
+            self.expected_entry.as_deref().unwrap()
+        );
+
+        Ok(())
+    }
+
+    fn verify_macho_entry(&self, obj: &object::File) -> Result {
+        let Some(expected_address) = self.expected_entry_address(obj)? else {
+            return Ok(());
+        };
+
+        let object::File::MachO64(file) = obj else {
+            bail!("ExpectEntry is only supported for 64-bit ELF and Mach-O");
+        };
+
+        let e = file.endianness();
+        let mut segments = Vec::new();
+        let mut entryoff = None;
+        let mut commands = file.macho_load_commands()?;
+
+        while let Some(command) = commands.next()? {
+            match command.variant()? {
+                LoadCommandVariant::Segment64(segment, _) => {
+                    segments.push((
+                        segment.vmaddr.get(e),
+                        segment.vmsize.get(e),
+                        segment.fileoff.get(e),
+                        String::from_utf8_lossy(segment.name()).into_owned(),
+                    ));
+                }
+                LoadCommandVariant::EntryPoint(entry) => {
+                    entryoff = Some(entry.entryoff.get(e));
+                }
+                _ => {}
+            }
+        }
+
+        let entryoff = entryoff.context("Missing LC_MAIN")?;
+        let (text_vmaddr, _, text_fileoff, _) = segments
+            .iter()
+            .find(|(_, _, _, name)| name == object::macho::SEG_TEXT)
+            .context("Missing __TEXT segment")?;
+
+        let image_base = text_vmaddr
+            .checked_sub(*text_fileoff)
+            .context("__TEXT file offset is greater than its VM address")?;
+
+        let actual_address = image_base + entryoff;
+        let (_, _, _, segment_name) = segments
+            .iter()
+            .find(|(vmaddr, vmsize, _, _)| (*vmaddr..vmaddr + vmsize).contains(&actual_address))
+            .with_context(|| {
+                format!("LC_MAIN refers to unmapped virtual address {actual_address:#x}")
+            })?;
+
+        ensure!(
+            actual_address == expected_address,
+            "Expected entry point `{}` at {expected_address:#x}, but LC_MAIN refers to {actual_address:#x} in segment `{segment_name}`",
+            self.expected_entry.as_deref().unwrap()
+        );
+
         Ok(())
     }
 
@@ -5131,6 +5226,18 @@ impl Assertions {
         // won't be checked for the test that writes the output to /dev/null.
         self.max_thunks > 0
     }
+}
+
+fn parse_number(s: &str) -> Result<u64> {
+    if let Some(hex) = s.strip_prefix("0x") {
+        return Ok(u64::from_str_radix(hex, 16)?);
+    }
+
+    if s.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok(s.parse()?);
+    }
+
+    bail!("Failed to parse `{s}` as a number");
 }
 
 /// Parsed offsets from a `.gdb_index` header, version-agnostic.

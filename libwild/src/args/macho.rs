@@ -26,6 +26,7 @@ pub struct MachOArgs {
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) plugin_path: Option<String>,
     pub(crate) dead_strip_dylibs: bool,
+    pub(crate) entry: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,7 +78,6 @@ impl MachOArgs {
     }
 }
 
-#[expect(clippy::derivable_impls)]
 impl Default for MachOArgs {
     fn default() -> Self {
         Self {
@@ -87,6 +87,7 @@ impl Default for MachOArgs {
             lib_search_path: Vec::new(),
             plugin_path: None,
             dead_strip_dylibs: false,
+            entry: "_main".to_owned(),
         }
     }
 }
@@ -108,9 +109,11 @@ impl platform::Args for MachOArgs {
         false
     }
 
-    fn entry_symbol_name<'a>(&'a self, _linker_script_entry: Option<&'a [u8]>) -> Option<&'a [u8]> {
-        // TODO: probably add option
-        Some(b"_main")
+    fn entry_point<'a>(
+        &'a self,
+        _linker_script_entry: Option<&'a [u8]>,
+    ) -> platform::EntryPoint<'a> {
+        platform::EntryPoint::Symbol(self.entry.as_bytes())
     }
 
     fn lib_search_path(&self) -> &[Box<std::path::Path>] {
@@ -182,6 +185,15 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
 // variants.
 fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
     let mut parser = ArgumentParser::<MachOArgs>::new();
+
+    parser
+        .declare_with_param()
+        .short("e")
+        .help("Set the entry point symbol")
+        .execute(|args, _modifier_stack, value| {
+            args.entry = value.to_owned();
+            Ok(())
+        });
 
     parser
         .declare_with_param()
