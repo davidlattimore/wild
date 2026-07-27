@@ -89,7 +89,7 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: base_image
+          name: base_image-${{ matrix.container }}
           path: ${{ runner.temp }}/base_image.tar
 
   # Build images that depend on other images.
@@ -104,16 +104,19 @@ jobs:
             platform: linux/amd64
             runs-on: ubuntu-24.04
             base_image: ghcr.io/${{ github.repository }}/ci-ubuntu-base-amd64:sha-${{ github.sha }}
+            base_image_container: ci-ubuntu-base-amd64
           - file: docker/ci/ubuntu.Dockerfile
             container: ci-ubuntu-arm64
             runs-on: ubuntu-24.04-arm
             platform: linux/arm64
             base_image: ghcr.io/${{ github.repository }}/ci-ubuntu-base-arm64:sha-${{ github.sha }}
+            base_image_container: ci-ubuntu-base-arm64
           - file: docker/ci/ubuntu-cross.Dockerfile
             container: ci-ubuntu-cross-amd64
             platform: linux/amd64
             runs-on: ubuntu-24.04-arm
             base_image: ghcr.io/${{ github.repository }}/ci-ubuntu-base-amd64:sha-${{ github.sha }}
+            base_image_container: ci-ubuntu-base-amd64
 
     runs-on: ${{ matrix.runs-on }}
 
@@ -143,7 +146,7 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: actions/download-artifact@v4
         with:
-          name: base_image
+          name: base_image-${{ matrix.base_image_container }}
           path: ${{ runner.temp }}
 
       - name: Load base image archive
