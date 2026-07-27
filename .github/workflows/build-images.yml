@@ -89,8 +89,8 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: myimage
-          path: ${{ runner.temp }}/myimage.tar
+          name: base_image
+          path: ${{ runner.temp }}/base_image.tar
 
   # Build images that depend on other images.
   build-dependent:
