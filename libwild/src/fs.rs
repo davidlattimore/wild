@@ -71,7 +71,7 @@ pub trait OutputFileData: Send {
     fn bytes_mut(&mut self) -> &mut [u8];
 
     /// Persist the bytes and apply final file attributes.
-    fn finish(&mut self) -> Result;
+    fn finish(self) -> Result;
 
     /// Invalidate any OS caches that may have observed partially written output.
     fn invalidate(&mut self, _len: usize) {}
@@ -169,7 +169,6 @@ pub struct OsOutputFile {
     file: File,
     buffer: OsOutputBuffer,
     path: Arc<Path>,
-    finished: bool,
 }
 
 impl OutputFileData for OsOutputFile {
@@ -187,10 +186,7 @@ impl OutputFileData for OsOutputFile {
         }
     }
 
-    fn finish(&mut self) -> Result {
-        if self.finished {
-            return Ok(());
-        }
+    fn finish(mut self) -> Result {
         if let OsOutputBuffer::InMemory(bytes) = &self.buffer {
             self.file
                 .write_all(bytes)
@@ -201,7 +197,6 @@ impl OutputFileData for OsOutputFile {
         // something, it isn't going to work and that's OK.
         let _ = make_executable(&self.file);
 
-        self.finished = true;
         Ok(())
     }
 
@@ -370,12 +365,7 @@ impl FileSystem for OsFileSystem {
             }
         };
 
-        Ok(OsOutputFile {
-            file,
-            buffer,
-            path,
-            finished: false,
-        })
+        Ok(OsOutputFile { file, buffer, path })
     }
 
     fn write_auxiliary(&self, path: &Path, bytes: &[u8]) -> Result {

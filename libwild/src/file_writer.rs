@@ -68,7 +68,7 @@ impl<O: OutputFileData> OutputBuffer<O> {
         self.0.invalidate(len);
     }
 
-    fn finish(&mut self) -> Result {
+    fn finish(self) -> Result {
         self.0.finish()
     }
 }
@@ -203,14 +203,13 @@ impl<F: FileSystem> Output<F> {
             }
         };
         write_fn(&mut sized_output, layout)?;
-        sized_output.flush()?;
         sized_output.trace.close(self.file_system.as_ref())?;
 
         // While we have the output file mmapped with write permission, the file will be locked and
         // unusable, so we can't really say that we've finished writing it until we've unmapped it.
         {
-            timing_phase!("Unmap output file");
-            drop(sized_output);
+            timing_phase!("Flush and unmap output file");
+            sized_output.flush()?;
         }
 
         Ok(())
@@ -274,7 +273,7 @@ impl<O: OutputFileData> SizedOutput<O> {
         })
     }
 
-    fn flush(&mut self) -> Result {
+    fn flush(self) -> Result {
         self.out.finish()
     }
 }
