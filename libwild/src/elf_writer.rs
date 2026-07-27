@@ -440,7 +440,7 @@ fn populate_file_header<A: Arch<Platform = Elf>>(
     header.e_type.set(e, ty);
     header.e_machine.set(e, A::arch_identifier());
     header.e_version.set(e, object::elf::EV_CURRENT.0.into());
-    header.e_entry.set(e, layout.entry_symbol_address()?);
+    header.e_entry.set(e, elf_entry_address(layout)?);
     header.e_phoff.set(
         e,
         if output_kind.is_partial_object() {
@@ -484,6 +484,40 @@ fn populate_file_header<A: Arch<Platform = Elf>>(
         .e_shstrndx
         .set(e, object::elf::SymbolSection::new(shstrndx));
     Ok(())
+}
+
+fn elf_entry_address(layout: &ElfLayout) -> Result<u64> {
+    if layout.args().should_output_partial_object() {
+        return Ok(0);
+    }
+
+    let entry_name = match layout.symbol_db.entry_point() {
+        crate::platform::EntryPoint::None => return Ok(0),
+        crate::platform::EntryPoint::Address(address) => return Ok(address),
+        crate::platform::EntryPoint::Symbol(name) => name,
+    };
+
+    if let Some(address) = layout.resolved_entry_symbol_address()? {
+        return Ok(address);
+    }
+    if layout.symbol_db.output_kind == OutputKind::SharedObject {
+        return Ok(0);
+    }
+
+    let entry_name = String::from_utf8_lossy(entry_name);
+    let text_layout = layout.section_layouts.get(output_section_id::TEXT);
+    if text_layout.mem_size == 0 {
+        layout.symbol_db.warning(format!(
+            "cannot find entry symbol `{entry_name}` and .text is empty, not setting entry point"
+        ));
+        return Ok(0);
+    }
+
+    layout.symbol_db.warning(format!(
+        "cannot find entry symbol `{entry_name}`, defaulting to 0x{}",
+        text_layout.mem_offset
+    ));
+    Ok(text_layout.mem_offset)
 }
 
 fn write_file<'data, A: Arch<Platform = Elf>>(

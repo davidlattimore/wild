@@ -1400,7 +1400,9 @@ impl platform::Platform for MachO {
             );
         }
         allocate_load_cmd(size_of::<SegmentCommand>());
-        allocate_load_cmd(size_of::<EntryPointCommand>());
+        if resources.symbol_db.output_kind.is_executable() {
+            allocate_load_cmd(size_of::<EntryPointCommand>());
+        }
         allocate_load_cmd(
             (size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
                 .next_multiple_of(MACHO_COMMAND_ALIGNMENT),

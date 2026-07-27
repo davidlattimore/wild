@@ -43,7 +43,6 @@ use crate::macho::PROGRAM_SEGMENT_DEFS;
 use crate::macho::SEG_DATA_CONST;
 use crate::macho::SectionEntry;
 use crate::macho::SegmentCommand;
-use crate::macho::SegmentSectionsInfo;
 use crate::macho::SegmentType;
 use crate::macho::SymtabCommand;
 use crate::macho::UuidCommand;
@@ -220,7 +219,9 @@ fn write_prelude<'data>(
     let mut load_command_buffer = slice_from_all_bytes_mut(buffers.get_mut(part_id::LOAD_COMMANDS));
     write_segment_commands(layout, &mut load_command_buffer)?;
 
-    write_entry_point_command(layout, take_mut(&mut load_command_buffer)?)?;
+    if layout.symbol_db.output_kind.is_executable() {
+        write_entry_point_command(layout, take_mut(&mut load_command_buffer)?)?;
+    }
 
     write_uuid_command(take_mut(&mut load_command_buffer)?);
 
@@ -741,15 +742,31 @@ fn get_resolution<'data>(
 }
 
 fn write_entry_point_command(layout: &MachOLayout, command: &mut EntryPointCommand) -> Result {
-    let SegmentSectionsInfo { segment_size, .. } =
-        get_segment_sections(layout, SegmentType::TextSections)
-            .ok_or_else(|| error!("TextSections segment is mandatory"))?;
+    let entry_name = match layout.symbol_db.entry_point() {
+        crate::platform::EntryPoint::Symbol(name) => String::from_utf8_lossy(name),
+        crate::platform::EntryPoint::None | crate::platform::EntryPoint::Address(_) => {
+            bail!("Mach-O executable entry point must be a symbol")
+        }
+    };
+
+    let entry_address = layout
+        .resolved_entry_symbol_address()?
+        .with_context(|| format!("entry symbol `{entry_name}` is not defined"))?;
+
+    let image_base = layout
+        .section_layouts
+        .get(output_section_id::FILE_HEADER)
+        .mem_offset;
+
+    let entry_offset = entry_address
+        .checked_sub(image_base)
+        .context("entry point is before the Mach-O image base")?;
 
     command.cmd.set(LE, LC_MAIN);
     command
         .cmdsize
         .set(LE, size_of::<EntryPointCommand>() as u32);
-    command.entryoff.set(LE, segment_size.file_offset as u64);
+    command.entryoff.set(LE, entry_offset);
     command.stacksize.set(LE, 0);
     Ok(())
 }
