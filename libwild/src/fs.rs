@@ -78,6 +78,189 @@ pub trait OutputFileData: Send {
 }
 
 /// Filesystem services needed by the core linker.
+///
+/// # Examples
+///
+/// ```
+/// use libwild::{FileSystem, FileType, InputFileData, Linker, OutputFileData, OutputOptions};
+/// use object::write::{Object, StandardSection, Symbol, SymbolSection};
+/// use object::{Architecture, BinaryFormat, Endianness, SymbolFlags, SymbolKind, SymbolScope};
+/// use std::collections::HashMap;
+/// use std::fs::File;
+/// use std::mem;
+/// use std::path::{Path, PathBuf};
+/// use std::sync::{Arc, Mutex};
+///
+/// // A small in-memory filesystem backed by a dictionary of path -> contents.
+/// #[derive(Clone, Default)]
+/// pub(crate) struct InMemoryFileSystem {
+///     pub(crate) files: Arc<Mutex<HashMap<PathBuf, Vec<u8>>>>,
+/// }
+///
+/// #[derive(Debug)]
+/// struct Input(Vec<u8>);
+///
+/// impl InputFileData for Input {
+///     fn bytes(&self) -> &[u8] {
+///         &self.0
+///     }
+/// }
+///
+/// struct Output {
+///     path: PathBuf,
+///     bytes: Vec<u8>,
+///     files: Arc<Mutex<HashMap<PathBuf, Vec<u8>>>>,
+/// }
+///
+/// impl OutputFileData for Output {
+///     fn bytes(&self) -> &[u8] {
+///         &self.bytes
+///     }
+///
+///     fn bytes_mut(&mut self) -> &mut [u8] {
+///         &mut self.bytes
+///     }
+///
+///     fn finish(mut self) -> libwild::error::Result {
+///         let data = mem::take(&mut self.bytes);
+///         self.files.lock().unwrap().insert(self.path.clone(), data);
+///         Ok(())
+///     }
+/// }
+///
+/// impl FileSystem for InMemoryFileSystem {
+///     type Input = Input;
+///     type Output = Output;
+///
+///     fn open_input(
+///         &self,
+///         path: &Path,
+///         _prepopulate_maps: bool,
+///     ) -> libwild::error::Result<(Self::Input, Option<Arc<File>>)> {
+///         let bytes = self
+///             .files
+///             .lock()
+///             .unwrap()
+///             .get(&path.to_path_buf())
+///             .cloned()
+///             .ok_or_else(|| libwild::error!("No such in-memory file: {}", path.display()))?;
+///         Ok((Input(bytes), None))
+///     }
+///
+///     fn file_type(&self, path: &Path) -> std::io::Result<FileType> {
+///         if self.files.lock().unwrap().contains_key(&path.to_path_buf()) {
+///             Ok(FileType::File)
+///         } else {
+///             Err(std::io::Error::new(
+///                 std::io::ErrorKind::NotFound,
+///                 "no such in-memory file",
+///             ))
+///         }
+///     }
+///
+///     fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
+///         Ok(path.to_path_buf())
+///     }
+///
+///     fn rename_file(&self, path: &Path, new_path: &Path) -> std::io::Result<()> {
+///         let mut guard = self.files.lock().unwrap();
+///         let Some(data) = guard.remove(&path.to_path_buf()) else {
+///             return Err(std::io::Error::new(
+///                 std::io::ErrorKind::NotFound,
+///                 "no such in-memory file",
+///             ));
+///         };
+///         guard.insert(new_path.to_path_buf(), data);
+///
+///         Ok(())
+///     }
+///
+///     fn remove_file(&self, path: &Path) -> std::io::Result<()> {
+///         self.files
+///             .lock()
+///             .unwrap()
+///             .remove(&path.to_path_buf())
+///             .map(|_| ())
+///             .ok_or_else(|| {
+///                 std::io::Error::new(std::io::ErrorKind::NotFound, "no such in-memory file")
+///             })
+///     }
+///
+///     fn create_output(
+///         &self,
+///         path: Arc<Path>,
+///         options: OutputOptions,
+///     ) -> libwild::error::Result<Self::Output> {
+///         let size = usize::try_from(options.size)
+///             .map_err(|_| libwild::error!("output is too large for this platform"))?;
+///         Ok(Output {
+///             path: path.to_path_buf(),
+///             bytes: vec![0; size],
+///             files: Arc::clone(&self.files),
+///         })
+///     }
+///
+///     fn write_auxiliary(&self, path: &Path, bytes: &[u8]) -> libwild::error::Result {
+///         self.files
+///             .lock()
+///             .unwrap()
+///             .insert(path.to_path_buf(), bytes.to_vec());
+///         Ok(())
+///     }
+/// }
+///
+/// fn create_main_object() -> object::write::Result<Vec<u8>> {
+///     let mut object = Object::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+///     let data = object.section_id(StandardSection::Data);
+///     let symbol = object.add_symbol(Symbol {
+///         name: b"foo".to_vec(),
+///         value: 0,
+///         size: 0,
+///         kind: SymbolKind::Data,
+///         scope: SymbolScope::Dynamic,
+///         weak: false,
+///         section: SymbolSection::Undefined,
+///         flags: SymbolFlags::None,
+///     });
+///     object.add_symbol_data(symbol, data, &42_u32.to_le_bytes(), 4);
+///     object.write()
+/// }
+///
+/// fn run() -> libwild::error::Result {
+///     let fs = InMemoryFileSystem::default();
+///
+///     fs.files
+///         .lock()
+///         .unwrap()
+///         .insert(PathBuf::from("main.o"), create_main_object()?);
+///
+///     let arguments = [
+///         "wild",
+///         "-m",
+///         "elf_x86_64",
+///         "-shared",
+///         "main.o",
+///         "-o",
+///         "libx.so",
+///     ];
+///     let get_arguments = || arguments.into_iter();
+///     let mut args = libwild::Args::new(get_arguments)?;
+///     args.parse(get_arguments)?;
+///
+///     let linker = Linker::with_file_system(fs.clone());
+///     linker.run(&args)?;
+///
+///     let output = fs
+///         .files
+///         .lock()
+///         .unwrap()
+///         .get(Path::new("libx.so"))
+///         .cloned()
+///         .ok_or_else(|| libwild::error!("linker did not create libx.so"))?;
+///     // std::fs::write("libx.so", &output)?;
+///     Ok(())
+/// }
+/// ```
 pub trait FileSystem: Send + Sync + 'static {
     type Input: InputFileData;
     type Output: OutputFileData;

@@ -70,6 +70,7 @@ cc.workspace = true
 
 [dev-dependencies]
 ar.workspace = true
+object = { workspace = true, features = ["write_std"] }
 tempfile.workspace = true
 
 [features]

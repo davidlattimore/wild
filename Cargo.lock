@@ -1232,7 +1232,10 @@ name = "object"
 version = "0.39.1"
 source = "git+https://github.com/gimli-rs/object?rev=a0bfa322#a0bfa322b6b01bcd4dc8c24eacaac1e8fad80d1d"
 dependencies = [
+ "crc32fast",
  "flate2",
+ "hashbrown 0.17.1",
+ "indexmap",
  "memchr",
  "ruzstd",
 ]
