@@ -76,7 +76,7 @@ jobs:
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=ghcr.io/{0}/{1}:buildcache,mode=max', github.repository, matrix.container) || '' }}
 
       - name: Export base image
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && contains(matrix.file, 'base')
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -86,7 +86,7 @@ jobs:
           outputs: type=docker,dest=${{ runner.temp }}/base_image.tar
 
       - name: Upload base image archive
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && contains(matrix.file, 'base')
         uses: actions/upload-artifact@v4
         with:
           name: base_image-${{ matrix.container }}
