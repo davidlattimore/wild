@@ -75,7 +75,7 @@ jobs:
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.container }}:buildcache
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=ghcr.io/{0}/{1}:buildcache,mode=max', github.repository, matrix.container) || '' }}
 
-      - name: Export base image (OCI layout)
+      - name: Export base image
         if: github.event_name == 'pull_request' && contains(matrix.file, 'base')
         uses: docker/build-push-action@v7
         with:
@@ -83,7 +83,7 @@ jobs:
           file: ${{ matrix.file }}
           platforms: ${{ matrix.platform }}
           tags: ghcr.io/${{ github.repository }}/${{ matrix.container }}:sha-${{ github.sha }}
-          outputs: type=oci,dest=${{ runner.temp }}/base_image.tar
+          outputs: type=docker,dest=${{ runner.temp }}/base_image.tar
 
       - name: Upload base image archive
         if: github.event_name == 'pull_request' && contains(matrix.file, 'base')
@@ -145,11 +145,11 @@ jobs:
           name: base_image-${{ matrix.base_image_container }}
           path: ${{ runner.temp }}
 
-      - name: Unpack base image OCI layout
+      - name: Load base image archive
         if: github.event_name == 'pull_request'
         run: |
-          mkdir -p ${{ runner.temp }}/base_image_oci
-          tar -xf ${{ runner.temp }}/base_image.tar -C ${{ runner.temp }}/base_image_oci
+          docker load --input ${{ runner.temp }}/base_image.tar
+          docker image ls -a
 
       - name: Build and push dependent image
         uses: docker/build-push-action@v7
@@ -160,10 +160,9 @@ jobs:
           platforms: ${{ matrix.platform }}
           build-args: |
             BASE_IMAGE=${{ matrix.base_image }}
-          build-contexts: |
-            ${{ github.event_name == 'pull_request' && format('{0}=oci-layout://{1}/base_image_oci', matrix.base_image, runner.temp) || '' }}
           tags: |
             ghcr.io/${{ github.repository }}/${{ matrix.container }}:latest
             ghcr.io/${{ github.repository }}/${{ matrix.container }}:sha-${{ github.sha }}
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.container }}:buildcache
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=ghcr.io/{0}/{1}:buildcache,mode=max', github.repository, matrix.container) || '' }}
+          load: ${{ github.event_name == 'pull_request' }}
