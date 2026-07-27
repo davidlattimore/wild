@@ -82,7 +82,7 @@ jobs:
           context: .
           file: ${{ matrix.file }}
           platforms: ${{ matrix.platform }}
-          tags: ghcr.io/${{ github.repository }}/${{ matrix.container }}:latest
+          tags: ghcr.io/${{ github.repository }}/${{ matrix.container }}:sha-${{ github.sha }}
           outputs: type=docker,dest=${{ runner.temp }}/base_image.tar
 
       - name: Upload base image archive
