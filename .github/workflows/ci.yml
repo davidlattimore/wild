@@ -23,10 +23,6 @@ jobs:
         include:
           - runs-on: ubuntu-24.04
             container: ci-ubuntu-cross-amd64
-            cross: all
-          - runs-on: ubuntu-24.04
-            container: ci-arch-cross-amd64
-            cross: aarch64,riscv64
           - runs-on: ubuntu-24.04-arm
             container: ci-ubuntu-arm64
           - runs-on: ubuntu-24.04
@@ -49,7 +45,7 @@ jobs:
       - run: echo "$PATH" >> "$GITHUB_PATH"
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: echo "WILD_TEST_CONFIG=test-config-ci.toml" >> $GITHUB_ENV
-      - run: echo "WILD_TEST_CROSS=${{ matrix.cross }}" >> $GITHUB_ENV
+      - run: echo "WILD_TEST_CROSS=all" >> $GITHUB_ENV
         if: ${{ contains(matrix.container, '-cross') }}
       - uses: actions/checkout@v7
         with:
