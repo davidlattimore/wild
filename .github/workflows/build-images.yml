@@ -129,6 +129,10 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+        with:
+          # `docker` supports local images, `docker-container` supports caching, and neither fits all...
+          # For PRs, we don't push images and loading base image is important.
+          driver: ${{ github.event_name == 'pull_request' && 'docker' || 'docker-container' }}
 
       - name: Log in to Container Registry
         if: github.event_name != 'pull_request'
@@ -165,4 +169,3 @@ jobs:
             ghcr.io/${{ github.repository }}/${{ matrix.container }}:sha-${{ github.sha }}
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.container }}:buildcache
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=ghcr.io/{0}/{1}:buildcache,mode=max', github.repository, matrix.container) || '' }}
-          load: ${{ github.event_name == 'pull_request' }}
