@@ -1,6 +1,7 @@
 //#Config:stack-size
 //#CompArgs:-DNO_STACK_FIRST
 //#LinkArgs: -z stack-size=1048576 --no-stack-first
+//#RequiresLinkerFlags: --no-stack-first
 
 //#Config:stack-first
 //#LinkArgs: -z stack-size=1048576 --stack-first

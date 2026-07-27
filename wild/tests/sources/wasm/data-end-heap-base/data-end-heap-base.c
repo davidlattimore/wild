@@ -1,5 +1,6 @@
 //#Object:data-end-heap-base2.c
 //#LinkArgs:--no-stack-first
+//#RequiresLinkerFlags: --no-stack-first
 
 extern char __data_end;
 extern char __heap_base;
