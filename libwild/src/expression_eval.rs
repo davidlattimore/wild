@@ -421,6 +421,7 @@ fn section_load_address<'data, P: Platform>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::OsFileSystem;
     use crate::elf::Elf;
     use crate::grouping::Group;
     use crate::grouping::SequencedLinkerScript;
@@ -444,7 +445,8 @@ mod tests {
         let args = crate::args::elf::ElfArgs::new().unwrap();
         let output_kind = crate::output_kind::OutputKind::Relocatable;
         let arena = Arena::new();
-        let auxiliary = crate::input_data::AuxiliaryFiles::new(&args, &arena).unwrap();
+        let auxiliary =
+            crate::input_data::AuxiliaryFiles::new(&args, &arena, &OsFileSystem).unwrap();
         let herd = Default::default();
         let mut symbol_db = SymbolDb::<Elf>::new(&args, output_kind, &auxiliary, &herd).unwrap();
         f(&layouts, &sections, &mut symbol_db)
@@ -767,14 +769,11 @@ mod tests {
     }
 
     fn make_group<'data>(assertions: Vec<AssertCommand<'static>>) -> Group<'data, Elf> {
-        static DUMMY_FILE: std::sync::OnceLock<crate::input_data::InputFile> =
-            std::sync::OnceLock::new();
-        let file = DUMMY_FILE.get_or_init(crate::input_data::InputFile::for_testing);
         let script = SequencedLinkerScript {
             parsed: ProcessedLinkerScript {
                 input: crate::input_data::InputRef {
-                    file,
-                    data: file.data(),
+                    file: crate::input_data::InputFileRef::for_testing(),
+                    data: &[],
                     entry: None,
                 },
                 symbol_defs: Vec::new(),

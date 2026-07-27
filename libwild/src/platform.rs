@@ -1,3 +1,4 @@
+use crate::FileSystem;
 use crate::OutputKind;
 use crate::Result;
 use crate::alignment::Alignment;
@@ -312,13 +313,13 @@ pub(crate) trait Platform:
     type VerneedTable<'data>: VerneedTable<'data>;
 
     /// Invoke the linker for requested architecture.
-    fn link_for_arch<'data>(
-        linker: &'data crate::Linker,
+    fn link_for_arch<'data, F: FileSystem>(
+        linker: &'data crate::Linker<F>,
         args: &'data Self::Args,
     ) -> Result<crate::LinkerOutput<'data>>;
 
-    fn write_output_file<'data, A: Arch<Platform = Self>>(
-        output: &crate::file_writer::Output,
+    fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
+        output: &crate::file_writer::Output<F>,
         layout: &Layout<'data, Self>,
     ) -> Result;
 
@@ -339,11 +340,11 @@ pub(crate) trait Platform:
     }
 
     /// Called once all symbols have been read, but only if a linker plugin is active.
-    fn plugin_all_symbols_read<'data>(
+    fn plugin_all_symbols_read<'data, F: FileSystem>(
         _plugin: &mut LinkerPlugin<'data>,
         _symbol_db: &mut SymbolDb<'data, Self>,
         _resolver: &mut Resolver<'data, Self>,
-        _file_loader: &mut FileLoader<'data>,
+        _file_loader: &mut FileLoader<'data, F>,
         _per_symbol_flags: &mut PerSymbolFlags,
         _output_sections: &mut OutputSections<'data, Self>,
         _layout_rules_builder: &mut LayoutRulesBuilder<'data>,

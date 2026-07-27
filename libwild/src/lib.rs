@@ -108,10 +108,18 @@ use crate::version_script::VersionScript;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
+pub use fs::FileReplacementMode;
+pub use fs::FileSystem;
+pub use fs::FileType;
+pub use fs::FileWriteMode;
+pub use fs::InputFileData;
+pub use fs::OsFileSystem;
+pub use fs::OutputFileData;
+pub use fs::OutputOptions;
 pub use fs::make_executable;
 use hashbrown::HashSet;
 use input_data::FileLoader;
-use input_data::InputFile;
+use input_data::InputFile as LoadedInputFile;
 use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
@@ -164,9 +172,9 @@ pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
 /// together with the `LinkerOutput`. Note, calling `exit` without dropping this struct is an
 /// option, but likely won't save any time, since the bulk of the work done during drop (unmapping
 /// pages) will still happen anyway.
-pub struct Linker {
+pub struct Linker<F: FileSystem = OsFileSystem> {
     /// We store our input files here once we've read them.
-    inputs_arena: Arena<InputFile>,
+    inputs_arena: Arena<input_data::InputFile<F::Input>>,
 
     linker_plugin_arena: Arena<linker_plugins::LoadedPlugin>,
 
@@ -182,6 +190,9 @@ pub struct Linker {
     /// A timing scope that exists for the whole time we're linking.
     #[allow(dyn_drop)]
     _link_scope: Vec<Box<dyn Drop>>,
+
+    // File system used for reading of the inputs and writing of the output file(s).
+    file_system: std::sync::Arc<F>,
 }
 
 pub struct LinkerOutput<'layout_inputs> {
@@ -192,11 +203,19 @@ pub struct LinkerOutput<'layout_inputs> {
     layout: Option<Box<dyn Drop + 'layout_inputs>>,
 }
 
-impl Linker {
+impl Linker<OsFileSystem> {
+    #[must_use]
     pub fn new() -> Self {
+        Self::with_file_system(OsFileSystem::new())
+    }
+}
+
+impl<F: FileSystem> Linker<F> {
+    pub fn with_file_system(file_system: F) -> Self {
         let (guard_a, guard_b) = timing_guard!("Link");
 
         Self {
+            file_system: std::sync::Arc::new(file_system),
             inputs_arena: Arena::new(),
             linker_plugin_arena: Arena::new(),
             herd: Default::default(),
@@ -258,7 +277,10 @@ impl Linker {
         &'data self,
         args: &'data P::Args,
     ) -> error::Result<LinkerOutput<'data>> {
-        let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
+        let mut file_loader = input_data::FileLoader::new(
+            &self.inputs_arena,
+            std::sync::Arc::clone(&self.file_system),
+        );
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
@@ -269,13 +291,18 @@ impl Linker {
         // Write the dependency file and inputs trace after successful linking.
         if result.is_ok() {
             if let Some(dep_file_path) = &args.dependency_file() {
-                write_dependency_file(dep_file_path, args.output(), &file_loader.loaded_files)
-                    .with_context(|| {
-                        format!(
-                            "Failed to write dependency file `{}`",
-                            dep_file_path.display()
-                        )
-                    })?;
+                write_dependency_file(
+                    self.file_system.as_ref(),
+                    dep_file_path,
+                    args.output(),
+                    &file_loader.loaded_files,
+                )
+                .with_context(|| {
+                    format!(
+                        "Failed to write dependency file `{}`",
+                        dep_file_path.display()
+                    )
+                })?;
             }
             if args.should_write_trace_file() {
                 let mut buf = BufWriter::new(std::io::stdout());
@@ -288,9 +315,13 @@ impl Linker {
         result
     }
 
+    pub fn file_system(&self) -> &F {
+        self.file_system.as_ref()
+    }
+
     fn load_inputs_and_link<'data, P: Platform, A: Arch<Platform = P>>(
         &'data self,
-        file_loader: &mut FileLoader<'data>,
+        file_loader: &mut FileLoader<'data, F>,
         args: &'data P::Args,
     ) -> error::Result<LinkerOutput<'data>> {
         let mut plugin = P::maybe_init_linker_plugin(args, &self.linker_plugin_arena, &self.herd)?;
@@ -303,7 +334,7 @@ impl Linker {
 
         let output_kind = OutputKind::new(args, file_loader);
 
-        let mut output = file_writer::Output::new(args, output_kind);
+        let mut output = file_writer::Output::new(args, output_kind, self.file_system.clone());
 
         let mut output_sections =
             OutputSections::with_base_address(A::start_memory_address(output_kind), output_kind);
@@ -311,7 +342,8 @@ impl Linker {
 
         let mut layout_rules_builder = LayoutRulesBuilder::default();
 
-        let auxiliary = input_data::AuxiliaryFiles::new(args, &self.inputs_arena)?;
+        let auxiliary =
+            input_data::AuxiliaryFiles::new(args, &self.inputs_arena, self.file_system.as_ref())?;
 
         let mut symbol_db = symbol_db::SymbolDb::new(args, output_kind, &auxiliary, &self.herd)?;
         let mut per_symbol_flags = PerSymbolFlags::new();
@@ -367,7 +399,7 @@ impl Linker {
             &layout_rules,
         )?;
 
-        let layout = layout::compute::<P, A>(
+        let layout = layout::compute::<P, A, F>(
             symbol_db,
             per_symbol_flags,
             resolved,
@@ -375,7 +407,7 @@ impl Linker {
             &mut output,
         )?;
 
-        P::write_output_file::<A>(&output, &layout)?;
+        P::write_output_file::<A, F>(&output, &layout)?;
         diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.
@@ -388,13 +420,13 @@ impl Linker {
     }
 }
 
-impl Default for Linker {
+impl Default for Linker<OsFileSystem> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Drop for Linker {
+impl<F: FileSystem> Drop for Linker<F> {
     fn drop(&mut self) {
         timing_phase!("Drop inputs");
         self.inputs_arena = Arena::new();
@@ -410,15 +442,15 @@ impl Drop for LinkerOutput<'_> {
 }
 
 /// Writes a dependency file in Makefile format.
-fn write_dependency_file(
+fn write_dependency_file<I: InputFileData>(
+    file_system: &impl FileSystem,
     dep_file_path: &Path,
     output_path: &Path,
-    loaded_files: &[&InputFile],
-) -> std::io::Result<()> {
+    loaded_files: &[&LoadedInputFile<I>],
+) -> Result<()> {
     timing_phase!("Write dependency file");
 
-    let file = std::fs::File::create(dep_file_path)?;
-    let mut writer = BufWriter::new(file);
+    let mut writer = Vec::new();
 
     // Collect unique dependency paths
     let mut seen = HashSet::new();
@@ -447,6 +479,7 @@ fn write_dependency_file(
         writeln!(writer, "\n{dep}:")?;
     }
 
+    file_system.write_auxiliary(dep_file_path, &writer)?;
     Ok(())
 }
 

@@ -2,6 +2,7 @@ use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use self::elf::NoteHeader;
 use self::elf::NoteProperty;
 use self::elf::get_page_mask;
+use crate::OutputFileData;
 use crate::OutputKind;
 use crate::alignment;
 use crate::args::elf::BuildIdOption;
@@ -180,7 +181,7 @@ impl From<object::elf::SymbolSection> for SymbolSection {
 }
 
 pub(crate) fn write<'data, A: Arch<Platform = Elf>>(
-    sized_output: &mut SizedOutput,
+    sized_output: &mut SizedOutput<impl OutputFileData>,
     layout: &ElfLayout<'data>,
 ) -> Result {
     write_file_contents::<A>(sized_output, layout)?;
@@ -207,7 +208,7 @@ pub(crate) fn write<'data, A: Arch<Platform = Elf>>(
 }
 
 fn write_gnu_build_id_note(
-    sized_output: &mut SizedOutput,
+    sized_output: &mut SizedOutput<impl OutputFileData>,
     build_id_option: &BuildIdOption,
     layout: &ElfLayout,
 ) -> Result {
@@ -243,7 +244,7 @@ fn write_gnu_build_id_note(
     Ok(())
 }
 
-fn compute_hash(sized_output: &SizedOutput) -> blake3::Hash {
+fn compute_hash(sized_output: &SizedOutput<impl OutputFileData>) -> blake3::Hash {
     timing_phase!("Compute build ID");
     blake3::Hasher::new()
         .update_rayon(&sized_output.out)
@@ -251,7 +252,7 @@ fn compute_hash(sized_output: &SizedOutput) -> blake3::Hash {
 }
 
 fn write_file_contents<'data, A: Arch<Platform = Elf>>(
-    sized_output: &mut SizedOutput,
+    sized_output: &mut SizedOutput<impl OutputFileData>,
     layout: &ElfLayout<'data>,
 ) -> Result {
     timing_phase!("Write data to file");

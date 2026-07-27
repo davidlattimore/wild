@@ -1,3 +1,4 @@
+use crate::FileSystem;
 use crate::args::RelocationModel;
 use crate::input_data::FileLoader;
 use crate::platform;
@@ -11,7 +12,10 @@ pub(crate) enum OutputKind {
 }
 
 impl OutputKind {
-    pub(crate) fn new(args: &impl platform::Args, input_data: &FileLoader<'_>) -> OutputKind {
+    pub(crate) fn new(
+        args: &impl platform::Args,
+        input_data: &FileLoader<'_, impl FileSystem>,
+    ) -> OutputKind {
         let model = args.relocation_model();
         if !args.should_output_executable() {
             if args.should_output_partial_object() {

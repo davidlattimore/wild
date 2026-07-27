@@ -432,7 +432,7 @@ impl<'data> LayoutRulesBuilder<'data> {
             assertions,
             input: InputRef {
                 file: input.input_file,
-                data: input.input_file.data(),
+                data: input.script_bytes,
                 entry: None,
             },
             file_bytes: input.script_bytes,
