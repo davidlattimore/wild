@@ -24,9 +24,9 @@ jobs:
           - runs-on: ubuntu-24.04
             container: ci-ubuntu-cross-amd64
             cross: all
-#          - runs-on: ubuntu-24.04
-#            container: ci-arch-cross-amd64
-#            cross: aarch64,riscv64
+            #          - runs-on: ubuntu-24.04
+            #            container: ci-arch-cross-amd64
+            #            cross: aarch64,riscv64
           - runs-on: ubuntu-24.04-arm
             container: ci-ubuntu-arm64
           - runs-on: ubuntu-24.04
