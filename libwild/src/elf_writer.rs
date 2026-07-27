@@ -514,7 +514,7 @@ fn elf_entry_address(layout: &ElfLayout) -> Result<u64> {
     }
 
     layout.symbol_db.warning(format!(
-        "cannot find entry symbol `{entry_name}`, defaulting to 0x{}",
+        "cannot find entry symbol `{entry_name}`, defaulting to 0x{:x}",
         text_layout.mem_offset
     ));
     Ok(text_layout.mem_offset)
