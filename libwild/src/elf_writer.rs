@@ -1994,6 +1994,9 @@ fn write_object_section<'data, A: Arch<Platform = Elf>>(
     }
 
     let out = write_section_raw::<A>(object, layout, section, section_index, buffers)?;
+    if out.is_empty() {
+        return Ok(());
+    }
 
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
     // reverse order while .init_array/.fini_array are executed in forward order.
@@ -2162,10 +2165,10 @@ fn write_section_raw<'out, 'data, A: Arch<Platform = Elf>>(
     buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result<&'out mut [u8]> {
     let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
-    if layout
-        .output_sections
-        .has_data_in_file(part_id.output_section_id())
-    {
+    if layout.output_sections.has_data_in_file(
+        part_id.output_section_id(),
+        layout.args().should_only_keep_debug(),
+    ) {
         let section_buffer = buffers.get_mut(part_id);
         let allocation_size = sec.capacity(part_id, &layout.output_sections) as usize;
         if section_buffer.len() < allocation_size {
@@ -3836,14 +3839,22 @@ fn write_merged_strings(
     layout: &ElfLayout,
 ) {
     layout.merged_strings.for_each(|section_id, merged| {
-        if merged.len() > 0 {
+        if merged.len() > 0
+            && layout
+                .output_sections
+                .has_data_in_file(section_id, layout.args().should_only_keep_debug())
+        {
             let buffer = buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
-
             write_merged_strings_to_buffer(merged, buffer);
         }
     });
 
-    if layout.args().should_write_linker_identity {
+    if layout.args().should_write_linker_identity
+        && layout.output_sections.has_data_in_file(
+            output_section_id::COMMENT,
+            layout.args().should_only_keep_debug(),
+        )
+    {
         // Write linker identity into .comment section.
         let comment_buffer =
             buffers.get_mut(output_section_id::COMMENT.part_id_with_alignment(alignment::MIN));
@@ -5551,8 +5562,13 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
         let entry = entries.next().unwrap();
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
-
-        let sh_type = if layout.args().use_android_relr_tags && section_type == sht::RELR {
+        let sh_type = if layout.args().should_only_keep_debug()
+            && section_type != sht::NULL
+            && section_id.is_regular()
+            && !layout.output_sections.is_debug_section(section_id)
+        {
+            sht::NOBITS
+        } else if layout.args().use_android_relr_tags && section_type == sht::RELR {
             object::elf::SHT_ANDROID_RELR
         } else {
             section_type

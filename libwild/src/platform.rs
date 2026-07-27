@@ -1342,6 +1342,10 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn should_strip_all(&self) -> bool;
 
+    fn should_only_keep_debug(&self) -> bool {
+        false
+    }
+
     /// Returns whether a symbol with the specified name should be stripped. Should return false if
     /// name-based stripping is not being applied.
     fn should_strip_symbol_named(&self, _name: &[u8]) -> bool {

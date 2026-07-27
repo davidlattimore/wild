@@ -2523,7 +2523,11 @@ impl<'data, P: Platform> GroupState<'data, P> {
             dynstr_start_offset,
             symtab_local_start_index,
             symtab_global_start_index,
-            file_sizes: compute_file_sizes(&self.common.mem_sizes, resources.output_sections),
+            file_sizes: compute_file_sizes(
+                &self.common.mem_sizes,
+                resources.output_sections,
+                resources.symbol_db.args.should_only_keep_debug(),
+            ),
             mem_sizes: self.common.mem_sizes,
             format_specific,
         })
@@ -2850,9 +2854,10 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
 fn compute_file_sizes<P: Platform>(
     mem_sizes: &OutputSectionPartMap<u64>,
     output_sections: &OutputSections<'_, P>,
+    only_keep_debug: bool,
 ) -> OutputSectionPartMap<usize> {
     mem_sizes.map(|part_id, size| {
-        if output_sections.has_data_in_file(part_id.output_section_id()) {
+        if output_sections.has_data_in_file(part_id.output_section_id(), only_keep_debug) {
             *size as usize
         } else {
             0
@@ -5390,7 +5395,8 @@ fn compute_layout_sections<'data, P: Platform>(
                         .is_some_and(|info| info.is_top_level);
                     if (section_id == merge_target || !is_top_level)
                         && section_flags.is_alloc()
-                        && output_sections.has_data_in_file(merge_target)
+                        && output_sections
+                            .has_data_in_file(merge_target, args.should_only_keep_debug())
                     {
                         let new_offset = offset
                             .checked_sub(mem_offset)
@@ -5427,7 +5433,9 @@ fn compute_layout_sections<'data, P: Platform>(
 
                         if section_flags.is_alloc() {
                             if args.should_output_partial_object() {
-                                let file_size = if output_sections.has_data_in_file(merge_target) {
+                                let file_size = if output_sections
+                                    .has_data_in_file(merge_target, args.should_only_keep_debug())
+                                {
                                     mem_size as usize
                                 } else {
                                     0
@@ -5453,7 +5461,9 @@ fn compute_layout_sections<'data, P: Platform>(
                                 mem_offset = alignment.align_up(mem_offset);
                                 lma_offset = alignment.align_up(lma_offset);
 
-                                let file_size = if output_sections.has_data_in_file(merge_target) {
+                                let file_size = if output_sections
+                                    .has_data_in_file(merge_target, args.should_only_keep_debug())
+                                {
                                     mem_size as usize
                                 } else {
                                     0
