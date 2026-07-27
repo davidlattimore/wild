@@ -75,6 +75,13 @@ jobs:
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.container }}:buildcache
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=ghcr.io/{0}/{1}:buildcache,mode=max', github.repository, matrix.container) || '' }}
 
+      - name: Export base image
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v7
+        with:
+          tags: ghcr.io/${{ github.repository }}/${{ matrix.container }}:latest
+          outputs: type=docker,dest=${{ runner.temp }}/base_image.tar
+
   # Build images that depend on other images.
   build-dependent:
     name: ${{ matrix.container }}
@@ -117,6 +124,12 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load base image
+        if: github.event_name == 'pull_request'
+        run: |
+          docker load --input ${{ runner.temp }}/base_image.tar
+          docker image ls -a
 
       - name: Build and push dependent image
         uses: docker/build-push-action@v7
