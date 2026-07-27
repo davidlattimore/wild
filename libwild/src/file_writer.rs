@@ -145,7 +145,26 @@ impl<F: FileSystem> Output<F> {
 
                     if output_config.file_replacement_mode == FileReplacementMode::UnlinkAndReplace
                     {
-                        file_system.remove_in_separate_thread(&path);
+                        // Rename the old output file so that we can create a new file in its place.
+                        // Reusing the existing file would also be an option, but that wouldn't
+                        // error if the file is currently being executed.
+                        let renamed_old_file = path.with_extension("delete");
+                        let rename_status = file_system.rename_file(&path, &renamed_old_file);
+
+                        // If there was an old output file that we renamed, then delete it. We do so
+                        // from a separate task so that it can run in the background while other
+                        // threads continue working. Deleting can take a while for large files.
+                        if rename_status.is_ok() {
+                            let file_system = Arc::clone(&file_system);
+                            rayon::spawn(move || {
+                                let _ = file_system.remove_file(&renamed_old_file);
+                                // Note, we don't currently signal when we've finished deleting the
+                                // file. Based on experiments run on Linux 6.9.3, if we exit while
+                                // an unlink syscall is in progress on a separate thread, Linux will
+                                // wait for the unlink syscall to complete before terminating the
+                                // process.
+                            });
+                        }
                     }
 
                     // Create the output file.
