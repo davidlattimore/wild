@@ -357,7 +357,7 @@ fn build_regular_debug_section<A: Arch<Platform = Elf>>(
 ) -> Result {
     verbose_timing_phase!("Build debug section");
 
-    let part_range = section_id.part_id_range();
+    let part_range = section_id.part_id_range::<Elf>();
     let mut remaining = buffer;
     let groups_and_buffers: Vec<(_, &mut [u8])> = layout
         .group_layouts
@@ -382,7 +382,7 @@ fn build_regular_debug_section<A: Arch<Platform = Elf>>(
                             let section_index = object::read::SectionIndex(idx);
                             let part_id = object_layout
                                 .section_part_id(section_index, &layout.symbol_db.section_part_ids);
-                            if part_id.output_section_id() == section_id {
+                            if part_id.output_section_id::<Elf>() == section_id {
                                 let object_section = object_layout.object.section(section_index)?;
                                 let section_size =
                                     object_layout.object.section_size(object_section)? as usize;
@@ -442,9 +442,9 @@ fn update_allocation_sizes<P: Platform>(layout: &mut Layout<P>) {
         };
 
         let compressed_size: usize = compressed_data.total_compressed_size;
-        let compressed_part_id = section_id.part_id_with_alignment(crate::alignment::MIN);
+        let compressed_part_id = section_id.part_id_with_alignment::<P>(crate::alignment::MIN);
 
-        for part_id in section_id.parts() {
+        for part_id in section_id.parts::<P>() {
             let part_layout = layout.section_part_layouts.get_mut(part_id);
             part_layout.file_size = 0;
         }
@@ -455,7 +455,7 @@ fn update_allocation_sizes<P: Platform>(layout: &mut Layout<P>) {
         layout.section_layouts.get_mut(section_id).mem_size = compressed_size as u64;
 
         for group_layout in &mut layout.group_layouts {
-            for part_id in section_id.parts() {
+            for part_id in section_id.parts::<P>() {
                 *group_layout.file_sizes.get_mut(part_id) = 0;
             }
 
@@ -510,7 +510,7 @@ fn update_file_offset<P: Platform>(layout: &mut Layout<P>) -> Result {
                     merged_section_layout.file_offset = file_offset;
                 }
 
-                for part_id in section_id.parts() {
+                for part_id in section_id.parts::<P>() {
                     let part_layout = layout.section_part_layouts.get_mut(part_id);
                     part_layout.file_offset = file_offset;
                     file_offset += part_layout.file_size;

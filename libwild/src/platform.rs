@@ -31,6 +31,7 @@ use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
+use crate::part_id;
 use crate::part_id::PartId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution;
@@ -254,6 +255,53 @@ pub(crate) struct RelaxSymbolInfo {
 pub(crate) trait Platform:
     Copy + Send + Sync + Sized + Default + std::fmt::Debug + 'static
 {
+    const NUM_SINGLE_PART_SECTIONS: u32;
+    const NUM_BUILT_IN_REGULAR_SECTIONS: usize;
+
+    // TODO: Some of these are very specific to a single platform. Investigate if the code that
+    // references them could be moved, allowing the constant to be deleted.
+
+    const TEXT_SECTION_ID: Option<OutputSectionId> = None;
+    const DATA_SECTION_ID: Option<OutputSectionId> = None;
+    const BSS_SECTION_ID: Option<OutputSectionId> = None;
+    const RODATA_SECTION_ID: Option<OutputSectionId> = None;
+    const TDATA_SECTION_ID: Option<OutputSectionId> = None;
+    const TBSS_SECTION_ID: Option<OutputSectionId> = None;
+    const STRTAB_SECTION_ID: Option<OutputSectionId> = None;
+    const SYMTAB_LOCAL_SECTION_ID: Option<OutputSectionId> = None;
+    const SYMTAB_GLOBAL_SECTION_ID: Option<OutputSectionId> = None;
+    const SYMTAB_SHNDX_LOCAL_SECTION_ID: Option<OutputSectionId> = None;
+    const SYMTAB_SHNDX_GLOBAL_SECTION_ID: Option<OutputSectionId> = None;
+    const GDB_INDEX_SECTION_ID: Option<OutputSectionId> = None;
+    const DYNSTR_SECTION_ID: Option<OutputSectionId> = None;
+    const DYNSYM_SECTION_ID: Option<OutputSectionId> = None;
+    const GOT_SECTION_ID: Option<OutputSectionId> = None;
+    const PLT_GOT_SECTION_ID: Option<OutputSectionId> = None;
+    const EH_FRAME_SECTION_ID: Option<OutputSectionId> = None;
+    const NOTE_GNU_PROPERTY_SECTION_ID: Option<OutputSectionId> = None;
+    const RISCV_ATTRIBUTES_SECTION_ID: Option<OutputSectionId> = None;
+    const GOT_RELR_SECTION_ID: Option<OutputSectionId> = None;
+    const GNU_VERSION_SECTION_ID: Option<OutputSectionId> = None;
+    const COMMENT_SECTION_ID: Option<OutputSectionId> = None;
+    const INTERP_SECTION_ID: Option<OutputSectionId> = None;
+    const SFRAME_SECTION_ID: Option<OutputSectionId> = None;
+    const RELRO_PADDING_SECTION_ID: Option<OutputSectionId> = None;
+
+    const CUSTOM_PHDR_EXCLUDED_SECTION_IDS: &'static [OutputSectionId] = &[];
+    const PACKED_SECTION_IDS: &'static [OutputSectionId] = &[];
+    const VERIFY_IGNORE_SECTION_IDS: &'static [OutputSectionId] = &[];
+    const VERIFY_IGNORE_ALIGNMENT_SECTION_IDS: &'static [OutputSectionId] = &[];
+
+    fn single_part_id(section_id: OutputSectionId) -> Option<PartId> {
+        (section_id.as_u32() < crate::output_section_id::regular_section_base::<Self>().as_u32())
+            .then(|| PartId::from_usize(section_id.as_usize()))
+    }
+
+    fn single_part_output_section_id(part_id: PartId) -> Option<OutputSectionId> {
+        (part_id < part_id::regular_part_base::<Self>())
+            .then(|| OutputSectionId::from_usize(part_id.as_usize()))
+    }
+
     type File<'data>: ObjectFile<'data, Platform = Self>;
     type FileFlags;
     type SymtabEntry: Symbol;

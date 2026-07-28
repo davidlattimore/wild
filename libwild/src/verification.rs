@@ -7,7 +7,6 @@ use crate::layout::FileLayout;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSections;
 use crate::output_section_part_map::OutputSectionPartMap;
-use crate::part_id;
 use crate::part_id::PartId;
 use crate::platform::Platform;
 use itertools::Itertools;
@@ -18,13 +17,13 @@ pub(crate) struct OffsetVerifier {
 }
 
 impl OffsetVerifier {
-    pub(crate) fn new(
+    pub(crate) fn new<P: Platform>(
         starting_offsets: &OutputSectionPartMap<u64>,
         sizes: &OutputSectionPartMap<u64>,
     ) -> Self {
         let mut expected = starting_offsets.clone();
         expected.merge(sizes);
-        clear_ignored(&mut expected);
+        clear_ignored::<P>(&mut expected);
         Self {
             expected,
             sizes: sizes.clone(),
@@ -54,16 +53,16 @@ impl OffsetVerifier {
                 problems.push(format!(
                     "Part #{part_id} (section {} alignment: {alignment}) expected: 0x{exp:x} \
                      actual: 0x{act:x} bumped by: 0x{actual_bump:x} requested size: 0x{size:x}\n",
-                    output_sections.display_name(part_id.output_section_id())
+                    output_sections.display_name(part_id.output_section_id::<P>())
                 ));
             }
             if !size.is_multiple_of(part_id.alignment(output_sections).value())
-                && !should_ignore_alignment(*part_id)
+                && !should_ignore_alignment::<P>(*part_id)
             {
                 problems.push(format!(
                     "Part #{part_id} (section {} alignment: {alignment}) \
                      has non aligned size: 0x{size:x}\n",
-                    output_sections.display_name(part_id.output_section_id())
+                    output_sections.display_name(part_id.output_section_id::<P>())
                 ));
             }
         }
@@ -81,52 +80,27 @@ impl OffsetVerifier {
         self.sizes.parts.iter().enumerate().all(|(i, size)| {
             let part_id = PartId::from_usize(i);
             size.is_multiple_of(part_id.alignment(output_sections).value())
-                || should_ignore_alignment(part_id)
+                || should_ignore_alignment::<P>(part_id)
         })
     }
 }
 
-fn should_ignore_alignment(part_id: PartId) -> bool {
-    part_id.should_pack()
-        || [
-            part_id::GNU_HASH,
-            part_id::EH_FRAME,
-            part_id::GNU_VERSION_D,
-            part_id::CODE_SIGNATURE,
-            part_id::STRTAB,
-        ]
-        .contains(&part_id)
+fn should_ignore_alignment<P: Platform>(part_id: PartId) -> bool {
+    let section_id = part_id.output_section_id::<P>();
+    part_id.should_pack::<P>() || P::VERIFY_IGNORE_ALIGNMENT_SECTION_IDS.contains(&section_id)
 }
 
 /// Clear offsets for sections where we never take the address of a section offset during
 /// `finalise_layout`.
-pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
+pub(crate) fn clear_ignored<P: Platform>(expected: &mut OutputSectionPartMap<u64>) {
     /// A distinctive value that should definitely make things fail if we actually do make use of
     /// one of these offsets during `finalise_layout`.
     const IGNORED_OFFSET: u64 = 0x98760000;
 
-    const IGNORED: &[PartId] = &[
-        part_id::RELA_PLT,
-        part_id::EH_FRAME_HDR,
-        part_id::RELA_DYN_GENERAL,
-        part_id::RELA_DYN_RELATIVE,
-        part_id::RELR_DYN,
-        part_id::GNU_VERSION,
-        part_id::GNU_HASH,
-        part_id::DYNAMIC,
-        part_id::INTERP,
-        part_id::FILE_HEADER,
-        part_id::PROGRAM_HEADERS,
-        part_id::SECTION_HEADERS,
-        part_id::SHSTRTAB,
-        part_id::LINK_EDIT_SEGMENT,
-        part_id::LOAD_COMMANDS,
-        part_id::CHAINED_FIXUP_TABLE,
-        part_id::CODE_SIGNATURE,
-    ];
-
-    for part_id in IGNORED {
-        *expected.get_mut(*part_id) = IGNORED_OFFSET;
+    for &section_id in P::VERIFY_IGNORE_SECTION_IDS {
+        if let Some(part_id) = P::single_part_id(section_id) {
+            *expected.get_mut(part_id) = IGNORED_OFFSET;
+        }
     }
 }
 

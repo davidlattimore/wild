@@ -32,6 +32,8 @@ use crate::elf::Vernaux;
 use crate::elf::Verneed;
 use crate::elf::VersionDef;
 use crate::elf::Versym;
+use crate::elf::output_section_id;
+use crate::elf::part_id;
 use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
@@ -59,17 +61,17 @@ use crate::layout::SyntheticSymbolsLayout;
 use crate::layout::compute_allocations;
 use crate::linker_script::Expression;
 use crate::malfunction;
-use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SectionName;
+use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::parsing::SymbolLoc;
-use crate::part_id;
 use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Arch;
@@ -1742,7 +1744,7 @@ fn write_thunks<'data, A: Arch<Platform = Elf>>(
     let primary_part_id = config.primary_function_part_id;
     let emit_symbols = !layout.args().should_strip_all();
 
-    let text_section_id = primary_part_id.output_section_id();
+    let text_section_id = primary_part_id.output_section_id::<Elf>();
     let text_shndx = layout
         .output_sections
         .output_index_of_section(text_section_id)
@@ -1830,9 +1832,9 @@ fn build_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
                                     input_section_index,
                                     &layout.symbol_db.section_part_ids,
                                 )
-                                .output_section_id(),
+                                .output_section_id::<Elf>(),
                         ),
-                        SectionSlot::FrameData(..) => Some(crate::output_section_id::EH_FRAME),
+                        SectionSlot::FrameData(..) => Some(output_section_id::EH_FRAME),
                         _ => None,
                     }
                 {
@@ -1926,11 +1928,11 @@ fn write_rela_sections<'data>(
 
         let Some(section_id) = layout
             .output_sections
-            .custom_name_to_id(output_section_id::SectionName(section_name))
+            .custom_name_to_id(SectionName(section_name))
         else {
             continue;
         };
-        let part_id = section_id.part_id_with_alignment(crate::alignment::RELA_ENTRY);
+        let part_id = section_id.part_id_with_alignment::<Elf>(crate::alignment::RELA_ENTRY);
 
         let target_sec_idx = object::SectionIndex(header.sh_info.get(e) as usize);
         let section_address = object.section_resolutions[target_sec_idx.0]
@@ -1940,7 +1942,7 @@ fn write_rela_sections<'data>(
         let relocations = object.relocations(target_sec_idx).with_context(|| {
             format!(
                 "Failed to get relocations from rela section {:?} in {}",
-                output_section_id::SectionName(section_name),
+                SectionName(section_name),
                 object.input
             )
         })?;
@@ -2019,7 +2021,7 @@ fn write_object_section<'data, A: Arch<Platform = Elf>>(
     if layout.args().should_output_partial_object() {
         let section_type = layout
             .output_sections
-            .output_info(part_id.output_section_id())
+            .output_info(part_id.output_section_id::<Elf>())
             .section_attributes
             .ty();
         if section_type.is_rela() || section_type.is_rel() {
@@ -2157,7 +2159,7 @@ fn write_debug_section<'data, A: Arch<Platform = Elf>>(
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
     let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
-    let section_id = part_id.output_section_id();
+    let section_id = part_id.output_section_id::<Elf>();
 
     if layout.compressed_debug_sections.get(section_id).is_some() {
         // Compressed debug sections are written by the epilogue.
@@ -2198,7 +2200,7 @@ fn write_section_raw<'out, 'data, A: Arch<Platform = Elf>>(
     let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
     if layout
         .output_sections
-        .has_data_in_file(part_id.output_section_id())
+        .has_data_in_file(part_id.output_section_id::<Elf>())
     {
         let section_buffer = buffers.get_mut(part_id);
         let allocation_size = sec.capacity(part_id, &layout.output_sections) as usize;
@@ -2216,7 +2218,7 @@ fn write_section_raw<'out, 'data, A: Arch<Platform = Elf>>(
 
         let section_info = layout
             .output_sections
-            .output_info(part_id.output_section_id());
+            .output_info(part_id.output_section_id::<Elf>());
         match relax_deltas {
             None => {
                 let section_size = object.object.section_size(object_section)?;
@@ -2298,7 +2300,7 @@ fn write_symbols<'data>(
                         | SectionSlot::LoadedDebugInfo(_)
                         | SectionSlot::MergeStrings(_) => object
                             .section_part_id(section_index, &layout.symbol_db.section_part_ids)
-                            .output_section_id(),
+                            .output_section_id::<Elf>(),
                         SectionSlot::FrameData(..) => output_section_id::EH_FRAME,
                         _ => bail!(
                             "Tried to copy a symbol in a section we didn't load. {}",
@@ -2465,7 +2467,7 @@ fn apply_relocations<
         .get(
             object
                 .section_part_id(section_index, &layout.symbol_db.section_part_ids)
-                .output_section_id(),
+                .output_section_id::<Elf>(),
         )
         .fetch_add(relocation_count, Relaxed);
     Ok(())
@@ -2527,7 +2529,7 @@ pub(crate) fn apply_debug_relocations<
         .get(
             object
                 .section_part_id(section_index, &layout.symbol_db.section_part_ids)
-                .output_section_id(),
+                .output_section_id::<Elf>(),
         )
         .fetch_add(relocation_count, Relaxed);
     Ok(())
@@ -2691,7 +2693,7 @@ fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation<Plat
                         section_flags,
                         // .eh_frame relocations never need thunks; use the eh_frame section's
                         // base part as a placeholder so the thunk lookup always misses.
-                        part_id: output_section_id::EH_FRAME.base_part_id(),
+                        part_id: output_section_id::EH_FRAME.base_part_id::<Elf>(),
                     },
                     layout,
                     entry_out,
@@ -2790,7 +2792,7 @@ struct SectionInfo<S: platform::SectionFlags> {
     section_address: u64,
     is_writable: bool,
     section_flags: S,
-    part_id: crate::part_id::PartId,
+    part_id: PartId,
 }
 
 fn get_resolution<'data, R: Relocation>(
@@ -3804,7 +3806,7 @@ fn write_prelude_except_gdb_index<'data, A: Arch<Platform = Elf>>(
 ) -> Result {
     verbose_timing_phase!("Write prelude");
 
-    let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
+    let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(crate::part_id::FILE_HEADER))
         .map_err(|_| error!("Invalid file header allocation"))?
         .0;
     populate_file_header::<A>(layout, &prelude.header_info, header)?;
@@ -3871,7 +3873,8 @@ fn write_merged_strings(
 ) {
     layout.merged_strings.for_each(|section_id, merged| {
         if merged.len() > 0 {
-            let buffer = buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
+            let buffer =
+                buffers.get_mut(section_id.part_id_with_alignment::<Elf>(crate::alignment::MIN));
 
             write_merged_strings_to_buffer(merged, buffer);
         }
@@ -3879,8 +3882,8 @@ fn write_merged_strings(
 
     if layout.args().should_write_linker_identity {
         // Write linker identity into .comment section.
-        let comment_buffer =
-            buffers.get_mut(output_section_id::COMMENT.part_id_with_alignment(alignment::MIN));
+        let comment_buffer = buffers
+            .get_mut(output_section_id::COMMENT.part_id_with_alignment::<Elf>(alignment::MIN));
         comment_buffer
             .split_off_mut(..prelude.identity.len())
             .unwrap()
@@ -3976,7 +3979,7 @@ fn write_symbol_table_entries(
 
 fn write_section_symbols(symbol_writer: &mut SymbolTableWriter, layout: &ElfLayout) -> Result {
     for event in &layout.output_order {
-        let output_section_id::OrderEvent::Section(section_id) = event else {
+        let OrderEvent::Section(section_id) = event else {
             continue;
         };
         let Some(shndx) = layout.output_sections.output_index_of_section(section_id) else {
@@ -4274,7 +4277,7 @@ fn write_compressed_debug_sections(
 
     for (section_id, _section_info) in layout.output_sections.ids_with_info() {
         if let Some(compressed_section) = layout.compressed_debug_sections.get(section_id) {
-            let part_id = section_id.part_id_with_alignment(alignment::MIN);
+            let part_id = section_id.part_id_with_alignment::<Elf>(alignment::MIN);
             let buffer = buffers.get_mut(part_id);
             for chunk in &compressed_section.compressed_chunks {
                 let out = buffer.split_off_mut(..chunk.len()).unwrap();
@@ -4631,7 +4634,7 @@ fn get_symbol_attributes(
                         | SectionSlot::Sorted(_) => {
                             let output_section_id = obj
                                 .section_part_id(section_index, &layout.symbol_db.section_part_ids)
-                                .output_section_id();
+                                .output_section_id::<Elf>();
                             layout
                                 .output_sections
                                 .output_index_of_section(output_section_id)
@@ -4873,10 +4876,10 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
         let output_section_id = match &object.sections[section_index.0] {
             SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => object
                 .section_part_id(section_index, &layout.symbol_db.section_part_ids)
-                .output_section_id(),
+                .output_section_id::<Elf>(),
             SectionSlot::Sorted(_) => object
                 .section_part_id(section_index, &layout.symbol_db.section_part_ids)
-                .output_section_id(),
+                .output_section_id::<Elf>(),
             _ => bail!(
                 "Internal error: Defined symbols should always be for a loaded, merge-strings or sorted section"
             ),
@@ -5614,7 +5617,7 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
 
         if layout.args().should_output_partial_object()
             && section_type == sht::RELA
-            && section_id.is_custom()
+            && section_id.is_custom::<Elf>()
         {
             if let Some(symtab_idx) =
                 output_sections.output_index_of_section(output_section_id::SYMTAB_LOCAL)
@@ -6081,7 +6084,7 @@ fn should_reverse_contents(
 ) -> bool {
     // Getting the section name is expensive, so we only do it when the output section is
     // .init_array / .fini_array.
-    let section_id = output_sections.primary_output_section(part_id.output_section_id());
+    let section_id = output_sections.primary_output_section(part_id.output_section_id::<Elf>());
     if section_id != output_section_id::INIT_ARRAY && section_id != output_section_id::FINI_ARRAY {
         return false;
     }
@@ -6103,7 +6106,7 @@ fn link_ids(section_id: OutputSectionId) -> &'static [OutputSectionId] {
 
 fn fill_section_padding<A: Arch<Platform = Elf>>(
     padding: &mut [u8],
-    section_info: &output_section_id::SectionOutputInfo<Elf>,
+    section_info: &SectionOutputInfo<Elf>,
 ) {
     if let Some(pattern) = section_info.fill {
         let chunks = padding.chunks_mut(4);

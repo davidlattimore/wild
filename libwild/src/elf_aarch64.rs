@@ -2,12 +2,12 @@ use crate::alignment::Alignment;
 use crate::elf::Elf;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
+use crate::elf::output_section_id;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
 use crate::layout::Layout;
 use crate::malfunction_point_ret;
-use crate::output_section_id;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use linker_utils::aarch64::RelaxationKind;
@@ -335,7 +335,8 @@ impl crate::platform::Arch for ElfAArch64 {
     fn thunk_config() -> Option<crate::platform::ThunkConfig> {
         Some(crate::platform::ThunkConfig {
             primary_function_part_id: const {
-                output_section_id::TEXT.part_id_with_alignment(Alignment { exponent: 2 })
+                output_section_id::TEXT
+                    .part_id_with_alignment::<crate::elf::Elf>(Alignment { exponent: 2 })
             },
             min_branch_range: MIN_BRANCH_RANGE,
             thunk_size: THUNK_TEMPLATE.len() as u64,

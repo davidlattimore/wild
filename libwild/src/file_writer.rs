@@ -395,7 +395,7 @@ pub(crate) fn split_buffers_by_alignment<'out, 'data, P: Platform>(
         &layout.output_sections,
         |part_id, _alignment, rec| {
             section_buffers
-                .get_mut(part_id.output_section_id())
+                .get_mut(part_id.output_section_id::<P>())
                 .split_off_mut(..rec.file_size)
                 .ok_or_else(|| {
                     anyhow!(
@@ -403,7 +403,7 @@ pub(crate) fn split_buffers_by_alignment<'out, 'data, P: Platform>(
                         rec.file_size,
                         layout
                             .output_sections
-                            .section_debug(part_id.output_section_id()),
+                            .section_debug(part_id.output_section_id::<P>()),
                         part_id.alignment(&layout.output_sections),
                     )
                 })

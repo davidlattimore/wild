@@ -20,7 +20,6 @@ use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout::FileLayout;
 use crate::layout::GroupLayout;
-use crate::output_section_id;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
@@ -100,10 +99,10 @@ fn write_gc_stats<'data, P: Platform>(
                 .zip(obj.object.enumerate_sections())
                 .zip(obj_part_ids)
             {
-                let output_section_id = part_id.output_section_id();
+                let output_section_id = part_id.output_section_id::<P>();
 
                 match slot {
-                    SectionSlot::Unloaded(_) if output_section_id == output_section_id::TEXT => {
+                    SectionSlot::Unloaded(_) if Some(output_section_id) == P::TEXT_SECTION_ID => {
                         file_discarded += obj.object.section_size(section)?;
                         if args.verbose_gc_stats() {
                             file_record
@@ -111,7 +110,7 @@ fn write_gc_stats<'data, P: Platform>(
                                 .push(obj.object.section_name(sec_idx)?);
                         }
                     }
-                    SectionSlot::Loaded(_) if output_section_id == output_section_id::TEXT => {
+                    SectionSlot::Loaded(_) if Some(output_section_id) == P::TEXT_SECTION_ID => {
                         file_kept += obj.object.section_size(section)?;
                     }
                     _ => {}

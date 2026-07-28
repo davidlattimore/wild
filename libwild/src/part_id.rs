@@ -1,7 +1,5 @@
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
-use crate::output_section_id::FINI;
-use crate::output_section_id::INIT;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::platform;
@@ -15,72 +13,15 @@ use std::fmt::Debug;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct PartId(u32);
 
-// Part ID for stuff that isn't directly mapped to an output part. Discarded sections will be placed
-// here. GCed sections won't - they'll have the part ID they would have been placed in had they not
-// been GCed. This is also used for various sections that we don't just copy, e.g. eh_frame.
-pub(crate) const UNMAPPED: PartId = PartId(0);
-// Sections that we generate ourselves rather than copying directly from input objects.
-pub(crate) const FILE_HEADER: PartId = PartId(1);
-pub(crate) const PROGRAM_HEADERS: PartId = PartId(2);
-pub(crate) const SECTION_HEADERS: PartId = PartId(3);
-pub(crate) const SHSTRTAB: PartId = PartId(4);
-pub(crate) const STRTAB: PartId = PartId(5);
-pub(crate) const GOT: PartId = PartId(6);
-pub(crate) const GOT_RELR: PartId = PartId(7);
-pub(crate) const PLT_GOT: PartId = PartId(8);
-pub(crate) const RELA_PLT: PartId = PartId(9);
-pub(crate) const EH_FRAME: PartId = PartId(10);
-pub(crate) const EH_FRAME_HDR: PartId = PartId(11);
-pub(crate) const SFRAME: PartId = PartId(12);
-pub(crate) const DYNAMIC: PartId = PartId(13);
-pub(crate) const SYSV_HASH: PartId = PartId(14);
-pub(crate) const GNU_HASH: PartId = PartId(15);
-pub(crate) const DYNSYM: PartId = PartId(16);
-pub(crate) const DYNSTR: PartId = PartId(17);
-pub(crate) const INTERP: PartId = PartId(18);
-pub(crate) const GNU_VERSION: PartId = PartId(19);
-pub(crate) const GNU_VERSION_D: PartId = PartId(20);
-pub(crate) const GNU_VERSION_R: PartId = PartId(21);
-pub(crate) const NOTE_GNU_PROPERTY: PartId = PartId(22);
-pub(crate) const NOTE_GNU_BUILD_ID: PartId = PartId(23);
-pub(crate) const SYMTAB_LOCAL: PartId = PartId(24);
-pub(crate) const SYMTAB_GLOBAL: PartId = PartId(25);
-pub(crate) const RELA_DYN_RELATIVE: PartId = PartId(26);
-pub(crate) const RELA_DYN_GENERAL: PartId = PartId(27);
-pub(crate) const RISCV_ATTRIBUTES: PartId = PartId(28);
-pub(crate) const RELRO_PADDING: PartId = PartId(29);
-pub(crate) const RELR_DYN: PartId = PartId(30);
-pub(crate) const SYMTAB_SHNDX_LOCAL: PartId = PartId(31);
-pub(crate) const SYMTAB_SHNDX_GLOBAL: PartId = PartId(32);
-pub(crate) const GDB_INDEX: PartId = PartId(33);
-// Mach-O specific sections
-pub(crate) const LINK_EDIT_SEGMENT: PartId = PartId(34);
-pub(crate) const LOAD_COMMANDS: PartId = PartId(35);
-pub(crate) const CODE_SIGNATURE: PartId = PartId(36);
-pub(crate) const CHAINED_FIXUP_TABLE: PartId = PartId(37);
-// Wasm specific sections. Each one corresponds to a single standard Wasm section.
-pub(crate) const WASM_TYPE: PartId = PartId(38);
-pub(crate) const WASM_IMPORT: PartId = PartId(39);
-pub(crate) const WASM_FUNCTION: PartId = PartId(40);
-pub(crate) const WASM_TABLE: PartId = PartId(41);
-pub(crate) const WASM_MEMORY: PartId = PartId(42);
-pub(crate) const WASM_GLOBAL: PartId = PartId(43);
-pub(crate) const WASM_EXPORT: PartId = PartId(44);
-pub(crate) const WASM_START: PartId = PartId(45);
-pub(crate) const WASM_ELEMENT: PartId = PartId(46);
-pub(crate) const WASM_DATA_COUNT: PartId = PartId(47);
-pub(crate) const WASM_CODE: PartId = PartId(48);
-pub(crate) const WASM_DATA: PartId = PartId(49);
-pub(crate) const WASM_NAME: PartId = PartId(50);
+pub(crate) const UNMAPPED: PartId =
+    crate::output_section_id::CommonSinglePartSectionId::Unmapped.part_id();
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 51;
+pub(crate) const FILE_HEADER: PartId =
+    crate::output_section_id::CommonSinglePartSectionId::FileHeader.part_id();
 
-#[cfg(test)]
-pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_SINGLE_PART_SECTIONS as usize
-    + crate::output_section_id::NUM_BUILT_IN_REGULAR_SECTIONS * crate::alignment::NUM_ALIGNMENTS;
-
-/// A placeholder used for custom sections before we know their actual PartId.
-pub(crate) const CUSTOM_PLACEHOLDER: PartId = PartId(u32::MAX);
+pub(crate) const fn regular_part_base<P: Platform>() -> PartId {
+    PartId::from_u32(P::NUM_SINGLE_PART_SECTIONS)
+}
 
 /// Returns whether the supplied section meets our criteria for section merging. Section merging is
 /// optional, so there are cases where we might be able to merge, but don't currently. For example
@@ -97,13 +38,21 @@ pub(crate) fn should_merge_sections(
 }
 
 impl PartId {
-    pub(crate) const fn output_section_id(self) -> OutputSectionId {
-        if self.0 < NUM_SINGLE_PART_SECTIONS {
-            OutputSectionId::from_u32(self.0)
+    /// A placeholder used for custom sections before we know their actual PartId.
+    pub(crate) const CUSTOM_PLACEHOLDER: PartId = PartId(u32::MAX);
+
+    pub(crate) fn output_section_id<P: Platform>(self) -> OutputSectionId {
+        if self < regular_part_base::<P>() {
+            P::single_part_output_section_id(self).unwrap_or_else(|| {
+                panic!(
+                    "platform {} has no output section ID for part {self:?}",
+                    std::any::type_name::<P>()
+                )
+            })
         } else {
             OutputSectionId::from_u32(
-                (self.0 - NUM_SINGLE_PART_SECTIONS) / (NUM_ALIGNMENTS as u32)
-                    + NUM_SINGLE_PART_SECTIONS,
+                (self.0 - regular_part_base::<P>().0) / (NUM_ALIGNMENTS as u32)
+                    + crate::output_section_id::regular_section_base::<P>().as_u32(),
             )
         }
     }
@@ -116,7 +65,11 @@ impl PartId {
         self.0 as usize
     }
 
-    pub(crate) fn offset(self, offset: usize) -> PartId {
+    pub(crate) const fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    pub(crate) const fn offset(self, offset: usize) -> PartId {
         PartId(self.0 + offset as u32)
     }
 
@@ -128,32 +81,31 @@ impl PartId {
         self,
         output_sections: &OutputSections<'_, P>,
     ) -> Alignment {
-        if let Some(offset) = self.0.checked_sub(NUM_SINGLE_PART_SECTIONS) {
+        if let Some(offset) = self.0.checked_sub(regular_part_base::<P>().0) {
             Alignment {
                 exponent: NUM_ALIGNMENTS as u8 - 1 - (offset % NUM_ALIGNMENTS as u32) as u8,
             }
         } else {
-            self.output_section_id().min_alignment(output_sections)
+            self.output_section_id::<P>().min_alignment(output_sections)
         }
     }
 }
 
 impl PartId {
-    /// Returns whether we should skip adding padding after this section. This is a special rule
-    /// that's just for `.init` and `.fini`. The `.init` section `crti.o` contains the start of a
-    /// function and `crtn.o` contains the end of that function. If `.init` has say alignment = 4
-    /// and we add padding after it to bring it up to a multiple of 4 bytes, then we'll break the
-    /// function, since the padding bytes won't be valid instructions.
-    pub(crate) fn should_pack(self) -> bool {
-        let section_id = self.output_section_id();
-        section_id == INIT || section_id == FINI
+    /// Returns whether we should skip adding padding after this section.
+    pub(crate) fn should_pack<P: Platform>(self) -> bool {
+        let section_id = self.output_section_id::<P>();
+        P::PACKED_SECTION_IDS.contains(&section_id)
     }
 }
 
 #[cfg(test)]
-pub(crate) fn built_in_part_ids()
--> impl ExactSizeIterator<Item = PartId> + DoubleEndedIterator<Item = PartId> {
-    (0..NUM_BUILT_IN_PARTS).map(|n| PartId(n as u32))
+pub(crate) fn built_in_part_ids<P: Platform>() -> impl Iterator<Item = PartId> {
+    let regular_part_base = regular_part_base::<P>();
+    let single_part_ids = (0..regular_part_base.0).map(PartId::from_u32);
+    let regular_part_ids = (0..P::NUM_BUILT_IN_REGULAR_SECTIONS * NUM_ALIGNMENTS)
+        .map(move |offset| regular_part_base.offset(offset));
+    single_part_ids.chain(regular_part_ids)
 }
 
 impl std::fmt::Display for PartId {
@@ -165,16 +117,67 @@ impl std::fmt::Display for PartId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args::RelocationModel;
+    use crate::output_kind::OutputKind;
+    use crate::output_section_id;
+
+    fn check_platform_part_ids<P: Platform>() {
+        let output_kind = OutputKind::StaticExecutable(RelocationModel::NonRelocatable);
+        let output_sections = OutputSections::<P>::with_base_address(0, output_kind);
+        let regular_part_base = regular_part_base::<P>();
+        let regular_section_base = output_section_id::regular_section_base::<P>();
+        let num_single_part_sections = P::NUM_SINGLE_PART_SECTIONS as usize;
+
+        for section_id in (0..num_single_part_sections).map(OutputSectionId::from_usize) {
+            let part_id = P::single_part_id(section_id).unwrap();
+            assert_eq!(P::single_part_output_section_id(part_id), Some(section_id));
+            assert_eq!(
+                section_id.base_part_id::<P>(),
+                part_id,
+                "single-part base ID failed for {}",
+                std::any::type_name::<P>()
+            );
+            assert_eq!(
+                part_id.output_section_id::<P>(),
+                section_id,
+                "single-part round trip failed for {}",
+                std::any::type_name::<P>()
+            );
+        }
+
+        assert_eq!(P::single_part_id(regular_section_base), None);
+        assert_eq!(P::single_part_output_section_id(regular_part_base), None);
+        for offset in 0..P::NUM_BUILT_IN_REGULAR_SECTIONS {
+            let section_id = regular_section_base.offset(offset);
+            for part_id in section_id.parts::<P>() {
+                let alignment = part_id.alignment(&output_sections);
+                assert_eq!(
+                    part_id.output_section_id::<P>(),
+                    section_id,
+                    "regular-part round trip failed for {}",
+                    std::any::type_name::<P>()
+                );
+                assert_eq!(
+                    section_id.part_id_with_alignment::<P>(alignment),
+                    part_id,
+                    "regular-part alignment conversion failed for {}",
+                    std::any::type_name::<P>()
+                );
+            }
+        }
+
+        assert_eq!(
+            P::built_in_section_details().len(),
+            output_section_id::num_built_in_sections::<P>(),
+            "built-in section definitions don't cover the ID range for {}",
+            std::any::type_name::<P>()
+        );
+    }
 
     #[test]
-    fn test_conversion_consistency() {
-        let output_sections = OutputSections::<crate::elf::Elf>::for_testing();
-        for i in NUM_SINGLE_PART_SECTIONS..NUM_SINGLE_PART_SECTIONS + 40 {
-            let part_id = PartId::from_u32(i);
-            let section_id = part_id.output_section_id();
-            let alignment = part_id.alignment(&output_sections);
-            let part_id2 = section_id.part_id_with_alignment(alignment);
-            assert_eq!(part_id, part_id2);
-        }
+    fn test_platform_part_id_invariants() {
+        check_platform_part_ids::<crate::elf::Elf>();
+        check_platform_part_ids::<crate::macho::MachO>();
+        check_platform_part_ids::<crate::wasm::Wasm>();
     }
 }

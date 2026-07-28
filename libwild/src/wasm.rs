@@ -13,7 +13,9 @@ use crate::layout;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
 use crate::layout_rules::SectionRuleOutcome;
+use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionName;
+use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Args as _;
 use crate::symbol::UnversionedSymbolName;
@@ -60,6 +62,74 @@ use wasmparser::TypeSectionReader;
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Wasm;
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum SinglePartSectionId {
+    WasmType = crate::output_section_id::NUM_COMMON_SINGLE_PART_SECTIONS,
+    WasmImport,
+    WasmFunction,
+    WasmTable,
+    WasmMemory,
+    WasmGlobal,
+    WasmExport,
+    WasmStart,
+    WasmElement,
+    WasmDataCount,
+    WasmCode,
+    WasmData,
+    WasmName,
+
+    // Must be last.
+    Count,
+}
+
+pub(crate) mod part_id {
+    use super::SinglePartSectionId;
+    use crate::part_id::PartId;
+
+    pub(crate) const WASM_TYPE: PartId = SinglePartSectionId::WasmType.part_id();
+    pub(crate) const WASM_IMPORT: PartId = SinglePartSectionId::WasmImport.part_id();
+    pub(crate) const WASM_FUNCTION: PartId = SinglePartSectionId::WasmFunction.part_id();
+    pub(crate) const WASM_TABLE: PartId = SinglePartSectionId::WasmTable.part_id();
+    pub(crate) const WASM_MEMORY: PartId = SinglePartSectionId::WasmMemory.part_id();
+    pub(crate) const WASM_GLOBAL: PartId = SinglePartSectionId::WasmGlobal.part_id();
+    pub(crate) const WASM_EXPORT: PartId = SinglePartSectionId::WasmExport.part_id();
+    pub(crate) const WASM_START: PartId = SinglePartSectionId::WasmStart.part_id();
+    pub(crate) const WASM_ELEMENT: PartId = SinglePartSectionId::WasmElement.part_id();
+    pub(crate) const WASM_DATA_COUNT: PartId = SinglePartSectionId::WasmDataCount.part_id();
+    pub(crate) const WASM_CODE: PartId = SinglePartSectionId::WasmCode.part_id();
+    pub(crate) const WASM_DATA: PartId = SinglePartSectionId::WasmData.part_id();
+    pub(crate) const WASM_NAME: PartId = SinglePartSectionId::WasmName.part_id();
+}
+
+pub(crate) mod output_section_id {
+    use super::SinglePartSectionId;
+    use crate::output_section_id::OutputSectionId;
+
+    pub(crate) const WASM_TYPE: OutputSectionId = SinglePartSectionId::WasmType.output_section_id();
+    pub(crate) const WASM_IMPORT: OutputSectionId =
+        SinglePartSectionId::WasmImport.output_section_id();
+    pub(crate) const WASM_FUNCTION: OutputSectionId =
+        SinglePartSectionId::WasmFunction.output_section_id();
+    pub(crate) const WASM_TABLE: OutputSectionId =
+        SinglePartSectionId::WasmTable.output_section_id();
+    pub(crate) const WASM_MEMORY: OutputSectionId =
+        SinglePartSectionId::WasmMemory.output_section_id();
+    pub(crate) const WASM_GLOBAL: OutputSectionId =
+        SinglePartSectionId::WasmGlobal.output_section_id();
+    pub(crate) const WASM_EXPORT: OutputSectionId =
+        SinglePartSectionId::WasmExport.output_section_id();
+    pub(crate) const WASM_START: OutputSectionId =
+        SinglePartSectionId::WasmStart.output_section_id();
+    pub(crate) const WASM_ELEMENT: OutputSectionId =
+        SinglePartSectionId::WasmElement.output_section_id();
+    pub(crate) const WASM_DATA_COUNT: OutputSectionId =
+        SinglePartSectionId::WasmDataCount.output_section_id();
+    pub(crate) const WASM_CODE: OutputSectionId = SinglePartSectionId::WasmCode.output_section_id();
+    pub(crate) const WASM_DATA: OutputSectionId = SinglePartSectionId::WasmData.output_section_id();
+    pub(crate) const WASM_NAME: OutputSectionId = SinglePartSectionId::WasmName.output_section_id();
+}
 
 /// Magic bytes at the start of every Wasm module.
 pub(crate) const WASM_MAGIC: [u8; 4] = [0x00, b'a', b's', b'm'];
@@ -1388,10 +1458,10 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
         section_id: crate::output_section_id::OutputSectionId,
         _rosegment: bool,
     ) -> bool {
-        use crate::output_section_id as osid;
+        use crate::wasm::output_section_id as osid;
 
         let section_segment_type = match section_id {
-            osid::FILE_HEADER => SegmentType::Header,
+            crate::output_section_id::FILE_HEADER => SegmentType::Header,
             osid::WASM_TYPE
             | osid::WASM_IMPORT
             | osid::WASM_FUNCTION
@@ -1424,17 +1494,17 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     target_segment_type: None,
 };
 
-const SECTION_DEFINITIONS: [BuiltInSectionDetails;
-    crate::output_section_id::NUM_BUILT_IN_SECTIONS] = {
-    use crate::layout_rules::SectionKind;
-    use crate::output_section_id as osid;
-    use crate::output_section_id::SectionName;
+const NUM_BUILT_IN_SECTIONS: usize = crate::output_section_id::num_built_in_sections::<Wasm>();
 
-    let mut defs: [BuiltInSectionDetails; osid::NUM_BUILT_IN_SECTIONS] =
-        [DEFAULT_DEFS; osid::NUM_BUILT_IN_SECTIONS];
+const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
+    use crate::layout_rules::SectionKind;
+    use crate::output_section_id::SectionName;
+    use crate::wasm::output_section_id as osid;
+
+    let mut defs = [DEFAULT_DEFS; NUM_BUILT_IN_SECTIONS];
 
     // The module preamble.
-    defs[osid::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
+    defs[crate::output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"WASM_HEADER")),
         target_segment_type: Some(SegmentType::Header),
     };
@@ -1626,21 +1696,21 @@ pub(crate) struct WasmEncodedSections {
 
 impl WasmEncodedSections {
     fn add_sizes_to(&self, sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>) {
-        add_encoded_section_size(sizes, crate::part_id::WASM_TYPE, self.ty.as_ref());
-        add_encoded_section_size(sizes, crate::part_id::WASM_IMPORT, self.import.as_ref());
-        add_encoded_section_size(sizes, crate::part_id::WASM_FUNCTION, self.function.as_ref());
-        add_encoded_section_size(sizes, crate::part_id::WASM_TABLE, self.table.as_ref());
-        add_encoded_section_size(sizes, crate::part_id::WASM_MEMORY, self.memory.as_ref());
-        add_encoded_section_size(sizes, crate::part_id::WASM_GLOBAL, self.global.as_ref());
-        add_encoded_section_size(sizes, crate::part_id::WASM_EXPORT, self.export.as_ref());
-        add_encoded_section_size(sizes, crate::part_id::WASM_ELEMENT, self.element.as_ref());
-        add_encoded_section_size(sizes, crate::part_id::WASM_NAME, self.name.as_ref());
+        add_encoded_section_size(sizes, part_id::WASM_TYPE, self.ty.as_ref());
+        add_encoded_section_size(sizes, part_id::WASM_IMPORT, self.import.as_ref());
+        add_encoded_section_size(sizes, part_id::WASM_FUNCTION, self.function.as_ref());
+        add_encoded_section_size(sizes, part_id::WASM_TABLE, self.table.as_ref());
+        add_encoded_section_size(sizes, part_id::WASM_MEMORY, self.memory.as_ref());
+        add_encoded_section_size(sizes, part_id::WASM_GLOBAL, self.global.as_ref());
+        add_encoded_section_size(sizes, part_id::WASM_EXPORT, self.export.as_ref());
+        add_encoded_section_size(sizes, part_id::WASM_ELEMENT, self.element.as_ref());
+        add_encoded_section_size(sizes, part_id::WASM_NAME, self.name.as_ref());
     }
 }
 
 fn add_encoded_section_size(
     sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-    part_id: crate::part_id::PartId,
+    part_id: PartId,
     section: Option<&Vec<u8>>,
 ) {
     if let Some(bytes) = section {
@@ -1838,7 +1908,7 @@ impl<'data> WasmLayout<'data> {
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) {
         if self.code_section_size > 0 {
-            sizes.increment(crate::part_id::WASM_CODE, self.code_section_size);
+            sizes.increment(part_id::WASM_CODE, self.code_section_size);
         }
     }
 
@@ -1847,7 +1917,7 @@ impl<'data> WasmLayout<'data> {
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) {
         if self.data_section_size > 0 {
-            sizes.increment(crate::part_id::WASM_DATA, self.data_section_size);
+            sizes.increment(part_id::WASM_DATA, self.data_section_size);
         }
     }
 }
@@ -4284,6 +4354,12 @@ fn wasm_index_range(base: u32, len: usize, kind: &str) -> Result<Vec<u32>> {
 }
 
 impl platform::Platform for Wasm {
+    const NUM_SINGLE_PART_SECTIONS: u32 = SinglePartSectionId::Count as u32;
+    const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 0;
+
+    const VERIFY_IGNORE_SECTION_IDS: &'static [OutputSectionId] =
+        &[crate::output_section_id::FILE_HEADER];
+
     type File<'data> = File<'data>;
     type FileFlags = u32;
     type SymtabEntry = WasmSymbol;
@@ -4758,7 +4834,7 @@ impl platform::Platform for Wasm {
         crate::output_section_id::OutputOrder<'data>,
         crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
     ) {
-        use crate::output_section_id as osid;
+        use crate::wasm::output_section_id as osid;
 
         let mut builder = crate::output_section_id::OutputOrderBuilder::<Self>::new(
             output_kind,
@@ -4768,7 +4844,7 @@ impl platform::Platform for Wasm {
             &[],
         );
 
-        builder.add_section(osid::FILE_HEADER);
+        builder.add_section(crate::output_section_id::FILE_HEADER);
         builder.add_section(osid::WASM_TYPE);
         builder.add_section(osid::WASM_IMPORT);
         builder.add_section(osid::WASM_FUNCTION);
@@ -5054,6 +5130,16 @@ fn wasm_symbol_from_info(
     }
 
     sym
+}
+
+impl SinglePartSectionId {
+    const fn part_id(self) -> PartId {
+        PartId::from_u32(self as u32)
+    }
+
+    const fn output_section_id(self) -> OutputSectionId {
+        OutputSectionId::from_u32(self as u32)
+    }
 }
 
 #[cfg(test)]

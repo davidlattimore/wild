@@ -1,17 +1,18 @@
+//! Section and part IDs are platform-specific. These instructions apply to all platforms.
+//!
 //! Instructions for adding a new generated, single-part output section:
 //!
-//! * Add a new constant `PartId` to `part_id.rs`.
-//! * Update `NUM_SINGLE_PART_SECTIONS` in `part_id.rs`.
-//! * Define a constant `OutputSectionId` below.
-//! * Add the section definition info to `SECTION_DEFINITIONS`, most likely inserting at the end of
-//!   the single-part sections.
+//! * Add a variant to the platform's `SinglePartSectionId` enum.
+//! * Define constants derived from the variant in the platform's `part_id` and `output_section_id`
+//!   modules.
+//! * Add the section definition info to `SECTION_DEFINITIONS`.
 //! * Insert the new section into the output order in `sections_and_segments_events`. The position
 //!   needs to be consistent with the access flags on the section. e.g. if the section is read-only
 //!   data, it should go between the start and end of the read-only segment.
 //!
-//! Adding a new alignment-base (regular) section is similar to the above, but skip the steps
-//! related to `part_id.rs` and insert later in `SECTION_DEFINITIONS`, probably at the end so that
-//! you don't have to renumber. Also, update `NUM_BUILT_IN_REGULAR_SECTIONS`.
+//! Adding a new alignment-based (regular) section is similar to the above, but add it to the
+//! platform's `RegularSectionId` enum and only define an `OutputSectionId` constant. Insert it
+//! later in `SECTION_DEFINITIONS`.
 
 use crate::Result;
 use crate::alignment::Alignment;
@@ -25,8 +26,6 @@ use crate::output_kind::OutputKind;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::SymbolLoc;
-use crate::part_id;
-use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
 use crate::platform::Args;
 use crate::platform::Platform;
@@ -42,15 +41,40 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::ops::Range;
 
-/// Number of sections that we have built-in IDs for.
-pub(crate) const NUM_BUILT_IN_SECTIONS: usize =
-    part_id::NUM_SINGLE_PART_SECTIONS as usize + NUM_BUILT_IN_REGULAR_SECTIONS;
-
 /// An ID for an output section. This is used for looking up section info. It's independent of
 /// section ordering.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, derive_more::Debug)]
 #[debug("osid-{_0}")]
 pub(crate) struct OutputSectionId(u32);
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+pub(crate) enum CommonSinglePartSectionId {
+    Unmapped,
+    FileHeader,
+
+    // Must be last.
+    Count,
+}
+
+impl CommonSinglePartSectionId {
+    pub(crate) const fn part_id(self) -> PartId {
+        PartId::from_u32(self as u32)
+    }
+
+    pub(crate) const fn output_section_id(self) -> OutputSectionId {
+        OutputSectionId::from_u32(self as u32)
+    }
+}
+
+pub(crate) const NUM_COMMON_SINGLE_PART_SECTIONS: u32 = CommonSinglePartSectionId::Count as u32;
+
+#[cfg(test)]
+pub(crate) const UNMAPPED: OutputSectionId =
+    CommonSinglePartSectionId::Unmapped.output_section_id();
+
+pub(crate) const FILE_HEADER: OutputSectionId =
+    CommonSinglePartSectionId::FileHeader.output_section_id();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CustomSectionDetails<'data> {
@@ -66,91 +90,6 @@ pub(crate) struct InitFiniSectionDetail {
     pub(crate) priority: u16,
     pub(crate) alignment: Alignment,
 }
-
-// Single-part sections that we generate ourselves rather than copying directly from input objects.
-pub(crate) const FILE_HEADER: OutputSectionId = part_id::FILE_HEADER.output_section_id();
-pub(crate) const PROGRAM_HEADERS: OutputSectionId = part_id::PROGRAM_HEADERS.output_section_id();
-pub(crate) const SECTION_HEADERS: OutputSectionId = part_id::SECTION_HEADERS.output_section_id();
-pub(crate) const SHSTRTAB: OutputSectionId = part_id::SHSTRTAB.output_section_id();
-pub(crate) const STRTAB: OutputSectionId = part_id::STRTAB.output_section_id();
-pub(crate) const GOT: OutputSectionId = part_id::GOT.output_section_id();
-pub(crate) const GOT_RELR: OutputSectionId = part_id::GOT_RELR.output_section_id();
-pub(crate) const RELA_PLT: OutputSectionId = part_id::RELA_PLT.output_section_id();
-pub(crate) const EH_FRAME: OutputSectionId = part_id::EH_FRAME.output_section_id();
-pub(crate) const EH_FRAME_HDR: OutputSectionId = part_id::EH_FRAME_HDR.output_section_id();
-pub(crate) const SFRAME: OutputSectionId = part_id::SFRAME.output_section_id();
-pub(crate) const DYNAMIC: OutputSectionId = part_id::DYNAMIC.output_section_id();
-pub(crate) const HASH: OutputSectionId = part_id::SYSV_HASH.output_section_id();
-pub(crate) const GNU_HASH: OutputSectionId = part_id::GNU_HASH.output_section_id();
-pub(crate) const DYNSYM: OutputSectionId = part_id::DYNSYM.output_section_id();
-pub(crate) const DYNSTR: OutputSectionId = part_id::DYNSTR.output_section_id();
-pub(crate) const INTERP: OutputSectionId = part_id::INTERP.output_section_id();
-pub(crate) const GNU_VERSION: OutputSectionId = part_id::GNU_VERSION.output_section_id();
-pub(crate) const GNU_VERSION_D: OutputSectionId = part_id::GNU_VERSION_D.output_section_id();
-pub(crate) const GNU_VERSION_R: OutputSectionId = part_id::GNU_VERSION_R.output_section_id();
-pub(crate) const PLT_GOT: OutputSectionId = part_id::PLT_GOT.output_section_id();
-pub(crate) const NOTE_GNU_PROPERTY: OutputSectionId =
-    part_id::NOTE_GNU_PROPERTY.output_section_id();
-pub(crate) const NOTE_GNU_BUILD_ID: OutputSectionId =
-    part_id::NOTE_GNU_BUILD_ID.output_section_id();
-pub(crate) const SYMTAB_LOCAL: OutputSectionId = part_id::SYMTAB_LOCAL.output_section_id();
-pub(crate) const SYMTAB_GLOBAL: OutputSectionId = part_id::SYMTAB_GLOBAL.output_section_id();
-pub(crate) const RELA_DYN_RELATIVE: OutputSectionId =
-    part_id::RELA_DYN_RELATIVE.output_section_id();
-pub(crate) const RELA_DYN_GENERAL: OutputSectionId = part_id::RELA_DYN_GENERAL.output_section_id();
-pub(crate) const RELR_DYN: OutputSectionId = part_id::RELR_DYN.output_section_id();
-pub(crate) const RISCV_ATTRIBUTES: OutputSectionId = part_id::RISCV_ATTRIBUTES.output_section_id();
-pub(crate) const RELRO_PADDING: OutputSectionId = part_id::RELRO_PADDING.output_section_id();
-pub(crate) const SYMTAB_SHNDX_LOCAL: OutputSectionId =
-    part_id::SYMTAB_SHNDX_LOCAL.output_section_id();
-pub(crate) const SYMTAB_SHNDX_GLOBAL: OutputSectionId =
-    part_id::SYMTAB_SHNDX_GLOBAL.output_section_id();
-pub(crate) const GDB_INDEX: OutputSectionId = part_id::GDB_INDEX.output_section_id();
-
-// Mach-O specific sections
-pub(crate) const LINK_EDIT_SEGMENT: OutputSectionId =
-    part_id::LINK_EDIT_SEGMENT.output_section_id();
-pub(crate) const LOAD_COMMANDS: OutputSectionId = part_id::LOAD_COMMANDS.output_section_id();
-pub(crate) const CHAINED_FIXUP_TABLE: OutputSectionId =
-    part_id::CHAINED_FIXUP_TABLE.output_section_id();
-pub(crate) const CODE_SIGNATURE: OutputSectionId = part_id::CODE_SIGNATURE.output_section_id();
-
-// Wasm specific sections.
-pub(crate) const WASM_TYPE: OutputSectionId = part_id::WASM_TYPE.output_section_id();
-pub(crate) const WASM_IMPORT: OutputSectionId = part_id::WASM_IMPORT.output_section_id();
-pub(crate) const WASM_FUNCTION: OutputSectionId = part_id::WASM_FUNCTION.output_section_id();
-pub(crate) const WASM_TABLE: OutputSectionId = part_id::WASM_TABLE.output_section_id();
-pub(crate) const WASM_MEMORY: OutputSectionId = part_id::WASM_MEMORY.output_section_id();
-pub(crate) const WASM_GLOBAL: OutputSectionId = part_id::WASM_GLOBAL.output_section_id();
-pub(crate) const WASM_EXPORT: OutputSectionId = part_id::WASM_EXPORT.output_section_id();
-pub(crate) const WASM_START: OutputSectionId = part_id::WASM_START.output_section_id();
-pub(crate) const WASM_ELEMENT: OutputSectionId = part_id::WASM_ELEMENT.output_section_id();
-pub(crate) const WASM_DATA_COUNT: OutputSectionId = part_id::WASM_DATA_COUNT.output_section_id();
-pub(crate) const WASM_CODE: OutputSectionId = part_id::WASM_CODE.output_section_id();
-pub(crate) const WASM_DATA: OutputSectionId = part_id::WASM_DATA.output_section_id();
-pub(crate) const WASM_NAME: OutputSectionId = part_id::WASM_NAME.output_section_id();
-
-// Regular sections copied from the input objects.
-pub(crate) const RODATA: OutputSectionId = OutputSectionId::regular(0);
-pub(crate) const INIT_ARRAY: OutputSectionId = OutputSectionId::regular(1);
-pub(crate) const FINI_ARRAY: OutputSectionId = OutputSectionId::regular(2);
-pub(crate) const PREINIT_ARRAY: OutputSectionId = OutputSectionId::regular(3);
-pub(crate) const TEXT: OutputSectionId = OutputSectionId::regular(4);
-pub(crate) const INIT: OutputSectionId = OutputSectionId::regular(5);
-pub(crate) const FINI: OutputSectionId = OutputSectionId::regular(6);
-pub(crate) const DATA: OutputSectionId = OutputSectionId::regular(7);
-pub(crate) const TDATA: OutputSectionId = OutputSectionId::regular(8);
-pub(crate) const TBSS: OutputSectionId = OutputSectionId::regular(9);
-pub(crate) const BSS: OutputSectionId = OutputSectionId::regular(10);
-pub(crate) const COMMENT: OutputSectionId = OutputSectionId::regular(11);
-pub(crate) const GCC_EXCEPT_TABLE: OutputSectionId = OutputSectionId::regular(12);
-pub(crate) const NOTE_ABI_TAG: OutputSectionId = OutputSectionId::regular(13);
-pub(crate) const DATA_REL_RO: OutputSectionId = OutputSectionId::regular(14);
-// Mach-O specific sections
-pub(crate) const CSTRING: OutputSectionId = OutputSectionId::regular(15);
-pub(crate) const CONST: OutputSectionId = OutputSectionId::regular(16);
-
-pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 17;
 
 #[derive(Debug)]
 pub(crate) struct OutputSections<'data, P: Platform> {
@@ -510,8 +449,8 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     }
 
     pub(crate) fn num_parts(&self) -> usize {
-        part_id::NUM_SINGLE_PART_SECTIONS as usize
-            + (self.num_sections() - part_id::NUM_SINGLE_PART_SECTIONS as usize) * NUM_ALIGNMENTS
+        crate::part_id::regular_part_base::<P>().as_usize()
+            + (self.num_sections() - regular_section_base::<P>().as_usize()) * NUM_ALIGNMENTS
     }
 
     pub(crate) fn new_part_map<T: Default>(&self) -> OutputSectionPartMap<T> {
@@ -572,8 +511,8 @@ pub(crate) struct SectionOutputInfo<'data, P: Platform> {
 }
 
 impl OutputSectionId {
-    pub(crate) const fn regular(offset: u32) -> OutputSectionId {
-        OutputSectionId(NUM_SINGLE_PART_SECTIONS + offset)
+    pub(crate) const fn as_u32(self) -> u32 {
+        self.0
     }
 
     pub(crate) const fn as_usize(self) -> usize {
@@ -588,24 +527,28 @@ impl OutputSectionId {
         Self(value as u32)
     }
 
-    pub(crate) fn part_id_range(self) -> Range<PartId> {
-        let base = self.base_part_id();
-        let count = self.num_parts();
+    pub(crate) const fn offset(self, offset: usize) -> Self {
+        Self(self.0 + offset as u32)
+    }
+
+    pub(crate) fn part_id_range<P: Platform>(self) -> Range<PartId> {
+        let base = self.base_part_id::<P>();
+        let count = self.num_parts::<P>();
         base..base.offset(count)
     }
 
-    pub(crate) fn num_parts(self) -> usize {
-        if self.0 < part_id::NUM_SINGLE_PART_SECTIONS {
+    pub(crate) fn num_parts<P: Platform>(self) -> usize {
+        if self.0 < regular_section_base::<P>().0 {
             1
         } else {
             NUM_ALIGNMENTS
         }
     }
 
-    pub(crate) fn parts(self) -> PartIdIterator {
+    pub(crate) fn parts<P: Platform>(self) -> PartIdIterator {
         PartIdIterator {
-            next: self.base_part_id(),
-            remaining: self.num_parts(),
+            next: self.base_part_id::<P>(),
+            remaining: self.num_parts::<P>(),
         }
     }
 
@@ -622,18 +565,18 @@ impl OutputSectionId {
         output_sections.section_infos.get(self).min_alignment
     }
 
-    pub(crate) fn is_regular(self) -> bool {
-        self.0 >= NUM_SINGLE_PART_SECTIONS
+    pub(crate) fn is_regular<P: Platform>(self) -> bool {
+        self.0 >= regular_section_base::<P>().0
     }
 
     /// Returns the part ID in this section that has the specified alignment. Can only be called for
     /// regular sections.
-    pub(crate) const fn part_id_with_alignment(self, alignment: Alignment) -> PartId {
-        let Some(regular_offset) = self.0.checked_sub(NUM_SINGLE_PART_SECTIONS) else {
+    pub(crate) const fn part_id_with_alignment<P: Platform>(self, alignment: Alignment) -> PartId {
+        let Some(regular_offset) = self.0.checked_sub(regular_section_base::<P>().0) else {
             panic!("part_id_with_alignment can only be called for regular sections");
         };
         PartId::from_u32(
-            part_id::NUM_SINGLE_PART_SECTIONS
+            crate::part_id::regular_part_base::<P>().as_u32()
                 + (regular_offset * NUM_ALIGNMENTS as u32)
                 + NUM_ALIGNMENTS as u32
                 - 1
@@ -642,22 +585,31 @@ impl OutputSectionId {
     }
 
     /// Returns the first part ID for this section.
-    pub(crate) fn base_part_id(self) -> PartId {
-        if self.0 < NUM_SINGLE_PART_SECTIONS {
-            PartId::from_u32(self.0)
+    pub(crate) fn base_part_id<P: Platform>(self) -> PartId {
+        if self.0 < regular_section_base::<P>().0 {
+            P::single_part_id(self).unwrap_or_else(|| {
+                panic!(
+                    "platform {} has no part ID for output section {self:?}",
+                    std::any::type_name::<P>()
+                )
+            })
         } else {
             PartId::from_u32(
-                NUM_SINGLE_PART_SECTIONS
-                    + (self.0 - NUM_SINGLE_PART_SECTIONS) * NUM_ALIGNMENTS as u32,
+                crate::part_id::regular_part_base::<P>().as_u32()
+                    + (self.0 - regular_section_base::<P>().0) * NUM_ALIGNMENTS as u32,
             )
         }
     }
 
     /// Returns whether this section ID corresponds to a custom section as opposed to a built-in
     /// section.
-    pub(crate) fn is_custom(self) -> bool {
-        self.as_usize() >= NUM_BUILT_IN_SECTIONS
+    pub(crate) const fn is_custom<P: Platform>(self) -> bool {
+        self.as_usize() >= num_built_in_sections::<P>()
     }
+}
+
+pub(crate) const fn regular_section_base<P: Platform>() -> OutputSectionId {
+    OutputSectionId::from_u32(P::NUM_SINGLE_PART_SECTIONS)
 }
 
 #[derive(Debug, Clone)]
@@ -732,10 +684,10 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 Vec::new(),
             );
 
-            let part_id = if section_id.is_regular() {
-                section_id.part_id_with_alignment(custom.alignment)
+            let part_id = if section_id.is_regular::<P>() {
+                section_id.part_id_with_alignment::<P>(custom.alignment)
             } else {
-                section_id.base_part_id()
+                section_id.base_part_id::<P>()
             };
             section_part_ids[custom.index.0] = part_id;
         }
@@ -745,11 +697,15 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     /// sections `.text`, `.data`, and `.bss`. Must be called after `with_base_address` and before
     /// the layout phase reads `section_info.location`.
     pub(crate) fn apply_section_start_overrides(&mut self, args: &P::Args) {
+        // TODO: The names here are definitely ELF-specific. Look at moving this code.
         for (section_id, name) in [
-            (TEXT, SectionName(b".text")),
-            (DATA, SectionName(b".data")),
-            (BSS, SectionName(b".bss")),
+            (P::TEXT_SECTION_ID, SectionName(b".text")),
+            (P::DATA_SECTION_ID, SectionName(b".data")),
+            (P::BSS_SECTION_ID, SectionName(b".bss")),
         ] {
+            let Some(section_id) = section_id else {
+                continue;
+            };
             if let Some(address) = args.start_address_for_section(name) {
                 let info = self.section_infos.get_mut(section_id);
                 if let Some(ref mut loc_info) = info.location_info {
@@ -777,7 +733,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     ) -> OutputSectionId {
         let mut resolved_id = None;
         if !self.output_kind.is_partial_object()
-            && let Some(builtin_id) = (0..NUM_SINGLE_PART_SECTIONS as usize)
+            && let Some(builtin_id) = (0..regular_section_base::<P>().as_usize())
                 .map(OutputSectionId::from_usize)
                 .find(|&bid| self.name(bid) == Some(name))
         {
@@ -918,20 +874,24 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 return;
             }
 
+            if !id.is_regular::<P>() && P::single_part_id(id).is_none() {
+                return;
+            }
+
             if has_custom_phdrs {
                 if !info.phdrs.is_empty() {
                     return;
                 }
 
-                if matches!(id, FILE_HEADER | PROGRAM_HEADERS | SECTION_HEADERS) {
+                if id == FILE_HEADER || P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&id) {
                     return;
-                } else if id.as_usize() < NUM_BUILT_IN_SECTIONS
+                } else if id.as_usize() < num_built_in_sections::<P>()
                     && let Some(name) = self.name(id)
                     && self.custom_name_to_id(name).is_some()
                 {
                     return;
                 }
-            } else if id.as_usize() < NUM_BUILT_IN_SECTIONS {
+            } else if !id.is_custom::<P>() {
                 return;
             }
 
@@ -985,7 +945,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     #[allow(dead_code)]
     #[must_use]
     pub(crate) fn num_regular_sections(&self) -> usize {
-        self.section_infos.len() - NUM_SINGLE_PART_SECTIONS as usize
+        self.section_infos.len() - regular_section_base::<P>().as_usize()
     }
 
     pub(crate) fn has_data_in_file(&self, section_id: OutputSectionId) -> bool {
@@ -1044,7 +1004,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         let alignment = part_id.alignment(self);
         format!(
             "{} align={alignment}",
-            self.section_debug(part_id.output_section_id())
+            self.section_debug(part_id.output_section_id::<P>())
         )
     }
 
@@ -1247,4 +1207,8 @@ pub(crate) struct SectionLocationInfo<'data> {
     pub(crate) location: Option<Expression<'data>>,
     pub(crate) at_location: Option<Expression<'data>>,
     pub(crate) is_top_level: bool,
+}
+
+pub(crate) const fn num_built_in_sections<P: Platform>() -> usize {
+    regular_section_base::<P>().as_usize() + P::NUM_BUILT_IN_REGULAR_SECTIONS
 }

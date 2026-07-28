@@ -14,7 +14,6 @@ use crate::input_data::InputRef;
 use crate::linker_script;
 use crate::linker_script::ContentsCommand;
 use crate::linker_script::SectionCommand;
-use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionLocationInfo;
 use crate::output_section_id::SectionName;
@@ -110,15 +109,18 @@ pub(crate) enum SectionRuleOutcome {
 }
 
 impl SectionRuleOutcome {
-    pub(crate) fn section_rule_from_id(
+    pub(crate) fn section_rule_from_id<P: Platform>(
         section_id: OutputSectionId,
         output_info: SectionOutputInfo,
     ) -> SectionRuleOutcome {
-        match section_id {
-            output_section_id::EH_FRAME => SectionRuleOutcome::EhFrame,
-            output_section_id::NOTE_GNU_PROPERTY => SectionRuleOutcome::NoteGnuProperty,
-            output_section_id::RISCV_ATTRIBUTES => SectionRuleOutcome::RiscVAttribute,
-            _ => crate::layout_rules::SectionRuleOutcome::Section(output_info),
+        if Some(section_id) == P::EH_FRAME_SECTION_ID {
+            SectionRuleOutcome::EhFrame
+        } else if Some(section_id) == P::NOTE_GNU_PROPERTY_SECTION_ID {
+            SectionRuleOutcome::NoteGnuProperty
+        } else if Some(section_id) == P::RISCV_ATTRIBUTES_SECTION_ID {
+            SectionRuleOutcome::RiscVAttribute
+        } else {
+            SectionRuleOutcome::Section(output_info)
         }
     }
 }
@@ -310,9 +312,10 @@ impl<'data> LayoutRulesBuilder<'data> {
                                                 sorted: pattern.sorted,
                                             };
 
-                                            let outcome = SectionRuleOutcome::section_rule_from_id(
-                                                primary_section_id,
-                                                output_info,
+                                            let outcome = SectionRuleOutcome::section_rule_from_id::<
+                                                P,
+                                            >(
+                                                primary_section_id, output_info
                                             );
 
                                             self.add_section_rule(SectionRule::new(
@@ -613,7 +616,7 @@ impl<'data> SectionRules<'data> {
     }
 
     #[inline(always)]
-    pub(crate) fn lookup(
+    pub(crate) fn lookup<P: Platform>(
         &self,
         section_name: &[u8],
         file_name: Option<&[u8]>,
@@ -632,7 +635,7 @@ impl<'data> SectionRules<'data> {
         }
 
         if section_name.is_empty() {
-            return unnamed_section_output(section_header);
+            return unnamed_section_output::<P>(section_header);
         }
 
         SectionRuleOutcome::Custom
@@ -652,28 +655,36 @@ fn section_name_prefix_hash(name: &[u8]) -> Option<u64> {
 }
 
 /// Determines, where if anywhere, we should place an input section with no name.
-pub(crate) fn unnamed_section_output(section_header: &impl SectionHeader) -> SectionRuleOutcome {
+pub(crate) fn unnamed_section_output<P: Platform>(
+    section_header: &impl SectionHeader,
+) -> SectionRuleOutcome {
     if !section_header.is_alloc() {
         SectionRuleOutcome::Discard
     } else if section_header.is_prog_bits() {
         if section_header.is_executable() {
-            SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::TEXT))
+            regular_section_or_discard(P::TEXT_SECTION_ID)
         } else if section_header.is_tls() {
-            SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::TDATA))
+            regular_section_or_discard(P::TDATA_SECTION_ID)
         } else if section_header.is_writable() {
-            SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::DATA))
+            regular_section_or_discard(P::DATA_SECTION_ID)
         } else {
-            SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::RODATA))
+            regular_section_or_discard(P::RODATA_SECTION_ID)
         }
     } else if section_header.is_no_bits() {
         if section_header.is_tls() {
-            SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::TBSS))
+            regular_section_or_discard(P::TBSS_SECTION_ID)
         } else {
-            SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::BSS))
+            regular_section_or_discard(P::BSS_SECTION_ID)
         }
     } else {
         SectionRuleOutcome::Discard
     }
+}
+
+fn regular_section_or_discard(section_id: Option<OutputSectionId>) -> SectionRuleOutcome {
+    section_id.map_or(SectionRuleOutcome::Discard, |section_id| {
+        SectionRuleOutcome::Section(SectionOutputInfo::regular(section_id))
+    })
 }
 
 #[test]
@@ -693,12 +704,12 @@ fn test_section_mapping() {
         sh_addralign: Default::default(),
         sh_entsize: Default::default(),
     };
-    let lookup_name = |name: &str| rules.lookup(name.as_bytes(), None, &header);
+    let lookup_name = |name: &str| rules.lookup::<crate::elf::Elf>(name.as_bytes(), None, &header);
 
     assert_eq!(
         lookup_name(".comment"),
         SectionRuleOutcome::Section(SectionOutputInfo {
-            section_id: output_section_id::COMMENT,
+            section_id: crate::elf::output_section_id::COMMENT,
             must_keep: true,
             sorted: false,
         })

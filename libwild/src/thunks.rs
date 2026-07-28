@@ -181,8 +181,8 @@ impl ThunkLayoutBuilder {
             .ids_with_info()
             .filter(|(_, info)| info.section_attributes.is_executable())
             .flat_map(|(section_id, _)| {
-                let base = section_id.base_part_id();
-                (0..section_id.num_parts()).map(move |i| base.offset(i))
+                let base = section_id.base_part_id::<P>();
+                (0..section_id.num_parts::<P>()).map(move |i| base.offset(i))
             })
             .filter(|&part_id| part_id != self.primary_function_part_id)
             .map(|part_id| *section_part_sizes.get(part_id))
