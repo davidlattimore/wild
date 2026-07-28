@@ -6,7 +6,6 @@
 //#ReferenceLinkers:lld
 //#LinkArgs:-shared --no-gc-sections
 //#ExpectError:recompile with -fPIC
-//#RunEnabled:false
 
 .globl foo
 foo:

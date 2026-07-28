@@ -3035,7 +3035,7 @@ fn apply_relocation<
         && (flags.is_interposable() || flags.is_dynamic())
         && !flags.needs_copy_relocation()
         && !flags.needs_plt()
-        && A::is_illegal_in_shared_object(r_type)
+        && A::is_disallowed_for_interposable_symbols(r_type)
     {
         bail!(
             "relocation {} cannot be used against symbol; recompile with -fPIC",
