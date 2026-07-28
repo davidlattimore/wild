@@ -7,7 +7,7 @@
 //#SkipArch: ppc64le
 //#CompArgs:-ftls-model=local-dynamic -fPIC -O2
 //#LinkerDriver:gcc
-//#LinkArgs:-Wl,-z,now
+//#LinkArgs:-Wl,-z,now -pie
 
 //#Config:gcc-no-relax:gcc
 //#LinkArgs:-Wl,-z,now,--no-relax
@@ -19,6 +19,17 @@
 //#Config:gcc-no-relax-aarch64:gcc-no-relax
 //#CompArgs:-ftls-model=local-dynamic -fPIC -O2 -mtls-dialect=trad
 //#Arch:aarch64
+
+//#Config:gcc-large-local-dynamic:gcc
+//#CompArgs:-ftls-model=local-dynamic -fPIC -O2 -mcmodel=large
+//#Arch:x86_64
+
+//#Config:gcc-large-global-dynamic:gcc
+//#CompArgs:-ftls-model=global-dynamic -fPIC -O2 -mcmodel=large
+//#Arch:x86_64
+
+//#Config:malfunction-no-identify-tls-gd-large:gcc-large-global-dynamic
+//#Malfunction:no-identify-tls-gd-large
 
 //#Config:malfunction-no-movzx0lsl16:gcc
 //#Arch:aarch64
