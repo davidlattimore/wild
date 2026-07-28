@@ -4,21 +4,20 @@ if [ -z "$OUT" ]; then
   OUT=$D/bin${S}
 fi
 L=()
-has_double_dash=false
-for arg in "$@"; do
-  if [[ "$arg" == "--" ]]; then
-    has_double_dash=true
+last_double_dash_index=0
+for ((i = $#; i > 1; i--)); do
+  if [[ "${!i}" == "--" ]]; then
+    last_double_dash_index=$i
     break
   fi
 done
-if $has_double_dash; then
-  for arg in "$@"; do
-    L+=("$arg")
-    [[ "$arg" == "--" ]] && break
+if [[ $last_double_dash_index -gt 0 ]]; then
+  for ((i = 1; i < last_double_dash_index; i++)); do
+    L+=("$1")
+    shift
   done
-else
-  [[ $# -gt 0 ]] && L=("$1")
-fi
-for ((i = 0; i < ${#L[@]}; i++)); do
   shift
-done
+else
+  L+=("$1")
+  shift
+fi
