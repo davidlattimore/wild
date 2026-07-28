@@ -23,6 +23,10 @@ jobs:
         include:
           - runs-on: ubuntu-24.04
             container: ci-ubuntu-cross-amd64
+            cross: all
+          - runs-on: ubuntu-24.04
+            container: ci-arch-cross-amd64
+            cross: aarch64,riscv64
           - runs-on: ubuntu-24.04-arm
             container: ci-ubuntu-arm64
           - runs-on: ubuntu-24.04
@@ -38,14 +42,14 @@ jobs:
     timeout-minutes: 10
 
     container:
-      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-b58cc74a969f3f81c8a01b5d626fa850e3d39c38
+      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-1ecf7940be4518c515a505f295e2b1ac15a35e79
 
     steps:
       # https://github.com/actions/runner/issues/3210
       - run: echo "$PATH" >> "$GITHUB_PATH"
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: echo "WILD_TEST_CONFIG=test-config-ci.toml" >> $GITHUB_ENV
-      - run: echo "WILD_TEST_CROSS=all" >> $GITHUB_ENV
+      - run: echo "WILD_TEST_CROSS=${{ matrix.cross }}" >> $GITHUB_ENV
         if: ${{ contains(matrix.container, '-cross') }}
       - uses: actions/checkout@v7
         with:
