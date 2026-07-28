@@ -72,7 +72,7 @@ impl crate::platform::Arch for ElfAArch64 {
         })
     }
 
-    fn is_illegal_in_shared_object(r_type: u32) -> bool {
+    fn is_disallowed_for_interposable_symbols(r_type: u32) -> bool {
         matches!(
             r_type,
             object::elf::R_AARCH64_ABS32
@@ -81,6 +81,9 @@ impl crate::platform::Arch for ElfAArch64 {
                 | object::elf::R_AARCH64_LDST8_ABS_LO12_NC
                 | object::elf::R_AARCH64_LDST32_ABS_LO12_NC
                 | object::elf::R_AARCH64_LDST64_ABS_LO12_NC
+                | object::elf::R_AARCH64_PREL16
+                | object::elf::R_AARCH64_PREL32
+                | object::elf::R_AARCH64_PREL64
         )
     }
 

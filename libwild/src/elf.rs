@@ -5668,7 +5668,9 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation<Plat
                     .store(true, atomic::Ordering::Relaxed);
             }
         } else if flags_to_add.needs_direct() && flags.is_interposable() {
-            if symbol_db.output_kind.is_shared_object() && A::is_illegal_in_shared_object(r_type) {
+            if symbol_db.output_kind.is_shared_object()
+                && A::is_disallowed_for_interposable_symbols(r_type)
+            {
                 bail!(
                     "relocation {} cannot be used when making a shared object; \
                     recompile with -fPIC",

@@ -131,10 +131,13 @@ pub(crate) trait Arch: Send + Sync + 'static {
         false
     }
 
-    /// Returns true if the given relocation type cannot be used when making a shared object.
-    /// On 64-bit architectures, sub-pointer-size absolute relocations cannot be represented
-    /// as dynamic relocations and must be rejected. Default is false (allow).
-    fn is_illegal_in_shared_object(_r_type: <Self::Platform as Platform>::RelocationInfo) -> bool {
+    /// Returns true if the given relocation type cannot be used against interposable symbols.
+    /// This includes preemptible symbols in shared objects and DSO-provided symbols in
+    /// executables. On 64-bit architectures, sub-pointer-size absolute and PC-relative
+    /// relocations cannot hold runtime-resolved addresses. Default is false (allow).
+    fn is_disallowed_for_interposable_symbols(
+        _r_type: <Self::Platform as Platform>::RelocationInfo,
+    ) -> bool {
         false
     }
 

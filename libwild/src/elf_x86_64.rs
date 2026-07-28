@@ -67,7 +67,7 @@ impl crate::platform::Arch for ElfX86_64 {
         })
     }
 
-    fn is_illegal_in_shared_object(r_type: u32) -> bool {
+    fn is_disallowed_for_interposable_symbols(r_type: u32) -> bool {
         matches!(
             r_type,
             object::elf::R_X86_64_32
