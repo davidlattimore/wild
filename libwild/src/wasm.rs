@@ -3047,13 +3047,6 @@ impl GotMem {
     }
 }
 
-fn is_global_index_relocation(ty: u8) -> bool {
-    matches!(
-        ty,
-        reloc_type::GLOBAL_INDEX_LEB | reloc_type::GLOBAL_INDEX_I32
-    )
-}
-
 fn layout_file_id_to_index(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
 ) -> HashMap<crate::input_data::FileId, usize> {
@@ -3064,43 +3057,51 @@ fn layout_file_id_to_index(
         .collect()
 }
 
-/// Collect GOT.mem targets, absorb matching imports, reserve indices with other linker-defined
-/// globals, and assign final module global indices.
-fn setup_got_mem<'data>(
+/// Per-object map of linking symbol index to provisional GOT slot.
+type GotMemSlotMap = Vec<Vec<Option<usize>>>;
+
+struct LayoutRelocScan {
+    got_mem: GotMem,
+    per_object_got_slots: GotMemSlotMap,
+    needs_memory_base: bool,
+    needs_table_base: bool,
+    needs_table: bool,
+    table_index_symbol_indices: Vec<Vec<usize>>,
+}
+
+/// Scan relocations, absorb GOT.mem imports, and reserve linker-defined indices.
+fn setup_got_mem_and_indices<'data>(
     layout_inputs: &[WasmObjectLayoutInput<'data>],
     resolutions: &mut [ObjectImportResolutions],
     symbol_db: &SymbolDb<'data, Wasm>,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
     has_init_funcs: bool,
     wrap_entry: bool,
-) -> Result<(LinkerDefinedIndices, GotMem)> {
-    let (mut got_mem, per_object_slots) =
-        collect_got_mem(layout_inputs, symbol_db, file_id_to_index)?;
+) -> Result<(LinkerDefinedIndices, LayoutRelocScan)> {
+    let mut scan = scan_layout_relocations(layout_inputs, symbol_db, file_id_to_index)?;
 
-    absorb_got_mem_imports(&got_mem, layout_inputs, resolutions, symbol_db)?;
+    absorb_got_mem_imports(&scan.got_mem, layout_inputs, resolutions, symbol_db)?;
 
     let indices = LinkerDefinedIndices::compute(
-        layout_inputs,
         resolutions,
         has_init_funcs,
         wrap_entry,
-        got_mem.len(),
+        scan.got_mem.len(),
+        scan.needs_memory_base,
+        scan.needs_table_base,
     )?;
 
-    if !got_mem.is_empty() {
+    if !scan.got_mem.is_empty() {
         let first_got = indices
             .got_mem_global_base
             .ok_or_else(|| crate::error!("GOT.mem entries present but no global base reserved"))?;
-        got_mem.per_object_global_indices =
-            assign_got_mem_global_indices(&per_object_slots, first_got)?;
+        scan.got_mem.per_object_global_indices =
+            assign_got_mem_global_indices(&scan.per_object_got_slots, first_got)?;
         finalize_got_mem_import_resolutions(resolutions, first_got)?;
     }
 
-    Ok((indices, got_mem))
+    Ok((indices, scan))
 }
-
-/// Per-object map of linking symbol index to provisional GOT slot.
-type GotMemSlotMap = Vec<Vec<Option<usize>>>;
 
 fn resolve_got_mem_def(
     def_id: SymbolId,
@@ -3147,68 +3148,113 @@ fn resolve_got_mem_def(
     )
 }
 
-fn collect_got_mem(
+fn scan_layout_relocations(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
-) -> Result<(GotMem, GotMemSlotMap)> {
+) -> Result<LayoutRelocScan> {
     let mut def_to_slot: HashMap<SymbolId, usize> = HashMap::new();
     let mut entries = Vec::new();
-    let mut per_object_slots = vec![Vec::new(); layout_inputs.len()];
+    let mut per_object_got_slots = vec![Vec::new(); layout_inputs.len()];
+    let mut needs_memory_base = false;
+    let mut needs_table_base = false;
+    let mut needs_table = layout_inputs
+        .iter()
+        .any(|input| !input.table_imports.is_empty());
+    let mut table_index_symbol_indices = vec![Vec::new(); layout_inputs.len()];
 
     for (obj_idx, input) in layout_inputs.iter().enumerate() {
-        let mut hits: Vec<(usize, usize)> = Vec::new();
+        let mut got_hits: Vec<(usize, usize)> = Vec::new();
+        let mut table_syms: Vec<usize> = Vec::new();
+        let mut table_sym_seen = HashSet::new();
+
         for reloc in input
             .code_relocations
             .iter()
             .chain(input.data_relocations.iter())
         {
-            if !is_global_index_relocation(reloc.ty) {
-                continue;
+            match reloc.ty {
+                reloc_type::MEMORY_ADDR_REL_SLEB => {
+                    needs_memory_base = true;
+                }
+                reloc_type::TABLE_NUMBER_LEB => {
+                    needs_table = true;
+                }
+                reloc_type::TABLE_INDEX_SLEB
+                | reloc_type::TABLE_INDEX_I32
+                | reloc_type::TABLE_INDEX_REL_SLEB => {
+                    if reloc.ty == reloc_type::TABLE_INDEX_REL_SLEB {
+                        needs_table_base = true;
+                    }
+                    needs_table = true;
+                    let sym_idx = reloc.index as usize;
+                    let Some(sym) = input.symbols.get(sym_idx) else {
+                        bail!(
+                            "table index relocation symbol {} out of range",
+                            reloc.index
+                        );
+                    };
+                    ensure!(
+                        sym.kind == WasmSymbolKind::Func,
+                        "R_WASM_TABLE_INDEX_* references non-function symbol"
+                    );
+                    if table_sym_seen.insert(sym_idx) {
+                        table_syms.push(sym_idx);
+                    }
+                }
+                reloc_type::GLOBAL_INDEX_LEB | reloc_type::GLOBAL_INDEX_I32 => {
+                    let sym_idx = reloc.index as usize;
+                    let Some(sym) = input.symbols.get(sym_idx) else {
+                        bail!(
+                            "GLOBAL_INDEX relocation symbol index {} out of range",
+                            reloc.index
+                        );
+                    };
+                    if sym.kind != WasmSymbolKind::Data {
+                        continue;
+                    }
+                    let symbol_id = input.symbol_id_range.offset_to_id(sym_idx);
+                    let def_id = symbol_db.definition(symbol_id);
+                    let slot = if let Some(&slot) = def_to_slot.get(&def_id) {
+                        slot
+                    } else {
+                        let def =
+                            resolve_got_mem_def(def_id, layout_inputs, symbol_db, file_id_to_index)?;
+                        let slot = entries.len();
+                        def_to_slot.insert(def_id, slot);
+                        entries.push(GotMemEntry {
+                            def_symbol_id: def_id,
+                            def,
+                        });
+                        slot
+                    };
+                    got_hits.push((sym_idx, slot));
+                }
+                _ => {}
             }
-            let sym_idx = reloc.index as usize;
-            let Some(sym) = input.symbols.get(sym_idx) else {
-                bail!(
-                    "GLOBAL_INDEX relocation symbol index {} out of range",
-                    reloc.index
-                );
-            };
-            if sym.kind != WasmSymbolKind::Data {
-                continue;
+        }
+
+        if !got_hits.is_empty() {
+            let mut obj_map = vec![None; input.symbols.len()];
+            for (sym_idx, slot) in got_hits {
+                obj_map[sym_idx] = Some(slot);
             }
-            let symbol_id = input.symbol_id_range.offset_to_id(sym_idx);
-            let def_id = symbol_db.definition(symbol_id);
-            let slot = if let Some(&slot) = def_to_slot.get(&def_id) {
-                slot
-            } else {
-                let def = resolve_got_mem_def(def_id, layout_inputs, symbol_db, file_id_to_index)?;
-                let slot = entries.len();
-                def_to_slot.insert(def_id, slot);
-                entries.push(GotMemEntry {
-                    def_symbol_id: def_id,
-                    def,
-                });
-                slot
-            };
-            hits.push((sym_idx, slot));
+            per_object_got_slots[obj_idx] = obj_map;
         }
-        if hits.is_empty() {
-            continue;
-        }
-        let mut obj_map = vec![None; input.symbols.len()];
-        for (sym_idx, slot) in hits {
-            obj_map[sym_idx] = Some(slot);
-        }
-        per_object_slots[obj_idx] = obj_map;
+        table_index_symbol_indices[obj_idx] = table_syms;
     }
 
-    Ok((
-        GotMem {
+    Ok(LayoutRelocScan {
+        got_mem: GotMem {
             entries,
             per_object_global_indices: Vec::new(),
         },
-        per_object_slots,
-    ))
+        per_object_got_slots,
+        needs_memory_base,
+        needs_table_base,
+        needs_table,
+        table_index_symbol_indices,
+    })
 }
 
 fn assign_got_mem_global_indices(
@@ -3396,14 +3442,13 @@ fn entry_is_defined_function(
 
 impl LinkerDefinedIndices {
     fn compute(
-        inputs: &[WasmObjectLayoutInput<'_>],
         import_resolutions: &[ObjectImportResolutions],
         has_init_funcs: bool,
         wrap_entry: bool,
         got_mem_count: u32,
+        mut needs_memory_base: bool,
+        mut needs_table_base: bool,
     ) -> Result<Self> {
-        let mut needs_memory_base = false;
-        let mut needs_table_base = false;
         let mut needs_stack_pointer = false;
         let mut needs_tls_base = false;
         let mut needs_ctors = has_init_funcs;
@@ -3411,7 +3456,7 @@ impl LinkerDefinedIndices {
         let mut function_import_count = 0u32;
         let mut global_import_count = 0u32;
 
-        for (input, resolutions) in inputs.iter().zip(import_resolutions) {
+        for resolutions in import_resolutions {
             let absorption = LinkerImportAbsorption::from_resolutions(resolutions);
             needs_ctors |= absorption.needs_ctors;
             needs_dtors |= absorption.needs_dtors;
@@ -3427,25 +3472,6 @@ impl LinkerDefinedIndices {
             global_import_count = global_import_count
                 .checked_add(resolutions.unresolved_global_count)
                 .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-
-            if !needs_memory_base
-                && input
-                    .code_relocations
-                    .iter()
-                    .chain(input.data_relocations.iter())
-                    .any(|reloc| reloc.ty == reloc_type::MEMORY_ADDR_REL_SLEB)
-            {
-                needs_memory_base = true;
-            }
-            if !needs_table_base
-                && input
-                    .code_relocations
-                    .iter()
-                    .chain(input.data_relocations.iter())
-                    .any(|reloc| reloc.ty == reloc_type::TABLE_INDEX_REL_SLEB)
-            {
-                needs_table_base = true;
-            }
         }
 
         let mut next_global = global_import_count;
@@ -4090,7 +4116,7 @@ where
         && !call_ctors_used_in_objects(&layout_inputs)
         && entry_is_defined_function(&layout_inputs, symbol_db);
 
-    let (indices, got_mem) = setup_got_mem(
+    let (indices, reloc_scan) = setup_got_mem_and_indices(
         &layout_inputs,
         &mut import_resolutions,
         symbol_db,
@@ -4098,6 +4124,7 @@ where
         has_init_funcs,
         wrap_entry,
     )?;
+    let got_mem = &reloc_scan.got_mem;
     let index_bases =
         allocate_wasm_object_index_bases(&layout_inputs, &import_resolutions, &indices)?;
     let mut object_layouts = {
@@ -4188,7 +4215,7 @@ where
                     .object_index_maps
                     .push(std::mem::take(&mut object_layout.index_map));
             }
-            apply_got_mem_to_index_maps(&mut layout.object_index_maps, &got_mem);
+            apply_got_mem_to_index_maps(&mut layout.object_index_maps, got_mem);
         }
         {
             timing_phase!("Clone Wasm symbol tables");
@@ -4287,55 +4314,41 @@ where
     }
     {
         timing_phase!("Finalize Wasm indirect function table");
-        finalize_indirect_function_table(&mut layout, &layout_inputs)?;
+        finalize_indirect_function_table(
+            &mut layout,
+            &layout_inputs,
+            &reloc_scan.table_index_symbol_indices,
+            reloc_scan.needs_table,
+        )?;
     }
-    layout.encode_metadata_sections(&layout_inputs, &indices, &got_mem)?;
+    layout.encode_metadata_sections(&layout_inputs, &indices, got_mem)?;
     Ok(layout)
-}
-
-fn is_table_index_relocation(ty: u8) -> bool {
-    matches!(
-        ty,
-        reloc_type::TABLE_INDEX_SLEB
-            | reloc_type::TABLE_INDEX_I32
-            | reloc_type::TABLE_INDEX_REL_SLEB
-    )
-}
-
-fn is_table_number_relocation(ty: u8) -> bool {
-    ty == reloc_type::TABLE_NUMBER_LEB
 }
 
 /// Assign indirect-call table slots and synthesize `table` / `element` sections.
 fn finalize_indirect_function_table(
     layout: &mut WasmLayout<'_>,
     layout_inputs: &[WasmObjectLayoutInput<'_>],
+    table_index_symbol_indices: &[Vec<usize>],
+    needs_table: bool,
 ) -> Result {
+    if !needs_table {
+        return Ok(());
+    }
+
     // Collect output function indices that must appear in the table.
     let mut needed: Vec<u32> = Vec::new();
     let mut seen = HashSet::new();
-    let mut needs_table = layout_inputs
-        .iter()
-        .any(|input| !input.table_imports.is_empty());
 
-    for (obj_idx, input) in layout_inputs.iter().enumerate() {
+    for (obj_idx, (input, sym_indices)) in layout_inputs
+        .iter()
+        .zip(table_index_symbol_indices.iter())
+        .enumerate()
+    {
         let index_map = &layout.object_index_maps[obj_idx];
-        let symbols = &input.symbols;
-        for reloc in input
-            .code_relocations
-            .iter()
-            .chain(input.data_relocations.iter())
-        {
-            if is_table_number_relocation(reloc.ty) {
-                needs_table = true;
-                continue;
-            }
-            if !is_table_index_relocation(reloc.ty) {
-                continue;
-            }
-            needs_table = true;
-            let sym = symbols.get(reloc.index as usize).ok_or_else(|| {
-                crate::error!("table index relocation symbol {} out of range", reloc.index)
+        for &sym_idx in sym_indices {
+            let sym = input.symbols.get(sym_idx).ok_or_else(|| {
+                crate::error!("table index relocation symbol {sym_idx} out of range")
             })?;
             ensure!(
                 sym.kind == WasmSymbolKind::Func,
@@ -4346,10 +4359,6 @@ fn finalize_indirect_function_table(
                 needed.push(func_out);
             }
         }
-    }
-
-    if !needs_table {
-        return Ok(());
     }
 
     // Slot 0 is unused and first function at slot 1. This matches common clang/wasm-ld layout.
