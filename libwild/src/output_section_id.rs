@@ -493,7 +493,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         segment_def: P::ProgramSegmentDef,
     ) -> bool {
         let info = self.output_info(section_id);
-        segment_def.should_include_section(info, section_id, self.rosegment)
+        P::program_segment_should_include_section(segment_def, info, section_id, self.rosegment)
     }
 }
 

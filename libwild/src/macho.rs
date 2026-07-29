@@ -846,8 +846,6 @@ impl std::fmt::Display for ProgramSegmentDef {
 }
 
 impl platform::ProgramSegmentDef for ProgramSegmentDef {
-    type Platform = MachO;
-
     fn is_writable(self) -> bool {
         false
     }
@@ -880,34 +878,6 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
 
     fn order_key(self) -> usize {
         self.segment_type as usize
-    }
-
-    fn should_include_section(
-        self,
-        _section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
-        section_id: crate::output_section_id::OutputSectionId,
-        _rosegment: bool,
-    ) -> bool {
-        let mapped_segment = match section_id {
-            crate::output_section_id::FILE_HEADER => SegmentType::Text,
-            output_section_id::LOAD_COMMANDS => SegmentType::LoadCommands,
-            output_section_id::TEXT
-            | output_section_id::CSTRING
-            | output_section_id::CONST
-            | output_section_id::PLT_GOT => SegmentType::TextSections,
-            output_section_id::DATA => SegmentType::DataSections,
-            output_section_id::GOT => SegmentType::DataConstSections,
-            output_section_id::CHAINED_FIXUP_TABLE
-            | output_section_id::SYMTAB_GLOBAL
-            | output_section_id::STRTAB
-            | output_section_id::CODE_SIGNATURE => SegmentType::LinkeditSections,
-            _ => SegmentType::Unused,
-        };
-
-        match (self.segment_type, mapped_segment) {
-            (SegmentType::Text, SegmentType::LoadCommands | SegmentType::TextSections) => true,
-            _ => self.segment_type == mapped_segment,
-        }
     }
 }
 
@@ -1218,6 +1188,34 @@ impl platform::Platform for MachO {
 
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
         &[]
+    }
+
+    fn program_segment_should_include_section(
+        segment_def: Self::ProgramSegmentDef,
+        _section_info: &crate::output_section_id::SectionOutputInfo<Self>,
+        section_id: crate::output_section_id::OutputSectionId,
+        _rosegment: bool,
+    ) -> bool {
+        let mapped_segment = match section_id {
+            crate::output_section_id::FILE_HEADER => SegmentType::Text,
+            output_section_id::LOAD_COMMANDS => SegmentType::LoadCommands,
+            output_section_id::TEXT
+            | output_section_id::CSTRING
+            | output_section_id::CONST
+            | output_section_id::PLT_GOT => SegmentType::TextSections,
+            output_section_id::DATA => SegmentType::DataSections,
+            output_section_id::GOT => SegmentType::DataConstSections,
+            output_section_id::CHAINED_FIXUP_TABLE
+            | output_section_id::SYMTAB_GLOBAL
+            | output_section_id::STRTAB
+            | output_section_id::CODE_SIGNATURE => SegmentType::LinkeditSections,
+            _ => SegmentType::Unused,
+        };
+
+        match (segment_def.segment_type, mapped_segment) {
+            (SegmentType::Text, SegmentType::LoadCommands | SegmentType::TextSections) => true,
+            _ => segment_def.segment_type == mapped_segment,
+        }
     }
 
     fn create_linker_defined_symbols(
