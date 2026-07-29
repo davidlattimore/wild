@@ -5667,7 +5667,7 @@ impl Display for LinkCommand {
             write!(
                 f,
                 "WILD_WRITE_LAYOUT=1 WILD_WRITE_TRACE=1 OUT={} {}/run-with cargo run \
-                     --bin wild --",
+                     --bin wild -- --",
                 self.output_path.display(),
                 save_dir.display()
             )?;
@@ -5716,7 +5716,7 @@ impl Display for LinkCommand {
 
                 write!(
                     f,
-                    "{} cargo run --bin wild -- {}",
+                    "{} cargo run --bin wild -- -- {}",
                     command_str,
                     args.join(" ")
                 )
