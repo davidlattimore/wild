@@ -1696,18 +1696,27 @@ fn build_name_section<'data>(
     if let Some(got_base) = indices.got_mem_global_base {
         got_mem_names.reserve(got_mem.entries.len());
         for (i, entry) in got_mem.entries.iter().enumerate() {
-            let name = layout_inputs
-                .get(entry.object_index)
-                .and_then(|input| {
-                    input
-                        .symbols
-                        .get(entry.symbol_offset)
-                        .and_then(|sym| wasm_symbol_name_str(input.data, sym))
-                })
-                .map_or_else(
-                    || format!("GOT.data.internal.{i}"),
-                    |sym| format!("GOT.data.internal.{sym}"),
-                );
+            let name = match entry.def {
+                GotMemDef::Object {
+                    object_index,
+                    symbol_offset,
+                } => layout_inputs
+                    .get(object_index)
+                    .and_then(|input| {
+                        input
+                            .symbols
+                            .get(symbol_offset)
+                            .and_then(|sym| wasm_symbol_name_str(input.data, sym))
+                    })
+                    .map_or_else(
+                        || format!("GOT.data.internal.{i}"),
+                        |sym| format!("GOT.data.internal.{sym}"),
+                    ),
+                GotMemDef::LinkerDefined(known) => {
+                    let sym = std::str::from_utf8(known.name()).unwrap_or("?");
+                    format!("GOT.data.internal.{sym}")
+                }
+            };
             got_mem_names.push(name);
         }
         for (i, name) in got_mem_names.iter().enumerate() {
@@ -2765,13 +2774,9 @@ fn local_defined_global_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbo
 fn resolve_cross_object_imports<'data>(
     inputs: &[WasmObjectLayoutInput<'data>],
     symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
+    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
 ) -> Result<Vec<ObjectImportResolutions>> {
     timing_phase!("Resolve Wasm cross-object imports");
-    let file_id_to_index: HashMap<crate::input_data::FileId, usize> = inputs
-        .iter()
-        .enumerate()
-        .map(|(i, input)| (input.file_id, i))
-        .collect();
 
     inputs
         .par_iter()
@@ -2783,7 +2788,7 @@ fn resolve_cross_object_imports<'data>(
                 input,
                 inputs,
                 symbol_db,
-                &file_id_to_index,
+                file_id_to_index,
             )?;
             let (global_resolutions, unresolved_global_count) = resolve_import_symbols(
                 input.global_imports.len(),
@@ -2791,7 +2796,7 @@ fn resolve_cross_object_imports<'data>(
                 input,
                 inputs,
                 symbol_db,
-                &file_id_to_index,
+                file_id_to_index,
             )?;
             Ok(ObjectImportResolutions {
                 function_resolutions,
@@ -3010,13 +3015,20 @@ struct LinkerDefinedIndices {
     got_mem_count: u32,
 }
 
+/// Where a GOT.mem slot's final linear-memory address comes from.
+#[derive(Debug, Clone, Copy)]
+enum GotMemDef {
+    Object {
+        object_index: usize,
+        symbol_offset: usize,
+    },
+    LinkerDefined(WasmLinkerSymbol),
+}
+
 #[derive(Debug, Clone, Copy)]
 struct GotMemEntry {
     def_symbol_id: SymbolId,
-    /// Index into the layout-input / object-index-map arrays for the defining object.
-    object_index: usize,
-    /// Offset of the definition within that object's `symbol_id_range` / `data_addresses`.
-    symbol_offset: usize,
+    def: GotMemDef,
 }
 
 #[derive(Debug, Default)]
@@ -3040,6 +3052,16 @@ fn is_global_index_relocation(ty: u8) -> bool {
         ty,
         reloc_type::GLOBAL_INDEX_LEB | reloc_type::GLOBAL_INDEX_I32
     )
+}
+
+fn layout_file_id_to_index(
+    layout_inputs: &[WasmObjectLayoutInput<'_>],
+) -> HashMap<crate::input_data::FileId, usize> {
+    layout_inputs
+        .iter()
+        .enumerate()
+        .map(|(i, input)| (input.file_id, i))
+        .collect()
 }
 
 /// Collect GOT.mem targets, absorb matching imports, reserve indices with other linker-defined
@@ -3080,6 +3102,51 @@ fn setup_got_mem<'data>(
 /// Per-object map of linking symbol index to provisional GOT slot.
 type GotMemSlotMap = Vec<Vec<Option<usize>>>;
 
+fn resolve_got_mem_def(
+    def_id: SymbolId,
+    layout_inputs: &[WasmObjectLayoutInput<'_>],
+    symbol_db: &SymbolDb<'_, Wasm>,
+    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
+) -> Result<GotMemDef> {
+    let def_file_id = symbol_db.file_id_for_symbol(def_id);
+    if let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) {
+        let def_input = &layout_inputs[def_obj_idx];
+        let def_off = def_id.to_offset(def_input.symbol_id_range);
+        let def_ok = def_input
+            .symbols
+            .get(def_off)
+            .is_some_and(|s| s.kind == WasmSymbolKind::Data && !s.is_undefined());
+        ensure!(
+            def_ok,
+            "GOT.mem for `{}` requires a defined data symbol in the link",
+            symbol_db.symbol_name_for_display(def_id)
+        );
+        return Ok(GotMemDef::Object {
+            object_index: def_obj_idx,
+            symbol_offset: def_off,
+        });
+    }
+
+    // Linker-defined data live on the prelude file, not in `layout_inputs`.
+    if let Some(def_info) = symbol_db.prelude_symbol_def(def_id)
+        && let crate::parsing::SymbolPlacement::PlatformSpecific(known) = def_info.placement
+        && matches!(
+            known,
+            WasmLinkerSymbol::DataEnd
+                | WasmLinkerSymbol::HeapBase
+                | WasmLinkerSymbol::HeapEnd
+                | WasmLinkerSymbol::WasmFirstPageEnd
+        )
+    {
+        return Ok(GotMemDef::LinkerDefined(known));
+    }
+
+    bail!(
+        "GOT.mem for `{}` requires a defined data symbol in the link",
+        symbol_db.symbol_name_for_display(def_id)
+    )
+}
+
 fn collect_got_mem(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
@@ -3114,31 +3181,12 @@ fn collect_got_mem(
             let slot = if let Some(&slot) = def_to_slot.get(&def_id) {
                 slot
             } else {
-                let Some(&def_obj_idx) =
-                    file_id_to_index.get(&symbol_db.file_id_for_symbol(def_id))
-                else {
-                    bail!(
-                        "GOT.mem for `{}` requires a defined data symbol in the link",
-                        symbol_db.symbol_name_for_display(def_id)
-                    );
-                };
-                let def_input = &layout_inputs[def_obj_idx];
-                let def_off = def_id.to_offset(def_input.symbol_id_range);
-                let def_ok = def_input
-                    .symbols
-                    .get(def_off)
-                    .is_some_and(|s| s.kind == WasmSymbolKind::Data && !s.is_undefined());
-                ensure!(
-                    def_ok,
-                    "GOT.mem for `{}` requires a defined data symbol in the link",
-                    symbol_db.symbol_name_for_display(def_id)
-                );
+                let def = resolve_got_mem_def(def_id, layout_inputs, symbol_db, file_id_to_index)?;
                 let slot = entries.len();
                 def_to_slot.insert(def_id, slot);
                 entries.push(GotMemEntry {
                     def_symbol_id: def_id,
-                    object_index: def_obj_idx,
-                    symbol_offset: def_off,
+                    def,
                 });
                 slot
             };
@@ -3270,6 +3318,10 @@ fn fill_got_mem_inits(
     layout: &mut WasmLayout<'_>,
     indices: &LinkerDefinedIndices,
     got_mem: &GotMem,
+    data_end: u32,
+    stack_size: u32,
+    heap_end: Option<u32>,
+    stack_first: bool,
 ) -> Result {
     let Some(got_base) = indices.got_mem_global_base else {
         return Ok(());
@@ -3277,11 +3329,24 @@ fn fill_got_mem_inits(
     let defined_slot = (got_base - indices.global_import_count) as usize;
 
     for (i, entry) in got_mem.entries.iter().enumerate() {
-        let addr = layout.object_index_maps[entry.object_index]
-            .data_addresses
-            .get(entry.symbol_offset)
-            .copied()
-            .ok_or_else(|| crate::error!("GOT.mem missing data address for definition"))?;
+        let addr = match entry.def {
+            GotMemDef::Object {
+                object_index,
+                symbol_offset,
+            } => layout.object_index_maps[object_index]
+                .data_addresses
+                .get(symbol_offset)
+                .copied()
+                .ok_or_else(|| crate::error!("GOT.mem missing data address for definition"))?,
+            GotMemDef::LinkerDefined(known) => known
+                .data_address(data_end, stack_size, heap_end, stack_first)?
+                .ok_or_else(|| {
+                    crate::error!(
+                        "GOT.mem linker-defined symbol `{}` has no data address",
+                        std::str::from_utf8(known.name()).unwrap_or("?")
+                    )
+                })?,
+        };
         let global_slot = defined_slot + i;
         let global = layout
             .globals
@@ -4013,7 +4078,9 @@ where
             .collect::<Result<Vec<_>>>()?
     };
 
-    let mut import_resolutions = resolve_cross_object_imports(&layout_inputs, symbol_db)?;
+    let file_id_to_index = layout_file_id_to_index(&layout_inputs);
+    let mut import_resolutions =
+        resolve_cross_object_imports(&layout_inputs, symbol_db, &file_id_to_index)?;
     let has_init_funcs = layout_inputs
         .iter()
         .any(|input| !input.init_funcs.is_empty());
@@ -4023,11 +4090,6 @@ where
         && !call_ctors_used_in_objects(&layout_inputs)
         && entry_is_defined_function(&layout_inputs, symbol_db);
 
-    let file_id_to_index: HashMap<crate::input_data::FileId, usize> = layout_inputs
-        .iter()
-        .enumerate()
-        .map(|(i, input)| (input.file_id, i))
-        .collect();
     let (indices, got_mem) = setup_got_mem(
         &layout_inputs,
         &mut import_resolutions,
@@ -4186,18 +4248,28 @@ where
         } else {
             Some(heap_end_from_initial_pages(initial_pages)?)
         };
+        let data_end = layout.data_end;
         compute_data_addresses(
             &mut layout.object_index_maps,
             &layout.per_object_symbols,
             &layout.object_data_layouts,
             &layout_inputs,
             symbol_db,
-            layout.data_end,
+            &file_id_to_index,
+            data_end,
             stack_size,
             heap_end,
             stack_first,
         )?;
-        fill_got_mem_inits(&mut layout, &indices, &got_mem)?;
+        fill_got_mem_inits(
+            &mut layout,
+            &indices,
+            &got_mem,
+            data_end,
+            stack_size,
+            heap_end,
+            stack_first,
+        )?;
         fill_stack_pointer_init(&mut layout, &indices, stack_size, stack_first)?;
         ensure_entry_export(
             &mut layout.exports,
@@ -4497,17 +4569,12 @@ fn compute_data_addresses(
     object_data_layouts: &[WasmObjectDataLayout<'_>],
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
+    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
     data_end: u32,
     stack_size: u32,
     heap_end: Option<u32>,
     stack_first: bool,
 ) -> Result {
-    let file_id_to_index: HashMap<crate::input_data::FileId, usize> = layout_inputs
-        .iter()
-        .enumerate()
-        .map(|(i, input)| (input.file_id, i))
-        .collect();
-
     for (obj_idx, (index_map, symbols)) in object_index_maps
         .iter_mut()
         .zip(per_object_symbols.iter())
