@@ -92,6 +92,7 @@ jobs:
           name: base_image-${{ matrix.container }}
           path: ${{ runner.temp }}/base_image.tar
           retention-days: 1
+          if-no-files-found: error
 
   # Build images that depend on other images.
   build-dependent:
