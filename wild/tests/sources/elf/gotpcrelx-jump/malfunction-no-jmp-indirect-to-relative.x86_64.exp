@@ -1,0 +1,13 @@
+wild: elf/x86_64/gotpcrelx-jump/malfunction-no-jmp-indirect-to-relative/gotpcrelx-jump.s.wild
+ld: elf/x86_64/gotpcrelx-jump/malfunction-no-jmp-indirect-to-relative/gotpcrelx-jump.s.ld
+rel.missing-opt.R_X86_64_GOTPCRELX.JmpIndirectToRelative.static-non-pie
+`elf/x86_64/gotpcrelx-jump/malfunction-no-jmp-indirect-to-relative/gotpcrelx-jump.s.o` .text _start
+R_X86_64_GOTPCRELX
+ORIG target -4
+R_X86_64_GOTPCRELX NoOp
+wild GOT->target
+wild TRACE: relocation applied flags=NON_INTERPOSABLE | DIRECT | GOT,
+wild TRACE: rel_kind=GotRelative,
+R_X86_64_PC32 JmpIndirectToRelative
+ld   target
+

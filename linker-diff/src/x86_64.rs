@@ -204,6 +204,10 @@ impl Arch for X86_64 {
                     Self::RelaxationKind::TlsLdToLocalExecNoPlt,
                     object::elf::R_X86_64_NONE,
                 );
+                relax(
+                    Self::RelaxationKind::TlsLdToLocalExec64,
+                    object::elf::R_X86_64_NONE,
+                );
             }
             (SectionKind::Text, object::elf::R_X86_64_TLSDESC_CALL) => {
                 relax(

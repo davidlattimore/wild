@@ -50,8 +50,7 @@ pub enum RelaxationKind {
     /// call instruction.
     TlsLdToLocalExecNoPlt,
 
-    /// Transform local dynamic (LD) into local exec with extra padding because the previous
-    /// instruction was 64 bit.
+    /// Transform the large-model local dynamic (LD) sequence into local exec.
     TlsLdToLocalExec64,
 
     /// Transform general dynamic (GD) into initial exec

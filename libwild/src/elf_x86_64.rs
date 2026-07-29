@@ -278,6 +278,7 @@ impl crate::platform::Arch for ElfX86_64 {
                         }
                         // jmp *x(%rip)
                         [0xff, 0x25] => {
+                            malfunction_point_ret!("no-jmp-indirect-to-relative", None);
                             return Some(Relaxation {
                                 kind: RelaxationKind::JmpIndirectToRelative,
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_PC32),
@@ -407,8 +408,6 @@ impl crate::platform::Arch for ElfX86_64 {
                                 mandatory: output_kind.is_static_executable(),
                             });
                         }
-                        // TODO: Make a test for this. Also, the description of TlsLdToLocalExec64
-                        // possibly doesn't match what we're actually checking here.
                         Some(&[0x48, 0xb8]) => {
                             return Some(Relaxation {
                                 kind: RelaxationKind::TlsLdToLocalExec64,
@@ -563,12 +562,13 @@ impl TlsGdForm {
 
         // lea 0x0(%rip),%rdi
         // movabs $X,%rax
-        // TODO: This branch is not currently exercised by our tests. Add a test and document the
-        // third instruction.
+        // add %rbx,%rax
+        // call *%rax
         if bytes.get(offset - 3..offset) == Some(&[0x48, 0x8d, 0x3d])
             && bytes.get(offset + 4..offset + 6) == Some(&[0x48, 0xb8])
             && bytes.get(offset + 14..offset + 19) == Some(&[0x48, 0x01, 0xd8, 0xff, 0xd0])
         {
+            malfunction_point_ret!("no-identify-tls-gd-large", None);
             return Some(Self::Large);
         }
 

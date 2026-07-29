@@ -1,0 +1,16 @@
+wild: elf/x86_64/tls-local-dynamic/malfunction-no-identify-tls-gd-large/tls-local-dynamic.c.wild
+ld: elf/x86_64/tls-local-dynamic/malfunction-no-identify-tls-gd-large/tls-local-dynamic.c.ld
+rel.missing-opt.R_X86_64_TLSGD.TlsGdToLocalExecLarge.dynamic-pie
+`elf/x86_64/tls-local-dynamic/malfunction-no-identify-tls-gd-large/tls-local-dynamic.c.o` .text.startup main
+R_X86_64_TLSGD
+ORIG foo -4
+R_X86_64_TLSGD NoOp
+Missing dynamic relocation for TlsGd
+wild ??
+wild TRACE: relocation applied flags=NON_INTERPOSABLE | DIRECT | GOT_TLS_MODULE,
+wild TRACE: rel_kind=TlsGd,
+wild TRACE: relocation applied flags=DYNAMIC | FUNCTION | GOT | PLT | HAS_NON_IR_REF,
+wild TRACE: rel_kind=PltRelGotBase,
+R_X86_64_TPOFF32 TlsGdToLocalExecLarge
+ld   foo
+
