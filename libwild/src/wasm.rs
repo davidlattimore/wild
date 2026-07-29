@@ -1675,7 +1675,7 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) unsupported_output: Vec<&'static str>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
     pub(crate) object_data_layouts: Vec<WasmObjectDataLayout<'data>>,
-    pub(crate) per_object_symbols: Vec<Vec<WasmSymbol>>,
+    pub(crate) per_object_symbols: Vec<&'data [WasmSymbol]>,
     pub(crate) encoded_sections: WasmEncodedSections,
     pub(crate) code_section_size: u64,
     pub(crate) data_section_size: u64,
@@ -1807,7 +1807,7 @@ fn build_name_section<'data>(
         let Some(index_map) = layout.object_index_maps.get(obj_idx) else {
             continue;
         };
-        for sym in &input.symbols {
+        for sym in input.symbols {
             let Some(name) = wasm_symbol_name_str(input.data, sym) else {
                 continue;
             };
@@ -2394,8 +2394,8 @@ struct WasmObjectLayoutInput<'data> {
     data_segments: Vec<WasmDataSegment<'data>>,
     segment_alignments: Vec<Alignment>,
     data_relocations: Vec<WasmRelocation>,
-    symbols: Vec<WasmSymbol>,
-    init_funcs: Vec<WasmInitFunc>,
+    symbols: &'data [WasmSymbol],
+    init_funcs: &'data [WasmInitFunc],
     symbol_id_range: crate::symbol_db::SymbolIdRange,
     file_id: crate::input_data::FileId,
 }
@@ -2425,7 +2425,7 @@ struct WasmObjectOutputLayout<'data> {
 
 impl<'data> WasmObjectLayoutInput<'data> {
     fn from_file(
-        file: &File<'data>,
+        file: &'data File<'data>,
         symbol_id_range: crate::symbol_db::SymbolIdRange,
         file_id: crate::input_data::FileId,
     ) -> Result<Self> {
@@ -2586,8 +2586,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
             data_segments,
             segment_alignments: file.segments.iter().map(|s| s.alignment).collect(),
             data_relocations,
-            symbols: file.symbols.clone(),
-            init_funcs: file.init_funcs.clone(),
+            symbols: file.symbols.as_slice(),
+            init_funcs: file.init_funcs.as_slice(),
             symbol_id_range,
             file_id,
         })
@@ -3791,7 +3791,7 @@ fn collect_sorted_init_function_calls(
     let mut items = Vec::new();
     for (obj_idx, input) in inputs.iter().enumerate() {
         let index_map = &object_index_maps[obj_idx];
-        for init in &input.init_funcs {
+        for init in input.init_funcs {
             let sym = &input.symbols[init.symbol_index as usize];
             ensure!(
                 sym.kind == WasmSymbolKind::Func && !sym.is_undefined(),
@@ -4307,9 +4307,8 @@ where
             apply_got_mem_to_index_maps(&mut layout.object_index_maps, got_mem);
         }
         {
-            timing_phase!("Clone Wasm symbol tables");
             for input in &layout_inputs {
-                layout.per_object_symbols.push(input.symbols.clone());
+                layout.per_object_symbols.push(input.symbols);
             }
         }
         {
@@ -4663,7 +4662,7 @@ fn linker_defined_data_symbol_address(
 
 fn compute_data_addresses(
     object_index_maps: &mut [WasmObjectIndexMap],
-    per_object_symbols: &[Vec<WasmSymbol>],
+    per_object_symbols: &[&[WasmSymbol]],
     object_data_layouts: &[WasmObjectDataLayout<'_>],
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
