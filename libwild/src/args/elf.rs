@@ -1651,15 +1651,6 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
     parser
         .declare()
-        .long("no-fork")
-        .help("Do not fork while linking")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().should_fork = false;
-            Ok(())
-        });
-
-    parser
-        .declare()
         .long("no-update-in-place")
         .help("Delete and recreate the file")
         .execute(|args, _modifier_stack| {
