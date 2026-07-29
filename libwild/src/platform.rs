@@ -2,6 +2,7 @@ use crate::FileSystem;
 use crate::OutputKind;
 use crate::Result;
 use crate::alignment::Alignment;
+use crate::arch::Architecture;
 use crate::bail;
 use crate::env;
 use crate::error::Warning;
@@ -47,6 +48,7 @@ use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
+use object::Endianness;
 use rayon::Scope;
 use std::borrow::Cow;
 use std::fmt::Display;
@@ -1560,5 +1562,13 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn should_output_partial_object(&self) -> bool {
         false
+    }
+
+    fn architecture(&self) -> Architecture {
+        Architecture::Unsupported
+    }
+
+    fn output_format_endian(&self) -> Option<Endianness> {
+        None
     }
 }

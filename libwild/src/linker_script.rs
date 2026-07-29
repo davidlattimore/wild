@@ -76,6 +76,7 @@ pub(crate) enum Command<'a> {
     Assert(AssertCommand<'a>),
     Memory(Vec<MemoryRegion<'a>>),
     Phdrs(Vec<Phdr<'a>>),
+    OutputFormat(OutputFormat<'a>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -165,6 +166,13 @@ pub(crate) struct Phdr<'a> {
     pub(crate) name: &'a [u8],
     pub(crate) ptype: Expression<'a>,
     pub(crate) flags: Option<Expression<'a>>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) struct OutputFormat<'a> {
+    pub(crate) default: &'a [u8],
+    pub(crate) big: Option<&'a [u8]>,
+    pub(crate) little: Option<&'a [u8]>,
 }
 
 /// Represents a parsed expression in linker scripts (e.g., in ASSERT commands).
@@ -380,10 +388,7 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
 
     let command = match command_str {
         b"GROUP" | b"INPUT" => Command::Group(parse_paren_group(input)?),
-        b"OUTPUT_FORMAT" => {
-            parse_paren_group(input)?;
-            Command::Ignored
-        }
+        b"OUTPUT_FORMAT" => Command::OutputFormat(parse_output_format(input)?),
         b"AS_NEEDED" => Command::AsNeeded(parse_paren_group(input)?),
         b"SECTIONS" => Command::Sections(parse_sections(input)?),
         b"ENTRY" => Command::Entry(parse_entry(input)?),
@@ -566,6 +571,31 @@ fn parse_phdrs<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<Phdr<'inp
     skip_comments_and_whitespace(input)?;
 
     Ok(phdrs)
+}
+
+fn parse_output_format<'input>(input: &mut &'input BStr) -> winnow::Result<OutputFormat<'input>> {
+    '('.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let default = parse_token(input)?;
+    skip_comments_and_whitespace(input)?;
+    let mut big = None;
+    let mut little = None;
+    if opt(",").parse_next(input)?.is_some() {
+        skip_comments_and_whitespace(input)?;
+        big = Some(parse_token(input)?);
+        skip_comments_and_whitespace(input)?;
+        ",".parse_next(input)?;
+        skip_comments_and_whitespace(input)?;
+        little = Some(parse_token(input)?);
+        skip_comments_and_whitespace(input)?;
+    }
+    ')'.parse_next(input)?;
+
+    Ok(OutputFormat {
+        default,
+        big,
+        little,
+    })
 }
 
 /// Parse an expression - entry point for expression parsing

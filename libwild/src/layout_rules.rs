@@ -2,6 +2,7 @@
 
 use crate::OutputSections;
 use crate::alignment;
+use crate::arch::Architecture;
 use crate::error::Result;
 use crate::expression_eval::evaluate_const;
 use crate::glob_match::GlobPatternType;
@@ -23,6 +24,7 @@ use crate::parsing::Redirect;
 use crate::parsing::RedirectKind;
 use crate::parsing::SymbolLoc;
 use crate::parsing::SymbolPlacement;
+use crate::platform::Args as _;
 use crate::platform::Platform;
 use crate::platform::SectionHeader;
 use glob::Pattern;
@@ -181,6 +183,7 @@ impl<'data> LayoutRulesBuilder<'data> {
         &mut self,
         input: &InputLinkerScript<'data>,
         output_sections: &mut OutputSections<'data, P>,
+        args: &P::Args,
     ) -> Result<ProcessedLinkerScript<'data, P>> {
         let mut symbol_defs = Vec::new();
         let mut assertions = Vec::new();
@@ -425,6 +428,28 @@ impl<'data> LayoutRulesBuilder<'data> {
                 memory_regions = regions.clone();
             } else if let linker_script::Command::Phdrs(phdrs) = cmd {
                 program_headers = phdrs.clone();
+            } else if let linker_script::Command::OutputFormat(output_format) = cmd {
+                let target_format = match args.output_format_endian() {
+                    Some(object::Endianness::Little) => {
+                        output_format.little.unwrap_or(output_format.default)
+                    }
+                    Some(object::Endianness::Big) => {
+                        output_format.big.unwrap_or(output_format.default)
+                    }
+                    None => output_format.default,
+                };
+                let target_arch = Architecture::parse_output_format(target_format);
+                if target_arch == Architecture::Unsupported {
+                    crate::bail!(
+                        "{} is not yet supported",
+                        String::from_utf8_lossy(target_format)
+                    );
+                }
+                if args.architecture() != target_arch {
+                    crate::bail!(
+                        "Setting the output format using OUTPUT_FORMAT is currently unsupported"
+                    );
+                }
             }
         }
 

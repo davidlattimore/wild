@@ -1,0 +1,1 @@
+OUTPUT_FORMAT(elf64-aarch64)

@@ -46,6 +46,23 @@ impl Display for Architecture {
     }
 }
 
+impl Architecture {
+    pub(crate) fn parse_output_format(format: &[u8]) -> Self {
+        let Some(format) = format.strip_prefix(b"elf64-") else {
+            return Self::Unsupported;
+        };
+
+        match format {
+            b"x86-64" => Self::X86_64,
+            b"aarch64" | b"littleaarch64" => Self::AArch64,
+            b"littleriscv" => Self::RiscV64,
+            b"loongarch" => Self::LoongArch64,
+            b"powerpcle" => Self::Ppc64,
+            _ => Self::Unsupported,
+        }
+    }
+}
+
 pub(crate) const SUPPORTED_TARGETS: &str =
     "elf64-x86-64 elf64-littleaarch64 elf64-littleriscv elf64-loongarch elf64-powerpcle";
 pub(crate) const SUPPORTED_EMULATIONS: &str =
