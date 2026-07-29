@@ -223,6 +223,13 @@ fn evaluate_expression_value<'data, P: Platform>(
             }
             Ok(eval!(l)? / divisor)
         }
+        Expression::Modulo(l, r) => {
+            let divisor = eval!(r)?;
+            if divisor == 0 {
+                bail!("Modulo by zero in linker script expression");
+            }
+            Ok(eval!(l)? % divisor)
+        }
 
         // Comparisons return 1 (true) or 0 (false)
         Expression::LessThan(l, r) => Ok(u64::from(eval!(l)? < eval!(r)?)),
@@ -320,6 +327,13 @@ pub(crate) fn evaluate_const<'data>(expr: &Expression<'data>) -> Result<u64> {
                 bail!("Division by zero in linker script expression");
             }
             Ok(evaluate_const(l)?.wrapping_div(divisor))
+        }
+        Expression::Modulo(l, r) => {
+            let divisor = evaluate_const(r)?;
+            if divisor == 0 {
+                bail!("Modulo by zero in linker script expression");
+            }
+            Ok(evaluate_const(l)? % divisor)
         }
         Expression::LessThan(l, r) => Ok(u64::from(evaluate_const(l)? < evaluate_const(r)?)),
         Expression::GreaterThan(l, r) => Ok(u64::from(evaluate_const(l)? > evaluate_const(r)?)),
@@ -747,6 +761,15 @@ mod tests {
     #[test]
     fn test_divide_by_zero() {
         let expr = Expression::Divide(
+            Box::new(Expression::Number(10)),
+            Box::new(Expression::Number(0)),
+        );
+        assert!(eval_const(&expr).is_err());
+    }
+
+    #[test]
+    fn test_modulo_by_zero() {
+        let expr = Expression::Modulo(
             Box::new(Expression::Number(10)),
             Box::new(Expression::Number(0)),
         );

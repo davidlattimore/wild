@@ -170,7 +170,7 @@ pub(crate) struct Phdr<'a> {
 /// Represents a parsed expression in linker scripts (e.g., in ASSERT commands).
 ///
 /// Currently supports:
-/// - Arithmetic: +, -, *, /
+/// - Arithmetic: +, -, *, /, %
 /// - Comparison: <, >, <=, >=, ==, !=
 /// - Bitwise: &, |, ^, ~, <<, >>
 /// - Logical: &&, ||
@@ -188,11 +188,12 @@ pub(crate) enum Expression<'a> {
     Symbol(&'a [u8]),
     /// The location counter '.'
     LocationCounter,
-    /// Binary arithmetic: +, -, *, /
+    /// Binary arithmetic: +, -, *, /, %
     Add(Box<Expression<'a>>, Box<Expression<'a>>),
     Subtract(Box<Expression<'a>>, Box<Expression<'a>>),
     Multiply(Box<Expression<'a>>, Box<Expression<'a>>),
     Divide(Box<Expression<'a>>, Box<Expression<'a>>),
+    Modulo(Box<Expression<'a>>, Box<Expression<'a>>),
     /// Comparison operators: <, >, <=, >=, ==, !=
     LessThan(Box<Expression<'a>>, Box<Expression<'a>>),
     GreaterThan(Box<Expression<'a>>, Box<Expression<'a>>),
@@ -274,6 +275,7 @@ impl<'a> Expression<'a> {
             | Expression::Subtract(l, r)
             | Expression::Multiply(l, r)
             | Expression::Divide(l, r)
+            | Expression::Modulo(l, r)
             | Expression::LessThan(l, r)
             | Expression::GreaterThan(l, r)
             | Expression::LessEqual(l, r)
@@ -763,6 +765,7 @@ fn parse_multiplicative<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'
     while let Some(op) = opt(alt((
         '*'.map(|_| MulOp::Multiply),
         '/'.map(|_| MulOp::Divide),
+        '%'.map(|_| MulOp::Modulo),
     )))
     .parse_next(input)?
     {
@@ -771,6 +774,7 @@ fn parse_multiplicative<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'
         left = match op {
             MulOp::Multiply => Expression::Multiply(Box::new(left), Box::new(right)),
             MulOp::Divide => Expression::Divide(Box::new(left), Box::new(right)),
+            MulOp::Modulo => Expression::Modulo(Box::new(left), Box::new(right)),
         };
         multispace0.parse_next(input)?;
     }
@@ -991,6 +995,7 @@ enum AddOp {
 enum MulOp {
     Multiply,
     Divide,
+    Modulo,
 }
 
 fn parse_location<'input>(input: &mut &'input BStr) -> winnow::Result<Location<'input>> {
