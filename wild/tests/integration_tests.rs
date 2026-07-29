@@ -6011,7 +6011,7 @@ fn normalise_report(report: &linker_diff::Report) -> String {
         } else {
             Cow::Borrowed(line)
         };
-        out.push_str(&line_out);
+        out.push_str(line_out.trim());
         out.push('\n');
     }
     out
