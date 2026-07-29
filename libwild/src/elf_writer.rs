@@ -3411,6 +3411,16 @@ fn apply_relocation<
             .wrapping_add(bias)
             .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
+        RelocationKind::TpOff
+            if layout
+                .symbol_db
+                .is_undefined(layout.symbol_db.definition(local_symbol_id)) =>
+        {
+            // An undefined weak TLS symbol has no offset within the TLS block, so we somewhat
+            // arbitrarily give the 0 offset which at least some other linkers also do and most
+            // importantly is a value guaranteed to fit within the range of any relocation.
+            (addend as u64).wrapping_add(bias)
+        }
         RelocationKind::TpOff => resolution
             .value()
             .wrapping_add(addend as u64)
