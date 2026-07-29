@@ -1436,6 +1436,24 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
             args.common_mut().num_threads = Some(NonZeroUsize::new(1).unwrap());
             Ok(())
         });
+
+    parser
+        .declare()
+        .long("no-fork")
+        .help("Do not fork while linking")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().should_fork = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("fork")
+        .help("Spawn a child process to link (default)")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().should_fork = true;
+            Ok(())
+        });
 }
 
 #[cfg(test)]
