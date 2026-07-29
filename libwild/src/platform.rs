@@ -28,6 +28,7 @@ use crate::output_section_id::CustomSectionIds;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SectionIdentity;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
@@ -337,6 +338,9 @@ pub(crate) trait Platform:
     type SymtabShndxEntry: std::fmt::Debug + Default + Send + Sync + 'static;
     type ResolvedObjectExt<'data>: Default + std::fmt::Debug + Send + Sync;
     type FinaliseSizesExt<'data>: Send + Sync;
+
+    /// Format-specific fields that form part of a section's identity.
+    type SectionIdentityExt: std::fmt::Debug + Copy + Eq + Send + Sync + std::hash::Hash;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
@@ -949,6 +953,29 @@ pub(crate) trait Platform:
 
     fn get_segment_flags_for_section(_section_flags: &Self::SectionFlags) -> u32 {
         0
+    }
+
+    /// Constructs the complete identity of an input section, including all format-specific fields
+    /// that distinguish sections with the same name.
+    fn section_identity<'data>(
+        name: SectionName<'data>,
+        section: &Self::SectionHeader,
+    ) -> SectionIdentity<'data, Self>;
+
+    /// Constructs a section identity with only the section name.
+    /// Returns None when the name alone cannot determine the complete section identity.
+    fn section_identity_from_name<'data>(
+        _name: SectionName<'data>,
+    ) -> Option<SectionIdentity<'data, Self>> {
+        None
+    }
+
+    fn fmt_section_identity(
+        name: SectionName<'_>,
+        _format_specific: &Self::SectionIdentityExt,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        std::fmt::Display::fmt(&name, f)
     }
 }
 

@@ -65,6 +65,7 @@ use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SectionIdentity;
 use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_map::OutputSectionMap;
@@ -1949,7 +1950,7 @@ fn write_rela_sections<'data>(
 
         let Some(section_id) = layout
             .output_sections
-            .custom_name_to_id(SectionName(section_name))
+            .custom_identity_to_id(SectionIdentity::new(SectionName(section_name), ()))
         else {
             continue;
         };
@@ -5658,10 +5659,9 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
             {
                 link = symtab_idx;
             }
-            if let Some(section_name) = output_sections.name(section_id)
-                && let Some(target_name) = section_name.0.strip_prefix(b".rela")
+            if let Some(target_name) = name.bytes().strip_prefix(b".rela")
                 && let Some(target_id) = output_sections
-                    .custom_name_to_id(crate::output_section_id::SectionName(target_name))
+                    .custom_identity_to_id(SectionIdentity::new(SectionName(target_name), ()))
                 && let Some(target_idx) = output_sections.output_index_of_section(target_id)
             {
                 info_value = target_idx;
