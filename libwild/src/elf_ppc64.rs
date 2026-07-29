@@ -1,5 +1,5 @@
 use crate::bail;
-use crate::elf::Elf;
+use crate::elf::Elf64;
 use crate::error;
 use crate::error::Result;
 use crate::platform::Platform;
@@ -14,7 +14,7 @@ pub(crate) struct ElfPpc64;
 
 impl crate::platform::Arch for ElfPpc64 {
     type Relaxation = Relaxation;
-    type Platform = Elf;
+    type Platform = Elf64;
 
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_PPC64
@@ -51,7 +51,7 @@ impl crate::platform::Arch for ElfPpc64 {
     }
 
     /// The thread pointer (`r13`) points 0x7000 bytes past the start of the static TLS block.
-    fn tp_offset_start(layout: &crate::layout::Layout<Elf>) -> u64 {
+    fn tp_offset_start(layout: &crate::layout::Layout<Elf64>) -> u64 {
         layout.tls_start_address() + 0x7000
     }
 

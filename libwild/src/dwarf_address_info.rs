@@ -1,7 +1,8 @@
 //! Uses DWARF debug info, if available, to find file and line number information for a particular
 //! offset in an input section.
 
-use crate::elf::File;
+use crate::elf::Elf64;
+use crate::elf::File64;
 use crate::elf::Rela;
 use crate::error::Result;
 use crate::fs::path_from_bytes;
@@ -26,8 +27,8 @@ use std::path::PathBuf;
 const SECTION_LOAD_ADDRESS: u64 = 0x1_000_000_000;
 
 /// Attempts to locate source info for `offset_in_section` within `section`.
-pub(crate) fn get_source_info<A: Arch<Platform = crate::elf::Elf>>(
-    object: &File,
+pub(crate) fn get_source_info<A: Arch<Platform = Elf64>>(
+    object: &File64,
     relocations: &RelocationSections,
     section: &object::elf::SectionHeader64<LittleEndian>,
     offset_in_section: u64,
@@ -92,8 +93,8 @@ pub(crate) fn get_source_info<A: Arch<Platform = crate::elf::Elf>>(
 }
 
 /// Gets the data for section `id` from `object` and applies relocations to it.
-fn section_data_with_relocations<A: Arch<Platform = crate::elf::Elf>>(
-    object: &File,
+fn section_data_with_relocations<A: Arch<Platform = Elf64>>(
+    object: &File64,
     relocations: &RelocationSections,
     id: gimli::SectionId,
     section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
@@ -130,11 +131,8 @@ fn section_data_with_relocations<A: Arch<Platform = crate::elf::Elf>>(
     Ok(data)
 }
 
-fn apply_section_relocations<
-    A: Arch<Platform = crate::elf::Elf>,
-    R: Relocation<Platform = crate::elf::Elf>,
->(
-    object: &File<'_>,
+fn apply_section_relocations<A: Arch<Platform = Elf64>, R: Relocation<Platform = Elf64>>(
+    object: &File64,
     section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
     section_data: &mut [u8],
     relocations: impl Iterator<Item = R>,

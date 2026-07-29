@@ -1,5 +1,5 @@
 use crate::alignment::Alignment;
-use crate::elf::Elf;
+use crate::elf::Elf64;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
 use crate::elf::output_section_id;
@@ -54,7 +54,7 @@ macro_rules! rel_info_from_type {
 
 impl crate::platform::Arch for ElfAArch64 {
     type Relaxation = Relaxation;
-    type Platform = Elf;
+    type Platform = Elf64;
 
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_AARCH64
@@ -130,7 +130,7 @@ impl crate::platform::Arch for ElfAArch64 {
         Ok(())
     }
 
-    fn tp_offset_start(layout: &Layout<Elf>) -> u64 {
+    fn tp_offset_start(layout: &Layout<Elf64>) -> u64 {
         layout.tls_start_address_aarch64()
     }
 
@@ -338,8 +338,7 @@ impl crate::platform::Arch for ElfAArch64 {
     fn thunk_config() -> Option<crate::platform::ThunkConfig> {
         Some(crate::platform::ThunkConfig {
             primary_function_part_id: const {
-                output_section_id::TEXT
-                    .part_id_with_alignment::<crate::elf::Elf>(Alignment { exponent: 2 })
+                output_section_id::TEXT.part_id_with_alignment::<Elf64>(Alignment { exponent: 2 })
             },
             min_branch_range: MIN_BRANCH_RANGE,
             thunk_size: THUNK_TEMPLATE.len() as u64,
