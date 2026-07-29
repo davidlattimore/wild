@@ -3084,11 +3084,13 @@ fn setup_got_mem_and_indices<'data>(
 
     let indices = LinkerDefinedIndices::compute(
         resolutions,
-        has_init_funcs,
-        wrap_entry,
-        scan.got_mem.len(),
-        scan.needs_memory_base,
-        scan.needs_table_base,
+        LinkerDefinedIndexRequest {
+            has_init_funcs,
+            wrap_entry,
+            got_mem_count: scan.got_mem.len(),
+            needs_memory_base: scan.needs_memory_base,
+            needs_table_base: scan.needs_table_base,
+        },
     )?;
 
     if !scan.got_mem.is_empty() {
@@ -3189,10 +3191,7 @@ fn scan_layout_relocations(
                     needs_table = true;
                     let sym_idx = reloc.index as usize;
                     let Some(sym) = input.symbols.get(sym_idx) else {
-                        bail!(
-                            "table index relocation symbol {} out of range",
-                            reloc.index
-                        );
+                        bail!("table index relocation symbol {} out of range", reloc.index);
                     };
                     ensure!(
                         sym.kind == WasmSymbolKind::Func,
@@ -3218,8 +3217,12 @@ fn scan_layout_relocations(
                     let slot = if let Some(&slot) = def_to_slot.get(&def_id) {
                         slot
                     } else {
-                        let def =
-                            resolve_got_mem_def(def_id, layout_inputs, symbol_db, file_id_to_index)?;
+                        let def = resolve_got_mem_def(
+                            def_id,
+                            layout_inputs,
+                            symbol_db,
+                            file_id_to_index,
+                        )?;
                         let slot = entries.len();
                         def_to_slot.insert(def_id, slot);
                         entries.push(GotMemEntry {
@@ -3440,18 +3443,25 @@ fn entry_is_defined_function(
     !sym.is_undefined() && sym.kind == WasmSymbolKind::Func
 }
 
+#[derive(Clone, Copy)]
+struct LinkerDefinedIndexRequest {
+    has_init_funcs: bool,
+    wrap_entry: bool,
+    got_mem_count: u32,
+    needs_memory_base: bool,
+    needs_table_base: bool,
+}
+
 impl LinkerDefinedIndices {
     fn compute(
         import_resolutions: &[ObjectImportResolutions],
-        has_init_funcs: bool,
-        wrap_entry: bool,
-        got_mem_count: u32,
-        mut needs_memory_base: bool,
-        mut needs_table_base: bool,
+        request: LinkerDefinedIndexRequest,
     ) -> Result<Self> {
+        let mut needs_memory_base = request.needs_memory_base;
+        let mut needs_table_base = request.needs_table_base;
         let mut needs_stack_pointer = false;
         let mut needs_tls_base = false;
-        let mut needs_ctors = has_init_funcs;
+        let mut needs_ctors = request.has_init_funcs;
         let mut needs_dtors = false;
         let mut function_import_count = 0u32;
         let mut global_import_count = 0u32;
@@ -3501,13 +3511,13 @@ impl LinkerDefinedIndices {
             next_defined_global_slot += 1;
             idx
         });
-        let got_mem_global_base = if got_mem_count > 0 {
+        let got_mem_global_base = if request.got_mem_count > 0 {
             let base = next_global;
             next_global = next_global
-                .checked_add(got_mem_count)
+                .checked_add(request.got_mem_count)
                 .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
             next_defined_global_slot = next_defined_global_slot
-                .checked_add(got_mem_count)
+                .checked_add(request.got_mem_count)
                 .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
             Some(base)
         } else {
@@ -3526,7 +3536,7 @@ impl LinkerDefinedIndices {
             next_func += 1;
             idx
         });
-        let entry_wrapper_func = wrap_entry.then(|| {
+        let entry_wrapper_func = request.wrap_entry.then(|| {
             let idx = next_func;
             next_func += 1;
             idx
@@ -3546,7 +3556,7 @@ impl LinkerDefinedIndices {
             num_defined_functions,
             global_import_count,
             got_mem_global_base,
-            got_mem_count,
+            got_mem_count: request.got_mem_count,
         })
     }
 
@@ -4291,7 +4301,7 @@ where
         fill_got_mem_inits(
             &mut layout,
             &indices,
-            &got_mem,
+            got_mem,
             data_end,
             stack_size,
             heap_end,
