@@ -351,7 +351,7 @@ fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]>
 
         Ok(content)
     } else {
-        take_while(1.., |b| !b" (){};\n\t".contains(&b)).parse_next(input)
+        take_while(1.., |b| !b" (){};,\n\t".contains(&b)).parse_next(input)
     }
 }
 
@@ -2268,5 +2268,24 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn test_output_format_parsing() {
+        let unquoted = parse_script(
+            r#"OUTPUT_FORMAT(elf64-x86-64)
+            OUTPUT_FORMAT(elf64-x86-64, elf64-x86-64, elf64-x86-64)
+            "#,
+        )
+        .unwrap();
+
+        let quoted = parse_script(
+            r#"OUTPUT_FORMAT("elf64-x86-64")
+            OUTPUT_FORMAT("elf64-x86-64", "elf64-x86-64", "elf64-x86-64")
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(unquoted, quoted);
     }
 }
