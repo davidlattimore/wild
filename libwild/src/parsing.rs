@@ -26,12 +26,13 @@ pub(crate) fn process_linker_scripts<'data, P: Platform>(
     linker_scripts_in: &[InputLinkerScript<'data>],
     output_sections: &mut OutputSections<'data, P>,
     layout_rules_builder: &mut LayoutRulesBuilder<'data>,
+    args: &P::Args,
 ) -> Result<Vec<ProcessedLinkerScript<'data, P>>> {
     timing_phase!("Process linker scripts");
 
     linker_scripts_in
         .iter()
-        .map(|script| layout_rules_builder.process_linker_script(script, output_sections))
+        .map(|script| layout_rules_builder.process_linker_script(script, output_sections, args))
         .collect::<Result<Vec<ProcessedLinkerScript<P>>>>()
 }
 

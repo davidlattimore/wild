@@ -30,6 +30,7 @@ use hashbrown::HashMap;
 use hashbrown::HashSet;
 use indexmap::IndexSet;
 use itertools::Itertools;
+use object::Endianness;
 use object::elf::GNU_PROPERTY_X86_ISA_1_BASELINE;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V2;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V3;
@@ -137,6 +138,7 @@ pub struct ElfArgs {
 
     pub(crate) debug_compression_kind: Option<CompressionKind>,
     pub(crate) sort_section: Option<SortSectionMode>,
+    pub(crate) output_format_endian: Option<Endianness>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,8 +260,7 @@ const DEFAULT_FLAGS: &[&str] = &[
     "no-fatal-warnings",
 ];
 const DEFAULT_SHORT_FLAGS: &[&str] = &[
-    "X",  // alias for --discard-locals
-    "EL", // little endian
+    "X", // alias for --discard-locals
 ];
 
 impl Default for ElfArgs {
@@ -342,6 +343,7 @@ impl Default for ElfArgs {
             debug_compression_kind: None,
             sort_section: None,
             gdb_index: false,
+            output_format_endian: None,
         }
     }
 }
@@ -1660,10 +1662,20 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
     parser
         .declare()
-        .long("EB")
-        .help("Big-endian (not supported)")
-        .execute(|_args, _modifier_stack| {
-            bail!("Big-endian target is not supported");
+        .short("EL")
+        .help("Select the little-endian format in the OUTPUT_FORMAT command")
+        .execute(|args, _modifier_stack| {
+            args.output_format_endian = Some(Endianness::Little);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .short("EB")
+        .help("Select the big-endian format in the OUTPUT_FORMAT command")
+        .execute(|args, _modifier_stack| {
+            args.output_format_endian = Some(Endianness::Big);
+            Ok(())
         });
 
     parser
@@ -2047,6 +2059,14 @@ impl platform::Args for ElfArgs {
 
     fn should_write_gdb_index(&self) -> bool {
         self.gdb_index && !self.should_strip_debug()
+    }
+
+    fn architecture(&self) -> Architecture {
+        self.arch
+    }
+
+    fn output_format_endian(&self) -> Option<Endianness> {
+        self.output_format_endian
     }
 }
 

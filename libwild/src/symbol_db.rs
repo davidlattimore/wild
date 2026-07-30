@@ -397,6 +397,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             &loaded.linker_scripts,
             output_sections,
             layout_rules_builder,
+            self.args,
         )?;
 
         self.add_version_script_from_linker_scripts(&loaded.linker_scripts)?;
