@@ -132,6 +132,11 @@ impl platform::Args for MachOArgs {
         self.sysroot.as_deref()
     }
 
+    fn should_gc_sections(&self) -> bool {
+        // TODO: Mach-O needs proper support for GC and -dead_strip.
+        false
+    }
+
     fn should_export_all_dynamic_symbols(&self) -> bool {
         false
     }

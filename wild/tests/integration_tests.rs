@@ -283,6 +283,9 @@
 //! section="section-name": Type: string. Asserts the name of the section in which the symbol is
 //! located.
 //!
+//! segment="segment-name": Type: string. Asserts the name of the segment containing the symbol's
+//! section. Requires that section is also specified.
+//!
 //! offset-in-section=N: Type: Integer. Asserts the offset of the symbol within the section.
 //! Requires that section is also specified.
 //!
@@ -1843,6 +1846,9 @@ struct SymtabAssertions {
     #[serde(rename = "section")]
     section_name: Option<String>,
 
+    #[serde(rename = "segment")]
+    segment_name: Option<String>,
+
     #[serde(rename = "offset-in-section")]
     section_offset: Option<u64>,
 
@@ -1867,7 +1873,11 @@ impl ExpectedSymtabEntry {
             });
         };
 
-        let assertions = serde_keyvalue::from_key_values(config_str)?;
+        let assertions: SymtabAssertions = serde_keyvalue::from_key_values(config_str)?;
+        ensure!(
+            assertions.segment_name.is_none() || assertions.section_name.is_some(),
+            "`segment` requires `section` for symbol `{name}`"
+        );
         Ok(Self {
             name: name.to_owned(),
             assertions,
@@ -5860,6 +5870,18 @@ where
                                 but it was in `{section_name}`",
                             exp.name
                         );
+                    }
+
+                    if let Some(expected_segment_name) = exp.assertions.segment_name.as_deref() {
+                        let segment_name = section.segment_name()?;
+                        if segment_name != Some(expected_segment_name) {
+                            let segment_name = segment_name.unwrap_or("<none>");
+                            bail!(
+                                "Expected symbol `{}` to be in segment `{expected_segment_name}`, \
+                                 but it was in `{segment_name}`",
+                                exp.name
+                            );
+                        }
                     }
 
                     if let Some(expected_offset) = exp.assertions.section_offset {

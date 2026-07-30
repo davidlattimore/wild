@@ -655,6 +655,10 @@ impl<'data, P: Platform> SectionIdentity<'data, P> {
     pub(crate) fn section_name(&self) -> SectionName<'data> {
         self.name
     }
+
+    pub(crate) fn format_specific(&self) -> P::SectionIdentityExt {
+        self.format_specific
+    }
 }
 
 impl<'data, P: Platform> PartialEq for SectionIdentity<'data, P> {
