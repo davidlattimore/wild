@@ -1315,32 +1315,29 @@ fn parse_matcher_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<Mat
 }
 
 fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<SectionPattern<'input>> {
-    // Handling SORT(...) wrapper: SORT is an alias for SORT_BY_NAME in GNU ld.
-    use winnow::combinator::opt;
-    use winnow::token::literal;
-    if opt(literal(b"SORT")).parse_next(input)?.is_some() {
-        skip_comments_and_whitespace(input)?;
+    let sort_kw = opt(alt((
+        "SORT_BY_NAME".map(|_| true),
+        "SORT_BY_ALIGNMENT".map(|_| false),
+        "SORT".map(|_| true),
+    )))
+    .parse_next(input)?;
+    let sorted = sort_kw.unwrap_or(false);
 
+    if sort_kw.is_some() {
+        skip_comments_and_whitespace(input)?;
         '('.parse_next(input)?;
-        skip_comments_and_whitespace(input)?;
+    }
 
-        // Inside SORT(...), accept a single wildcard pattern up to ')'
-        let name =
-            take_while(1.., |b: u8| b != b')' && !b.is_ascii_whitespace()).parse_next(input)?;
-        skip_comments_and_whitespace(input)?;
+    skip_comments_and_whitespace(input)?;
+    let name = take_while(1.., |b: u8| b != b')' && !b.is_ascii_whitespace()).parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    if sort_kw.is_some() {
         ')'.parse_next(input)?;
         skip_comments_and_whitespace(input)?;
-
-        Ok(SectionPattern { name, sorted: true })
-    } else {
-        let name =
-            take_while(1.., |b: u8| b != b')' && !b.is_ascii_whitespace()).parse_next(input)?;
-        skip_comments_and_whitespace(input)?;
-        Ok(SectionPattern {
-            name,
-            sorted: false,
-        })
     }
+
+    Ok(SectionPattern { name, sorted })
 }
 
 /// Call `cb` for each input file requested by `commands`.
