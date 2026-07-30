@@ -94,11 +94,9 @@ pub(crate) mod wasm;
 pub(crate) mod wasm_wasm32;
 pub(crate) mod wasm_writer;
 
-use crate::elf::Elf;
 use crate::error::Context;
 use crate::error::Result;
 use crate::layout_rules::LayoutRulesBuilder;
-use crate::macho::MachO;
 use crate::output_kind::OutputKind;
 use crate::platform::Arch;
 use crate::platform::Args as _;
@@ -267,9 +265,9 @@ impl<F: FileSystem> Linker<F> {
         }
 
         match args {
-            Args::Elf(elf_args) => Elf::link_for_arch(self, elf_args),
-            Args::MachO(macho_args) => MachO::link_for_arch(self, macho_args),
-            Args::Wasm(wasm_args) => crate::wasm::Wasm::link_for_arch(self, wasm_args),
+            Args::Elf(elf_args) => crate::elf::link_for_arch(self, elf_args),
+            Args::MachO(macho_args) => crate::macho::link_for_arch(self, macho_args),
+            Args::Wasm(wasm_args) => crate::wasm::link_for_arch(self, wasm_args),
         }
     }
 

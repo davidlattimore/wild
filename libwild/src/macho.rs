@@ -66,6 +66,19 @@ use std::num::NonZeroU64;
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct MachO;
 
+pub(crate) fn link_for_arch<'data, F: FileSystem>(
+    linker: &'data crate::Linker<F>,
+    args: &'data MachOArgs,
+) -> crate::error::Result<crate::LinkerOutput<'data>> {
+    if !cfg!(feature = "macho") {
+        crate::bail!(
+            "Mach-O support is still experimental. Rebuild with `--features macho` to enable it."
+        );
+    }
+
+    linker.link_for_arch::<MachO, crate::macho_aarch64::MachOAArch64>(args)
+}
+
 #[repr(u32)]
 #[derive(Clone, Copy)]
 enum SinglePartSectionId {
@@ -1045,19 +1058,6 @@ impl platform::Platform for MachO {
     type ResolvedObjectExt<'data> = ();
 
     const HAS_NULL_SYMBOL_ENTRY: bool = true;
-
-    fn link_for_arch<'data, F: FileSystem>(
-        linker: &'data crate::Linker<F>,
-        args: &'data Self::Args,
-    ) -> crate::error::Result<crate::LinkerOutput<'data>> {
-        if !cfg!(feature = "macho") {
-            crate::bail!(
-                "Mach-O support is still experimental. Rebuild with `--features macho` to enable it."
-            );
-        }
-
-        linker.link_for_arch::<MachO, crate::macho_aarch64::MachOAArch64>(args)
-    }
 
     fn write_output_file<'data, A: platform::Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,

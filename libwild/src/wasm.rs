@@ -64,6 +64,17 @@ use wasmparser::TypeSectionReader;
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Wasm;
 
+pub(crate) fn link_for_arch<'data, F: FileSystem>(
+    linker: &'data crate::Linker<F>,
+    args: &'data WasmArgs,
+) -> crate::error::Result<crate::LinkerOutput<'data>> {
+    if !cfg!(feature = "wasm") {
+        bail!("Wasm support is still experimental. Rebuild with `--features wasm` to enable it.");
+    }
+
+    linker.link_for_arch::<Wasm, crate::wasm_wasm32::WasmWasm32>(args)
+}
+
 #[repr(u32)]
 #[derive(Clone, Copy)]
 enum SinglePartSectionId {
@@ -4868,19 +4879,6 @@ impl platform::Platform for Wasm {
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
     type ResolvedObjectExt<'data> = WasmObjectLayout<'data>;
-
-    fn link_for_arch<'data, F: FileSystem>(
-        linker: &'data crate::Linker<F>,
-        args: &'data Self::Args,
-    ) -> crate::error::Result<crate::LinkerOutput<'data>> {
-        if !cfg!(feature = "wasm") {
-            bail!(
-                "Wasm support is still experimental. Rebuild with `--features wasm` to enable it."
-            );
-        }
-
-        linker.link_for_arch::<Wasm, crate::wasm_wasm32::WasmWasm32>(args)
-    }
 
     fn write_output_file<'data, A: platform::Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
