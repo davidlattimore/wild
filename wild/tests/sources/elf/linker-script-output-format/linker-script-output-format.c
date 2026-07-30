@@ -14,7 +14,7 @@
 //#LinkArgs:-EL
 //#LinkerScript:linker-script-output-format-el.ld
 
-//#Config:unsuppported:default
+//#Config:unsupported:default
 //#ReferenceLinkers:
 //#LinkerScript:linker-script-output-format-unsupported.ld
 //#ExpectError:elf32-i386 is not yet supported
