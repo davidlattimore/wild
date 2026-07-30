@@ -389,6 +389,10 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
     let command = match command_str {
         b"GROUP" | b"INPUT" => Command::Group(parse_paren_group(input)?),
         b"OUTPUT_FORMAT" => Command::OutputFormat(parse_output_format(input)?),
+        b"OUTPUT_ARCH" => {
+            parse_paren_group(input)?;
+            Command::Ignored
+        }
         b"AS_NEEDED" => Command::AsNeeded(parse_paren_group(input)?),
         b"SECTIONS" => Command::Sections(parse_sections(input)?),
         b"ENTRY" => Command::Entry(parse_entry(input)?),

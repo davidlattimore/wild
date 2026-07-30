@@ -14,7 +14,7 @@ end lists the features required to link the Linux kernel.
 | `AS_NEEDED(files...)` | ✅ | |
 | `INCLUDE(file)` | 📅 | |
 | `OUTPUT_FORMAT(...)` | 🧪 | Emits error if the format doest not match the target |
-| `OUTPUT_ARCH(arch)` | ❌ | |
+| `OUTPUT_ARCH(arch)` | 🧪 | Parsed and ignored |
 | `OUTPUT(filename)` | ❌ | |
 | `SECTIONS { ... }` | ✅ | |
 | `ENTRY(symbol)` | ✅ | |
