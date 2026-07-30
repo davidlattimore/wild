@@ -363,12 +363,6 @@ pub(crate) trait Platform:
     /// For platforms that don't support symbol versioning, this can just be the unit type.
     type VerneedTable<'data>: VerneedTable<'data>;
 
-    /// Invoke the linker for requested architecture.
-    fn link_for_arch<'data, F: FileSystem>(
-        linker: &'data crate::Linker<F>,
-        args: &'data Self::Args,
-    ) -> Result<crate::LinkerOutput<'data>>;
-
     fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
         layout: &Layout<'data, Self>,
