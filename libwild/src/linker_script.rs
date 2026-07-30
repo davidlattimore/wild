@@ -2273,9 +2273,9 @@ mod tests {
     #[test]
     fn test_output_format_parsing() {
         let unquoted = parse_script(
-            r#"OUTPUT_FORMAT(elf64-x86-64)
+            r"OUTPUT_FORMAT(elf64-x86-64)
             OUTPUT_FORMAT(elf64-x86-64, elf64-x86-64, elf64-x86-64)
-            "#,
+            ",
         )
         .unwrap();
 
