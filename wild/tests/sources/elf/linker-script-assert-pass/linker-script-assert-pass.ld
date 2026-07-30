@@ -14,7 +14,14 @@ ASSERT(1 == 1, "1 == 1 must always be true");
 
 /* Arithmetic assertion */
 ASSERT(1 + 1 == 2, "arithmetic must work");
-ASSERT(12 % 10 == 2, "modulo must work");
+ASSERT(12 / 10 == 1, "pos / pos division");
+ASSERT(-50 / 10 == -5, "neg / pos division failed");
+ASSERT(60 / -10 == -6, "pos / neg division failed");
+ASSERT(-40 / -10 == 4, "neg / neg division failed");
+ASSERT(12 % 10 == 2, "pos % pos modulo failed");
+ASSERT(-5 % 10 == -5, "neg % pos modulo failed");
+ASSERT(13 % -10 == 3, "pos % neg modulo failed");
+ASSERT(-12 % -10 == -2, "neg % neg modulo failed");
 
 /* SIZEOF(.text) should be > 0 since _start is in it */
 ASSERT(SIZEOF(.text) > 0, "text section must be non-empty");
