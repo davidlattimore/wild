@@ -1674,7 +1674,10 @@ impl<'data, P: Platform> std::fmt::Display for ResolvedFile<'data, P> {
 
 impl SectionSlot {
     pub(crate) fn is_loaded(&self) -> bool {
-        !matches!(self, SectionSlot::Discard | SectionSlot::Unloaded(..))
+        !matches!(
+            self,
+            SectionSlot::Discard | SectionSlot::Unloaded(..) | SectionSlot::NoteGnuProperty(..)
+        )
     }
 
     pub(crate) fn unloaded_mut(&mut self) -> Option<&mut UnloadedSection> {
