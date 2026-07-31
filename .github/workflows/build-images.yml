@@ -150,7 +150,7 @@ jobs:
 
       - name: Download base image archive
         if: github.event_name == 'pull_request'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: base_image-${{ matrix.base_image_container }}
           path: ${{ runner.temp }}
