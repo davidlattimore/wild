@@ -1434,8 +1434,6 @@ impl std::fmt::Display for ProgramSegmentDef {
 }
 
 impl platform::ProgramSegmentDef for ProgramSegmentDef {
-    type Platform = Wasm;
-
     fn is_writable(self) -> bool {
         false
     }
@@ -1462,35 +1460,6 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
 
     fn order_key(self) -> usize {
         self.segment_type as usize
-    }
-
-    fn should_include_section(
-        self,
-        _section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
-        section_id: crate::output_section_id::OutputSectionId,
-        _rosegment: bool,
-    ) -> bool {
-        use crate::wasm::output_section_id as osid;
-
-        let section_segment_type = match section_id {
-            crate::output_section_id::FILE_HEADER => SegmentType::Header,
-            osid::WASM_TYPE
-            | osid::WASM_IMPORT
-            | osid::WASM_FUNCTION
-            | osid::WASM_TABLE
-            | osid::WASM_MEMORY
-            | osid::WASM_GLOBAL
-            | osid::WASM_EXPORT
-            | osid::WASM_START
-            | osid::WASM_ELEMENT
-            | osid::WASM_DATA_COUNT
-            | osid::WASM_CODE
-            | osid::WASM_DATA
-            | osid::WASM_NAME => SegmentType::Module,
-            _ => SegmentType::Unused,
-        };
-
-        self.segment_type == section_segment_type
     }
 }
 
@@ -5020,6 +4989,35 @@ impl platform::Platform for Wasm {
 
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
         &[]
+    }
+
+    fn program_segment_should_include_section(
+        segment_def: Self::ProgramSegmentDef,
+        _section_info: &crate::output_section_id::SectionOutputInfo<Self>,
+        section_id: crate::output_section_id::OutputSectionId,
+        _rosegment: bool,
+    ) -> bool {
+        use crate::wasm::output_section_id as osid;
+
+        let section_segment_type = match section_id {
+            crate::output_section_id::FILE_HEADER => SegmentType::Header,
+            osid::WASM_TYPE
+            | osid::WASM_IMPORT
+            | osid::WASM_FUNCTION
+            | osid::WASM_TABLE
+            | osid::WASM_MEMORY
+            | osid::WASM_GLOBAL
+            | osid::WASM_EXPORT
+            | osid::WASM_START
+            | osid::WASM_ELEMENT
+            | osid::WASM_DATA_COUNT
+            | osid::WASM_CODE
+            | osid::WASM_DATA
+            | osid::WASM_NAME => SegmentType::Module,
+            _ => SegmentType::Unused,
+        };
+
+        segment_def.segment_type == section_segment_type
     }
 
     fn create_linker_defined_symbols(

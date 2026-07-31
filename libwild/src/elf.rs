@@ -57,6 +57,7 @@ use crate::platform::DynamicTagValues as _;
 use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
+use crate::platform::ProgramSegmentDef as _;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Relaxation as _;
 use crate::platform::Relocation;
@@ -1091,6 +1092,39 @@ impl platform::Platform for Elf {
 
     fn unconditional_segment_defs() -> &'static [ProgramSegmentDef] {
         &[STACK_SEGMENT_DEF]
+    }
+
+    fn program_segment_should_include_section(
+        segment_def: ProgramSegmentDef,
+        info: &SectionOutputInfo<Self>,
+        section_id: OutputSectionId,
+        rosegment: bool,
+    ) -> bool {
+        match segment_def.segment_type {
+            pt::NOTE => info.section_attributes.ty == sht::NOTE,
+            pt::TLS => info.section_attributes.flags.contains(shf::TLS),
+            pt::LOAD => {
+                let mut exec = info.section_attributes.flags.contains(shf::EXECINSTR);
+                if !rosegment && !info.section_attributes.flags.contains(shf::WRITE) {
+                    exec = true;
+                }
+
+                info.section_attributes.flags.contains(shf::ALLOC)
+                    && info.section_attributes.flags.contains(shf::WRITE)
+                        == segment_def.is_writable()
+                    && exec == segment_def.is_executable()
+            }
+            pt::GNU_RELRO => {
+                info.section_attributes.flags.contains(shf::TLS)
+                    || section_id
+                        .opt_built_in_details::<Self>()
+                        .is_some_and(|details| details.is_relro)
+            }
+            other => section_id
+                .opt_built_in_details::<Self>()
+                .and_then(|details| details.target_segment_type)
+                .is_some_and(|target_segment_type| target_segment_type == other),
+        }
     }
 
     fn get_segment_flags_for_section(section_flags: &Self::SectionFlags) -> u32 {
@@ -4964,8 +4998,6 @@ pub(crate) const STACK_SEGMENT_DEF: ProgramSegmentDef = ProgramSegmentDef {
 };
 
 impl platform::ProgramSegmentDef for ProgramSegmentDef {
-    type Platform = Elf;
-
     fn is_writable(self) -> bool {
         self.segment_flags.contains(pf::WRITABLE)
     }
@@ -4998,38 +5030,6 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             .iter()
             .position(|t| *t == self.segment_type)
             .unwrap_or(TYPE_ORDER.len() + self.segment_type.0 as usize)
-    }
-
-    fn should_include_section(
-        self,
-        info: &crate::output_section_id::SectionOutputInfo<Elf>,
-        section_id: OutputSectionId,
-        rosegment: bool,
-    ) -> bool {
-        match self.segment_type {
-            pt::NOTE => info.section_attributes.ty == sht::NOTE,
-            pt::TLS => info.section_attributes.flags.contains(shf::TLS),
-            pt::LOAD => {
-                let mut exec = info.section_attributes.flags.contains(shf::EXECINSTR);
-                if !rosegment && !info.section_attributes.flags.contains(shf::WRITE) {
-                    exec = true;
-                }
-
-                info.section_attributes.flags.contains(shf::ALLOC)
-                    && info.section_attributes.flags.contains(shf::WRITE) == self.is_writable()
-                    && exec == self.is_executable()
-            }
-            pt::GNU_RELRO => {
-                info.section_attributes.flags.contains(shf::TLS)
-                    || section_id
-                        .opt_built_in_details::<Elf>()
-                        .is_some_and(|details| details.is_relro)
-            }
-            other => section_id
-                .opt_built_in_details::<Elf>()
-                .and_then(|details| details.target_segment_type)
-                .is_some_and(|target_segment_type| target_segment_type == other),
-        }
     }
 
     fn should_cut_rw_segment_when_ending(self) -> bool {
