@@ -6031,7 +6031,7 @@ fn has_android_relr_tags(inputs: &DynamicEntryInputs) -> bool {
     inputs.args.use_android_relr_tags
 }
 
-pub(crate) fn verify_resolution_allocation(
+pub(crate) fn verify_resolution_allocation<A: Arch<Platform = Elf>>(
     output_sections: &OutputSections<Elf>,
     output_order: &OutputOrder,
     output_kind: OutputKind,
@@ -6077,7 +6077,7 @@ pub(crate) fn verify_resolution_allocation(
         0,
         args.is_relr_enabled(),
     );
-    table_writer.process_resolution::<crate::elf_x86_64::ElfX86_64>(None, args, resolution)?;
+    table_writer.process_resolution::<A>(None, args, resolution)?;
     table_writer.validate_empty(mem_sizes)
 }
 
