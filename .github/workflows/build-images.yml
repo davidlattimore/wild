@@ -91,7 +91,7 @@ jobs:
 
       - name: Upload base image archive
         if: github.event_name == 'pull_request' && contains(matrix.file, 'base')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: base_image-${{ matrix.container }}
           path: ${{ runner.temp }}/base_image.tar
