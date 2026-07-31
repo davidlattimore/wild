@@ -2302,10 +2302,15 @@ fn write_symbols<'data>(
                             .section_part_id(section_index, &layout.symbol_db.section_part_ids)
                             .output_section_id::<Elf>(),
                         SectionSlot::FrameData(..) => output_section_id::EH_FRAME,
-                        _ => bail!(
-                            "Tried to copy a symbol in a section we didn't load. {}",
-                            layout.symbol_debug(symbol_id)
-                        ),
+                        _ => {
+                            if layout.symbol_db.is_mapping_symbol(symbol_id) {
+                                continue;
+                            }
+                            bail!(
+                                "Tried to copy a symbol in a section we didn't load. {}",
+                                layout.symbol_debug(symbol_id)
+                            )
+                        }
                     }
                 } else if sym.is_common(e) {
                     if sym.st_type() == STT_TLS {
