@@ -18,6 +18,8 @@ if [[ $last_double_dash_index -gt 0 ]]; then
   done
   shift
 else
-  L+=("$1")
-  shift
+  while [ $# -gt 0 ]; do
+    L+=("$1")
+    shift
+  done
 fi
