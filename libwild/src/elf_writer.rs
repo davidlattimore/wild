@@ -1462,7 +1462,13 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         let e = LittleEndian;
         let is_local = flags.is_symtab_local(sym);
         let size = sym.st_size(e);
-        let entry = self.define_symbol(is_local, SymbolSection::Index(shndx), value, size, name)?;
+        let entry = self.define_symbol(
+            is_local,
+            SymbolSection::Index(shndx),
+            value,
+            size,
+            Some(name),
+        )?;
         entry.st_info = sym.st_info();
         entry.st_other = sym.st_other();
         // Fix binding if symbol was downgraded to local by version script
@@ -1482,7 +1488,13 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         let is_local = flags.is_symtab_local(sym);
         let value = sym.st_value(e);
         let size = sym.st_size(e);
-        let entry = self.define_symbol(is_local, object::elf::SHN_ABS.into(), value, size, name)?;
+        let entry = self.define_symbol(
+            is_local,
+            object::elf::SHN_ABS.into(),
+            value,
+            size,
+            Some(name),
+        )?;
         entry.st_info = sym.st_info();
         entry.st_other = sym.st_other();
         // Fix binding if symbol was downgraded to local by version script
@@ -1494,7 +1506,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
 
     #[inline(always)]
     fn undefined_symbol(&mut self, is_local: bool, name: &[u8]) -> Result<&mut SymtabEntry> {
-        self.define_symbol(is_local, object::elf::SHN_UNDEF.into(), 0, 0, name)
+        self.define_symbol(is_local, object::elf::SHN_UNDEF.into(), 0, 0, Some(name))
     }
 
     #[inline(always)]
@@ -1504,14 +1516,14 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         section: SymbolSection,
         value: u64,
         size: u64,
-        name: &[u8],
+        name: Option<&[u8]>,
     ) -> Result<&mut SymtabEntry> {
         let (entry, symtab_shndx_entries) = if is_local {
             (
                 self.local_entries.split_off_first_mut().with_context(|| {
                     format!(
                         "Insufficient .symtab local entries allocated for symbol `{}`",
-                        String::from_utf8_lossy(name),
+                        String::from_utf8_lossy(name.unwrap_or_default()),
                     )
                 })?,
                 self.symtab_shndx_local_entries
@@ -1520,7 +1532,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             )
         } else {
             if self.is_dynamic {
-                tracing::trace!(name = %String::from_utf8_lossy(name), "Write .dynsym");
+                tracing::trace!(name = %String::from_utf8_lossy(name.unwrap_or_default()), "Write .dynsym");
             }
             (
                 self.global_entries.split_off_first_mut().with_context(|| {
@@ -1531,7 +1543,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
                         } else {
                             ".symtab global"
                         },
-                        String::from_utf8_lossy(name),
+                        String::from_utf8_lossy(name.unwrap_or_default()),
                     )
                 })?,
                 self.symtab_shndx_global_entries
@@ -1541,13 +1553,18 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         };
         let e = LittleEndian;
 
-        let name = if self.is_dynamic {
-            // .dynsym encodes version info separately in .gnu.version, so strip it from the name.
-            crate::elf::RawSymbolName::parse(name).name
+        let string_offset = if let Some(name) = name {
+            let name = if self.is_dynamic {
+                // .dynsym encodes version info separately in .gnu.version, so strip it from the
+                // name.
+                crate::elf::RawSymbolName::parse(name).name
+            } else {
+                crate::elf::symtab_name_for_strtab(name)
+            };
+            self.strtab_writer.write_str(name)
         } else {
-            crate::elf::symtab_name_for_strtab(name)
+            0
         };
-        let string_offset = self.strtab_writer.write_str(name);
 
         let (index, shndx) = match section {
             SymbolSection::Raw(shndx) => (0, shndx),
@@ -1565,7 +1582,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         } else if shndx == object::elf::SHN_XINDEX {
             bail!(
                 "Expected .symtab_shndx section when writing symbol {} with shndx set to SHN_XINDEX.",
-                String::from_utf8_lossy(name)
+                String::from_utf8_lossy(name.unwrap_or_default())
             );
         }
         entry.st_name.set(e, string_offset);
@@ -1784,7 +1801,7 @@ fn write_thunks<'data, A: Arch<Platform = Elf>>(
                 SymbolSection::Index(text_shndx),
                 thunk_address,
                 thunk_size as u64,
-                &thunk_name,
+                Some(&thunk_name),
             )?;
             entry.set_st_info(object::elf::STB_LOCAL, object::elf::STT_FUNC);
         }
@@ -2892,7 +2909,7 @@ fn write_got_plt_syms(
                     SymbolSection::Index(shndx),
                     value,
                     0,
-                    symbol_name.as_bytes(),
+                    Some(symbol_name.as_bytes()),
                 )
                 .with_context(|| {
                     format!(
@@ -4006,12 +4023,7 @@ fn write_section_symbols(symbol_writer: &mut SymbolTableWriter, layout: &ElfLayo
         {
             continue;
         }
-        let name = layout
-            .output_sections
-            .name(section_id)
-            .map(|x| x.0)
-            .unwrap_or_default();
-        let entry = symbol_writer.define_symbol(true, SymbolSection::Index(shndx), 0, 0, name)?;
+        let entry = symbol_writer.define_symbol(true, SymbolSection::Index(shndx), 0, 0, None)?;
         entry.set_st_info(object::elf::STB_LOCAL, object::elf::STT_SECTION);
     }
     Ok(())
@@ -4810,7 +4822,7 @@ fn write_internal_dynsym(
         SymbolSection::Index(shndx),
         address,
         0,
-        name.bytes(),
+        Some(name.bytes()),
     )?;
     entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
 
@@ -4833,7 +4845,7 @@ fn write_defsym_dynsym(
     let name = layout.symbol_db.symbol_name(symbol_id)?;
 
     let entry = dynsym_writer
-        .define_symbol(false, shndx, address, 0, name.bytes())
+        .define_symbol(false, shndx, address, 0, Some(name.bytes()))
         .with_context(|| {
             format!(
                 "Failed to define dynamic {}",
@@ -4936,7 +4948,7 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
                 SymbolSection::Index(shndx),
                 plt_address.into(),
                 size,
-                name,
+                Some(name),
             )?;
             entry.set_st_info(sym.st_bind(), object::elf::STT_FUNC);
             entry.st_other = sym.st_other();
@@ -5083,7 +5095,7 @@ fn write_internal_symbols(
                 shndx,
                 address,
                 0,
-                symbol_name.bytes(),
+                Some(symbol_name.bytes()),
             )
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
 
