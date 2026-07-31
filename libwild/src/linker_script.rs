@@ -1314,18 +1314,28 @@ fn parse_matcher_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<Mat
     })
 }
 
-fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<SectionPattern<'input>> {
-    let sort_kw = opt(alt((
+fn parse_sort(input: &mut &BStr) -> winnow::Result<bool> {
+    let sort_kw = alt((
         "SORT_BY_NAME".map(|_| true),
         "SORT_BY_ALIGNMENT".map(|_| false),
         "SORT".map(|_| true),
-    )))
+    ))
     .parse_next(input)?;
+    Ok(sort_kw)
+}
+
+fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<SectionPattern<'input>> {
+    let sort_kw = opt(parse_sort).parse_next(input)?;
     let sorted = sort_kw.unwrap_or(false);
 
     if sort_kw.is_some() {
         skip_comments_and_whitespace(input)?;
         '('.parse_next(input)?;
+        winnow::combinator::not(parse_sort)
+            .parse_next(input)
+            .map_err(|_: ContextError| {
+                ContextError::from_external_error(input, LinkerScriptError::UnsupportedNestedSort)
+            })?;
     }
 
     skip_comments_and_whitespace(input)?;
@@ -1384,6 +1394,7 @@ fn to_str(bytes: &[u8]) -> Result<&str> {
 enum LinkerScriptError {
     InvalidAlignment,
     UnclosedComment,
+    UnsupportedNestedSort,
 }
 
 impl std::error::Error for LinkerScriptError {}
@@ -1393,6 +1404,10 @@ impl std::fmt::Display for LinkerScriptError {
         match self {
             LinkerScriptError::InvalidAlignment => write!(f, "Invalid alignment"),
             LinkerScriptError::UnclosedComment => write!(f, "Unclosed comment"),
+            LinkerScriptError::UnsupportedNestedSort => write!(
+                f,
+                "Nested sorting commands in linker scripts is not supported"
+            ),
         }
     }
 }
@@ -2289,5 +2304,19 @@ mod tests {
         .unwrap();
 
         assert_eq!(unquoted, quoted);
+    }
+
+    #[test]
+    fn test_nested_sort_is_unsupported() {
+        let script = parse_script(
+            r"
+            SECTIONS {
+                .text : {
+                    *(SORT(SORT_BY_ALIGNMENT(.text.*)))
+                }
+            }
+            ",
+        );
+        assert!(script.is_err());
     }
 }
