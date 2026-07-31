@@ -1040,7 +1040,7 @@ impl platform::Platform for Elf {
         Ok(())
     }
 
-    fn verify_resolution_allocation(
+    fn verify_resolution_allocation<A: Arch<Platform = Self>>(
         output_sections: &OutputSections<Elf>,
         output_order: &OutputOrder,
         output_kind: OutputKind,
@@ -1048,7 +1048,7 @@ impl platform::Platform for Elf {
         resolution: &layout::Resolution<Elf>,
         args: &ElfArgs,
     ) -> Result {
-        crate::elf_writer::verify_resolution_allocation(
+        crate::elf_writer::verify_resolution_allocation::<A>(
             output_sections,
             output_order,
             output_kind,

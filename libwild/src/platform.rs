@@ -551,7 +551,7 @@ pub(crate) trait Platform:
 
     /// Called when we detect an internal error with allocation in order to try and help determine
     /// what we did wrong. Can optionally return a more helpful error.
-    fn verify_resolution_allocation(
+    fn verify_resolution_allocation<A: Arch<Platform = Self>>(
         _output_sections: &OutputSections<Self>,
         _output_order: &OutputOrder<'_>,
         _output_kind: OutputKind,
