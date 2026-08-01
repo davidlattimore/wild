@@ -37,6 +37,19 @@
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-no-load.ld
 //#ExpectErrorWild:Missing LOAD PHDR in linker script
 
+//#Config:with-pt-phdr:default
+//#ExpectProgramHeader:PHDR sections=[],offset=0x40
+//#ExpectProgramHeader:LOAD flags=RX,sections=[.text,*],offset=0x0
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs-with-pt-phdr.ld
+
+//#Config:discontinuous:default
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs-discontinuous.ld
+//#ExpectError:PHDRS and FILEHDR are not supported when prior PT_LOAD headers lack them
+
+//#Config:non-load-with-headers:default
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs-non-load.ld
+//#ExpectError:(?i-u)non-load segment [0-9]+ includes file header and/or program header
+
 const char message[] = "Hello PHDRS";
 char message2[10];
 

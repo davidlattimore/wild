@@ -1767,6 +1767,8 @@ struct PhdrAssertions {
 
     #[serde(rename = "mem-size")]
     mem_size: Option<u64>,
+
+    offset: Option<u64>,
 }
 
 impl ExpectedProgramHeaders {
@@ -5122,6 +5124,12 @@ impl Assertions {
                         continue;
                     }
 
+                    if let Some(expected_offset) = assertions.offset
+                        && header.p_offset(endian) != expected_offset
+                    {
+                        continue;
+                    }
+
                     if !expected_sections.is_empty() {
                         let mut has_wildcard = false;
                         let mut sections_found = 0;
@@ -5152,12 +5160,13 @@ impl Assertions {
 
             if !found {
                 bail!(
-                    "Expected program header `{}' with flags {:?}, sections {:?}, mem-size {:?} and filesize {:?} not found.",
+                    "Expected program header `{}' with flags {:?}, sections {:?}, mem-size {:?} filesize {:?} and offset {:?} not found.",
                     expected.ptype,
                     expected.assertions.flags,
                     expected.assertions.sections,
                     expected.assertions.mem_size,
                     expected.assertions.file_size,
+                    expected.assertions.offset,
                 );
             }
         }
@@ -5320,7 +5329,7 @@ fn verify_no_overlapping_segments(obj: &object::File) -> Result {
             let start = seg.p_vaddr(elf_obj.endian());
             let size = seg.p_memsz(elf_obj.endian());
             let p_type = seg.p_type(elf_obj.endian());
-            if p_type != object::elf::PT_LOAD {
+            if p_type != object::elf::PT_LOAD || size == 0 {
                 return None;
             }
             Some((i, start, start + size))
