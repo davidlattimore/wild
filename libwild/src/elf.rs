@@ -4035,22 +4035,35 @@ fn merge_gnu_property_notes<'states, 'data: 'states, A: Arch>(
     let properties_per_file = states.map(|state| &state.gnu_property_notes).collect_vec();
 
     // Merge bits of each property type based on type: OR or AND operation.
-    let mut property_map = HashMap::new();
+    // Within a single file, OR the bits (accumulate all features the file has).
+    // Across files, AND the bits (only keep features all files support).
+    let mut property_map: HashMap<_, (u32, PropertyClass)> = HashMap::new();
 
     for file_props in &properties_per_file {
+        // First OR within file to accumulate all features this file has.
+        let mut file_map: HashMap<_, (u32, PropertyClass)> = HashMap::new();
         for prop in *file_props {
             let property_class = A::get_property_class(prop.ptype.0)
                 .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
-            property_map
+            file_map
                 .entry(prop.ptype)
                 .and_modify(|entry: &mut (u32, PropertyClass)| {
-                    if matches!(property_class, PropertyClass::And) {
-                        entry.0 &= prop.data;
-                    } else {
-                        entry.0 |= prop.data;
-                    }
+                    entry.0 |= prop.data;
                 })
                 .or_insert_with(|| (prop.data, property_class));
+        }
+        // Then AND across files to keep only features all files support.
+        for (ptype, (data, class)) in file_map {
+            property_map
+                .entry(ptype)
+                .and_modify(|entry: &mut (u32, PropertyClass)| {
+                    if matches!(class, PropertyClass::And) {
+                        entry.0 &= data;
+                    } else {
+                        entry.0 |= data;
+                    }
+                })
+                .or_insert_with(|| (data, class));
         }
     }
 
