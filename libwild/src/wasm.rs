@@ -209,6 +209,9 @@ const LINKER_MEMORY_BASE: u32 = 1024;
 /// Empty function body: zero locals + `end`.
 const EMPTY_FUNCTION_BODY: &[u8] = &[0x00, 0x0b];
 
+/// Undefined weak function stubs.
+const UNREACHABLE_FUNCTION_BODY: &[u8] = &[0x00, 0x00, 0x0b];
+
 /// `i32.const` body for `LINKER_MEMORY_BASE`.
 const LINKER_MEMORY_BASE_INIT_EXPR: &[u8] = &[0x41, 0x80, 0x08];
 
@@ -2326,6 +2329,9 @@ impl WasmObjectIndexMap {
                     "function {func_out} has no indirect table slot"
                 );
                 if reloc.ty == reloc_type::TABLE_INDEX_REL_SLEB {
+                    if slot == 0 {
+                        return Ok(0);
+                    }
                     let relative = slot.checked_sub(DEFAULT_TABLE_BASE).ok_or_else(|| {
                         crate::error!("Wasm TABLE_INDEX_REL_SLEB relocation out of range")
                     })?;
@@ -2640,6 +2646,16 @@ impl<'data> WasmObjectLayoutInput<'data> {
                     })?;
                     index_map.function_indices.push(index);
                 }
+                ImportResolution::WeakUndefStub { stub_index } => {
+                    let index = indices
+                        .weak_undef_stubs
+                        .get(stub_index as usize)
+                        .map(|s| s.function_index)
+                        .ok_or_else(|| {
+                            crate::error!("Wasm weak-undef stub index {stub_index} out of range")
+                        })?;
+                    index_map.function_indices.push(index);
+                }
                 ImportResolution::ResolvedFunction {
                     object_index,
                     local_defined_index,
@@ -2708,7 +2724,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
                         .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
                     index_map.global_indices.push(output_global_index);
                 }
-                ImportResolution::ResolvedFunction { .. } => {
+                ImportResolution::ResolvedFunction { .. }
+                | ImportResolution::WeakUndefStub { .. } => {
                     bail!("global import resolved as function");
                 }
             }
@@ -2797,6 +2814,8 @@ enum ImportResolution {
     },
     /// Resolved to a linker-synthesized function or global.
     LinkerDefined(WasmLinkerSymbol),
+    /// Undefined weak function absorbed into a shared `unreachable` stub.
+    WeakUndefStub { stub_index: u32 },
     /// Fixed module global index (GOT.mem entry).
     DirectGlobal { output_index: u32 },
     /// GOT.mem slot pending final module global index.
@@ -3043,8 +3062,15 @@ impl LinkerImportAbsorption {
     }
 }
 
+/// Synthetic function produced for an unresolved weak function import.
+#[derive(Debug, Clone)]
+struct WeakUndefFunctionStub {
+    ty: wasmparser::FuncType,
+    function_index: u32,
+}
+
 /// Reserved Wasm index-space slots for linker-defined globals/functions.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct LinkerDefinedIndices {
     memory_base_global: Option<u32>,
     table_base_global: Option<u32>,
@@ -3056,6 +3082,7 @@ struct LinkerDefinedIndices {
     call_ctors_func: Option<u32>,
     call_dtors_func: Option<u32>,
     entry_wrapper_func: Option<u32>,
+    weak_undef_stubs: Vec<WeakUndefFunctionStub>,
     /// Linker-defined globals including GOT.mem.
     num_defined_globals: u32,
     num_defined_functions: u32,
@@ -3120,7 +3147,7 @@ struct LayoutRelocScan {
     table_index_symbol_indices: Vec<Vec<usize>>,
 }
 
-/// Scan relocations, absorb GOT.mem imports, and reserve linker-defined indices.
+/// Scan relocations, absorb GOT.mem / weak-undef imports, and reserve linker-defined indices.
 fn setup_got_mem_and_indices<'data>(
     layout_inputs: &[WasmObjectLayoutInput<'data>],
     resolutions: &mut [ObjectImportResolutions],
@@ -3132,9 +3159,11 @@ fn setup_got_mem_and_indices<'data>(
     let mut scan = scan_layout_relocations(layout_inputs, symbol_db, file_id_to_index)?;
 
     absorb_got_mem_imports(&scan.got_mem, layout_inputs, resolutions, symbol_db)?;
+    let weak_undef_stubs = absorb_weak_undef_function_imports(layout_inputs, resolutions)?;
 
     let indices = LinkerDefinedIndices::compute(
         resolutions,
+        weak_undef_stubs,
         LinkerDefinedIndexRequest {
             has_init_funcs,
             wrap_entry,
@@ -3154,6 +3183,121 @@ fn setup_got_mem_and_indices<'data>(
     }
 
     Ok((indices, scan))
+}
+
+/// True when every undefined Func symbol for that ordinal is weak.
+fn pure_weak_function_import_flags(input: &WasmObjectLayoutInput<'_>) -> Vec<bool> {
+    let n = input.function_imports.len();
+    let mut saw_weak = vec![false; n];
+    let mut saw_non_weak = vec![false; n];
+    for sym in input.symbols {
+        if sym.kind != WasmSymbolKind::Func || !sym.is_undefined() {
+            continue;
+        }
+        let idx = sym.index as usize;
+        if idx >= n {
+            continue;
+        }
+        if sym.is_weak() {
+            saw_weak[idx] = true;
+        } else {
+            saw_non_weak[idx] = true;
+        }
+    }
+    saw_weak
+        .into_iter()
+        .zip(saw_non_weak)
+        .map(|(weak, non_weak)| weak && !non_weak)
+        .collect()
+}
+
+/// Absorb pure undefined-weak function imports into shared `unreachable` stubs.
+fn absorb_weak_undef_function_imports<'data>(
+    inputs: &[WasmObjectLayoutInput<'data>],
+    resolutions: &mut [ObjectImportResolutions],
+) -> Result<Vec<WeakUndefFunctionStub>> {
+    let pure_weak_flags: Vec<Vec<bool>> =
+        inputs.iter().map(pure_weak_function_import_flags).collect();
+
+    let mut non_weak_names = HashSet::new();
+    for (input, (res, flags)) in inputs
+        .iter()
+        .zip(resolutions.iter().zip(pure_weak_flags.iter()))
+    {
+        for (i, import) in input.function_imports.iter().enumerate() {
+            if !matches!(
+                res.function_resolutions.get(i),
+                Some(ImportResolution::Unresolved)
+            ) {
+                continue;
+            }
+            if !flags.get(i).copied().unwrap_or(false) {
+                non_weak_names.insert(import.name);
+            }
+        }
+    }
+
+    let mut stubs: Vec<WeakUndefFunctionStub> = Vec::new();
+    let mut name_to_stub: HashMap<&str, u32> = HashMap::new();
+
+    for (input, (res, flags)) in inputs
+        .iter()
+        .zip(resolutions.iter_mut().zip(pure_weak_flags.iter()))
+    {
+        for (i, import) in input.function_imports.iter().enumerate() {
+            if !matches!(
+                res.function_resolutions.get(i),
+                Some(ImportResolution::Unresolved)
+            ) {
+                continue;
+            }
+            if !flags.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            if non_weak_names.contains(import.name) {
+                continue;
+            }
+            let ty = input
+                .types
+                .get(import.type_index as usize)
+                .ok_or_else(|| {
+                    crate::error!(
+                        "Wasm type index {} out of range for weak import `{}`",
+                        import.type_index,
+                        import.name
+                    )
+                })?
+                .clone();
+            let stub_index = if let Some(&idx) = name_to_stub.get(import.name) {
+                ensure!(
+                    stubs[idx as usize].ty == ty,
+                    "conflicting types for undefined weak function `{}`",
+                    import.name
+                );
+                idx
+            } else {
+                let idx = u32::try_from(stubs.len()).context("too many Wasm weak-undef stubs")?;
+                name_to_stub.insert(import.name, idx);
+                stubs.push(WeakUndefFunctionStub {
+                    ty,
+                    function_index: 0,
+                });
+                idx
+            };
+            res.function_resolutions[i] = ImportResolution::WeakUndefStub { stub_index };
+            res.unresolved_function_count = res
+                .unresolved_function_count
+                .checked_sub(1)
+                .ok_or_else(|| {
+                    crate::error!(
+                        "Wasm weak-undef absorption underflow for import `{}`",
+                        import.name
+                    )
+                })?;
+        }
+    }
+
+    Ok(stubs)
 }
 
 fn resolve_got_mem_def(
@@ -3508,6 +3652,7 @@ struct LinkerDefinedIndexRequest {
 impl LinkerDefinedIndices {
     fn compute(
         import_resolutions: &[ObjectImportResolutions],
+        mut weak_undef_stubs: Vec<WeakUndefFunctionStub>,
         request: LinkerDefinedIndexRequest,
     ) -> Result<Self> {
         let mut needs_memory_base = request.needs_memory_base;
@@ -3594,6 +3739,12 @@ impl LinkerDefinedIndices {
             next_func += 1;
             idx
         });
+        for stub in &mut weak_undef_stubs {
+            stub.function_index = next_func;
+            next_func = next_func
+                .checked_add(1)
+                .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+        }
         let num_defined_functions = next_func - function_import_count;
 
         Ok(Self {
@@ -3605,6 +3756,7 @@ impl LinkerDefinedIndices {
             call_ctors_func,
             call_dtors_func,
             entry_wrapper_func,
+            weak_undef_stubs,
             num_defined_globals,
             num_defined_functions,
             global_import_count,
@@ -3639,14 +3791,18 @@ fn encode_i32_const_body(value: i32) -> Vec<u8> {
 }
 
 fn ensure_void_void_type(types: &mut Vec<wasmparser::FuncType>) -> u32 {
+    ensure_func_type(types, &wasmparser::FuncType::new([], []))
+}
+
+fn ensure_func_type(types: &mut Vec<wasmparser::FuncType>, ty: &wasmparser::FuncType) -> u32 {
     if let Some((idx, _)) = types
         .iter()
         .enumerate()
-        .find(|(_, ty)| ty.params().is_empty() && ty.results().is_empty())
+        .find(|(_, existing)| *existing == ty)
     {
         return idx as u32;
     }
-    types.push(wasmparser::FuncType::new([], []));
+    types.push(ty.clone());
     (types.len() - 1) as u32
 }
 
@@ -3707,13 +3863,21 @@ fn deduplicate_output_types(layout: &mut WasmLayout<'_>) {
     }
 }
 
-fn empty_linker_function_body() -> WasmFunctionBody<'static> {
+fn borrowed_linker_function_body(bytes: &'static [u8]) -> WasmFunctionBody<'static> {
     WasmFunctionBody {
-        bytes: Cow::Borrowed(EMPTY_FUNCTION_BODY),
+        bytes: Cow::Borrowed(bytes),
         code_offset: 0,
         relocations: Vec::new(),
         object_index: 0,
     }
+}
+
+fn empty_linker_function_body() -> WasmFunctionBody<'static> {
+    borrowed_linker_function_body(EMPTY_FUNCTION_BODY)
+}
+
+fn unreachable_linker_function_body() -> WasmFunctionBody<'static> {
+    borrowed_linker_function_body(UNREACHABLE_FUNCTION_BODY)
 }
 
 fn owned_linker_function_body(bytes: Vec<u8>) -> WasmFunctionBody<'static> {
@@ -3882,6 +4046,10 @@ fn emit_reserved_linker_definitions(
                 Some(bytes) => owned_linker_function_body(bytes),
                 None => empty_linker_function_body(),
             });
+        }
+        for stub in &indices.weak_undef_stubs {
+            type_indices.push(ensure_func_type(&mut layout.output_types, &stub.ty));
+            bodies.push(unreachable_linker_function_body());
         }
         type_indices.append(&mut layout.function_type_indices);
 
@@ -4382,11 +4550,17 @@ where
     }
     {
         timing_phase!("Finalize Wasm indirect function table");
+        let weak_undef_funcs: HashSet<u32> = indices
+            .weak_undef_stubs
+            .iter()
+            .map(|s| s.function_index)
+            .collect();
         finalize_indirect_function_table(
             &mut layout,
             &layout_inputs,
             &reloc_scan.table_index_symbol_indices,
             reloc_scan.needs_table,
+            &weak_undef_funcs,
         )?;
     }
     layout.encode_metadata_sections(&layout_inputs, &indices, got_mem)?;
@@ -4399,6 +4573,7 @@ fn finalize_indirect_function_table(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     table_index_symbol_indices: &[Vec<usize>],
     needs_table: bool,
+    weak_undef_funcs: &HashSet<u32>,
 ) -> Result {
     if !needs_table {
         return Ok(());
@@ -4423,6 +4598,9 @@ fn finalize_indirect_function_table(
                 "R_WASM_TABLE_INDEX_* references non-function symbol"
             );
             let func_out = remap_wasm_index(&index_map.function_indices, sym.index, "function")?;
+            if weak_undef_funcs.contains(&func_out) {
+                continue;
+            }
             if seen.insert(func_out) {
                 needed.push(func_out);
             }
@@ -4437,6 +4615,12 @@ fn finalize_indirect_function_table(
         .max()
         .unwrap_or(0);
     let mut slots_by_func = vec![u32::MAX; max_func as usize + 1];
+
+    for &func_out in weak_undef_funcs {
+        if (func_out as usize) < slots_by_func.len() {
+            slots_by_func[func_out as usize] = 0;
+        }
+    }
 
     let mut element_functions = Vec::with_capacity(needed.len());
     for (i, &func_out) in needed.iter().enumerate() {
