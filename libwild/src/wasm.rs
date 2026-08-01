@@ -1946,7 +1946,9 @@ fn build_target_features_section<'data>(
     }))
 }
 
-fn parse_target_features_payload<'data>(data: &'data [u8]) -> Result<Vec<WasmTargetFeature<'data>>> {
+fn parse_target_features_payload<'data>(
+    data: &'data [u8],
+) -> Result<Vec<WasmTargetFeature<'data>>> {
     let mut reader = BinaryReader::new(data, 0);
     let count = reader
         .read_var_u32()
