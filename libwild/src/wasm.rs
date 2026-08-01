@@ -2329,6 +2329,9 @@ impl WasmObjectIndexMap {
                     "function {func_out} has no indirect table slot"
                 );
                 if reloc.ty == reloc_type::TABLE_INDEX_REL_SLEB {
+                    if slot == 0 {
+                        return Ok(0);
+                    }
                     let relative = slot.checked_sub(DEFAULT_TABLE_BASE).ok_or_else(|| {
                         crate::error!("Wasm TABLE_INDEX_REL_SLEB relocation out of range")
                     })?;
