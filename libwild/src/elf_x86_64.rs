@@ -4,7 +4,7 @@
 //! static-PIE binary because dynamic relocations haven't yet been applied to the GOT yet.
 
 use crate::OutputKind;
-use crate::elf::Elf;
+use crate::elf::Elf64;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
 use crate::error;
@@ -51,7 +51,7 @@ macro_rules! rel_info_from_type {
 
 impl crate::platform::Arch for ElfX86_64 {
     type Relaxation = Relaxation;
-    type Platform = Elf;
+    type Platform = Elf64;
 
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_X86_64
@@ -111,7 +111,7 @@ impl crate::platform::Arch for ElfX86_64 {
         x86_64_rel_type_to_string(r_type)
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout<Elf>) -> u64 {
+    fn tp_offset_start(layout: &crate::layout::Layout<Elf64>) -> u64 {
         layout.tls_end_address()
     }
 

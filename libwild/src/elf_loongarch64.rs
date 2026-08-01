@@ -1,4 +1,4 @@
-use crate::elf::Elf;
+use crate::elf::Elf64;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
@@ -31,7 +31,7 @@ const _ASSERTS: () = {
 
 impl crate::platform::Arch for ElfLoongArch64 {
     type Relaxation = Relaxation;
-    type Platform = Elf;
+    type Platform = Elf64;
 
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_LOONGARCH
@@ -82,7 +82,7 @@ impl crate::platform::Arch for ElfLoongArch64 {
         0
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout<Elf>) -> u64 {
+    fn tp_offset_start(layout: &crate::layout::Layout<Elf64>) -> u64 {
         layout.tls_start_address_aligned()
     }
 

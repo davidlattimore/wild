@@ -5881,13 +5881,13 @@ impl<'data, P: Platform> ObjectLayout<'data, P> {
 #[test]
 fn test_no_disallowed_overlaps() {
     use crate::OsFileSystem;
-    use crate::elf::Elf;
+    use crate::elf::Elf64;
     use crate::output_section_id::OrderEvent;
 
     let output_kind = crate::output_kind::OutputKind::StaticExecutable(
         crate::args::RelocationModel::NonRelocatable,
     );
-    let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000, output_kind);
+    let mut output_sections = OutputSections::<Elf64>::with_base_address(0x1000, output_kind);
     let (output_order, program_segments) =
         output_sections.output_order(output_kind, &[], &[]).unwrap();
     let mut args = crate::args::elf::ElfArgs::default();
@@ -5907,7 +5907,7 @@ fn test_no_disallowed_overlaps() {
         .collect();
 
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|part_id, _| {
-        if sections_to_output.contains(&part_id.output_section_id::<crate::elf::Elf>()) {
+        if sections_to_output.contains(&part_id.output_section_id::<Elf64>()) {
             7
         } else {
             0
@@ -5921,9 +5921,9 @@ fn test_no_disallowed_overlaps() {
     let auxiliary = crate::input_data::AuxiliaryFiles::new(&args, &arena, &OsFileSystem).unwrap();
     let herd = Default::default();
     let symbol_db =
-        crate::symbol_db::SymbolDb::<Elf>::new(&args, output_kind, &auxiliary, &herd).unwrap();
+        crate::symbol_db::SymbolDb::<Elf64>::new(&args, output_kind, &auxiliary, &herd).unwrap();
 
-    let (_, section_layouts, _) = compute_layout_sections::<Elf>(
+    let (_, section_layouts, _) = compute_layout_sections::<Elf64>(
         &section_part_sizes,
         &output_sections,
         &program_segments,
@@ -5990,7 +5990,7 @@ fn test_no_disallowed_overlaps() {
         }
     });
 
-    let segment_layouts = compute_segment_layout::<Elf>(
+    let segment_layouts = compute_segment_layout::<Elf64>(
         &section_layouts,
         &output_sections,
         &output_order,

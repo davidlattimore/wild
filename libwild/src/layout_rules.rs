@@ -714,10 +714,10 @@ fn regular_section_or_discard(section_id: Option<OutputSectionId>) -> SectionRul
 
 #[test]
 fn test_section_mapping() {
-    let rules = SectionRules::from_rules(&crate::elf::Elf::default_layout_rules(
+    let rules = SectionRules::from_rules(&crate::elf::Elf64::default_layout_rules(
         &crate::args::elf::ElfArgs::new().unwrap(),
     ));
-    let header = crate::elf::SectionHeader {
+    let header = object::elf::SectionHeader64::<object::LittleEndian> {
         sh_name: Default::default(),
         sh_type: Default::default(),
         sh_flags: Default::default(),
@@ -729,7 +729,8 @@ fn test_section_mapping() {
         sh_addralign: Default::default(),
         sh_entsize: Default::default(),
     };
-    let lookup_name = |name: &str| rules.lookup::<crate::elf::Elf>(name.as_bytes(), None, &header);
+    let lookup_name =
+        |name: &str| rules.lookup::<crate::elf::Elf64>(name.as_bytes(), None, &header);
 
     assert_eq!(
         lookup_name(".comment"),

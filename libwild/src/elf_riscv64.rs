@@ -1,6 +1,6 @@
-use crate::elf::Elf;
+use crate::elf::Elf64;
 use crate::elf::PLT_ENTRY_SIZE;
-use crate::elf::RelocationList;
+use crate::elf::RelocationList64;
 use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
@@ -48,7 +48,7 @@ macro_rules! rel_info_from_type {
 
 impl crate::platform::Arch for ElfRiscV64 {
     type Relaxation = Relaxation;
-    type Platform = Elf;
+    type Platform = Elf64;
     const DEFAULT_LOAD_ADDRESS: u64 = 0x10000;
 
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
@@ -99,7 +99,7 @@ impl crate::platform::Arch for ElfRiscV64 {
         RISCV_TLS_DTV_OFFSET
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout<Elf>) -> u64 {
+    fn tp_offset_start(layout: &crate::layout::Layout<Elf64>) -> u64 {
         layout.tls_start_address_aligned()
     }
 
@@ -290,19 +290,19 @@ impl crate::platform::Arch for ElfRiscV64 {
     fn collect_relaxation_deltas(
         section_output_address: u64,
         section_bytes: &[u8],
-        relocations: RelocationList,
+        relocations: RelocationList64,
         existing_deltas: Option<&SectionRelaxDeltas>,
         mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
         match relocations {
-            RelocationList::Rela(rela_list) => collect_relaxation_deltas(
+            RelocationList64::Rela(rela_list) => collect_relaxation_deltas(
                 section_output_address,
                 section_bytes,
                 rela_list.rel_iter(),
                 existing_deltas,
                 &mut resolve_symbol,
             ),
-            RelocationList::Crel(crel_iter) => collect_relaxation_deltas(
+            RelocationList64::Crel(crel_iter) => collect_relaxation_deltas(
                 section_output_address,
                 section_bytes,
                 crel_iter.flatten(),
@@ -389,7 +389,7 @@ impl crate::platform::Relaxation for Relaxation {
 /// `section_output_address` is the output address of the section being scanned. `existing_deltas`,
 /// if present, is used to skip calls that were already relaxed in a previous pass. `resolve_symbol`
 /// returns the output address and interposability of a symbol.
-fn collect_relaxation_deltas<R: Relocation<Platform = Elf>>(
+fn collect_relaxation_deltas<R: Relocation<Platform = Elf64>>(
     section_output_address: u64,
     section_bytes: &[u8],
     relocations: impl Iterator<Item = R>,

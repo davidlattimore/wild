@@ -169,25 +169,30 @@ type SymbolTable<'data> = object::read::elf::SymbolTable<'data, FileHeader>;
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Elf;
 
+pub(crate) type Elf64 = Elf;
+pub(crate) type File64<'data> = File<'data>;
+pub(crate) type FileHeader64 = FileHeader;
+pub(crate) type RelocationList64<'data> = RelocationList<'data>;
+
 pub(crate) fn link_for_arch<'data, F: FileSystem>(
     linker: &'data crate::Linker<F>,
     args: &'data ElfArgs,
 ) -> Result<crate::LinkerOutput<'data>> {
     match args.arch {
         crate::arch::Architecture::X86_64 => {
-            linker.link_for_arch::<Elf, crate::elf_x86_64::ElfX86_64>(args)
+            linker.link_for_arch::<Elf64, crate::elf_x86_64::ElfX86_64>(args)
         }
         crate::arch::Architecture::AArch64 => {
-            linker.link_for_arch::<Elf, crate::elf_aarch64::ElfAArch64>(args)
+            linker.link_for_arch::<Elf64, crate::elf_aarch64::ElfAArch64>(args)
         }
         crate::arch::Architecture::RiscV64 => {
-            linker.link_for_arch::<Elf, crate::elf_riscv64::ElfRiscV64>(args)
+            linker.link_for_arch::<Elf64, crate::elf_riscv64::ElfRiscV64>(args)
         }
         crate::arch::Architecture::LoongArch64 => {
-            linker.link_for_arch::<Elf, crate::elf_loongarch64::ElfLoongArch64>(args)
+            linker.link_for_arch::<Elf64, crate::elf_loongarch64::ElfLoongArch64>(args)
         }
         crate::arch::Architecture::Ppc64 => {
-            linker.link_for_arch::<Elf, crate::elf_ppc64::ElfPpc64>(args)
+            linker.link_for_arch::<Elf64, crate::elf_ppc64::ElfPpc64>(args)
         }
         crate::arch::Architecture::Unsupported => {
             bail!(

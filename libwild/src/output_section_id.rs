@@ -1050,13 +1050,13 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     }
 
     #[cfg(test)]
-    pub(crate) fn for_testing() -> OutputSections<'static, crate::elf::Elf> {
-        use crate::elf::Elf;
+    pub(crate) fn for_testing() -> OutputSections<'static, crate::elf::Elf64> {
+        use crate::elf::Elf64;
 
         let output_kind = crate::output_kind::OutputKind::StaticExecutable(
             crate::args::RelocationModel::NonRelocatable,
         );
-        let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000, output_kind);
+        let mut output_sections = OutputSections::<Elf64>::with_base_address(0x1000, output_kind);
         let mut add_name = |name: &'static str| {
             output_sections.add_named_section(
                 SectionName(name.as_bytes()),
