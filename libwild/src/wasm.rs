@@ -91,6 +91,7 @@ enum SinglePartSectionId {
     WasmCode,
     WasmData,
     WasmName,
+    WasmTargetFeatures,
 
     // Must be last.
     Count,
@@ -113,6 +114,8 @@ pub(crate) mod part_id {
     pub(crate) const WASM_CODE: PartId = SinglePartSectionId::WasmCode.part_id();
     pub(crate) const WASM_DATA: PartId = SinglePartSectionId::WasmData.part_id();
     pub(crate) const WASM_NAME: PartId = SinglePartSectionId::WasmName.part_id();
+    pub(crate) const WASM_TARGET_FEATURES: PartId =
+        SinglePartSectionId::WasmTargetFeatures.part_id();
 }
 
 pub(crate) mod output_section_id {
@@ -141,6 +144,8 @@ pub(crate) mod output_section_id {
     pub(crate) const WASM_CODE: OutputSectionId = SinglePartSectionId::WasmCode.output_section_id();
     pub(crate) const WASM_DATA: OutputSectionId = SinglePartSectionId::WasmData.output_section_id();
     pub(crate) const WASM_NAME: OutputSectionId = SinglePartSectionId::WasmName.output_section_id();
+    pub(crate) const WASM_TARGET_FEATURES: OutputSectionId =
+        SinglePartSectionId::WasmTargetFeatures.output_section_id();
 }
 
 /// Magic bytes at the start of every Wasm module.
@@ -203,6 +208,11 @@ pub(crate) const RELOC_SECTION_PREFIX: &str = "reloc.";
 /// The custom-section name used for the WebAssembly target features.
 pub(crate) const TARGET_FEATURES_SECTION_NAME: &str = "target_features";
 
+/// Feature is used by this object (`+` in the target_features section).
+const TARGET_FEATURE_PREFIX_USED: u8 = b'+';
+/// Feature must not appear in the output (`-` in the target_features section).
+const TARGET_FEATURE_PREFIX_DISALLOWED: u8 = b'-';
+
 /// Default static data base for linker-produced executables.
 const LINKER_MEMORY_BASE: u32 = 1024;
 
@@ -250,9 +260,16 @@ pub(crate) struct File<'data> {
 
     pub(crate) linking_version: Option<u32>,
 
-    /// Raw payload of the `target_features` custom section, if present.
+    /// Entries from the `target_features` custom section, if present.
     #[debug(skip)]
-    pub(crate) target_features_raw: Option<&'data [u8]>,
+    pub(crate) target_features: Vec<WasmTargetFeature<'data>>,
+}
+
+/// One entry of the Wasm tool-conventions `target_features` custom section.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WasmTargetFeature<'data> {
+    pub(crate) prefix: u8,
+    pub(crate) name: &'data str,
 }
 
 /// A constructor from the linking `InitFuncs` subsection.
@@ -1546,6 +1563,10 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         kind: SectionKind::Primary(SectionName(b"name")),
         target_segment_type: Some(SegmentType::Module),
     };
+    defs[osid::WASM_TARGET_FEATURES.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"target_features")),
+        target_segment_type: Some(SegmentType::Module),
+    };
 
     defs
 };
@@ -1577,6 +1598,8 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact(b"data", SectionRuleOutcome::Discard),
     SectionRule::exact(b"linking", SectionRuleOutcome::Discard),
     SectionRule::prefix(b"reloc.", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"name", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"target_features", SectionRuleOutcome::Discard),
 ];
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -1676,6 +1699,8 @@ pub(crate) struct WasmEncodedSections {
     pub(crate) element: Option<Vec<u8>>,
     // Custom `name` section.
     pub(crate) name: Option<Vec<u8>>,
+    // Custom `target_features` section.
+    pub(crate) target_features: Option<Vec<u8>>,
 }
 
 impl WasmEncodedSections {
@@ -1689,6 +1714,11 @@ impl WasmEncodedSections {
         add_encoded_section_size(sizes, part_id::WASM_EXPORT, self.export.as_ref());
         add_encoded_section_size(sizes, part_id::WASM_ELEMENT, self.element.as_ref());
         add_encoded_section_size(sizes, part_id::WASM_NAME, self.name.as_ref());
+        add_encoded_section_size(
+            sizes,
+            part_id::WASM_TARGET_FEATURES,
+            self.target_features.as_ref(),
+        );
     }
 }
 
@@ -1861,6 +1891,89 @@ fn wasm_symbol_name_str<'data>(data: &'data [u8], sym: &WasmSymbol) -> Option<&'
     core::str::from_utf8(bytes).ok()
 }
 
+/// Merge `target_features` from linked objects and encode the output custom section.
+fn build_target_features_section<'data>(
+    layout_inputs: &[WasmObjectLayoutInput<'data>],
+) -> Result<Option<wasm_encoder::CustomSection<'static>>> {
+    let mut used: HashSet<&'data str> = HashSet::new();
+    // First file that disallowed each feature.
+    let mut disallowed: HashMap<&'data str, crate::input_data::FileId> = HashMap::new();
+
+    for input in layout_inputs {
+        for feature in input.target_features {
+            match feature.prefix {
+                TARGET_FEATURE_PREFIX_USED => {
+                    used.insert(feature.name);
+                }
+                TARGET_FEATURE_PREFIX_DISALLOWED => {
+                    disallowed.entry(feature.name).or_insert(input.file_id);
+                }
+                other => {
+                    bail!(
+                        "unrecognized target_features prefix 0x{other:02x} for feature `{}`",
+                        feature.name
+                    );
+                }
+            }
+        }
+    }
+
+    for name in &used {
+        if let Some(&file_id) = disallowed.get(name) {
+            bail!(
+                "target feature `{name}` is used by linked objects but disallowed by input file \
+                 {file_id}"
+            );
+        }
+    }
+
+    if used.is_empty() {
+        return Ok(None);
+    }
+
+    let mut names: Vec<&'data str> = used.into_iter().collect();
+    names.sort_unstable();
+
+    let mut payload = Vec::new();
+    leb128::write::unsigned(&mut payload, names.len() as u64).unwrap();
+    for name in names {
+        payload.push(TARGET_FEATURE_PREFIX_USED);
+        let name_bytes = name.as_bytes();
+        leb128::write::unsigned(&mut payload, name_bytes.len() as u64).unwrap();
+        payload.extend_from_slice(name_bytes);
+    }
+
+    Ok(Some(wasm_encoder::CustomSection {
+        name: Cow::Borrowed(TARGET_FEATURES_SECTION_NAME),
+        data: Cow::Owned(payload),
+    }))
+}
+
+fn parse_target_features_payload<'data>(
+    data: &'data [u8],
+) -> Result<Vec<WasmTargetFeature<'data>>> {
+    let mut reader = BinaryReader::new(data, 0);
+    let count = reader
+        .read_var_u32()
+        .context("invalid target_features feature count")?;
+    let mut features = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let prefix = reader
+            .read_u8()
+            .context("truncated target_features feature prefix")?;
+        let name = reader
+            .read_string()
+            .context("invalid target_features feature name")?;
+        features.push(WasmTargetFeature { prefix, name });
+    }
+    ensure!(
+        reader.eof(),
+        "trailing bytes in target_features section after {} features",
+        features.len()
+    );
+    Ok(features)
+}
+
 impl<'data> WasmLayout<'data> {
     fn encode_metadata_sections(
         &mut self,
@@ -1913,6 +2026,10 @@ impl<'data> WasmLayout<'data> {
 
         if let Some(name_section) = build_name_section(self, layout_inputs, indices, got_mem) {
             self.encoded_sections.name = Some(encode_wasm_section(&name_section));
+        }
+
+        if let Some(target_features) = build_target_features_section(layout_inputs)? {
+            self.encoded_sections.target_features = Some(encode_wasm_section(&target_features));
         }
 
         self.code_section_size = compute_code_section_size(&self.function_bodies);
@@ -2382,6 +2499,7 @@ struct WasmObjectLayoutInput<'data> {
     data_relocations: Vec<WasmRelocation>,
     symbols: &'data [WasmSymbol],
     init_funcs: &'data [WasmInitFunc],
+    target_features: &'data [WasmTargetFeature<'data>],
     symbol_id_range: crate::symbol_db::SymbolIdRange,
     file_id: crate::input_data::FileId,
 }
@@ -2574,6 +2692,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             data_relocations,
             symbols: file.symbols.as_slice(),
             init_funcs: file.init_funcs.as_slice(),
+            target_features: file.target_features.as_slice(),
             symbol_id_range,
             file_id,
         })
@@ -5197,7 +5316,8 @@ impl platform::Platform for Wasm {
             | osid::WASM_DATA_COUNT
             | osid::WASM_CODE
             | osid::WASM_DATA
-            | osid::WASM_NAME => SegmentType::Module,
+            | osid::WASM_NAME
+            | osid::WASM_TARGET_FEATURES => SegmentType::Module,
             _ => SegmentType::Unused,
         };
 
@@ -5503,6 +5623,7 @@ impl platform::Platform for Wasm {
         builder.add_section(osid::WASM_CODE);
         builder.add_section(osid::WASM_DATA);
         builder.add_section(osid::WASM_NAME);
+        builder.add_section(osid::WASM_TARGET_FEATURES);
 
         builder.build()
     }
@@ -5531,7 +5652,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
     let mut init_funcs: Vec<WasmInitFunc> = Vec::new();
     let mut reloc_sections: Vec<WasmRelocSection> = Vec::new();
     let mut linking_version: Option<u32> = None;
-    let mut target_features_raw: Option<&'data [u8]> = None;
+    let mut target_features: Vec<WasmTargetFeature<'data>> = Vec::new();
     let mut standard_section_index = [None; STANDARD_SECTION_LOOKUP_LEN];
 
     for payload in Parser::new(0).parse_all(input) {
@@ -5567,7 +5688,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
                     });
                 }
             } else if section_name == TARGET_FEATURES_SECTION_NAME {
-                target_features_raw = Some(reader.data());
+                target_features.extend(parse_target_features_payload(reader.data())?);
             }
         } else if (section_id::TYPE..=section_id::MAX).contains(&id) {
             standard_section_index[id as usize] = Some(sections.len() as u32);
@@ -5595,7 +5716,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         init_funcs,
         reloc_sections,
         linking_version,
-        target_features_raw,
+        target_features,
     })
 }
 
@@ -5791,6 +5912,114 @@ impl SinglePartSectionId {
 mod tests {
     use super::*;
     use crate::args::wasm::DEFAULT_STACK_SIZE;
+
+    fn layout_input_with_features<'data>(
+        file: u32,
+        features: &'data [WasmTargetFeature<'data>],
+    ) -> WasmObjectLayoutInput<'data> {
+        WasmObjectLayoutInput {
+            data: &[],
+            types: Vec::new(),
+            function_imports: Vec::new(),
+            global_imports: Vec::new(),
+            memory_imports: Vec::new(),
+            table_imports: Vec::new(),
+            module_functions: Vec::new(),
+            globals: Vec::new(),
+            exports: Vec::new(),
+            function_bodies: Vec::new(),
+            memories: Vec::new(),
+            unsupported_output: Vec::new(),
+            code_relocations: Vec::new(),
+            data_segments: Vec::new(),
+            segment_alignments: Vec::new(),
+            data_relocations: Vec::new(),
+            symbols: &[],
+            init_funcs: &[],
+            target_features: features,
+            symbol_id_range: crate::symbol_db::SymbolIdRange::empty(),
+            file_id: crate::input_data::FileId::new(0, file),
+        }
+    }
+
+    fn emitted_feature_names(section: &wasm_encoder::CustomSection<'_>) -> Vec<String> {
+        let parsed = parse_target_features_payload(section.data.as_ref()).unwrap();
+        assert!(
+            parsed
+                .iter()
+                .all(|f| f.prefix == TARGET_FEATURE_PREFIX_USED),
+            "output must only contain used (+) prefixes"
+        );
+        parsed.iter().map(|f| f.name.to_owned()).collect()
+    }
+
+    #[test]
+    fn target_features_deduplicates_used_features_across_objects() {
+        // Both objects use sign-ext. Only the first also uses bulk-memory.
+        let features_a = [
+            WasmTargetFeature {
+                prefix: TARGET_FEATURE_PREFIX_USED,
+                name: "sign-ext",
+            },
+            WasmTargetFeature {
+                prefix: TARGET_FEATURE_PREFIX_USED,
+                name: "bulk-memory",
+            },
+            WasmTargetFeature {
+                prefix: TARGET_FEATURE_PREFIX_USED,
+                name: "sign-ext",
+            },
+        ];
+        let features_b = [WasmTargetFeature {
+            prefix: TARGET_FEATURE_PREFIX_USED,
+            name: "sign-ext",
+        }];
+        let inputs = [
+            layout_input_with_features(1, &features_a),
+            layout_input_with_features(2, &features_b),
+        ];
+        let section = build_target_features_section(&inputs)
+            .unwrap()
+            .expect("expected target_features section");
+        assert_eq!(emitted_feature_names(&section), ["bulk-memory", "sign-ext"]);
+    }
+
+    #[test]
+    fn target_features_errors_when_used_and_disallowed_conflict() {
+        let used = [WasmTargetFeature {
+            prefix: TARGET_FEATURE_PREFIX_USED,
+            name: "atomics",
+        }];
+        let disallowed = [WasmTargetFeature {
+            prefix: TARGET_FEATURE_PREFIX_DISALLOWED,
+            name: "atomics",
+        }];
+        let inputs = [
+            layout_input_with_features(1, &used),
+            layout_input_with_features(2, &disallowed),
+        ];
+        let err = build_target_features_section(&inputs).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("atomics") && msg.contains("disallowed"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_target_features_payload_used_and_disallowed() {
+        // count=2, +bulk-memory, -atomics
+        let payload: &[u8] = &[
+            2, b'+', 11, b'b', b'u', b'l', b'k', b'-', b'm', b'e', b'm', b'o', b'r', b'y', b'-', 7,
+            b'a', b't', b'o', b'm', b'i', b'c', b's',
+        ];
+        let features = parse_target_features_payload(payload).unwrap();
+        assert_eq!(features.len(), 2);
+        assert_eq!(features[0].prefix, TARGET_FEATURE_PREFIX_USED);
+        assert_eq!(features[0].name, "bulk-memory");
+        assert_eq!(features[1].prefix, TARGET_FEATURE_PREFIX_DISALLOWED);
+        assert_eq!(features[1].name, "atomics");
+    }
 
     #[test]
     fn linker_defined_data_symbol_addresses() {

@@ -131,6 +131,10 @@ fn copy_metadata_sections(
         encoded.name.as_ref(),
         section_buffers.get_mut(output_section_id::WASM_NAME),
     )?;
+    copy_encoded_section(
+        encoded.target_features.as_ref(),
+        section_buffers.get_mut(output_section_id::WASM_TARGET_FEATURES),
+    )?;
     Ok(())
 }
 
