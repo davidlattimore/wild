@@ -5729,6 +5729,114 @@ mod tests {
     use super::*;
     use crate::args::wasm::DEFAULT_STACK_SIZE;
 
+    fn layout_input_with_features<'data>(
+        file: u32,
+        features: &'data [WasmTargetFeature<'data>],
+    ) -> WasmObjectLayoutInput<'data> {
+        WasmObjectLayoutInput {
+            data: &[],
+            types: Vec::new(),
+            function_imports: Vec::new(),
+            global_imports: Vec::new(),
+            memory_imports: Vec::new(),
+            table_imports: Vec::new(),
+            module_functions: Vec::new(),
+            globals: Vec::new(),
+            exports: Vec::new(),
+            function_bodies: Vec::new(),
+            memories: Vec::new(),
+            unsupported_output: Vec::new(),
+            code_relocations: Vec::new(),
+            data_segments: Vec::new(),
+            segment_alignments: Vec::new(),
+            data_relocations: Vec::new(),
+            symbols: &[],
+            init_funcs: &[],
+            target_features: features,
+            symbol_id_range: crate::symbol_db::SymbolIdRange::empty(),
+            file_id: crate::input_data::FileId::new(0, file),
+        }
+    }
+
+    fn emitted_feature_names(section: &wasm_encoder::CustomSection<'_>) -> Vec<String> {
+        let parsed = parse_target_features_payload(section.data.as_ref()).unwrap();
+        assert!(
+            parsed
+                .iter()
+                .all(|f| f.prefix == TARGET_FEATURE_PREFIX_USED),
+            "output must only contain used (+) prefixes"
+        );
+        parsed.iter().map(|f| f.name.to_owned()).collect()
+    }
+
+    #[test]
+    fn target_features_deduplicates_used_features_across_objects() {
+        // Both objects use sign-ext. Only the first also uses bulk-memory.
+        let features_a = [
+            WasmTargetFeature {
+                prefix: TARGET_FEATURE_PREFIX_USED,
+                name: "sign-ext",
+            },
+            WasmTargetFeature {
+                prefix: TARGET_FEATURE_PREFIX_USED,
+                name: "bulk-memory",
+            },
+            WasmTargetFeature {
+                prefix: TARGET_FEATURE_PREFIX_USED,
+                name: "sign-ext",
+            },
+        ];
+        let features_b = [WasmTargetFeature {
+            prefix: TARGET_FEATURE_PREFIX_USED,
+            name: "sign-ext",
+        }];
+        let inputs = [
+            layout_input_with_features(1, &features_a),
+            layout_input_with_features(2, &features_b),
+        ];
+        let section = build_target_features_section(&inputs)
+            .unwrap()
+            .expect("expected target_features section");
+        assert_eq!(emitted_feature_names(&section), ["bulk-memory", "sign-ext"]);
+    }
+
+    #[test]
+    fn target_features_errors_when_used_and_disallowed_conflict() {
+        let used = [WasmTargetFeature {
+            prefix: TARGET_FEATURE_PREFIX_USED,
+            name: "atomics",
+        }];
+        let disallowed = [WasmTargetFeature {
+            prefix: TARGET_FEATURE_PREFIX_DISALLOWED,
+            name: "atomics",
+        }];
+        let inputs = [
+            layout_input_with_features(1, &used),
+            layout_input_with_features(2, &disallowed),
+        ];
+        let err = build_target_features_section(&inputs).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("atomics") && msg.contains("disallowed"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_target_features_payload_used_and_disallowed() {
+        // count=2, +bulk-memory, -atomics
+        let payload: &[u8] = &[
+            2, b'+', 11, b'b', b'u', b'l', b'k', b'-', b'm', b'e', b'm', b'o', b'r', b'y', b'-', 7,
+            b'a', b't', b'o', b'm', b'i', b'c', b's',
+        ];
+        let features = parse_target_features_payload(payload).unwrap();
+        assert_eq!(features.len(), 2);
+        assert_eq!(features[0].prefix, TARGET_FEATURE_PREFIX_USED);
+        assert_eq!(features[0].name, "bulk-memory");
+        assert_eq!(features[1].prefix, TARGET_FEATURE_PREFIX_DISALLOWED);
+        assert_eq!(features[1].name, "atomics");
+    }
+
     #[test]
     fn linker_defined_data_symbol_addresses() {
         let data_end = 1024u32;
