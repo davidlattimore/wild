@@ -2329,15 +2329,25 @@ impl platform::Platform for Elf {
 
         let mut segments_map = HashMap::new();
         let mut ordered_sections = Vec::new();
+        let mut segment_entries = Vec::new();
 
         let mut num_phdrs = 0;
-
-        let mut segment_has_explicit_flags = Vec::new();
+        let mut has_filehdr = false;
+        let mut load_without_hdrs = false;
 
         for script in linker_scripts {
             num_phdrs += script.parsed.program_headers.len();
             for phdr in &script.parsed.program_headers {
                 let ptype = expression_eval::evaluate_const(&phdr.ptype)? as u32;
+                if ptype == pt::LOAD.0 {
+                    if (phdr.has_filehdr || phdr.has_phdrs) && load_without_hdrs {
+                        bail!(
+                            "PHDRS and FILEHDR are not supported when prior PT_LOAD headers lack them"
+                        );
+                    } else {
+                        load_without_hdrs = true;
+                    }
+                }
                 let flags = phdr
                     .flags
                     .as_ref()
@@ -2350,16 +2360,17 @@ impl platform::Platform for Elf {
                         ptype, flags,
                     ),
                 );
-                segment_has_explicit_flags.push(phdr.flags.is_some());
-                segments_map.insert(
-                    phdr.name,
-                    SegmentEntry {
-                        id,
-                        ptype,
-                        flags,
-                        is_emitted: false,
-                    },
-                );
+                has_filehdr = has_filehdr || phdr.has_filehdr;
+                segment_entries.push(SegmentEntry {
+                    id,
+                    ptype,
+                    flags,
+                    is_emitted: phdr.has_filehdr || phdr.has_phdrs,
+                    has_explicit_flags: phdr.flags.is_some(),
+                    has_filehdr: phdr.has_filehdr,
+                    has_phdrs: phdr.has_phdrs,
+                });
+                segments_map.insert(phdr.name, id);
             }
 
             for id in &script.parsed.ordered_sections {
@@ -2368,21 +2379,29 @@ impl platform::Platform for Elf {
                     if phdr == b"NONE" {
                         continue;
                     }
-                    let segment = segments_map.get_mut(phdr).with_context(|| {
+                    let segment = segments_map.get(phdr).with_context(|| {
                         format!(
                             "Section {} assigned to non-existent phdr `{}`",
                             output_sections.display_name(*id),
                             String::from_utf8_lossy(phdr)
                         )
                     })?;
-                    segment.is_emitted = true;
-                    if segment_has_explicit_flags[segment.id.as_usize()] {
+                    let entry = &mut segment_entries[segment.as_usize()];
+                    entry.is_emitted = true;
+                    if !matches!(SegmentType(entry.ptype), pt::LOAD | pt::PHDR)
+                        && (entry.has_filehdr || entry.has_phdrs)
+                    {
+                        bail!(
+                            "Non-load segment {} includes file header and/or program header",
+                            segment.as_usize()
+                        );
+                    }
+                    if entry.has_explicit_flags {
                         continue;
                     }
-                    segment.flags |=
+                    entry.flags |=
                         Self::get_segment_flags_for_section(&info.section_attributes.flags);
-                    builder.get_segment_mut(segment.id).segment_flags |=
-                        SegmentFlags(segment.flags);
+                    builder.get_segment_mut(*segment).segment_flags |= SegmentFlags(entry.flags);
                 }
                 ordered_sections.push(*id);
             }
@@ -2391,35 +2410,42 @@ impl platform::Platform for Elf {
         let mut first_load = None;
         let mut starts = vec![None; num_phdrs];
         let mut ends = vec![None; num_phdrs];
-        let mut first_exec: Option<&SegmentEntry> = None;
-        let mut first_rw: Option<&SegmentEntry> = None;
-        let mut first_ro: Option<&SegmentEntry> = None;
+        let mut first_exec: Option<ProgramSegmentId> = None;
+        let mut first_rw: Option<ProgramSegmentId> = None;
+        let mut first_ro: Option<ProgramSegmentId> = None;
 
         for (pos, id) in ordered_sections.iter().enumerate() {
             let phdrs = &output_sections.section_infos.get(*id).phdrs;
             for &phdr_name in phdrs {
-                let Some(entry) = segments_map.get(phdr_name) else {
+                let Some(id) = segments_map.get(phdr_name) else {
                     continue;
                 };
-                let seg_idx = entry.id.as_usize();
+                let seg_idx = id.as_usize();
+                let entry = segment_entries[seg_idx];
                 if entry.ptype == pt::LOAD.0 && first_load.is_none() {
-                    first_load = Some(entry.id);
+                    first_load = Some(*id);
                 }
-                if ends[seg_idx].is_none() {
+                if starts[seg_idx].is_none() {
                     starts[seg_idx] = Some(pos);
                 }
                 ends[seg_idx] = Some(pos);
                 if entry.ptype == pt::LOAD.0 {
                     if (entry.flags & pf::EXECUTABLE.0) != 0
-                        && first_exec.is_none_or(|e| e.flags & pf::WRITABLE.0 != 0)
+                        && first_exec.is_none_or(|e| {
+                            segment_entries[e.as_usize()].flags & pf::WRITABLE.0 != 0
+                        })
                     {
-                        first_exec = Some(entry);
+                        first_exec = Some(*id);
                     } else if (entry.flags & pf::WRITABLE.0) != 0
-                        && first_rw.is_none_or(|e| e.flags & pf::EXECUTABLE.0 != 0)
+                        && first_rw.is_none_or(|e| {
+                            segment_entries[e.as_usize()].flags & pf::EXECUTABLE.0 != 0
+                        })
                     {
-                        first_rw = Some(entry);
-                    } else if first_ro.is_none_or(|e| e.flags != pf::READABLE.0) {
-                        first_ro = Some(entry);
+                        first_rw = Some(*id);
+                    } else if first_ro
+                        .is_none_or(|e| segment_entries[e.as_usize()].flags != pf::READABLE.0)
+                    {
+                        first_ro = Some(*id);
                     }
                 }
             }
@@ -2429,18 +2455,10 @@ impl platform::Platform for Elf {
             bail!("Missing LOAD PHDR in linker script");
         }
 
-        for &hdr_id in &[
-            crate::output_section_id::FILE_HEADER,
-            output_section_id::PROGRAM_HEADERS,
-            output_section_id::SECTION_HEADERS,
-        ] {
-            builder.push_event(OrderEvent::Section(hdr_id));
-        }
-
         let update_flags = |builder: &mut OutputOrderBuilder<Self>,
                             sections: &[OutputSectionId],
                             segment: ProgramSegmentId| {
-            if segment_has_explicit_flags[segment.as_usize()] {
+            if segment_entries[segment.as_usize()].has_explicit_flags {
                 return;
             }
             for &section_id in sections {
@@ -2453,22 +2471,48 @@ impl platform::Platform for Elf {
         for (pos, section_id) in ordered_sections.iter().enumerate() {
             let section_id = *section_id;
 
-            for (seg_idx, segment) in starts.iter().enumerate().take(num_phdrs) {
-                if *segment == Some(pos) {
-                    builder.push_event(OrderEvent::SegmentStart(ProgramSegmentId::new(seg_idx)));
+            if pos == 0 {
+                for (seg_idx, _) in starts.iter().enumerate().take(num_phdrs) {
+                    let entry = segment_entries[seg_idx];
+                    if entry.has_filehdr {
+                        builder
+                            .push_event(OrderEvent::SegmentStart(ProgramSegmentId::new(seg_idx)));
+                    }
+                }
+                builder.push_event(OrderEvent::Section(crate::output_section_id::FILE_HEADER));
+                for (seg_idx, segment) in starts.iter().enumerate().take(num_phdrs) {
+                    let entry = segment_entries[seg_idx];
+                    if (*segment == Some(0) || entry.has_phdrs) && !entry.has_filehdr {
+                        builder
+                            .push_event(OrderEvent::SegmentStart(ProgramSegmentId::new(seg_idx)));
+                    }
+                }
+                builder.push_event(OrderEvent::Section(output_section_id::PROGRAM_HEADERS));
+                builder.push_event(OrderEvent::Section(output_section_id::SECTION_HEADERS));
+            } else {
+                for (seg_idx, segment) in starts.iter().enumerate().take(num_phdrs) {
+                    if *segment == Some(pos) {
+                        builder
+                            .push_event(OrderEvent::SegmentStart(ProgramSegmentId::new(seg_idx)));
+                    }
                 }
             }
 
             builder.add_section(section_id);
 
             for (seg_idx, segment) in ends.iter().enumerate().take(num_phdrs) {
-                if *segment == Some(pos) {
+                let entry = segment_entries[seg_idx];
+                if *segment == Some(pos)
+                    || (pos == 0
+                        && ends[seg_idx].is_none()
+                        && (entry.has_filehdr || entry.has_phdrs))
+                {
                     let seg_id = ProgramSegmentId::new(seg_idx);
-                    if Some(seg_id) == first_exec.map_or(first_load, |e| Some(e.id)) {
+                    if Some(seg_id) == first_exec.or(first_load) {
                         update_flags(&mut builder, &custom.exec, seg_id);
                         builder.add_sections(&custom.exec);
                     }
-                    if Some(seg_id) == first_rw.map_or(first_load, |e| Some(e.id)) {
+                    if Some(seg_id) == first_rw.or(first_load) {
                         update_flags(&mut builder, &custom.tdata, seg_id);
                         update_flags(&mut builder, &custom.tbss, seg_id);
                         update_flags(&mut builder, &custom.data, seg_id);
@@ -2478,7 +2522,7 @@ impl platform::Platform for Elf {
                         builder.add_sections(&custom.data);
                         builder.add_sections(&custom.bss);
                     }
-                    if Some(seg_id) == first_ro.map_or(first_load, |e| Some(e.id)) {
+                    if Some(seg_id) == first_ro.or(first_load) {
                         update_flags(&mut builder, &custom.ro, seg_id);
                         builder.add_sections(&custom.ro);
                     }
@@ -2493,7 +2537,7 @@ impl platform::Platform for Elf {
             }
         }
 
-        for segment in segments_map.values() {
+        for segment in segment_entries {
             if !segment.is_emitted {
                 builder.push_event(OrderEvent::SegmentStart(segment.id));
                 builder.push_event(OrderEvent::SegmentEnd(segment.id));

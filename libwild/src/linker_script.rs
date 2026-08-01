@@ -166,6 +166,8 @@ pub(crate) struct Phdr<'a> {
     pub(crate) name: &'a [u8],
     pub(crate) ptype: Expression<'a>,
     pub(crate) flags: Option<Expression<'a>>,
+    pub(crate) has_filehdr: bool,
+    pub(crate) has_phdrs: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -554,20 +556,34 @@ fn parse_phdr<'input>(input: &mut &'input BStr) -> winnow::Result<Phdr<'input>> 
 
     skip_comments_and_whitespace(input)?;
 
-    let flags = if opt("FLAGS").parse_next(input)?.is_some() {
-        '('.parse_next(input)?;
-        let flags = Some(parse_expression.parse_next(input)?);
-        ')'.parse_next(input)?;
+    let mut flags = None;
+    let mut has_filehdr = false;
+    let mut has_phdrs = false;
+    while let Some(prefix) = opt(alt((b"FLAGS", b"FILEHDR", b"PHDRS"))).parse_next(input)? {
         skip_comments_and_whitespace(input)?;
-        flags
-    } else {
-        None
-    };
+        match prefix {
+            b"FLAGS" => {
+                '('.parse_next(input)?;
+                flags = Some(parse_expression.parse_next(input)?);
+                ')'.parse_next(input)?;
+            }
+            b"FILEHDR" => has_filehdr = true,
+            b"PHDRS" => has_phdrs = true,
+            _ => unreachable!(),
+        }
+        skip_comments_and_whitespace(input)?;
+    }
 
     opt(';').parse_next(input)?;
     skip_comments_and_whitespace(input)?;
 
-    Ok(Phdr { name, ptype, flags })
+    Ok(Phdr {
+        name,
+        ptype,
+        flags,
+        has_filehdr,
+        has_phdrs,
+    })
 }
 
 fn parse_phdrs<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<Phdr<'input>>> {
