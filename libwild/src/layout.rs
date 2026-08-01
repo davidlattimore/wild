@@ -3236,13 +3236,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
         if resources.symbol_db.args.should_output_partial_object() {
             let mut num_section_syms = 0;
-            let mut section_names_size = 0;
             for (id, _) in output_sections.ids_with_info() {
                 if output_sections.will_emit_section_symbol_for_partial_objects(id) {
                     num_section_syms += 1;
-                    if let Some(name) = output_sections.name(id) {
-                        section_names_size += name.len() as u64 + 1;
-                    }
                 }
             }
             extra_sizes.increment(
@@ -3250,12 +3246,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                     .expect("partial objects require a local symbol table")
                     .base_part_id::<P>(),
                 num_section_syms * entry_size,
-            );
-            extra_sizes.increment(
-                P::STRTAB_SECTION_ID
-                    .expect("partial objects require a string table")
-                    .base_part_id::<P>(),
-                section_names_size,
             );
         }
 

@@ -2,6 +2,8 @@
 //#ReferenceLinkers:bfd,lld
 //#Object:runtime.c
 //#Relocatable:relocatable-1.c,relocatable-2.c
+//#NoSym:.text
+//#ExpectSym:add
 
 #include "../common/runtime.h"
 
