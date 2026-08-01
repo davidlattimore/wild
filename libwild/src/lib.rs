@@ -93,6 +93,7 @@ pub(crate) mod version_script;
 pub(crate) mod wasm;
 pub(crate) mod wasm_wasm32;
 pub(crate) mod wasm_writer;
+pub(crate) mod writable_elf;
 
 use crate::error::Context;
 use crate::error::Result;

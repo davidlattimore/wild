@@ -6,6 +6,7 @@
 //! Format reference: <https://sourceware.org/gdb/current/onlinedocs/gdb.html/Index-Section-Format.html>
 
 use crate::elf::Elf;
+use crate::elf::ElfClass;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::hash::PassThroughHashMap;
@@ -189,8 +190,8 @@ fn parse_pubnames_sets<'data>(data: &'data [u8]) -> Result<Vec<PubnamesSet<'data
 }
 
 /// Read section data from an input object by name.
-fn section_by_name<'data>(
-    object: &crate::elf::File<'data>,
+fn section_by_name<'data, C: ElfClass>(
+    object: &crate::elf::File<'data, C>,
     name: &str,
 ) -> Result<Option<Cow<'data, [u8]>>> {
     let Some((_index, header)) = object.section_by_name(name) else {
@@ -223,8 +224,8 @@ fn gdb_index_size_from_scan(scan: &GdbIndexScanResult) -> u64 {
 
 /// Pre-scan all input objects to compute the `.gdb_index` section size and return the scan result
 /// for later use during the write phase.
-pub(crate) fn compute_gdb_index_size<'data>(
-    groups: &[GroupState<'data, Elf>],
+pub(crate) fn compute_gdb_index_size<'data, C: ElfClass>(
+    groups: &[GroupState<'data, Elf<C>>],
 ) -> Result<(u64, Option<GdbIndexScanResult<'data>>)> {
     timing_phase!("Compute GDB index size");
 
@@ -252,9 +253,9 @@ pub(crate) fn compute_gdb_index_size<'data>(
 ///
 /// Reads the output `.debug_info` (already written into `output_buf`) for the CU list,
 /// and uses the pre-computed scan result for symbol data.
-pub(crate) fn write_gdb_index(
+pub(crate) fn write_gdb_index<C: ElfClass>(
     buf: &mut [u8],
-    layout: &Layout<'_, Elf>,
+    layout: &Layout<'_, Elf<C>>,
     scan: &GdbIndexScanResult,
 ) -> Result {
     if buf.is_empty() {
@@ -355,8 +356,8 @@ struct PerObjectGdbScan<'data> {
 }
 
 /// Scan a single input object, returning per-object GDB index data with 0-based CU indices.
-fn scan_one_object<'data>(
-    object: &ObjectLayoutState<'data, Elf>,
+fn scan_one_object<'data, C: ElfClass>(
+    object: &ObjectLayoutState<'data, Elf<C>>,
     sections: &[SectionSlot],
 ) -> Result<Option<PerObjectGdbScan<'data>>> {
     verbose_timing_phase!("Parse GDB index inputs");
@@ -579,8 +580,8 @@ fn build_buckets<'data>(
 }
 
 /// Scan all input objects in parallel to build the GDB index symbol table.
-fn scan_objects_for_gdb_index<'data>(
-    objects: &[(&ObjectLayoutState<'data, Elf>, &[SectionSlot])],
+fn scan_objects_for_gdb_index<'data, C: ElfClass>(
+    objects: &[(&ObjectLayoutState<'data, Elf<C>>, &[SectionSlot])],
 ) -> Result<GdbIndexScanResult<'data>> {
     timing_phase!("Scan objects for GDB index");
 
@@ -593,8 +594,8 @@ fn scan_objects_for_gdb_index<'data>(
 }
 
 /// Build address entries using resolved addresses from the final layout.
-fn build_address_entries(
-    layout: &Layout<'_, Elf>,
+fn build_address_entries<C: ElfClass>(
+    layout: &Layout<'_, Elf<C>>,
     per_object_cu_counts: &[u32],
 ) -> Result<Vec<GdbIndexAddressEntry>> {
     verbose_timing_phase!("Build GDB address entries");
@@ -651,8 +652,8 @@ fn build_address_entries(
 }
 
 /// Build a mapping from section index to local CU index for an input object with multiple CUs.
-fn build_section_cu_map(
-    object: &crate::elf::File<'_>,
+fn build_section_cu_map<C: ElfClass>(
+    object: &crate::elf::File<'_, C>,
     cu_count: u32,
 ) -> Result<HashMap<usize, u32>> {
     let boundaries = match section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)? {
@@ -690,7 +691,7 @@ fn build_section_cu_map(
                 continue;
             }
             // Find which CU this relocation offset belongs to.
-            if let Some(local_cu) = cu_index_for_offset(&boundaries, offset) {
+            if let Some(local_cu) = cu_index_for_offset(&boundaries, offset.into()) {
                 map.insert(sec_idx.0, local_cu);
             }
         }

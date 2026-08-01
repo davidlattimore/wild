@@ -4,8 +4,7 @@
 use crate::alignment::Alignment;
 use crate::bail;
 use crate::elf;
-use crate::elf::Elf;
-use crate::elf::Rela;
+use crate::elf::ElfClass;
 use crate::elf_writer;
 use crate::elf_writer::apply_debug_relocations;
 use crate::error::Result;
@@ -20,11 +19,9 @@ use crate::platform::SectionFlags as _;
 use crate::resolution::SectionSlot;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
-use object::LittleEndian;
+use crate::writable_elf::WritableCompressionHeader as _;
 use object::bytes_of;
-use object::elf::CompressionHeader64;
 use object::elf::CompressionType;
-use object::read::elf::Crel;
 use rayon::iter::IntoParallelIterator as _;
 use rayon::iter::IntoParallelRefIterator as _;
 use rayon::iter::ParallelIterator as _;
@@ -76,8 +73,8 @@ const ZLIB_SYNC_FLUSH_SLACK: usize = 16;
 /// How much to grow the output buffer when a Finish/SyncFlush needs more space.
 const ZLIB_OUTPUT_GROW_BYTES: usize = 64;
 
-pub(crate) fn maybe_compress_debug_sections_elf<A: Arch<Platform = Elf>>(
-    layout: &mut crate::layout::Layout<Elf>,
+pub(crate) fn maybe_compress_debug_sections_elf<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    layout: &mut crate::layout::Layout<elf::Elf<C>>,
 ) -> Result {
     let Some(compression_kind) = layout.args().debug_compression_kind else {
         return Ok(());
@@ -103,10 +100,10 @@ pub(crate) fn maybe_compress_debug_sections_elf<A: Arch<Platform = Elf>>(
 
     match compression_kind {
         crate::args::elf::CompressionKind::Zlib => {
-            compress_sections::<A, ZlibCompressor>(layout, &debug_sections)?;
+            compress_sections::<C, A, ZlibCompressor>(layout, &debug_sections)?;
         }
         crate::args::elf::CompressionKind::Zstd => {
-            compress_sections::<A, ZstdCompressor>(layout, &debug_sections)?;
+            compress_sections::<C, A, ZstdCompressor>(layout, &debug_sections)?;
         }
     }
 
@@ -272,8 +269,8 @@ fn zlib_compress_shard(input: &[u8]) -> Result<(Vec<u8>, u32)> {
     }
 }
 
-fn compress_sections<A: Arch<Platform = Elf>, C: SectionCompressor>(
-    layout: &mut Layout<Elf>,
+fn compress_sections<C: ElfClass, A: Arch<Platform = elf::Elf<C>>, S: SectionCompressor>(
+    layout: &mut Layout<elf::Elf<C>>,
     debug_sections: &[OutputSectionId],
 ) -> Result {
     let compression_results = debug_sections
@@ -288,9 +285,9 @@ fn compress_sections<A: Arch<Platform = Elf>, C: SectionCompressor>(
                 let section_layout = layout.section_layouts.get(section_id);
                 let mut buffer = vec![0u8; section_layout.file_size];
 
-                build_debug_section_in_memory::<A>(section_id, &mut buffer, layout)?;
+                build_debug_section_in_memory::<C, A>(section_id, &mut buffer, layout)?;
 
-                let compressed = compress_section::<C>(&buffer, section_layout.alignment)?;
+                let compressed = compress_section::<C, S>(&buffer, section_layout.alignment)?;
 
                 Ok((section_id, compressed))
             },
@@ -304,18 +301,18 @@ fn compress_sections<A: Arch<Platform = Elf>, C: SectionCompressor>(
     Ok(())
 }
 
-fn compress_section<C: SectionCompressor>(
+fn compress_section<C: ElfClass, S: SectionCompressor>(
     uncompressed: &[u8],
     alignment: Alignment,
 ) -> Result<Option<CompressedSection>> {
     verbose_timing_phase!("Compress section");
 
-    let mut compressed_chunks = C::compress_section(uncompressed)?;
+    let mut compressed_chunks = S::compress_section(uncompressed)?;
 
-    let mut header: CompressionHeader64<LittleEndian> = Default::default();
-    header.ch_type.set(LittleEndian, C::kind());
-    header.ch_size.set(LittleEndian, uncompressed.len() as u64);
-    header.ch_addralign.set(LittleEndian, alignment.value());
+    let mut header: elf::CompressionHeaderEntry<C> = Default::default();
+    header.set_type(S::kind());
+    header.set_size(uncompressed.len() as u64)?;
+    header.set_alignment(alignment.value())?;
 
     let header_bytes = bytes_of(&header).to_vec();
     let body_size: usize = compressed_chunks.iter().map(Vec::len).sum();
@@ -334,10 +331,10 @@ fn compress_section<C: SectionCompressor>(
     }))
 }
 
-fn build_debug_section_in_memory<A: Arch<Platform = Elf>>(
+fn build_debug_section_in_memory<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     section_id: crate::output_section_id::OutputSectionId,
     mut buffer: &mut [u8],
-    layout: &crate::layout::Layout<Elf>,
+    layout: &crate::layout::Layout<elf::Elf<C>>,
 ) -> Result {
     let merged = layout.merged_strings.get(section_id);
     if merged.len() > 0 {
@@ -345,19 +342,19 @@ fn build_debug_section_in_memory<A: Arch<Platform = Elf>>(
         return Ok(());
     }
 
-    build_regular_debug_section::<A>(section_id, buffer, layout)?;
+    build_regular_debug_section::<C, A>(section_id, buffer, layout)?;
 
     Ok(())
 }
 
-fn build_regular_debug_section<A: Arch<Platform = Elf>>(
+fn build_regular_debug_section<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     section_id: OutputSectionId,
     buffer: &mut [u8],
-    layout: &Layout<Elf>,
+    layout: &Layout<elf::Elf<C>>,
 ) -> Result {
     verbose_timing_phase!("Build debug section");
 
-    let part_range = section_id.part_id_range::<Elf>();
+    let part_range = section_id.part_id_range::<elf::Elf<C>>();
     let mut remaining = buffer;
     let groups_and_buffers: Vec<(_, &mut [u8])> = layout
         .group_layouts
@@ -382,7 +379,7 @@ fn build_regular_debug_section<A: Arch<Platform = Elf>>(
                             let section_index = object::read::SectionIndex(idx);
                             let part_id = object_layout
                                 .section_part_id(section_index, &layout.symbol_db.section_part_ids);
-                            if part_id.output_section_id::<Elf>() == section_id {
+                            if part_id.output_section_id::<elf::Elf<C>>() == section_id {
                                 let object_section = object_layout.object.section(section_index)?;
                                 let section_size =
                                     object_layout.object.section_size(object_section)? as usize;
@@ -404,20 +401,20 @@ fn build_regular_debug_section<A: Arch<Platform = Elf>>(
                                 let relocations = object_layout.relocations(section_index)?;
                                 match relocations {
                                     elf::RelocationList::Rela(rela) => {
-                                        apply_debug_relocations::<A, Rela, _>(
+                                        apply_debug_relocations::<C, A, elf::ElfRela<C>, _>(
                                             object_layout,
                                             &mut group_buf[offset..end],
                                             section_index,
-                                            rela.iter().map(|r| Ok(*r)),
+                                            rela.iter().map(|r| Ok(elf::ElfRela::<C>::new(*r))),
                                             layout,
                                         )?;
                                     }
                                     elf::RelocationList::Crel(crel_iter) => {
-                                        apply_debug_relocations::<A, Crel, _>(
+                                        apply_debug_relocations::<C, A, elf::ElfCrel<C>, _>(
                                             object_layout,
                                             &mut group_buf[offset..end],
                                             section_index,
-                                            crel_iter,
+                                            crel_iter.map(|r| r.map(elf::ElfCrel::<C>::new)),
                                             layout,
                                         )?;
                                     }
