@@ -115,7 +115,9 @@ impl RelaxationKind {
 }
 
 #[must_use]
-pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
+pub const fn relocation_type_from_raw(
+    r_type: object::elf::RelocationType,
+) -> Option<RelocationKindInfo> {
     let (kind, size, mask, range, alignment) = match r_type {
         // 5.7.4   Static miscellaneous relocations
         object::elf::R_AARCH64_NONE => (

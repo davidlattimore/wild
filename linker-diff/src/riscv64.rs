@@ -264,10 +264,10 @@ fn decode_plt_entry_riscv(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RType(u32);
+pub(crate) struct RType(object::elf::RelocationType);
 
 impl crate::arch::RType for RType {
-    fn from_raw(raw: u32) -> Self {
+    fn from_raw(raw: object::elf::RelocationType) -> Self {
         RType(raw)
     }
 
