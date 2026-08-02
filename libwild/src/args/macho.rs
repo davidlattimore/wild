@@ -173,10 +173,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
     }
 
-    if !args.common.unrecognized_options.is_empty() {
-        let options_list = args.common.unrecognized_options.join(", ");
-        bail!("unrecognized option(s): {}", options_list);
-    }
+    args.common.report_unrecognized()?;
 
     Ok(())
 }

@@ -152,6 +152,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
     }
 
+    args.common.report_unrecognized()?;
+
     Ok(())
 }
 
@@ -196,6 +198,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
                 search_first: None,
                 modifiers,
             });
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("gc-sections")
+        .help("Enable removal of unused sections")
+        .execute(|_args, _modifier_stack| {
+            // TODO
             Ok(())
         });
 
@@ -270,6 +281,22 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Place stack at the end of linear memory after data")
         .execute(|args, _modifier_stack| {
             args.stack_first = false;
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .prefix("O")
+        .execute(|_args, _modifier_stack, _value|
+        // We don't use opt-level for now.
+        Ok(()));
+
+    parser
+        .declare()
+        .long("no-demangle")
+        .help("Disable symbol demangling")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().demangle = false;
             Ok(())
         });
 

@@ -337,6 +337,15 @@ fn default_warning_callback(warning: Warning) {
 }
 
 impl CommonArgs {
+    pub(crate) fn report_unrecognized(&self) -> Result {
+        if !self.unrecognized_options.is_empty() {
+            let options_list = self.unrecognized_options.join(", ");
+            bail!("unrecognized option(s): {}", options_list);
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn trace_span_for_file(
         &self,
         file_id: FileId,
