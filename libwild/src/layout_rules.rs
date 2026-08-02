@@ -3,6 +3,7 @@
 use crate::OutputSections;
 use crate::alignment;
 use crate::arch::Architecture;
+use crate::error::Context;
 use crate::error::Result;
 use crate::expression_eval::evaluate_const;
 use crate::glob_match::GlobPatternType;
@@ -16,6 +17,7 @@ use crate::linker_script;
 use crate::linker_script::ContentsCommand;
 use crate::linker_script::SectionCommand;
 use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::SectionIdentity;
 use crate::output_section_id::SectionLocationInfo;
 use crate::output_section_id::SectionName;
 use crate::parsing::InternalSymDefInfo;
@@ -41,10 +43,10 @@ pub(crate) struct LayoutRulesBuilder<'data> {
     num_location_counters: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SectionKind<'data> {
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SectionKind<'data, P: Platform> {
     /// This is the primary section.
-    Primary(SectionName<'data>),
+    Primary(SectionIdentity<'data, P>),
 
     /// This is a secondary section that will be merged into the primary. The ID of the primary is
     /// supplied.
@@ -264,8 +266,17 @@ impl<'data> LayoutRulesBuilder<'data> {
                             if !sec.phdrs.is_empty() {
                                 prev_phdrs = sec.phdrs.clone();
                             }
+                            let identity = P::section_identity_from_name(SectionName(
+                                sec.output_section_name,
+                            ))
+                            .with_context(|| {
+                                format!(
+                                    "Output section `{}` cannot be identified from the name alone",
+                                    SectionName(sec.output_section_name)
+                                )
+                            })?;
                             let primary_section_id = output_sections.add_named_section(
-                                SectionName(sec.output_section_name),
+                                identity,
                                 min_alignment,
                                 sec.region,
                                 Some(&location_info),

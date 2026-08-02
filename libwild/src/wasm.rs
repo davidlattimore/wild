@@ -14,6 +14,7 @@ use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::SectionIdentity;
 use crate::output_section_id::SectionName;
 use crate::part_id::PartId;
 use crate::platform;
@@ -1484,14 +1485,14 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
 }
 
 pub(crate) struct BuiltInSectionDetails {
-    pub(crate) kind: SectionKind<'static>,
+    pub(crate) kind: SectionKind<'static, Wasm>,
     pub(crate) target_segment_type: Option<SegmentType>,
 }
 
 impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
-    kind: SectionKind::Primary(SectionName(&[])),
+    kind: SectionKind::Primary(SectionIdentity::new(SectionName(&[]), ())),
     target_segment_type: None,
 };
 
@@ -1506,65 +1507,65 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
 
     // The module preamble.
     defs[crate::output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"WASM_HEADER")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"WASM_HEADER"), ())),
         target_segment_type: Some(SegmentType::Header),
     };
 
     // Standard Wasm sections.
     defs[osid::WASM_TYPE.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"type")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"type"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_IMPORT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"import")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"import"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_FUNCTION.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"function")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"function"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_TABLE.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"table")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"table"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_MEMORY.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"memory")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"memory"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_GLOBAL.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"global")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"global"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_EXPORT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"export")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"export"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_START.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"start")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"start"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_ELEMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"element")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"element"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_DATA_COUNT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"data_count")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"data_count"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_CODE.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"code")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"code"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_DATA.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"data")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"data"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_NAME.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"name")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"name"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_TARGET_FEATURES.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"target_features")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"target_features"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
 
@@ -5151,6 +5152,7 @@ impl platform::Platform for Wasm {
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
     type ResolvedObjectExt<'data> = WasmObjectLayout<'data>;
+    type SectionIdentityExt = ();
 
     fn write_output_file<'data, A: platform::Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
@@ -5634,6 +5636,19 @@ impl platform::Platform for Wasm {
 
     fn is_allowed_in_archive(kind: crate::file_kind::FileKind) -> bool {
         kind == crate::file_kind::FileKind::WasmObject
+    }
+
+    fn section_identity<'data>(
+        name: SectionName<'data>,
+        _section: &Self::SectionHeader,
+    ) -> SectionIdentity<'data, Self> {
+        SectionIdentity::new(name, ())
+    }
+
+    fn section_identity_from_name<'data>(
+        name: SectionName<'data>,
+    ) -> Option<SectionIdentity<'data, Self>> {
+        Some(SectionIdentity::new(name, ()))
     }
 }
 

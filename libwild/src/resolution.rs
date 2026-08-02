@@ -772,7 +772,7 @@ pub(crate) struct ResolvedObject<'data, P: Platform> {
     pub(crate) string_merge_extras: Vec<StringMergeSectionExtra<'data>>,
 
     /// Details about each custom section that is defined in this object.
-    custom_sections: Vec<CustomSectionDetails<'data>>,
+    custom_sections: Vec<CustomSectionDetails<'data, P>>,
 
     init_fini_sections: Vec<InitFiniSectionDetail>,
 
@@ -1161,7 +1161,8 @@ fn allocate_start_stop_symbol_id<'data, P: Platform>(
         (s, false)
     };
 
-    let section_id = output_sections.custom_name_to_id(SectionName(section_name))?;
+    let identity = P::section_identity_from_name(SectionName(section_name))?;
+    let section_id = output_sections.custom_identity_to_id(identity)?;
 
     let def_info = if is_start {
         InternalSymDefInfo::new(SymbolPlacement::SectionStart(section_id), name.bytes())
@@ -1423,7 +1424,7 @@ fn resolve_section<'data, P: Platform>(
 
     if part_id == PartId::CUSTOM_PLACEHOLDER {
         let custom_section = CustomSectionDetails {
-            name: SectionName(section_name),
+            identity: P::section_identity(SectionName(section_name), input_section),
             alignment,
             index: input_section_index,
         };
