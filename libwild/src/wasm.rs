@@ -2092,7 +2092,6 @@ fn layout_object_data<'data>(
     input: &WasmObjectLayoutInput<'data>,
     index_map: &WasmObjectIndexMap,
     memory_cursor: &mut u32,
-    section_cursor: &mut u32,
 ) -> Result<Vec<WasmDataSegmentLayout<'data>>> {
     let mut segment_relocations =
         classify_data_relocations(&input.data_segments, &input.data_relocations);
@@ -2121,9 +2120,6 @@ fn layout_object_data<'data>(
         *memory_cursor = memory_cursor
             .checked_add(u32::try_from(segment.data.len()).context("Wasm data segment too large")?)
             .ok_or_else(|| crate::error!("Wasm output memory offset overflow"))?;
-        *section_cursor = section_cursor
-            .checked_add(encoded_output_size)
-            .ok_or_else(|| crate::error!("Wasm data section offset overflow"))?;
         segments.push(WasmDataSegmentLayout {
             segment_index: u32::try_from(segment_index).context("too many Wasm data segments")?,
             data: segment.data,
@@ -4482,7 +4478,6 @@ where
     } else {
         layout.memory_base
     };
-    let mut section_cursor = 0u32;
     {
         timing_phase!("Merge Wasm object layouts");
         let n_objects = object_layouts.len();
@@ -4545,7 +4540,6 @@ where
                     input,
                     &layout.object_index_maps[obj_idx],
                     &mut memory_cursor,
-                    &mut section_cursor,
                 )?);
             }
         }
