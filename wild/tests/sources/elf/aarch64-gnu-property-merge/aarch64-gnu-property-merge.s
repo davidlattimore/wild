@@ -1,6 +1,6 @@
-// Test that GNU property notes within a file are OR'd before AND-ing across files.
-// A single note with BTI(1) and PAC(2) entries should produce BTI|PAC=3 in output,
-// not BTI&PAC=0 which would incorrectly discard the .note.gnu.property section.
+// This verifies that the linker ORs GNU property entries within a single note
+// (producing BTI|PAC = 0x3) rather than ANDing them (which would produce
+// BTI&PAC = 0x0 and incorrectly discard the .note.gnu.property section).
 // We use lld as reference linker because GNU ld cross linker does not output
 // .note.gnu.property in static mode.
 //#Arch:aarch64
