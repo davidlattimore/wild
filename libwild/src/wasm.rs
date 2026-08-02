@@ -56,6 +56,7 @@ use wasmparser::MemoryType;
 use wasmparser::Parser;
 use wasmparser::Payload;
 use wasmparser::RelocationEntry;
+use wasmparser::RelocationType;
 use wasmparser::SegmentFlags;
 use wasmparser::SymbolFlags;
 use wasmparser::SymbolInfo;
@@ -174,31 +175,8 @@ pub(crate) mod section_id {
 /// Size of a `[Option<u32>; _]` lookup that can be indexed by any standard section id.
 pub(crate) const STANDARD_SECTION_LOOKUP_LEN: usize = section_id::MAX as usize + 1;
 
-pub(crate) mod reloc_type {
-    pub(crate) const FUNCTION_INDEX_LEB: u8 = 0;
-    pub(crate) const TABLE_INDEX_SLEB: u8 = 1;
-    pub(crate) const TABLE_INDEX_I32: u8 = 2;
-    pub(crate) const MEMORY_ADDR_LEB: u8 = 3;
-    pub(crate) const MEMORY_ADDR_SLEB: u8 = 4;
-    pub(crate) const MEMORY_ADDR_I32: u8 = 5;
-    pub(crate) const TYPE_INDEX_LEB: u8 = 6;
-    pub(crate) const GLOBAL_INDEX_LEB: u8 = 7;
-    pub(crate) const FUNCTION_OFFSET_I32: u8 = 8;
-    pub(crate) const SECTION_OFFSET_I32: u8 = 9;
-    pub(crate) const EVENT_INDEX_LEB: u8 = 10;
-    pub(crate) const MEMORY_ADDR_REL_SLEB: u8 = 11;
-    pub(crate) const TABLE_INDEX_REL_SLEB: u8 = 12;
-    pub(crate) const GLOBAL_INDEX_I32: u8 = 13;
-    pub(crate) const TABLE_NUMBER_LEB: u8 = 20;
-    pub(crate) const FUNCTION_INDEX_I32: u8 = 26;
-}
-
 /// Default `__table_base` for non-PIC executables.
 const DEFAULT_TABLE_BASE: u32 = 1;
-
-/// `R_WASM_TYPE_INDEX_LEB` from the Wasm Tool Conventions. The only reloc whose `index` field
-/// refers to a type index rather than a symbol index.
-pub(crate) const R_WASM_TYPE_INDEX_LEB: u8 = reloc_type::TYPE_INDEX_LEB;
 
 /// The custom-section name used for the linker metadata.
 pub(crate) const LINKING_SECTION_NAME: &str = "linking";
@@ -420,8 +398,8 @@ impl WasmRelocSection {
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct WasmRelocation {
-    /// Wasm relocation type code.
-    pub(crate) ty: u8,
+    /// Wasm relocation type.
+    pub(crate) ty: RelocationType,
     /// Byte offset within the target section's payload.
     pub(crate) offset: u32,
     /// Symbol or type index.
@@ -429,10 +407,50 @@ pub(crate) struct WasmRelocation {
     pub(crate) addend: i64,
 }
 
+macro_rules! define_relocation_type_to_string {
+    ($($variant:ident),* $(,)?) => {
+        pub(crate) const fn relocation_type_to_string(ty: RelocationType) -> &'static str {
+            match ty {
+                $(RelocationType::$variant => stringify!($variant),)*
+            }
+        }
+    };
+}
+
+define_relocation_type_to_string!(
+    FunctionIndexLeb,
+    TableIndexSleb,
+    TableIndexI32,
+    MemoryAddrLeb,
+    MemoryAddrSleb,
+    MemoryAddrI32,
+    TypeIndexLeb,
+    GlobalIndexLeb,
+    FunctionOffsetI32,
+    SectionOffsetI32,
+    EventIndexLeb,
+    MemoryAddrRelSleb,
+    TableIndexRelSleb,
+    GlobalIndexI32,
+    MemoryAddrLeb64,
+    MemoryAddrSleb64,
+    MemoryAddrI64,
+    MemoryAddrRelSleb64,
+    TableIndexSleb64,
+    TableIndexI64,
+    TableNumberLeb,
+    MemoryAddrTlsSleb,
+    FunctionOffsetI64,
+    MemoryAddrLocrelI32,
+    TableIndexRelSleb64,
+    MemoryAddrTlsSleb64,
+    FunctionIndexI32,
+);
+
 impl WasmRelocation {
     fn from_entry(entry: RelocationEntry) -> Self {
         Self {
-            ty: entry.ty as u8,
+            ty: entry.ty,
             offset: entry.offset,
             index: entry.index,
             addend: entry.addend,
@@ -441,28 +459,28 @@ impl WasmRelocation {
 
     /// Whether `index` refers to a symbol rather than a type index.
     pub(crate) fn refers_to_symbol(&self) -> bool {
-        self.ty != R_WASM_TYPE_INDEX_LEB
+        self.ty != RelocationType::TypeIndexLeb
     }
 
     /// Width in bytes of the slot this relocation overwrites.
     pub(crate) fn slot_size(&self) -> usize {
         match self.ty {
-            reloc_type::FUNCTION_INDEX_LEB
-            | reloc_type::TABLE_INDEX_SLEB
-            | reloc_type::TABLE_INDEX_REL_SLEB
-            | reloc_type::MEMORY_ADDR_LEB
-            | reloc_type::MEMORY_ADDR_SLEB
-            | reloc_type::MEMORY_ADDR_REL_SLEB
-            | reloc_type::TYPE_INDEX_LEB
-            | reloc_type::GLOBAL_INDEX_LEB
-            | reloc_type::EVENT_INDEX_LEB
-            | reloc_type::TABLE_NUMBER_LEB => 5,
-            reloc_type::TABLE_INDEX_I32
-            | reloc_type::MEMORY_ADDR_I32
-            | reloc_type::FUNCTION_OFFSET_I32
-            | reloc_type::SECTION_OFFSET_I32
-            | reloc_type::GLOBAL_INDEX_I32
-            | reloc_type::FUNCTION_INDEX_I32 => 4,
+            RelocationType::FunctionIndexLeb
+            | RelocationType::TableIndexSleb
+            | RelocationType::TableIndexRelSleb
+            | RelocationType::MemoryAddrLeb
+            | RelocationType::MemoryAddrSleb
+            | RelocationType::MemoryAddrRelSleb
+            | RelocationType::TypeIndexLeb
+            | RelocationType::GlobalIndexLeb
+            | RelocationType::EventIndexLeb
+            | RelocationType::TableNumberLeb => 5,
+            RelocationType::TableIndexI32
+            | RelocationType::MemoryAddrI32
+            | RelocationType::FunctionOffsetI32
+            | RelocationType::SectionOffsetI32
+            | RelocationType::GlobalIndexI32
+            | RelocationType::FunctionIndexI32 => 4,
             _ => 0,
         }
     }
@@ -511,31 +529,34 @@ pub(crate) fn apply_relocation(
         .get_mut(offset..end)
         .ok_or_else(|| crate::error!("Wasm relocation slot out of range"))?;
     match reloc.ty {
-        reloc_type::FUNCTION_INDEX_LEB
-        | reloc_type::MEMORY_ADDR_LEB
-        | reloc_type::TYPE_INDEX_LEB
-        | reloc_type::GLOBAL_INDEX_LEB
-        | reloc_type::EVENT_INDEX_LEB
-        | reloc_type::TABLE_NUMBER_LEB => {
+        RelocationType::FunctionIndexLeb
+        | RelocationType::MemoryAddrLeb
+        | RelocationType::TypeIndexLeb
+        | RelocationType::GlobalIndexLeb
+        | RelocationType::EventIndexLeb
+        | RelocationType::TableNumberLeb => {
             let buf: &mut [u8; 5] = slot.try_into().expect("slot_size returned 5");
             write_uleb128_5(buf, value);
         }
-        reloc_type::TABLE_INDEX_SLEB
-        | reloc_type::TABLE_INDEX_REL_SLEB
-        | reloc_type::MEMORY_ADDR_SLEB
-        | reloc_type::MEMORY_ADDR_REL_SLEB => {
+        RelocationType::TableIndexSleb
+        | RelocationType::TableIndexRelSleb
+        | RelocationType::MemoryAddrSleb
+        | RelocationType::MemoryAddrRelSleb => {
             let buf: &mut [u8; 5] = slot.try_into().expect("slot_size returned 5");
             write_sleb128_5(buf, value as i32);
         }
-        reloc_type::TABLE_INDEX_I32
-        | reloc_type::MEMORY_ADDR_I32
-        | reloc_type::FUNCTION_OFFSET_I32
-        | reloc_type::SECTION_OFFSET_I32
-        | reloc_type::GLOBAL_INDEX_I32
-        | reloc_type::FUNCTION_INDEX_I32 => {
+        RelocationType::TableIndexI32
+        | RelocationType::MemoryAddrI32
+        | RelocationType::FunctionOffsetI32
+        | RelocationType::SectionOffsetI32
+        | RelocationType::GlobalIndexI32
+        | RelocationType::FunctionIndexI32 => {
             slot.copy_from_slice(&value.to_le_bytes());
         }
-        other => bail!("unsupported Wasm relocation type {other}"),
+        other => bail!(
+            "unsupported Wasm relocation type {}",
+            relocation_type_to_string(other)
+        ),
     }
     Ok(())
 }
@@ -2364,7 +2385,7 @@ impl WasmObjectIndexMap {
         function_table_slots: &[u32],
         memory_base: u32,
     ) -> Result<u32> {
-        if reloc.ty == R_WASM_TYPE_INDEX_LEB {
+        if reloc.ty == RelocationType::TypeIndexLeb {
             return remap_wasm_index(&self.type_indices, reloc.index, "type");
         }
 
@@ -2373,14 +2394,14 @@ impl WasmObjectIndexMap {
             .ok_or_else(|| crate::error!("relocation symbol index {} out of range", reloc.index))?;
 
         match reloc.ty {
-            reloc_type::FUNCTION_INDEX_LEB | reloc_type::FUNCTION_INDEX_I32 => {
+            RelocationType::FunctionIndexLeb | RelocationType::FunctionIndexI32 => {
                 ensure!(
                     sym.kind == WasmSymbolKind::Func,
                     "R_WASM_FUNCTION_INDEX_* references non-function symbol"
                 );
                 remap_wasm_index(&self.function_indices, sym.index, "function")
             }
-            reloc_type::GLOBAL_INDEX_LEB | reloc_type::GLOBAL_INDEX_I32 => match sym.kind {
+            RelocationType::GlobalIndexLeb | RelocationType::GlobalIndexI32 => match sym.kind {
                 WasmSymbolKind::Global => {
                     remap_wasm_index(&self.global_indices, sym.index, "global")
                 }
@@ -2399,17 +2420,17 @@ impl WasmObjectIndexMap {
                     bail!("R_WASM_GLOBAL_INDEX_* references unsupported symbol kind {other:?}")
                 }
             },
-            reloc_type::TABLE_NUMBER_LEB => {
+            RelocationType::TableNumberLeb => {
                 ensure!(
                     sym.kind == WasmSymbolKind::Table,
                     "R_WASM_TABLE_NUMBER_LEB references non-table symbol"
                 );
                 remap_wasm_index(&self.table_indices, sym.index, "table")
             }
-            reloc_type::MEMORY_ADDR_LEB
-            | reloc_type::MEMORY_ADDR_SLEB
-            | reloc_type::MEMORY_ADDR_I32
-            | reloc_type::MEMORY_ADDR_REL_SLEB => {
+            RelocationType::MemoryAddrLeb
+            | RelocationType::MemoryAddrSleb
+            | RelocationType::MemoryAddrI32
+            | RelocationType::MemoryAddrRelSleb => {
                 ensure!(
                     sym.kind == WasmSymbolKind::Data,
                     "R_WASM_MEMORY_ADDR_* references non-data symbol"
@@ -2421,7 +2442,7 @@ impl WasmObjectIndexMap {
                     .ok_or_else(|| {
                         crate::error!("data address for symbol index {} out of range", reloc.index)
                     })?;
-                if reloc.ty == reloc_type::MEMORY_ADDR_REL_SLEB {
+                if reloc.ty == RelocationType::MemoryAddrRelSleb {
                     let relative = i64::from(addr) - i64::from(memory_base) + reloc.addend;
                     let relative = i32::try_from(relative)
                         .map_err(|_| crate::error!("Wasm REL_SLEB relocation out of range"))?;
@@ -2430,9 +2451,9 @@ impl WasmObjectIndexMap {
                     Ok(addr)
                 }
             }
-            reloc_type::TABLE_INDEX_SLEB
-            | reloc_type::TABLE_INDEX_I32
-            | reloc_type::TABLE_INDEX_REL_SLEB => {
+            RelocationType::TableIndexSleb
+            | RelocationType::TableIndexI32
+            | RelocationType::TableIndexRelSleb => {
                 ensure!(
                     sym.kind == WasmSymbolKind::Func,
                     "R_WASM_TABLE_INDEX_* references non-function symbol"
@@ -2446,7 +2467,7 @@ impl WasmObjectIndexMap {
                     slot != u32::MAX,
                     "function {func_out} has no indirect table slot"
                 );
-                if reloc.ty == reloc_type::TABLE_INDEX_REL_SLEB {
+                if reloc.ty == RelocationType::TableIndexRelSleb {
                     if slot == 0 {
                         return Ok(0);
                     }
@@ -2458,16 +2479,19 @@ impl WasmObjectIndexMap {
                     Ok(slot)
                 }
             }
-            reloc_type::EVENT_INDEX_LEB => {
+            RelocationType::EventIndexLeb => {
                 bail!("event index relocations are not supported yet");
             }
-            reloc_type::FUNCTION_OFFSET_I32 => {
+            RelocationType::FunctionOffsetI32 => {
                 bail!("function offset relocations are not supported yet");
             }
-            reloc_type::SECTION_OFFSET_I32 => {
+            RelocationType::SectionOffsetI32 => {
                 bail!("section offset relocations are not supported yet");
             }
-            other => bail!("unsupported Wasm relocation type {other}"),
+            other => bail!(
+                "unsupported Wasm relocation type {}",
+                relocation_type_to_string(other)
+            ),
         }
     }
 }
@@ -3641,16 +3665,16 @@ fn scan_layout_relocations(
             .chain(input.data_relocations.iter())
         {
             match reloc.ty {
-                reloc_type::MEMORY_ADDR_REL_SLEB => {
+                RelocationType::MemoryAddrRelSleb => {
                     needs_memory_base = true;
                 }
-                reloc_type::TABLE_NUMBER_LEB => {
+                RelocationType::TableNumberLeb => {
                     needs_table = true;
                 }
-                reloc_type::TABLE_INDEX_SLEB
-                | reloc_type::TABLE_INDEX_I32
-                | reloc_type::TABLE_INDEX_REL_SLEB => {
-                    if reloc.ty == reloc_type::TABLE_INDEX_REL_SLEB {
+                RelocationType::TableIndexSleb
+                | RelocationType::TableIndexI32
+                | RelocationType::TableIndexRelSleb => {
+                    if reloc.ty == RelocationType::TableIndexRelSleb {
                         needs_table_base = true;
                     }
                     needs_table = true;
@@ -3666,7 +3690,7 @@ fn scan_layout_relocations(
                         table_syms.push(sym_idx);
                     }
                 }
-                reloc_type::GLOBAL_INDEX_LEB | reloc_type::GLOBAL_INDEX_I32 => {
+                RelocationType::GlobalIndexLeb | RelocationType::GlobalIndexI32 => {
                     let sym_idx = reloc.index as usize;
                     let Some(sym) = input.symbols.get(sym_idx) else {
                         bail!(
@@ -4918,28 +4942,28 @@ fn finalize_indirect_function_table(
     Ok(())
 }
 
-fn is_memory_addr_relocation(ty: u8) -> bool {
+fn is_memory_addr_relocation(ty: RelocationType) -> bool {
     matches!(
         ty,
-        reloc_type::MEMORY_ADDR_LEB
-            | reloc_type::MEMORY_ADDR_SLEB
-            | reloc_type::MEMORY_ADDR_I32
-            | reloc_type::MEMORY_ADDR_REL_SLEB
+        RelocationType::MemoryAddrLeb
+            | RelocationType::MemoryAddrSleb
+            | RelocationType::MemoryAddrI32
+            | RelocationType::MemoryAddrRelSleb
     )
 }
 
-fn is_supported_data_relocation(ty: u8) -> bool {
+fn is_supported_data_relocation(ty: RelocationType) -> bool {
     is_memory_addr_relocation(ty)
         || matches!(
             ty,
-            reloc_type::FUNCTION_INDEX_I32
-                | reloc_type::FUNCTION_INDEX_LEB
-                | reloc_type::TABLE_INDEX_I32
-                | reloc_type::TABLE_INDEX_SLEB
-                | reloc_type::TABLE_NUMBER_LEB
-                | reloc_type::GLOBAL_INDEX_I32
-                | reloc_type::GLOBAL_INDEX_LEB
-                | reloc_type::TYPE_INDEX_LEB
+            RelocationType::FunctionIndexI32
+                | RelocationType::FunctionIndexLeb
+                | RelocationType::TableIndexI32
+                | RelocationType::TableIndexSleb
+                | RelocationType::TableNumberLeb
+                | RelocationType::GlobalIndexI32
+                | RelocationType::GlobalIndexLeb
+                | RelocationType::TypeIndexLeb
         )
 }
 
@@ -4960,7 +4984,7 @@ pub(crate) fn reloc_value_with_addend(base: u32, addend: i64) -> Result<u32> {
 pub(crate) fn finalize_reloc_value(reloc: &WasmRelocation, base: u32) -> Result<u32> {
     if matches!(
         reloc.ty,
-        reloc_type::MEMORY_ADDR_REL_SLEB | reloc_type::TABLE_INDEX_REL_SLEB
+        RelocationType::MemoryAddrRelSleb | RelocationType::TableIndexRelSleb
     ) {
         Ok(base)
     } else {
@@ -5252,7 +5276,7 @@ impl platform::Platform for Wasm {
     type RelocationSections = ();
     type DynamicEntry = ();
     type DynamicSymbolDefinitionExt = ();
-    type RelocationInfo = u32;
+    type RelocationInfo = RelocationType;
     type NonAddressableIndexes = NonAddressableIndexes;
     type NonAddressableCounts = ();
     type EpilogueLayoutExt = ();
