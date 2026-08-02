@@ -2340,10 +2340,12 @@ impl platform::Platform for Elf {
             for phdr in &script.parsed.program_headers {
                 let ptype = expression_eval::evaluate_const(&phdr.ptype)? as u32;
                 if ptype == pt::LOAD.0 {
-                    if (phdr.has_filehdr || phdr.has_phdrs) && load_without_hdrs {
-                        bail!(
-                            "PHDRS and FILEHDR are not supported when prior PT_LOAD headers lack them"
-                        );
+                    if phdr.has_filehdr || phdr.has_phdrs {
+                        if load_without_hdrs {
+                            bail!(
+                                "PHDRS and FILEHDR are not supported when prior PT_LOAD headers lack them"
+                            );
+                        }
                     } else {
                         load_without_hdrs = true;
                     }
@@ -2472,26 +2474,48 @@ impl platform::Platform for Elf {
             let section_id = *section_id;
 
             if pos == 0 {
-                for (seg_idx, _) in starts.iter().enumerate().take(num_phdrs) {
-                    let entry = segment_entries[seg_idx];
-                    if entry.has_filehdr {
-                        builder
-                            .push_event(OrderEvent::SegmentStart(ProgramSegmentId::new(seg_idx)));
-                    }
-                }
-                builder.push_event(OrderEvent::Section(crate::output_section_id::FILE_HEADER));
+                let mut filehdr_starts = Vec::new();
+                let mut filehdr_ends = Vec::new();
+                let mut phdrs_starts = Vec::new();
+                let mut phdrs_ends = Vec::new();
+
                 for (seg_idx, segment) in starts.iter().enumerate().take(num_phdrs) {
                     let entry = segment_entries[seg_idx];
-                    if (*segment == Some(0) || entry.has_phdrs) && !entry.has_filehdr {
-                        builder
-                            .push_event(OrderEvent::SegmentStart(ProgramSegmentId::new(seg_idx)));
+                    let seg_id = ProgramSegmentId::new(seg_idx);
+                    if entry.has_filehdr {
+                        filehdr_starts.push(seg_id);
+                        if ends[seg_idx].is_none() && !entry.has_phdrs {
+                            filehdr_ends.push(seg_id);
+                        }
+                    } else if entry.has_phdrs {
+                        phdrs_starts.push(seg_id);
+                        if ends[seg_idx].is_none() {
+                            phdrs_ends.push(seg_id);
+                        }
+                    } else if *segment == Some(pos) {
+                        builder.push_event(OrderEvent::SegmentStart(seg_id));
                     }
                 }
+
+                for seg_id in filehdr_starts {
+                    builder.push_event(OrderEvent::SegmentStart(seg_id));
+                }
+                builder.push_event(OrderEvent::Section(crate::output_section_id::FILE_HEADER));
+                for seg_id in filehdr_ends {
+                    builder.push_event(OrderEvent::SegmentEnd(seg_id));
+                }
+                for seg_id in phdrs_starts {
+                    builder.push_event(OrderEvent::SegmentStart(seg_id));
+                }
                 builder.push_event(OrderEvent::Section(output_section_id::PROGRAM_HEADERS));
+                for seg_id in phdrs_ends {
+                    builder.push_event(OrderEvent::SegmentEnd(seg_id));
+                }
                 builder.push_event(OrderEvent::Section(output_section_id::SECTION_HEADERS));
             } else {
                 for (seg_idx, segment) in starts.iter().enumerate().take(num_phdrs) {
-                    if *segment == Some(pos) {
+                    let entry = segment_entries[seg_idx];
+                    if *segment == Some(pos) && !entry.has_filehdr && !entry.has_phdrs {
                         builder
                             .push_event(OrderEvent::SegmentStart(ProgramSegmentId::new(seg_idx)));
                     }
@@ -2501,12 +2525,7 @@ impl platform::Platform for Elf {
             builder.add_section(section_id);
 
             for (seg_idx, segment) in ends.iter().enumerate().take(num_phdrs) {
-                let entry = segment_entries[seg_idx];
-                if *segment == Some(pos)
-                    || (pos == 0
-                        && ends[seg_idx].is_none()
-                        && (entry.has_filehdr || entry.has_phdrs))
-                {
+                if *segment == Some(pos) {
                     let seg_id = ProgramSegmentId::new(seg_idx);
                     if Some(seg_id) == first_exec.or(first_load) {
                         update_flags(&mut builder, &custom.exec, seg_id);

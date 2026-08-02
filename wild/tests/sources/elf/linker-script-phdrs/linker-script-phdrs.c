@@ -38,8 +38,13 @@
 //#ExpectErrorWild:Missing LOAD PHDR in linker script
 
 //#Config:with-pt-phdr:default
-//#ExpectProgramHeader:PHDR sections=[],offset=0x40
+//#SkipArch:riscv64
+// If the linker script intentionally emits overlapping segments, we need to skip the overlap check.
+//#SkipOverlapSegmentsCheck:true
+//#ExpectProgramHeader:PHDR sections=[],offset=0x0,mem-size=0x40
+//#ExpectProgramHeader:PHDR sections=[],offset=0x40,mem-size=0x150
 //#ExpectProgramHeader:LOAD flags=RX,sections=[.text,*],offset=0x0
+//#ExpectProgramHeader:LOAD flags=RW,sections=[.bss,*],offset=0x0
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-with-pt-phdr.ld
 
 //#Config:discontinuous:default

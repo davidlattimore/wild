@@ -1673,6 +1673,7 @@ struct Assertions {
     max_thunks: u64,
     expected_program_headers: Vec<ExpectedProgramHeaders>,
     absent_program_headers: Vec<ProgramHeaderType>,
+    skip_overlap_segments_check: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2231,6 +2232,7 @@ fn process_directive(
             config.enabled_linkers.insert(arg.to_owned());
         }
         "Cross" => config.cross_enabled = arg.parse()?,
+        "SkipOverlapSegmentsCheck" => config.assertions.skip_overlap_segments_check = arg.parse()?,
         "ExpectError" => {
             config.expect_stderr.push(ErrorMatcher::new(arg)?);
             config.should_error = true;
@@ -4440,7 +4442,9 @@ impl Assertions {
         self.verify_gdb_index_distinct_addr_cus(&obj)?;
         self.verify_strings(&bytes)?;
         verify_no_overlapping_sections(&obj)?;
-        verify_no_overlapping_segments(&obj)?;
+        if !self.skip_overlap_segments_check {
+            verify_no_overlapping_segments(&obj)?;
+        }
 
         match obj {
             object::File::Elf64(elf_obj) => {
