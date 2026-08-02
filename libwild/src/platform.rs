@@ -28,6 +28,7 @@ use crate::output_section_id::CustomSectionIds;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SectionIdentity;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
@@ -145,7 +146,9 @@ pub(crate) trait Arch: Send + Sync + 'static {
 
     /// Returns true if the given relocation type cannot be used when making a shared object,
     /// regardless of whether the symbol is interposable. Default is false (allow).
-    fn is_disallowed_in_shared_object(_r_type: u32) -> bool {
+    fn is_disallowed_in_shared_object(
+        _r_type: <Self::Platform as Platform>::RelocationInfo,
+    ) -> bool {
         false
     }
 
@@ -316,7 +319,7 @@ pub(crate) trait Platform:
     type SectionAttributes: SectionAttributes<Platform = Self>;
     type SectionType: SectionType;
     type SegmentType: SegmentType;
-    type ProgramSegmentDef: ProgramSegmentDef<Platform = Self>;
+    type ProgramSegmentDef: ProgramSegmentDef;
     type BuiltInSectionDetails: BuiltInSectionDetails;
     type RelocationSections: std::fmt::Debug + Default + Send + Sync + 'static;
     type DynamicEntry: Send + Sync + 'static;
@@ -335,6 +338,9 @@ pub(crate) trait Platform:
     type SymtabShndxEntry: std::fmt::Debug + Default + Send + Sync + 'static;
     type ResolvedObjectExt<'data>: Default + std::fmt::Debug + Send + Sync;
     type FinaliseSizesExt<'data>: Send + Sync;
+
+    /// Format-specific fields that form part of a section's identity.
+    type SectionIdentityExt: std::fmt::Debug + Copy + Eq + Send + Sync + std::hash::Hash;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
@@ -551,7 +557,7 @@ pub(crate) trait Platform:
 
     /// Called when we detect an internal error with allocation in order to try and help determine
     /// what we did wrong. Can optionally return a more helpful error.
-    fn verify_resolution_allocation(
+    fn verify_resolution_allocation<A: Arch<Platform = Self>>(
         _output_sections: &OutputSections<Self>,
         _output_order: &OutputOrder<'_>,
         _output_kind: OutputKind,
@@ -573,6 +579,14 @@ pub(crate) trait Platform:
 
     /// Returns segment definitions that should be unconditionally emitted without content.
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef];
+
+    /// Returns whether the specified section should be included in the specified segment.
+    fn program_segment_should_include_section(
+        segment_def: Self::ProgramSegmentDef,
+        section_info: &crate::output_section_id::SectionOutputInfo<Self>,
+        section_id: OutputSectionId,
+        rosegment: bool,
+    ) -> bool;
 
     fn create_linker_defined_symbols(
         symbols: &mut crate::parsing::InternalSymbolsBuilder<Self>,
@@ -939,6 +953,29 @@ pub(crate) trait Platform:
 
     fn get_segment_flags_for_section(_section_flags: &Self::SectionFlags) -> u32 {
         0
+    }
+
+    /// Constructs the complete identity of an input section, including all format-specific fields
+    /// that distinguish sections with the same name.
+    fn section_identity<'data>(
+        name: SectionName<'data>,
+        section: &Self::SectionHeader,
+    ) -> SectionIdentity<'data, Self>;
+
+    /// Constructs a section identity with only the section name.
+    /// Returns None when the name alone cannot determine the complete section identity.
+    fn section_identity_from_name<'data>(
+        _name: SectionName<'data>,
+    ) -> Option<SectionIdentity<'data, Self>> {
+        None
+    }
+
+    fn fmt_section_identity(
+        name: SectionName<'_>,
+        _format_specific: &Self::SectionIdentityExt,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        std::fmt::Display::fmt(&name, f)
     }
 }
 
@@ -1328,8 +1365,6 @@ impl FrameIndex {
 }
 
 pub(crate) trait ProgramSegmentDef: Copy + Send + Sync + Display + 'static {
-    type Platform: Platform;
-
     fn is_writable(self) -> bool;
 
     fn is_executable(self) -> bool;
@@ -1345,15 +1380,6 @@ pub(crate) trait ProgramSegmentDef: Copy + Send + Sync + Display + 'static {
     /// Returns a numeric value that can be used to sort the segments as they should appear in the
     /// program headers table. Segments with lower values will appear first.
     fn order_key(self) -> usize;
-
-    /// Returns whether we should include the specified section in a segment with the properties of
-    /// `self`
-    fn should_include_section(
-        self,
-        section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
-        section_id: OutputSectionId,
-        rosegment: bool,
-    ) -> bool;
 
     /// Returns whether the current RW segment should end when this segment ends.
     fn should_cut_rw_segment_when_ending(self) -> bool {

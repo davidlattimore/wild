@@ -14,6 +14,7 @@ use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::SectionIdentity;
 use crate::output_section_id::SectionName;
 use crate::part_id::PartId;
 use crate::platform;
@@ -92,6 +93,7 @@ enum SinglePartSectionId {
     WasmCode,
     WasmData,
     WasmName,
+    WasmTargetFeatures,
 
     // Must be last.
     Count,
@@ -114,6 +116,8 @@ pub(crate) mod part_id {
     pub(crate) const WASM_CODE: PartId = SinglePartSectionId::WasmCode.part_id();
     pub(crate) const WASM_DATA: PartId = SinglePartSectionId::WasmData.part_id();
     pub(crate) const WASM_NAME: PartId = SinglePartSectionId::WasmName.part_id();
+    pub(crate) const WASM_TARGET_FEATURES: PartId =
+        SinglePartSectionId::WasmTargetFeatures.part_id();
 }
 
 pub(crate) mod output_section_id {
@@ -142,6 +146,8 @@ pub(crate) mod output_section_id {
     pub(crate) const WASM_CODE: OutputSectionId = SinglePartSectionId::WasmCode.output_section_id();
     pub(crate) const WASM_DATA: OutputSectionId = SinglePartSectionId::WasmData.output_section_id();
     pub(crate) const WASM_NAME: OutputSectionId = SinglePartSectionId::WasmName.output_section_id();
+    pub(crate) const WASM_TARGET_FEATURES: OutputSectionId =
+        SinglePartSectionId::WasmTargetFeatures.output_section_id();
 }
 
 /// Magic bytes at the start of every Wasm module.
@@ -181,11 +187,19 @@ pub(crate) const RELOC_SECTION_PREFIX: &str = "reloc.";
 /// The custom-section name used for the WebAssembly target features.
 pub(crate) const TARGET_FEATURES_SECTION_NAME: &str = "target_features";
 
+/// Feature is used by this object (`+` in the target_features section).
+const TARGET_FEATURE_PREFIX_USED: u8 = b'+';
+/// Feature must not appear in the output (`-` in the target_features section).
+const TARGET_FEATURE_PREFIX_DISALLOWED: u8 = b'-';
+
 /// Default static data base for linker-produced executables.
 const LINKER_MEMORY_BASE: u32 = 1024;
 
 /// Empty function body: zero locals + `end`.
 const EMPTY_FUNCTION_BODY: &[u8] = &[0x00, 0x0b];
+
+/// Undefined weak function stubs.
+const UNREACHABLE_FUNCTION_BODY: &[u8] = &[0x00, 0x00, 0x0b];
 
 /// `i32.const` body for `LINKER_MEMORY_BASE`.
 const LINKER_MEMORY_BASE_INIT_EXPR: &[u8] = &[0x41, 0x80, 0x08];
@@ -225,9 +239,16 @@ pub(crate) struct File<'data> {
 
     pub(crate) linking_version: Option<u32>,
 
-    /// Raw payload of the `target_features` custom section, if present.
+    /// Entries from the `target_features` custom section, if present.
     #[debug(skip)]
-    pub(crate) target_features_raw: Option<&'data [u8]>,
+    pub(crate) target_features: Vec<WasmTargetFeature<'data>>,
+}
+
+/// One entry of the Wasm tool-conventions `target_features` custom section.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WasmTargetFeature<'data> {
+    pub(crate) prefix: u8,
+    pub(crate) name: &'data str,
 }
 
 /// A constructor from the linking `InitFuncs` subsection.
@@ -1455,8 +1476,6 @@ impl std::fmt::Display for ProgramSegmentDef {
 }
 
 impl platform::ProgramSegmentDef for ProgramSegmentDef {
-    type Platform = Wasm;
-
     fn is_writable(self) -> bool {
         false
     }
@@ -1484,46 +1503,17 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     fn order_key(self) -> usize {
         self.segment_type as usize
     }
-
-    fn should_include_section(
-        self,
-        _section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
-        section_id: crate::output_section_id::OutputSectionId,
-        _rosegment: bool,
-    ) -> bool {
-        use crate::wasm::output_section_id as osid;
-
-        let section_segment_type = match section_id {
-            crate::output_section_id::FILE_HEADER => SegmentType::Header,
-            osid::WASM_TYPE
-            | osid::WASM_IMPORT
-            | osid::WASM_FUNCTION
-            | osid::WASM_TABLE
-            | osid::WASM_MEMORY
-            | osid::WASM_GLOBAL
-            | osid::WASM_EXPORT
-            | osid::WASM_START
-            | osid::WASM_ELEMENT
-            | osid::WASM_DATA_COUNT
-            | osid::WASM_CODE
-            | osid::WASM_DATA
-            | osid::WASM_NAME => SegmentType::Module,
-            _ => SegmentType::Unused,
-        };
-
-        self.segment_type == section_segment_type
-    }
 }
 
 pub(crate) struct BuiltInSectionDetails {
-    pub(crate) kind: SectionKind<'static>,
+    pub(crate) kind: SectionKind<'static, Wasm>,
     pub(crate) target_segment_type: Option<SegmentType>,
 }
 
 impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
-    kind: SectionKind::Primary(SectionName(&[])),
+    kind: SectionKind::Primary(SectionIdentity::new(SectionName(&[]), ())),
     target_segment_type: None,
 };
 
@@ -1538,61 +1528,65 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
 
     // The module preamble.
     defs[crate::output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"WASM_HEADER")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"WASM_HEADER"), ())),
         target_segment_type: Some(SegmentType::Header),
     };
 
     // Standard Wasm sections.
     defs[osid::WASM_TYPE.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"type")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"type"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_IMPORT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"import")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"import"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_FUNCTION.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"function")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"function"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_TABLE.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"table")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"table"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_MEMORY.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"memory")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"memory"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_GLOBAL.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"global")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"global"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_EXPORT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"export")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"export"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_START.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"start")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"start"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_ELEMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"element")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"element"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_DATA_COUNT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"data_count")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"data_count"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_CODE.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"code")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"code"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_DATA.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"data")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"data"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_NAME.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"name")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"name"), ())),
+        target_segment_type: Some(SegmentType::Module),
+    };
+    defs[osid::WASM_TARGET_FEATURES.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"target_features"), ())),
         target_segment_type: Some(SegmentType::Module),
     };
 
@@ -1626,6 +1620,8 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact(b"data", SectionRuleOutcome::Discard),
     SectionRule::exact(b"linking", SectionRuleOutcome::Discard),
     SectionRule::prefix(b"reloc.", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"name", SectionRuleOutcome::Discard),
+    SectionRule::exact(b"target_features", SectionRuleOutcome::Discard),
 ];
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -1725,6 +1721,8 @@ pub(crate) struct WasmEncodedSections {
     pub(crate) element: Option<Vec<u8>>,
     // Custom `name` section.
     pub(crate) name: Option<Vec<u8>>,
+    // Custom `target_features` section.
+    pub(crate) target_features: Option<Vec<u8>>,
 }
 
 impl WasmEncodedSections {
@@ -1738,6 +1736,11 @@ impl WasmEncodedSections {
         add_encoded_section_size(sizes, part_id::WASM_EXPORT, self.export.as_ref());
         add_encoded_section_size(sizes, part_id::WASM_ELEMENT, self.element.as_ref());
         add_encoded_section_size(sizes, part_id::WASM_NAME, self.name.as_ref());
+        add_encoded_section_size(
+            sizes,
+            part_id::WASM_TARGET_FEATURES,
+            self.target_features.as_ref(),
+        );
     }
 }
 
@@ -1910,6 +1913,89 @@ fn wasm_symbol_name_str<'data>(data: &'data [u8], sym: &WasmSymbol) -> Option<&'
     core::str::from_utf8(bytes).ok()
 }
 
+/// Merge `target_features` from linked objects and encode the output custom section.
+fn build_target_features_section<'data>(
+    layout_inputs: &[WasmObjectLayoutInput<'data>],
+) -> Result<Option<wasm_encoder::CustomSection<'static>>> {
+    let mut used: HashSet<&'data str> = HashSet::new();
+    // First file that disallowed each feature.
+    let mut disallowed: HashMap<&'data str, crate::input_data::FileId> = HashMap::new();
+
+    for input in layout_inputs {
+        for feature in input.target_features {
+            match feature.prefix {
+                TARGET_FEATURE_PREFIX_USED => {
+                    used.insert(feature.name);
+                }
+                TARGET_FEATURE_PREFIX_DISALLOWED => {
+                    disallowed.entry(feature.name).or_insert(input.file_id);
+                }
+                other => {
+                    bail!(
+                        "unrecognized target_features prefix 0x{other:02x} for feature `{}`",
+                        feature.name
+                    );
+                }
+            }
+        }
+    }
+
+    for name in &used {
+        if let Some(&file_id) = disallowed.get(name) {
+            bail!(
+                "target feature `{name}` is used by linked objects but disallowed by input file \
+                 {file_id}"
+            );
+        }
+    }
+
+    if used.is_empty() {
+        return Ok(None);
+    }
+
+    let mut names: Vec<&'data str> = used.into_iter().collect();
+    names.sort_unstable();
+
+    let mut payload = Vec::new();
+    leb128::write::unsigned(&mut payload, names.len() as u64).unwrap();
+    for name in names {
+        payload.push(TARGET_FEATURE_PREFIX_USED);
+        let name_bytes = name.as_bytes();
+        leb128::write::unsigned(&mut payload, name_bytes.len() as u64).unwrap();
+        payload.extend_from_slice(name_bytes);
+    }
+
+    Ok(Some(wasm_encoder::CustomSection {
+        name: Cow::Borrowed(TARGET_FEATURES_SECTION_NAME),
+        data: Cow::Owned(payload),
+    }))
+}
+
+fn parse_target_features_payload<'data>(
+    data: &'data [u8],
+) -> Result<Vec<WasmTargetFeature<'data>>> {
+    let mut reader = BinaryReader::new(data, 0);
+    let count = reader
+        .read_var_u32()
+        .context("invalid target_features feature count")?;
+    let mut features = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let prefix = reader
+            .read_u8()
+            .context("truncated target_features feature prefix")?;
+        let name = reader
+            .read_string()
+            .context("invalid target_features feature name")?;
+        features.push(WasmTargetFeature { prefix, name });
+    }
+    ensure!(
+        reader.eof(),
+        "trailing bytes in target_features section after {} features",
+        features.len()
+    );
+    Ok(features)
+}
+
 impl<'data> WasmLayout<'data> {
     fn encode_metadata_sections(
         &mut self,
@@ -1962,6 +2048,10 @@ impl<'data> WasmLayout<'data> {
 
         if let Some(name_section) = build_name_section(self, layout_inputs, indices, got_mem) {
             self.encoded_sections.name = Some(encode_wasm_section(&name_section));
+        }
+
+        if let Some(target_features) = build_target_features_section(layout_inputs)? {
+            self.encoded_sections.target_features = Some(encode_wasm_section(&target_features));
         }
 
         self.code_section_size = compute_code_section_size(&self.function_bodies);
@@ -2378,6 +2468,9 @@ impl WasmObjectIndexMap {
                     "function {func_out} has no indirect table slot"
                 );
                 if reloc.ty == RelocationType::TableIndexRelSleb {
+                    if slot == 0 {
+                        return Ok(0);
+                    }
                     let relative = slot.checked_sub(DEFAULT_TABLE_BASE).ok_or_else(|| {
                         crate::error!("Wasm TABLE_INDEX_REL_SLEB relocation out of range")
                     })?;
@@ -2431,6 +2524,7 @@ struct WasmObjectLayoutInput<'data> {
     data_relocations: Vec<WasmRelocation>,
     symbols: &'data [WasmSymbol],
     init_funcs: &'data [WasmInitFunc],
+    target_features: &'data [WasmTargetFeature<'data>],
     symbol_id_range: crate::symbol_db::SymbolIdRange,
     file_id: crate::input_data::FileId,
 }
@@ -2438,9 +2532,7 @@ struct WasmObjectLayoutInput<'data> {
 #[derive(Debug, Clone, Copy)]
 struct WasmObjectIndexBases {
     type_index_base: u32,
-    function_import_base: u32,
     defined_function_base: u32,
-    global_import_base: u32,
     defined_global_base: u32,
     memory_base: u32,
 }
@@ -2448,7 +2540,6 @@ struct WasmObjectIndexBases {
 #[derive(Debug)]
 struct WasmObjectOutputLayout<'data> {
     types: Vec<wasmparser::FuncType>,
-    imports: Vec<OutputImport<'data>>,
     function_type_indices: Vec<u32>,
     globals: Vec<OutputGlobal<'data>>,
     exports: Vec<OutputExport<'data>>,
@@ -2623,6 +2714,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             data_relocations,
             symbols: file.symbols.as_slice(),
             init_funcs: file.init_funcs.as_slice(),
+            target_features: file.target_features.as_slice(),
             symbol_id_range,
             file_id,
         })
@@ -2630,10 +2722,12 @@ impl<'data> WasmObjectLayoutInput<'data> {
 
     fn build_object_output_layout(
         &self,
+        object_index: usize,
         index_bases: WasmObjectIndexBases,
         resolutions: &ObjectImportResolutions,
         all_index_bases: &[WasmObjectIndexBases],
         indices: &LinkerDefinedIndices,
+        shared_imports: &SharedUnresolvedImports<'data>,
     ) -> Result<WasmObjectOutputLayout<'data>> {
         ensure!(
             resolutions.function_resolutions.len() == self.function_imports.len(),
@@ -2665,29 +2759,18 @@ impl<'data> WasmObjectLayoutInput<'data> {
             got_mem_globals: Vec::new(),
         };
 
-        let mut imports =
-            Vec::with_capacity(self.function_imports.len() + self.global_imports.len());
-        let mut unresolved_func_count = 0u32;
-        for (i, import) in self.function_imports.iter().enumerate() {
-            match resolutions.function_resolutions[i] {
+        for (i, resolution) in resolutions.function_resolutions.iter().enumerate() {
+            match *resolution {
                 ImportResolution::Unresolved => {
-                    let output_type_index = index_bases
-                        .type_index_base
-                        .checked_add(import.type_index)
-                        .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
-                    let output_function_index = index_bases
-                        .function_import_base
-                        .checked_add(unresolved_func_count)
-                        .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
-                    unresolved_func_count += 1;
+                    let output_function_index = shared_imports
+                        .function_index(object_index, i)
+                        .ok_or_else(|| {
+                            crate::error!(
+                                "missing shared function import index for object {object_index} \
+                                 import {i}"
+                            )
+                        })?;
                     index_map.function_indices.push(output_function_index);
-                    imports.push(OutputImport {
-                        module: import.module,
-                        name: import.name,
-                        entity: OutputImportEntity::Function {
-                            type_index: output_type_index,
-                        },
-                    });
                 }
                 ImportResolution::LinkerDefined(known) => {
                     let index = indices.function_index(known).ok_or_else(|| {
@@ -2695,16 +2778,26 @@ impl<'data> WasmObjectLayoutInput<'data> {
                     })?;
                     index_map.function_indices.push(index);
                 }
+                ImportResolution::WeakUndefStub { stub_index } => {
+                    let index = indices
+                        .weak_undef_stubs
+                        .get(stub_index as usize)
+                        .map(|s| s.function_index)
+                        .ok_or_else(|| {
+                            crate::error!("Wasm weak-undef stub index {stub_index} out of range")
+                        })?;
+                    index_map.function_indices.push(index);
+                }
                 ImportResolution::ResolvedFunction {
-                    object_index,
+                    object_index: def_object_index,
                     local_defined_index,
                 } => {
                     ensure!(
-                        object_index < all_index_bases.len(),
-                        "Wasm function import resolution references object index {object_index} \
-                         out of range"
+                        def_object_index < all_index_bases.len(),
+                        "Wasm function import resolution references object index \
+                         {def_object_index} out of range"
                     );
-                    let target_bases = &all_index_bases[object_index];
+                    let target_bases = &all_index_bases[def_object_index];
                     let output_function_index = target_bases
                         .defined_function_base
                         .checked_add(local_defined_index)
@@ -2719,21 +2812,18 @@ impl<'data> WasmObjectLayoutInput<'data> {
             }
         }
 
-        let mut unresolved_global_count = 0u32;
-        for (i, import) in self.global_imports.iter().enumerate() {
-            match resolutions.global_resolutions[i] {
+        for (i, resolution) in resolutions.global_resolutions.iter().enumerate() {
+            match *resolution {
                 ImportResolution::Unresolved => {
-                    let output_global_index = index_bases
-                        .global_import_base
-                        .checked_add(unresolved_global_count)
-                        .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-                    unresolved_global_count += 1;
+                    let output_global_index = shared_imports
+                        .global_index(object_index, i)
+                        .ok_or_else(|| {
+                            crate::error!(
+                                "missing shared global import index for object {object_index} \
+                                 import {i}"
+                            )
+                        })?;
                     index_map.global_indices.push(output_global_index);
-                    imports.push(OutputImport {
-                        module: import.module,
-                        name: import.name,
-                        entity: OutputImportEntity::Global(import.ty),
-                    });
                 }
                 ImportResolution::LinkerDefined(known) => {
                     let index = indices.global_index(known).ok_or_else(|| {
@@ -2763,7 +2853,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
                         .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
                     index_map.global_indices.push(output_global_index);
                 }
-                ImportResolution::ResolvedFunction { .. } => {
+                ImportResolution::ResolvedFunction { .. }
+                | ImportResolution::WeakUndefStub { .. } => {
                     bail!("global import resolved as function");
                 }
             }
@@ -2821,7 +2912,6 @@ impl<'data> WasmObjectLayoutInput<'data> {
 
         Ok(WasmObjectOutputLayout {
             types: self.types.clone(),
-            imports,
             function_type_indices,
             globals: self.globals.clone(),
             exports,
@@ -2852,6 +2942,8 @@ enum ImportResolution {
     },
     /// Resolved to a linker-synthesized function or global.
     LinkerDefined(WasmLinkerSymbol),
+    /// Undefined weak function absorbed into a shared `unreachable` stub.
+    WeakUndefStub { stub_index: u32 },
     /// Fixed module global index (GOT.mem entry).
     DirectGlobal { output_index: u32 },
     /// GOT.mem slot pending final module global index.
@@ -2862,8 +2954,181 @@ enum ImportResolution {
 struct ObjectImportResolutions {
     function_resolutions: Vec<ImportResolution>,
     global_resolutions: Vec<ImportResolution>,
-    unresolved_function_count: u32,
-    unresolved_global_count: u32,
+}
+
+#[derive(Debug, Clone)]
+struct SharedFunctionImport<'data> {
+    module: &'data str,
+    name: &'data str,
+    first_object: usize,
+    local_type_index: u32,
+}
+
+#[derive(Debug, Clone)]
+struct SharedGlobalImport<'data> {
+    module: &'data str,
+    name: &'data str,
+    ty: GlobalType,
+}
+
+/// Unresolved host imports coalesced by `(module, name)` across objects.
+#[derive(Debug, Default)]
+struct SharedUnresolvedImports<'data> {
+    functions: Vec<SharedFunctionImport<'data>>,
+    globals: Vec<SharedGlobalImport<'data>>,
+    function_indices: Vec<Vec<Option<u32>>>,
+    global_indices: Vec<Vec<Option<u32>>>,
+}
+
+impl<'data> SharedUnresolvedImports<'data> {
+    fn function_count(&self) -> u32 {
+        self.functions.len() as u32
+    }
+
+    fn global_count(&self) -> u32 {
+        self.globals.len() as u32
+    }
+
+    fn function_index(&self, object_index: usize, local_import: usize) -> Option<u32> {
+        self.function_indices
+            .get(object_index)?
+            .get(local_import)
+            .copied()
+            .flatten()
+    }
+
+    fn global_index(&self, object_index: usize, local_import: usize) -> Option<u32> {
+        self.global_indices
+            .get(object_index)?
+            .get(local_import)
+            .copied()
+            .flatten()
+    }
+
+    fn to_output_imports(
+        &self,
+        index_bases: &[WasmObjectIndexBases],
+    ) -> Result<Vec<OutputImport<'data>>> {
+        let mut imports = Vec::with_capacity(self.functions.len() + self.globals.len());
+        for imp in &self.functions {
+            let type_index = index_bases
+                .get(imp.first_object)
+                .ok_or_else(|| crate::error!("Wasm shared import object index out of range"))?
+                .type_index_base
+                .checked_add(imp.local_type_index)
+                .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+            imports.push(OutputImport {
+                module: imp.module,
+                name: imp.name,
+                entity: OutputImportEntity::Function { type_index },
+            });
+        }
+        for imp in &self.globals {
+            imports.push(OutputImport {
+                module: imp.module,
+                name: imp.name,
+                entity: OutputImportEntity::Global(imp.ty),
+            });
+        }
+        Ok(imports)
+    }
+}
+
+fn collect_shared_unresolved_imports<'data>(
+    inputs: &[WasmObjectLayoutInput<'data>],
+    resolutions: &[ObjectImportResolutions],
+) -> Result<SharedUnresolvedImports<'data>> {
+    let mut functions: Vec<SharedFunctionImport<'data>> = Vec::new();
+    let mut globals: Vec<SharedGlobalImport<'data>> = Vec::new();
+    let mut func_key_to_idx: HashMap<(&str, &str), u32> = HashMap::new();
+    let mut global_key_to_idx: HashMap<(&str, &str), u32> = HashMap::new();
+    let mut function_indices = Vec::with_capacity(inputs.len());
+    let mut global_indices = Vec::with_capacity(inputs.len());
+
+    for (obj_idx, (input, res)) in inputs.iter().zip(resolutions.iter()).enumerate() {
+        let mut func_map = vec![None; input.function_imports.len()];
+        for (i, import) in input.function_imports.iter().enumerate() {
+            if !matches!(
+                res.function_resolutions.get(i),
+                Some(ImportResolution::Unresolved)
+            ) {
+                continue;
+            }
+            let local_type_index = import.type_index;
+            ensure!(
+                (local_type_index as usize) < input.types.len(),
+                "Wasm type index {local_type_index} out of range for import `{}`.`{}`",
+                import.module,
+                import.name
+            );
+            let key = (import.module, import.name);
+            let shared_idx = if let Some(&idx) = func_key_to_idx.get(&key) {
+                let existing = &functions[idx as usize];
+                let existing_ty =
+                    &inputs[existing.first_object].types[existing.local_type_index as usize];
+                let this_ty = &input.types[local_type_index as usize];
+                ensure!(
+                    existing_ty == this_ty,
+                    "conflicting types for import `{}`.`{}`",
+                    import.module,
+                    import.name
+                );
+                idx
+            } else {
+                let idx =
+                    u32::try_from(functions.len()).context("too many Wasm function imports")?;
+                functions.push(SharedFunctionImport {
+                    module: import.module,
+                    name: import.name,
+                    first_object: obj_idx,
+                    local_type_index,
+                });
+                func_key_to_idx.insert(key, idx);
+                idx
+            };
+            func_map[i] = Some(shared_idx);
+        }
+        function_indices.push(func_map);
+
+        let mut global_map = vec![None; input.global_imports.len()];
+        for (i, import) in input.global_imports.iter().enumerate() {
+            if !matches!(
+                res.global_resolutions.get(i),
+                Some(ImportResolution::Unresolved)
+            ) {
+                continue;
+            }
+            let key = (import.module, import.name);
+            let shared_idx = if let Some(&idx) = global_key_to_idx.get(&key) {
+                let existing = &globals[idx as usize];
+                ensure!(
+                    existing.ty == import.ty,
+                    "conflicting types for import `{}`.`{}`",
+                    import.module,
+                    import.name
+                );
+                idx
+            } else {
+                let idx = u32::try_from(globals.len()).context("too many Wasm global imports")?;
+                globals.push(SharedGlobalImport {
+                    module: import.module,
+                    name: import.name,
+                    ty: import.ty,
+                });
+                global_key_to_idx.insert(key, idx);
+                idx
+            };
+            global_map[i] = Some(shared_idx);
+        }
+        global_indices.push(global_map);
+    }
+
+    Ok(SharedUnresolvedImports {
+        functions,
+        globals,
+        function_indices,
+        global_indices,
+    })
 }
 
 fn local_defined_function_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> u32 {
@@ -2888,7 +3153,7 @@ fn resolve_cross_object_imports<'data>(
         .par_iter()
         .map(|input| {
             verbose_timing_phase!("Resolve Wasm object imports");
-            let (function_resolutions, unresolved_function_count) = resolve_import_symbols(
+            let function_resolutions = resolve_import_symbols(
                 input.function_imports.len(),
                 WasmSymbolKind::Func,
                 input,
@@ -2896,7 +3161,7 @@ fn resolve_cross_object_imports<'data>(
                 symbol_db,
                 file_id_to_index,
             )?;
-            let (global_resolutions, unresolved_global_count) = resolve_import_symbols(
+            let global_resolutions = resolve_import_symbols(
                 input.global_imports.len(),
                 WasmSymbolKind::Global,
                 input,
@@ -2907,8 +3172,6 @@ fn resolve_cross_object_imports<'data>(
             Ok(ObjectImportResolutions {
                 function_resolutions,
                 global_resolutions,
-                unresolved_function_count,
-                unresolved_global_count,
             })
         })
         .collect()
@@ -2921,10 +3184,9 @@ fn resolve_import_symbols<'data>(
     all_inputs: &[WasmObjectLayoutInput<'data>],
     symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
-) -> Result<(Vec<ImportResolution>, u32)> {
+) -> Result<Vec<ImportResolution>> {
     ensure!(u32::try_from(import_count).is_ok(), "too many Wasm imports");
     let mut resolutions = vec![ImportResolution::Unresolved; import_count];
-    let mut unresolved_count = u32::try_from(import_count).expect("checked above");
 
     for (sym_offset, sym) in input.symbols.iter().enumerate() {
         if !sym.is_undefined() || sym.kind != kind {
@@ -2945,7 +3207,6 @@ fn resolve_import_symbols<'data>(
         if matches!(resolutions[import_idx], ImportResolution::Unresolved)
             && !matches!(resolution, ImportResolution::Unresolved)
         {
-            unresolved_count -= 1;
             resolutions[import_idx] = resolution;
         }
     }
@@ -2960,12 +3221,11 @@ fn resolve_import_symbols<'data>(
             continue;
         }
         if let Some(resolution) = linker_defined_import_resolution(name, kind, symbol_db) {
-            unresolved_count -= 1;
             resolutions[import_idx] = resolution;
         }
     }
 
-    Ok((resolutions, unresolved_count))
+    Ok(resolutions)
 }
 
 /// Try to resolve a single undefined import symbol.
@@ -3098,8 +3358,15 @@ impl LinkerImportAbsorption {
     }
 }
 
+/// Synthetic function produced for an unresolved weak function import.
+#[derive(Debug, Clone)]
+struct WeakUndefFunctionStub {
+    ty: wasmparser::FuncType,
+    function_index: u32,
+}
+
 /// Reserved Wasm index-space slots for linker-defined globals/functions.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct LinkerDefinedIndices {
     memory_base_global: Option<u32>,
     table_base_global: Option<u32>,
@@ -3111,6 +3378,7 @@ struct LinkerDefinedIndices {
     call_ctors_func: Option<u32>,
     call_dtors_func: Option<u32>,
     entry_wrapper_func: Option<u32>,
+    weak_undef_stubs: Vec<WeakUndefFunctionStub>,
     /// Linker-defined globals including GOT.mem.
     num_defined_globals: u32,
     num_defined_functions: u32,
@@ -3175,7 +3443,7 @@ struct LayoutRelocScan {
     table_index_symbol_indices: Vec<Vec<usize>>,
 }
 
-/// Scan relocations, absorb GOT.mem imports, and reserve linker-defined indices.
+/// Scan relocations, absorb GOT.mem / weak-undef imports, and reserve linker-defined indices.
 fn setup_got_mem_and_indices<'data>(
     layout_inputs: &[WasmObjectLayoutInput<'data>],
     resolutions: &mut [ObjectImportResolutions],
@@ -3183,13 +3451,22 @@ fn setup_got_mem_and_indices<'data>(
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
     has_init_funcs: bool,
     wrap_entry: bool,
-) -> Result<(LinkerDefinedIndices, LayoutRelocScan)> {
+) -> Result<(
+    LinkerDefinedIndices,
+    LayoutRelocScan,
+    SharedUnresolvedImports<'data>,
+)> {
     let mut scan = scan_layout_relocations(layout_inputs, symbol_db, file_id_to_index)?;
 
     absorb_got_mem_imports(&scan.got_mem, layout_inputs, resolutions, symbol_db)?;
+    let weak_undef_stubs = absorb_weak_undef_function_imports(layout_inputs, resolutions)?;
+    let shared_imports = collect_shared_unresolved_imports(layout_inputs, resolutions)?;
 
     let indices = LinkerDefinedIndices::compute(
         resolutions,
+        shared_imports.function_count(),
+        shared_imports.global_count(),
+        weak_undef_stubs,
         LinkerDefinedIndexRequest {
             has_init_funcs,
             wrap_entry,
@@ -3208,7 +3485,113 @@ fn setup_got_mem_and_indices<'data>(
         finalize_got_mem_import_resolutions(resolutions, first_got)?;
     }
 
-    Ok((indices, scan))
+    Ok((indices, scan, shared_imports))
+}
+
+/// True when every undefined Func symbol for that ordinal is weak.
+fn pure_weak_function_import_flags(input: &WasmObjectLayoutInput<'_>) -> Vec<bool> {
+    let n = input.function_imports.len();
+    let mut saw_weak = vec![false; n];
+    let mut saw_non_weak = vec![false; n];
+    for sym in input.symbols {
+        if sym.kind != WasmSymbolKind::Func || !sym.is_undefined() {
+            continue;
+        }
+        let idx = sym.index as usize;
+        if idx >= n {
+            continue;
+        }
+        if sym.is_weak() {
+            saw_weak[idx] = true;
+        } else {
+            saw_non_weak[idx] = true;
+        }
+    }
+    saw_weak
+        .into_iter()
+        .zip(saw_non_weak)
+        .map(|(weak, non_weak)| weak && !non_weak)
+        .collect()
+}
+
+/// Absorb pure undefined-weak function imports into shared `unreachable` stubs.
+fn absorb_weak_undef_function_imports<'data>(
+    inputs: &[WasmObjectLayoutInput<'data>],
+    resolutions: &mut [ObjectImportResolutions],
+) -> Result<Vec<WeakUndefFunctionStub>> {
+    let pure_weak_flags: Vec<Vec<bool>> =
+        inputs.iter().map(pure_weak_function_import_flags).collect();
+
+    let mut non_weak_names = HashSet::new();
+    for (input, (res, flags)) in inputs
+        .iter()
+        .zip(resolutions.iter().zip(pure_weak_flags.iter()))
+    {
+        for (i, import) in input.function_imports.iter().enumerate() {
+            if !matches!(
+                res.function_resolutions.get(i),
+                Some(ImportResolution::Unresolved)
+            ) {
+                continue;
+            }
+            if !flags.get(i).copied().unwrap_or(false) {
+                non_weak_names.insert(import.name);
+            }
+        }
+    }
+
+    let mut stubs: Vec<WeakUndefFunctionStub> = Vec::new();
+    let mut name_to_stub: HashMap<&str, u32> = HashMap::new();
+
+    for (input, (res, flags)) in inputs
+        .iter()
+        .zip(resolutions.iter_mut().zip(pure_weak_flags.iter()))
+    {
+        for (i, import) in input.function_imports.iter().enumerate() {
+            if !matches!(
+                res.function_resolutions.get(i),
+                Some(ImportResolution::Unresolved)
+            ) {
+                continue;
+            }
+            if !flags.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+            if non_weak_names.contains(import.name) {
+                continue;
+            }
+            let ty = input
+                .types
+                .get(import.type_index as usize)
+                .ok_or_else(|| {
+                    crate::error!(
+                        "Wasm type index {} out of range for weak import `{}`",
+                        import.type_index,
+                        import.name
+                    )
+                })?
+                .clone();
+            let stub_index = if let Some(&idx) = name_to_stub.get(import.name) {
+                ensure!(
+                    stubs[idx as usize].ty == ty,
+                    "conflicting types for undefined weak function `{}`",
+                    import.name
+                );
+                idx
+            } else {
+                let idx = u32::try_from(stubs.len()).context("too many Wasm weak-undef stubs")?;
+                name_to_stub.insert(import.name, idx);
+                stubs.push(WeakUndefFunctionStub {
+                    ty,
+                    function_index: 0,
+                });
+                idx
+            };
+            res.function_resolutions[i] = ImportResolution::WeakUndefStub { stub_index };
+        }
+    }
+
+    Ok(stubs)
 }
 
 fn resolve_got_mem_def(
@@ -3446,7 +3829,6 @@ fn absorb_got_mem_imports(
                 continue;
             };
             res.global_resolutions[i] = ImportResolution::GotMemSlot(slot);
-            res.unresolved_global_count = res.unresolved_global_count.saturating_sub(1);
         }
     }
     Ok(())
@@ -3563,6 +3945,9 @@ struct LinkerDefinedIndexRequest {
 impl LinkerDefinedIndices {
     fn compute(
         import_resolutions: &[ObjectImportResolutions],
+        function_import_count: u32,
+        global_import_count: u32,
+        mut weak_undef_stubs: Vec<WeakUndefFunctionStub>,
         request: LinkerDefinedIndexRequest,
     ) -> Result<Self> {
         let mut needs_memory_base = request.needs_memory_base;
@@ -3571,8 +3956,6 @@ impl LinkerDefinedIndices {
         let mut needs_tls_base = false;
         let mut needs_ctors = request.has_init_funcs;
         let mut needs_dtors = false;
-        let mut function_import_count = 0u32;
-        let mut global_import_count = 0u32;
 
         for resolutions in import_resolutions {
             let absorption = LinkerImportAbsorption::from_resolutions(resolutions);
@@ -3582,14 +3965,6 @@ impl LinkerDefinedIndices {
             needs_table_base |= absorption.needs_table_base;
             needs_stack_pointer |= absorption.needs_stack_pointer;
             needs_tls_base |= absorption.needs_tls_base;
-
-            function_import_count = function_import_count
-                .checked_add(resolutions.unresolved_function_count)
-                .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
-
-            global_import_count = global_import_count
-                .checked_add(resolutions.unresolved_global_count)
-                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
         }
 
         let mut next_global = global_import_count;
@@ -3649,6 +4024,12 @@ impl LinkerDefinedIndices {
             next_func += 1;
             idx
         });
+        for stub in &mut weak_undef_stubs {
+            stub.function_index = next_func;
+            next_func = next_func
+                .checked_add(1)
+                .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+        }
         let num_defined_functions = next_func - function_import_count;
 
         Ok(Self {
@@ -3660,6 +4041,7 @@ impl LinkerDefinedIndices {
             call_ctors_func,
             call_dtors_func,
             entry_wrapper_func,
+            weak_undef_stubs,
             num_defined_globals,
             num_defined_functions,
             global_import_count,
@@ -3694,14 +4076,18 @@ fn encode_i32_const_body(value: i32) -> Vec<u8> {
 }
 
 fn ensure_void_void_type(types: &mut Vec<wasmparser::FuncType>) -> u32 {
+    ensure_func_type(types, &wasmparser::FuncType::new([], []))
+}
+
+fn ensure_func_type(types: &mut Vec<wasmparser::FuncType>, ty: &wasmparser::FuncType) -> u32 {
     if let Some((idx, _)) = types
         .iter()
         .enumerate()
-        .find(|(_, ty)| ty.params().is_empty() && ty.results().is_empty())
+        .find(|(_, existing)| *existing == ty)
     {
         return idx as u32;
     }
-    types.push(wasmparser::FuncType::new([], []));
+    types.push(ty.clone());
     (types.len() - 1) as u32
 }
 
@@ -3762,13 +4148,21 @@ fn deduplicate_output_types(layout: &mut WasmLayout<'_>) {
     }
 }
 
-fn empty_linker_function_body() -> WasmFunctionBody<'static> {
+fn borrowed_linker_function_body(bytes: &'static [u8]) -> WasmFunctionBody<'static> {
     WasmFunctionBody {
-        bytes: Cow::Borrowed(EMPTY_FUNCTION_BODY),
+        bytes: Cow::Borrowed(bytes),
         code_offset: 0,
         relocations: Vec::new(),
         object_index: 0,
     }
+}
+
+fn empty_linker_function_body() -> WasmFunctionBody<'static> {
+    borrowed_linker_function_body(EMPTY_FUNCTION_BODY)
+}
+
+fn unreachable_linker_function_body() -> WasmFunctionBody<'static> {
+    borrowed_linker_function_body(UNREACHABLE_FUNCTION_BODY)
 }
 
 fn owned_linker_function_body(bytes: Vec<u8>) -> WasmFunctionBody<'static> {
@@ -3937,6 +4331,10 @@ fn emit_reserved_linker_definitions(
                 Some(bytes) => owned_linker_function_body(bytes),
                 None => empty_linker_function_body(),
             });
+        }
+        for stub in &indices.weak_undef_stubs {
+            type_indices.push(ensure_func_type(&mut layout.output_types, &stub.ty));
+            bodies.push(unreachable_linker_function_body());
         }
         type_indices.append(&mut layout.function_type_indices);
 
@@ -4240,7 +4638,7 @@ where
         && !call_ctors_used_in_objects(&layout_inputs)
         && entry_is_defined_function(&layout_inputs, symbol_db);
 
-    let (indices, reloc_scan) = setup_got_mem_and_indices(
+    let (indices, reloc_scan, shared_imports) = setup_got_mem_and_indices(
         &layout_inputs,
         &mut import_resolutions,
         symbol_db,
@@ -4249,8 +4647,7 @@ where
         wrap_entry,
     )?;
     let got_mem = &reloc_scan.got_mem;
-    let index_bases =
-        allocate_wasm_object_index_bases(&layout_inputs, &import_resolutions, &indices)?;
+    let index_bases = allocate_wasm_object_index_bases(&layout_inputs, &shared_imports, &indices)?;
     let mut object_layouts = {
         timing_phase!("Build per-object Wasm layouts");
         layout_inputs
@@ -4260,10 +4657,12 @@ where
             .map(|(obj_idx, (input, resolutions))| {
                 verbose_timing_phase!("Build Wasm object output layout");
                 input.build_object_output_layout(
+                    obj_idx,
                     index_bases[obj_idx],
                     resolutions,
                     &index_bases,
                     &indices,
+                    &shared_imports,
                 )
             })
             .collect::<Result<Vec<_>>>()?
@@ -4298,13 +4697,11 @@ where
 
         {
             timing_phase!("Merge Wasm section lists");
+            layout.imports = shared_imports.to_output_imports(&index_bases)?;
             for object_layout in &mut object_layouts {
                 layout
                     .output_types
                     .extend(std::mem::take(&mut object_layout.types));
-                layout
-                    .imports
-                    .extend(std::mem::take(&mut object_layout.imports));
                 layout
                     .function_type_indices
                     .extend(std::mem::take(&mut object_layout.function_type_indices));
@@ -4437,11 +4834,17 @@ where
     }
     {
         timing_phase!("Finalize Wasm indirect function table");
+        let weak_undef_funcs: HashSet<u32> = indices
+            .weak_undef_stubs
+            .iter()
+            .map(|s| s.function_index)
+            .collect();
         finalize_indirect_function_table(
             &mut layout,
             &layout_inputs,
             &reloc_scan.table_index_symbol_indices,
             reloc_scan.needs_table,
+            &weak_undef_funcs,
         )?;
     }
     layout.encode_metadata_sections(&layout_inputs, &indices, got_mem)?;
@@ -4454,6 +4857,7 @@ fn finalize_indirect_function_table(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     table_index_symbol_indices: &[Vec<usize>],
     needs_table: bool,
+    weak_undef_funcs: &HashSet<u32>,
 ) -> Result {
     if !needs_table {
         return Ok(());
@@ -4478,6 +4882,9 @@ fn finalize_indirect_function_table(
                 "R_WASM_TABLE_INDEX_* references non-function symbol"
             );
             let func_out = remap_wasm_index(&index_map.function_indices, sym.index, "function")?;
+            if weak_undef_funcs.contains(&func_out) {
+                continue;
+            }
             if seen.insert(func_out) {
                 needed.push(func_out);
             }
@@ -4492,6 +4899,12 @@ fn finalize_indirect_function_table(
         .max()
         .unwrap_or(0);
     let mut slots_by_func = vec![u32::MAX; max_func as usize + 1];
+
+    for &func_out in weak_undef_funcs {
+        if (func_out as usize) < slots_by_func.len() {
+            slots_by_func[func_out as usize] = 0;
+        }
+    }
 
     let mut element_functions = Vec::with_capacity(needed.len());
     for (i, &func_out) in needed.iter().enumerate() {
@@ -4756,41 +5169,30 @@ fn compute_data_addresses(
 
 fn allocate_wasm_object_index_bases(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
-    import_resolutions: &[ObjectImportResolutions],
+    shared_imports: &SharedUnresolvedImports<'_>,
     indices: &LinkerDefinedIndices,
 ) -> Result<Vec<WasmObjectIndexBases>> {
     let mut index_bases = Vec::with_capacity(layout_inputs.len());
     let mut next_type_index = 0u32;
-    let mut next_function_import_index = 0u32;
-    let mut next_global_import_index = 0u32;
+    let function_import_count = shared_imports.function_count();
+    let global_import_count = shared_imports.global_count();
 
-    for (input, resolutions) in layout_inputs.iter().zip(import_resolutions) {
+    for input in layout_inputs {
         index_bases.push(WasmObjectIndexBases {
             type_index_base: next_type_index,
-            function_import_base: next_function_import_index,
             defined_function_base: 0,
-            global_import_base: next_global_import_index,
             defined_global_base: 0,
-            // Imported and defined memories are merged into a single output memory at index 0.
             memory_base: 0,
         });
         next_type_index = next_type_index
             .checked_add(u32::try_from(input.types.len()).context("too many Wasm types")?)
             .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
-
-        next_function_import_index = next_function_import_index
-            .checked_add(resolutions.unresolved_function_count)
-            .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
-        next_global_import_index = next_global_import_index
-            .checked_add(resolutions.unresolved_global_count)
-            .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
     }
 
-    // Object-defined entities start after imports and any reserved linker-defined entities.
-    let mut next_defined_function_index = next_function_import_index
+    let mut next_defined_function_index = function_import_count
         .checked_add(indices.num_defined_functions)
         .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
-    let mut next_defined_global_index = next_global_import_index
+    let mut next_defined_global_index = global_import_count
         .checked_add(indices.num_defined_globals)
         .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
     for (input, index_base) in layout_inputs.iter().zip(index_bases.iter_mut()) {
@@ -4903,6 +5305,7 @@ impl platform::Platform for Wasm {
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
     type ResolvedObjectExt<'data> = WasmObjectLayout<'data>;
+    type SectionIdentityExt = ();
 
     fn write_output_file<'data, A: platform::Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
@@ -5044,6 +5447,36 @@ impl platform::Platform for Wasm {
 
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
         &[]
+    }
+
+    fn program_segment_should_include_section(
+        segment_def: Self::ProgramSegmentDef,
+        _section_info: &crate::output_section_id::SectionOutputInfo<Self>,
+        section_id: crate::output_section_id::OutputSectionId,
+        _rosegment: bool,
+    ) -> bool {
+        use crate::wasm::output_section_id as osid;
+
+        let section_segment_type = match section_id {
+            crate::output_section_id::FILE_HEADER => SegmentType::Header,
+            osid::WASM_TYPE
+            | osid::WASM_IMPORT
+            | osid::WASM_FUNCTION
+            | osid::WASM_TABLE
+            | osid::WASM_MEMORY
+            | osid::WASM_GLOBAL
+            | osid::WASM_EXPORT
+            | osid::WASM_START
+            | osid::WASM_ELEMENT
+            | osid::WASM_DATA_COUNT
+            | osid::WASM_CODE
+            | osid::WASM_DATA
+            | osid::WASM_NAME
+            | osid::WASM_TARGET_FEATURES => SegmentType::Module,
+            _ => SegmentType::Unused,
+        };
+
+        segment_def.segment_type == section_segment_type
     }
 
     fn create_linker_defined_symbols(
@@ -5345,6 +5778,7 @@ impl platform::Platform for Wasm {
         builder.add_section(osid::WASM_CODE);
         builder.add_section(osid::WASM_DATA);
         builder.add_section(osid::WASM_NAME);
+        builder.add_section(osid::WASM_TARGET_FEATURES);
 
         builder.build()
     }
@@ -5355,6 +5789,19 @@ impl platform::Platform for Wasm {
 
     fn is_allowed_in_archive(kind: crate::file_kind::FileKind) -> bool {
         kind == crate::file_kind::FileKind::WasmObject
+    }
+
+    fn section_identity<'data>(
+        name: SectionName<'data>,
+        _section: &Self::SectionHeader,
+    ) -> SectionIdentity<'data, Self> {
+        SectionIdentity::new(name, ())
+    }
+
+    fn section_identity_from_name<'data>(
+        name: SectionName<'data>,
+    ) -> Option<SectionIdentity<'data, Self>> {
+        Some(SectionIdentity::new(name, ()))
     }
 }
 
@@ -5373,7 +5820,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
     let mut init_funcs: Vec<WasmInitFunc> = Vec::new();
     let mut reloc_sections: Vec<WasmRelocSection> = Vec::new();
     let mut linking_version: Option<u32> = None;
-    let mut target_features_raw: Option<&'data [u8]> = None;
+    let mut target_features: Vec<WasmTargetFeature<'data>> = Vec::new();
     let mut standard_section_index = [None; STANDARD_SECTION_LOOKUP_LEN];
 
     for payload in Parser::new(0).parse_all(input) {
@@ -5409,7 +5856,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
                     });
                 }
             } else if section_name == TARGET_FEATURES_SECTION_NAME {
-                target_features_raw = Some(reader.data());
+                target_features.extend(parse_target_features_payload(reader.data())?);
             }
         } else if (section_id::TYPE..=section_id::MAX).contains(&id) {
             standard_section_index[id as usize] = Some(sections.len() as u32);
@@ -5437,7 +5884,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         init_funcs,
         reloc_sections,
         linking_version,
-        target_features_raw,
+        target_features,
     })
 }
 
@@ -5633,6 +6080,114 @@ impl SinglePartSectionId {
 mod tests {
     use super::*;
     use crate::args::wasm::DEFAULT_STACK_SIZE;
+
+    fn layout_input_with_features<'data>(
+        file: u32,
+        features: &'data [WasmTargetFeature<'data>],
+    ) -> WasmObjectLayoutInput<'data> {
+        WasmObjectLayoutInput {
+            data: &[],
+            types: Vec::new(),
+            function_imports: Vec::new(),
+            global_imports: Vec::new(),
+            memory_imports: Vec::new(),
+            table_imports: Vec::new(),
+            module_functions: Vec::new(),
+            globals: Vec::new(),
+            exports: Vec::new(),
+            function_bodies: Vec::new(),
+            memories: Vec::new(),
+            unsupported_output: Vec::new(),
+            code_relocations: Vec::new(),
+            data_segments: Vec::new(),
+            segment_alignments: Vec::new(),
+            data_relocations: Vec::new(),
+            symbols: &[],
+            init_funcs: &[],
+            target_features: features,
+            symbol_id_range: crate::symbol_db::SymbolIdRange::empty(),
+            file_id: crate::input_data::FileId::new(0, file),
+        }
+    }
+
+    fn emitted_feature_names(section: &wasm_encoder::CustomSection<'_>) -> Vec<String> {
+        let parsed = parse_target_features_payload(section.data.as_ref()).unwrap();
+        assert!(
+            parsed
+                .iter()
+                .all(|f| f.prefix == TARGET_FEATURE_PREFIX_USED),
+            "output must only contain used (+) prefixes"
+        );
+        parsed.iter().map(|f| f.name.to_owned()).collect()
+    }
+
+    #[test]
+    fn target_features_deduplicates_used_features_across_objects() {
+        // Both objects use sign-ext. Only the first also uses bulk-memory.
+        let features_a = [
+            WasmTargetFeature {
+                prefix: TARGET_FEATURE_PREFIX_USED,
+                name: "sign-ext",
+            },
+            WasmTargetFeature {
+                prefix: TARGET_FEATURE_PREFIX_USED,
+                name: "bulk-memory",
+            },
+            WasmTargetFeature {
+                prefix: TARGET_FEATURE_PREFIX_USED,
+                name: "sign-ext",
+            },
+        ];
+        let features_b = [WasmTargetFeature {
+            prefix: TARGET_FEATURE_PREFIX_USED,
+            name: "sign-ext",
+        }];
+        let inputs = [
+            layout_input_with_features(1, &features_a),
+            layout_input_with_features(2, &features_b),
+        ];
+        let section = build_target_features_section(&inputs)
+            .unwrap()
+            .expect("expected target_features section");
+        assert_eq!(emitted_feature_names(&section), ["bulk-memory", "sign-ext"]);
+    }
+
+    #[test]
+    fn target_features_errors_when_used_and_disallowed_conflict() {
+        let used = [WasmTargetFeature {
+            prefix: TARGET_FEATURE_PREFIX_USED,
+            name: "atomics",
+        }];
+        let disallowed = [WasmTargetFeature {
+            prefix: TARGET_FEATURE_PREFIX_DISALLOWED,
+            name: "atomics",
+        }];
+        let inputs = [
+            layout_input_with_features(1, &used),
+            layout_input_with_features(2, &disallowed),
+        ];
+        let err = build_target_features_section(&inputs).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("atomics") && msg.contains("disallowed"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_target_features_payload_used_and_disallowed() {
+        // count=2, +bulk-memory, -atomics
+        let payload: &[u8] = &[
+            2, b'+', 11, b'b', b'u', b'l', b'k', b'-', b'm', b'e', b'm', b'o', b'r', b'y', b'-', 7,
+            b'a', b't', b'o', b'm', b'i', b'c', b's',
+        ];
+        let features = parse_target_features_payload(payload).unwrap();
+        assert_eq!(features.len(), 2);
+        assert_eq!(features[0].prefix, TARGET_FEATURE_PREFIX_USED);
+        assert_eq!(features[0].name, "bulk-memory");
+        assert_eq!(features[1].prefix, TARGET_FEATURE_PREFIX_DISALLOWED);
+        assert_eq!(features[1].name, "atomics");
+    }
 
     #[test]
     fn linker_defined_data_symbol_addresses() {

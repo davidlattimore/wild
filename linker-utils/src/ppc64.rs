@@ -37,7 +37,9 @@ impl RelaxationKind {
 }
 
 #[must_use]
-pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
+pub const fn relocation_type_from_raw(
+    r_type: object::elf::RelocationType,
+) -> Option<RelocationKindInfo> {
     let (kind, size, range, alignment, bias) = match r_type {
         // Absolute addresses.
         object::elf::R_PPC64_ADDR64 => (

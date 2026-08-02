@@ -36,11 +36,11 @@ impl FileKind {
         } else if bytes.starts_with(&object::archive::THIN_MAGIC) {
             Ok(FileKind::ThinArchive)
         } else if bytes.starts_with(&object::elf::ELFMAG) {
-            const HEADER_LEN: usize = size_of::<elf::FileHeader>();
+            const HEADER_LEN: usize = size_of::<elf::FileHeader64>();
             if bytes.len() < HEADER_LEN {
                 bail!("Invalid ELF file");
             }
-            let header: &elf::FileHeader = object::from_bytes(&bytes[..HEADER_LEN]).unwrap().0;
+            let header: &elf::FileHeader64 = object::from_bytes(&bytes[..HEADER_LEN]).unwrap().0;
             ensure!(
                 header.e_ident.class == object::elf::ELFCLASS64,
                 "Only 64 bit ELF is currently supported"
@@ -115,7 +115,7 @@ fn determine_macho_kind(bytes: &[u8]) -> Result<FileKind> {
 /// expensive. Instead, we assume that we'll find a GCC LTO section within the first few sections,
 /// so just scan part of the section header strings table. It's unfortunate that GCC didn't tag
 /// these objects in some fast-to-check way.
-fn is_gcc_bitcode(data: &[u8], header: &crate::elf::FileHeader) -> Option<bool> {
+fn is_gcc_bitcode(data: &[u8], header: &crate::elf::FileHeader64) -> Option<bool> {
     // If we don't have plugin support, then we skip checking if the file contains GCC IR. If it is,
     // then we'll figure that out later on and report an error. We do this because this code has a
     // measurable performance impact.

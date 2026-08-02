@@ -4,7 +4,7 @@
 //! static-PIE binary because dynamic relocations haven't yet been applied to the GOT yet.
 
 use crate::OutputKind;
-use crate::elf::Elf;
+use crate::elf::Elf64;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
 use crate::error;
@@ -51,14 +51,14 @@ macro_rules! rel_info_from_type {
 
 impl crate::platform::Arch for ElfX86_64 {
     type Relaxation = Relaxation;
-    type Platform = Elf;
+    type Platform = Elf64;
 
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_X86_64
     }
 
     #[inline(always)]
-    fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
+    fn relocation_from_raw(r_type: object::elf::RelocationType) -> Result<RelocationKindInfo> {
         linker_utils::x86_64::relocation_from_raw(r_type).ok_or_else(|| {
             error!(
                 "Unsupported relocation type {}",
@@ -67,7 +67,7 @@ impl crate::platform::Arch for ElfX86_64 {
         })
     }
 
-    fn is_disallowed_for_interposable_symbols(r_type: u32) -> bool {
+    fn is_disallowed_for_interposable_symbols(r_type: object::elf::RelocationType) -> bool {
         matches!(
             r_type,
             object::elf::R_X86_64_32
@@ -80,7 +80,7 @@ impl crate::platform::Arch for ElfX86_64 {
         )
     }
 
-    fn is_disallowed_in_shared_object(r_type: u32) -> bool {
+    fn is_disallowed_in_shared_object(r_type: object::elf::RelocationType) -> bool {
         matches!(
             r_type,
             object::elf::R_X86_64_32
@@ -90,7 +90,9 @@ impl crate::platform::Arch for ElfX86_64 {
         )
     }
 
-    fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
+    fn get_dynamic_relocation_type(
+        relocation: DynamicRelocationKind,
+    ) -> object::elf::RelocationType {
         relocation.x86_64_r_type()
     }
 
@@ -107,11 +109,11 @@ impl crate::platform::Arch for ElfX86_64 {
         Ok(())
     }
 
-    fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
+    fn rel_type_to_string(r_type: object::elf::RelocationType) -> std::borrow::Cow<'static, str> {
         x86_64_rel_type_to_string(r_type)
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout<Elf>) -> u64 {
+    fn tp_offset_start(layout: &crate::layout::Layout<Elf64>) -> u64 {
         layout.tls_end_address()
     }
 
@@ -138,13 +140,13 @@ impl crate::platform::Arch for ElfX86_64 {
         Ok(object::elf::FileFlags(0))
     }
 
-    fn high_part_relocations() -> &'static [u32] {
+    fn high_part_relocations() -> &'static [object::elf::RelocationType] {
         &[]
     }
 
     #[inline(always)]
     fn new_relaxation(
-        relocation_kind: u32,
+        relocation_kind: object::elf::RelocationType,
         section_bytes: &[u8],
         offset_in_section: u64,
         flags: ValueFlags,
@@ -583,7 +585,12 @@ fn test_relaxation() {
     use crate::platform::Relaxation as _;
 
     #[track_caller]
-    fn check(relocation_kind: u32, bytes_in: &[u8], address: &[u8], absolute: &[u8]) {
+    fn check(
+        relocation_kind: object::elf::RelocationType,
+        bytes_in: &[u8],
+        address: &[u8],
+        absolute: &[u8],
+    ) {
         let mut out = bytes_in.to_owned();
         let mut offset = bytes_in.len() as u64;
         if let Some(r) = ElfX86_64::new_relaxation(

@@ -319,7 +319,9 @@ const RELOC_NONE: RelocSizeAndRange = (RelocationSize::ByteSize(0), AllowedRange
 /// recognised.
 #[must_use]
 #[inline(always)]
-pub const fn relocation_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
+pub const fn relocation_from_raw(
+    r_type: object::elf::RelocationType,
+) -> Option<RelocationKindInfo> {
     let (kind, (size, range)) = match r_type {
         object::elf::R_X86_64_64 => (RelocationKind::Absolute, RELOC_8_BYTE_UNSIGNED),
         object::elf::R_X86_64_PC32 => (RelocationKind::Relative, RELOC_4_BYTE_SIGNED),

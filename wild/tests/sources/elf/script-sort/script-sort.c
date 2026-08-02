@@ -15,6 +15,11 @@ extern int func_a();
 extern int func_b();
 extern int func_c();
 
+extern int align_16();
+extern int align_64();
+extern int align_4();
+extern int align_32();
+
 void _start(void) {
   runtime_init();
 
@@ -31,6 +36,16 @@ void _start(void) {
 
   if (func_a() != 1 || func_b() != 2 || func_c() != 3) {
     exit_syscall(103);
+  }
+
+  size_t align_16_addr = ptr_to_int(&align_16);
+  size_t align_64_addr = ptr_to_int(&align_64);
+  size_t align_4_addr = ptr_to_int(&align_4);
+  size_t align_32_addr = ptr_to_int(&align_32);
+
+  if (align_64_addr >= align_32_addr || align_32_addr >= align_16_addr ||
+      align_16_addr >= align_4_addr) {
+    exit_syscall(104);
   }
 
   exit_syscall(42);

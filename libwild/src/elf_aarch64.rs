@@ -1,5 +1,5 @@
 use crate::alignment::Alignment;
-use crate::elf::Elf;
+use crate::elf::Elf64;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
 use crate::elf::output_section_id;
@@ -54,7 +54,7 @@ macro_rules! rel_info_from_type {
 
 impl crate::platform::Arch for ElfAArch64 {
     type Relaxation = Relaxation;
-    type Platform = Elf;
+    type Platform = Elf64;
 
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_AARCH64
@@ -63,7 +63,7 @@ impl crate::platform::Arch for ElfAArch64 {
     // The table of the relocations is documented here:
     // https://github.com/ARM-software/abi-aa/blob/main/aaelf64/aaelf64.rst.
     #[inline(always)]
-    fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
+    fn relocation_from_raw(r_type: object::elf::RelocationType) -> Result<RelocationKindInfo> {
         linker_utils::aarch64::relocation_type_from_raw(r_type).ok_or_else(|| {
             error!(
                 "Unsupported relocation type {}",
@@ -72,7 +72,7 @@ impl crate::platform::Arch for ElfAArch64 {
         })
     }
 
-    fn is_disallowed_for_interposable_symbols(r_type: u32) -> bool {
+    fn is_disallowed_for_interposable_symbols(r_type: object::elf::RelocationType) -> bool {
         matches!(
             r_type,
             object::elf::R_AARCH64_ABS32
@@ -87,18 +87,20 @@ impl crate::platform::Arch for ElfAArch64 {
         )
     }
 
-    fn is_disallowed_in_shared_object(r_type: u32) -> bool {
+    fn is_disallowed_in_shared_object(r_type: object::elf::RelocationType) -> bool {
         matches!(
             r_type,
             object::elf::R_AARCH64_ABS32 | object::elf::R_AARCH64_ABS16
         )
     }
 
-    fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
+    fn get_dynamic_relocation_type(
+        relocation: DynamicRelocationKind,
+    ) -> object::elf::RelocationType {
         relocation.aarch64_r_type()
     }
 
-    fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
+    fn rel_type_to_string(r_type: object::elf::RelocationType) -> std::borrow::Cow<'static, str> {
         aarch64_rel_type_to_string(r_type)
     }
 
@@ -130,7 +132,7 @@ impl crate::platform::Arch for ElfAArch64 {
         Ok(())
     }
 
-    fn tp_offset_start(layout: &Layout<Elf>) -> u64 {
+    fn tp_offset_start(layout: &Layout<Elf64>) -> u64 {
         layout.tls_start_address_aarch64()
     }
 
@@ -147,13 +149,13 @@ impl crate::platform::Arch for ElfAArch64 {
         Ok(object::elf::FileFlags(0))
     }
 
-    fn high_part_relocations() -> &'static [u32] {
+    fn high_part_relocations() -> &'static [object::elf::RelocationType] {
         &[]
     }
 
     #[inline(always)]
     fn new_relaxation(
-        relocation_kind: u32,
+        relocation_kind: object::elf::RelocationType,
         section_bytes: &[u8],
         offset_in_section: u64,
         flags: crate::value_flags::ValueFlags,
@@ -338,8 +340,7 @@ impl crate::platform::Arch for ElfAArch64 {
     fn thunk_config() -> Option<crate::platform::ThunkConfig> {
         Some(crate::platform::ThunkConfig {
             primary_function_part_id: const {
-                output_section_id::TEXT
-                    .part_id_with_alignment::<crate::elf::Elf>(Alignment { exponent: 2 })
+                output_section_id::TEXT.part_id_with_alignment::<Elf64>(Alignment { exponent: 2 })
             },
             min_branch_range: MIN_BRANCH_RANGE,
             thunk_size: THUNK_TEMPLATE.len() as u64,

@@ -202,8 +202,9 @@ impl<'out> OutputSectionPartMap<&'out mut [u8]> {
 
 #[test]
 fn test_merge_parts() {
-    let output_sections =
-        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
+    use crate::elf::Elf64;
+
+    let output_sections = crate::output_section_id::OutputSections::<Elf64>::for_testing();
     let (output_order, _program_segments) = output_sections
         .output_order(
             crate::output_kind::OutputKind::StaticExecutable(
@@ -228,12 +229,12 @@ fn test_merge_parts() {
 
     let mut sum_of_1s = output_sections.new_section_map::<u32>();
     sum_of_1s.for_each_mut(|section_id, sum| {
-        if !section_id.is_regular::<crate::elf::Elf>()
-            && <crate::elf::Elf as crate::platform::Platform>::single_part_id(section_id).is_none()
+        if !section_id.is_regular::<Elf64>()
+            && <Elf64 as crate::platform::Platform>::single_part_id(section_id).is_none()
         {
             return;
         }
-        let range = section_id.part_id_range::<crate::elf::Elf>();
+        let range = section_id.part_id_range::<Elf64>();
         *sum = all_1[range].iter().sum();
     });
 
@@ -243,8 +244,8 @@ fn test_merge_parts() {
         if *sum == 17 {
             num_sections_with_17 += 1;
         }
-        let unsupported_single_part = !section_id.is_regular::<crate::elf::Elf>()
-            && <crate::elf::Elf as crate::platform::Platform>::single_part_id(section_id).is_none();
+        let unsupported_single_part = !section_id.is_regular::<Elf64>()
+            && <Elf64 as crate::platform::Platform>::single_part_id(section_id).is_none();
         if section_id == crate::output_section_id::UNMAPPED || unsupported_single_part {
             assert!(*sum == 0, "Expected zero sum for section {section_id:?}");
         } else {
@@ -259,12 +260,12 @@ fn test_merge_parts() {
 
     let mut merged = output_sections.new_section_map::<u32>();
     merged.for_each_mut(|section_id, sum| {
-        if !section_id.is_regular::<crate::elf::Elf>()
-            && <crate::elf::Elf as crate::platform::Platform>::single_part_id(section_id).is_none()
+        if !section_id.is_regular::<Elf64>()
+            && <Elf64 as crate::platform::Platform>::single_part_id(section_id).is_none()
         {
             return;
         }
-        let range = section_id.part_id_range::<crate::elf::Elf>();
+        let range = section_id.part_id_range::<Elf64>();
         *sum = headers_only[range].iter().sum();
     });
 
@@ -276,7 +277,7 @@ fn test_merge_parts() {
 #[test]
 fn test_mut_with_map() {
     let output_sections =
-        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
+        crate::output_section_id::OutputSections::<crate::elf::Elf64>::for_testing();
     let mut input1 = output_sections.new_part_map::<u32>().map(|_, _| 1);
     let input2 = output_sections.new_part_map::<u32>().map(|_, _| 2);
     let expected = output_sections.new_part_map::<u32>().map(|_, _| 3);
@@ -287,7 +288,7 @@ fn test_mut_with_map() {
 #[test]
 fn test_merge() {
     let output_sections =
-        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
+        crate::output_section_id::OutputSections::<crate::elf::Elf64>::for_testing();
     let mut input1 = output_sections.new_part_map::<u32>().map(|_, _| 1);
     let input2 = output_sections.new_part_map::<u32>().map(|_, _| 2);
     let expected = output_sections.new_part_map::<u32>().map(|_, _| 3);
@@ -298,7 +299,7 @@ fn test_merge() {
 #[test]
 fn test_merge_with_custom_sections() {
     let output_sections =
-        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
+        crate::output_section_id::OutputSections::<crate::elf::Elf64>::for_testing();
     let mut m1 = output_sections.new_part_map::<u32>();
     let mut m2 = output_sections.new_part_map::<u32>();
     assert_eq!(m2.num_parts(), output_sections.num_parts());
@@ -312,10 +313,11 @@ fn test_merge_with_custom_sections() {
 /// latter, so this test is less important. It's kept for the time being anyway.
 #[test]
 fn test_output_order_map_consistent() {
+    use crate::elf::Elf64;
     use itertools::Itertools;
 
     let output_sections =
-        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
+        crate::output_section_id::OutputSections::<crate::elf::Elf64>::for_testing();
     let (output_order, _program_segments) = output_sections
         .output_order(
             crate::output_kind::OutputKind::StaticExecutable(
@@ -330,7 +332,7 @@ fn test_output_order_map_consistent() {
     // First, make sure that all our built-in part-ids are here. If they're not, we'd fail anyway,
     // but we can give a much better failure message if we check first.
     let mut missing: hashbrown::HashSet<PartId> =
-        crate::part_id::built_in_part_ids::<crate::elf::Elf>().collect();
+        crate::part_id::built_in_part_ids::<Elf64>().collect();
     part_map.map(|part_id, _| {
         missing.remove(&part_id);
     });
@@ -342,7 +344,7 @@ fn test_output_order_map_consistent() {
             .iter()
             .map(|id| format!(
                 "{id} (in {})",
-                output_sections.display_name(id.output_section_id::<crate::elf::Elf>())
+                output_sections.display_name(id.output_section_id::<Elf64>())
             ))
             .collect_vec()
             .join(", ")
@@ -350,7 +352,7 @@ fn test_output_order_map_consistent() {
 
     let mut ordering_a = Vec::new();
     part_map.output_order_map(&output_order, &output_sections, |part_id, _, _| {
-        let section_id = part_id.output_section_id::<crate::elf::Elf>();
+        let section_id = part_id.output_section_id::<Elf64>();
         if ordering_a.last() != Some(&section_id.as_usize()) {
             ordering_a.push(section_id.as_usize());
         }
@@ -371,10 +373,10 @@ fn test_output_order_map_consistent() {
 
 #[test]
 fn test_output_order_map() {
+    use crate::elf::Elf64;
     use crate::elf::output_section_id;
 
-    let output_sections =
-        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
+    let output_sections = crate::output_section_id::OutputSections::<Elf64>::for_testing();
     let (output_order, _program_segments) = output_sections
         .output_order(
             crate::output_kind::OutputKind::StaticExecutable(
@@ -387,11 +389,11 @@ fn test_output_order_map() {
     let mut part_map = output_sections.new_part_map::<u32>();
 
     const PART_ID1: PartId =
-        output_section_id::DATA.part_id_with_alignment::<crate::elf::Elf>(alignment::USIZE);
+        output_section_id::DATA.part_id_with_alignment::<Elf64>(alignment::USIZE);
     *part_map.get_mut(PART_ID1) += 32;
 
     const PART_ID2: PartId =
-        output_section_id::DATA.part_id_with_alignment::<crate::elf::Elf>(alignment::MIN);
+        output_section_id::DATA.part_id_with_alignment::<Elf64>(alignment::MIN);
     *part_map.get_mut(PART_ID2) += 5;
 
     part_map.output_order_map(
@@ -407,7 +409,7 @@ fn test_output_order_map() {
                 assert_eq!(value, 5);
             }
             _ => {
-                if part_id.output_section_id::<crate::elf::Elf>() == output_section_id::DATA {
+                if part_id.output_section_id::<Elf64>() == output_section_id::DATA {
                     assert!(
                         alignment <= alignment::USIZE,
                         "Unexpected alignment {alignment}"
@@ -421,31 +423,31 @@ fn test_output_order_map() {
 
 #[test]
 fn test_max_alignment() {
+    use crate::elf::Elf64;
     use crate::elf::output_section_id;
 
-    let output_sections =
-        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
+    let output_sections = crate::output_section_id::OutputSections::<Elf64>::for_testing();
     let mut part_map = output_sections.new_part_map::<u32>();
 
     assert_eq!(
         part_map.max_alignment(
-            output_section_id::DATA.part_id_range::<crate::elf::Elf>(),
+            output_section_id::DATA.part_id_range::<Elf64>(),
             &output_sections,
         ),
         alignment::MIN
     );
 
     const PART_ID1: PartId =
-        output_section_id::DATA.part_id_with_alignment::<crate::elf::Elf>(alignment::USIZE);
+        output_section_id::DATA.part_id_with_alignment::<Elf64>(alignment::USIZE);
     *part_map.get_mut(PART_ID1) += 32;
 
     const PART_ID2: PartId =
-        output_section_id::DATA.part_id_with_alignment::<crate::elf::Elf>(alignment::MIN);
+        output_section_id::DATA.part_id_with_alignment::<Elf64>(alignment::MIN);
     *part_map.get_mut(PART_ID2) += 5;
 
     assert_eq!(
         part_map.max_alignment(
-            output_section_id::DATA.part_id_range::<crate::elf::Elf>(),
+            output_section_id::DATA.part_id_range::<Elf64>(),
             &output_sections,
         ),
         alignment::USIZE

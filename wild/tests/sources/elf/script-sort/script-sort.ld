@@ -9,7 +9,8 @@ SECTIONS
         
         *(SORT(.text.sort.*))
         KEEP(*(SORT(.text.kept.*)))
-        *(SORT(.text.drop.*))
+        *(SORT_BY_NAME(.text.drop.*))
+        *(SORT_BY_ALIGNMENT(.text.align.*))
     }
 
     /* Ensure valid alignment for subsequent sections */

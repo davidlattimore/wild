@@ -436,7 +436,7 @@ fn section_load_address<'data, P: Platform>(
 mod tests {
     use super::*;
     use crate::OsFileSystem;
-    use crate::elf::Elf;
+    use crate::elf::Elf64;
     use crate::grouping::Group;
     use crate::grouping::SequencedLinkerScript;
     use crate::input_data::FileId;
@@ -450,11 +450,11 @@ mod tests {
     fn with_dummy_context<R>(
         f: impl for<'test> FnOnce(
             &OutputSectionMap<OutputRecordLayout>,
-            &OutputSections<'test, Elf>,
-            &mut SymbolDb<'test, Elf>,
+            &OutputSections<'test, Elf64>,
+            &mut SymbolDb<'test, Elf64>,
         ) -> R,
     ) -> R {
-        let sections = OutputSections::<Elf>::for_testing();
+        let sections = OutputSections::<Elf64>::for_testing();
         let layouts = sections.new_section_map::<OutputRecordLayout>();
         let args = crate::args::elf::ElfArgs::new().unwrap();
         let output_kind = crate::output_kind::OutputKind::Relocatable;
@@ -462,13 +462,13 @@ mod tests {
         let auxiliary =
             crate::input_data::AuxiliaryFiles::new(&args, &arena, &OsFileSystem).unwrap();
         let herd = Default::default();
-        let mut symbol_db = SymbolDb::<Elf>::new(&args, output_kind, &auxiliary, &herd).unwrap();
+        let mut symbol_db = SymbolDb::<Elf64>::new(&args, output_kind, &auxiliary, &herd).unwrap();
         f(&layouts, &sections, &mut symbol_db)
     }
 
     fn eval_const(expr: &Expression<'static>) -> Result<u64> {
         with_dummy_context(|layouts, sections, symbol_db| {
-            evaluate_expression::<Elf>(
+            evaluate_expression::<Elf64>(
                 expr,
                 &SymbolLoc::None,
                 layouts,
@@ -791,7 +791,7 @@ mod tests {
         );
     }
 
-    fn make_group<'data>(assertions: Vec<AssertCommand<'static>>) -> Group<'data, Elf> {
+    fn make_group<'data>(assertions: Vec<AssertCommand<'static>>) -> Group<'data, Elf64> {
         let script = SequencedLinkerScript {
             parsed: ProcessedLinkerScript {
                 input: crate::input_data::InputRef {
@@ -826,7 +826,7 @@ mod tests {
             }]);
             symbol_db.add_group(group);
             assert!(
-                evaluate_assertions::<Elf>(
+                evaluate_assertions::<Elf64>(
                     symbol_db,
                     layouts,
                     sections,
@@ -849,7 +849,7 @@ mod tests {
                 remainder: b"",
             }]);
             symbol_db.add_group(group);
-            let err = evaluate_assertions::<Elf>(
+            let err = evaluate_assertions::<Elf64>(
                 symbol_db,
                 layouts,
                 sections,
@@ -885,7 +885,7 @@ mod tests {
                 ),
             ]);
             let eval = |expr: &Expression<'static>| {
-                evaluate_expression::<Elf>(
+                evaluate_expression::<Elf64>(
                     expr,
                     &SymbolLoc::None,
                     layouts,

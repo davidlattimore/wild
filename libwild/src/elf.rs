@@ -42,6 +42,7 @@ use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputOrderBuilder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SectionIdentity;
 use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_map::OutputSectionMap;
@@ -57,6 +58,7 @@ use crate::platform::DynamicTagValues as _;
 use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
+use crate::platform::ProgramSegmentDef as _;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Relaxation as _;
 use crate::platform::Relocation;
@@ -168,25 +170,30 @@ type SymbolTable<'data> = object::read::elf::SymbolTable<'data, FileHeader>;
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Elf;
 
+pub(crate) type Elf64 = Elf;
+pub(crate) type File64<'data> = File<'data>;
+pub(crate) type FileHeader64 = FileHeader;
+pub(crate) type RelocationList64<'data> = RelocationList<'data>;
+
 pub(crate) fn link_for_arch<'data, F: FileSystem>(
     linker: &'data crate::Linker<F>,
     args: &'data ElfArgs,
 ) -> Result<crate::LinkerOutput<'data>> {
     match args.arch {
         crate::arch::Architecture::X86_64 => {
-            linker.link_for_arch::<Elf, crate::elf_x86_64::ElfX86_64>(args)
+            linker.link_for_arch::<Elf64, crate::elf_x86_64::ElfX86_64>(args)
         }
         crate::arch::Architecture::AArch64 => {
-            linker.link_for_arch::<Elf, crate::elf_aarch64::ElfAArch64>(args)
+            linker.link_for_arch::<Elf64, crate::elf_aarch64::ElfAArch64>(args)
         }
         crate::arch::Architecture::RiscV64 => {
-            linker.link_for_arch::<Elf, crate::elf_riscv64::ElfRiscV64>(args)
+            linker.link_for_arch::<Elf64, crate::elf_riscv64::ElfRiscV64>(args)
         }
         crate::arch::Architecture::LoongArch64 => {
-            linker.link_for_arch::<Elf, crate::elf_loongarch64::ElfLoongArch64>(args)
+            linker.link_for_arch::<Elf64, crate::elf_loongarch64::ElfLoongArch64>(args)
         }
         crate::arch::Architecture::Ppc64 => {
-            linker.link_for_arch::<Elf, crate::elf_ppc64::ElfPpc64>(args)
+            linker.link_for_arch::<Elf64, crate::elf_ppc64::ElfPpc64>(args)
         }
         crate::arch::Architecture::Unsupported => {
             bail!(
@@ -406,7 +413,7 @@ impl Relocation for Rela {
         object::read::elf::Rela::symbol(self, LittleEndian, false)
     }
 
-    fn raw_type(&self) -> u32 {
+    fn raw_type(&self) -> object::elf::RelocationType {
         object::read::elf::Rela::r_type(self, LittleEndian, false)
     }
 
@@ -427,7 +434,7 @@ impl Relocation for Crel {
         object::read::elf::Crel::symbol(self)
     }
 
-    fn raw_type(&self) -> u32 {
+    fn raw_type(&self) -> object::elf::RelocationType {
         self.r_type
     }
 
@@ -587,7 +594,7 @@ impl platform::Platform for Elf {
     type RelocationSections = RelocationSections;
     type DynamicEntry = DynamicEntry;
     type DynamicSymbolDefinitionExt = DynamicSymbolDefinitionExt;
-    type RelocationInfo = u32;
+    type RelocationInfo = object::elf::RelocationType;
     type FinaliseSizesExt<'data> = LayoutExt;
     type LayoutExt<'data> = LayoutExt;
     type SymbolVersionIndex = Versym;
@@ -615,6 +622,7 @@ impl platform::Platform for Elf {
     type ResolutionExt = ResolutionExt;
     type SymtabShndxEntry = SymtabShndxEntry;
     type ResolvedObjectExt<'data> = ResolvedObjectExt<'data>;
+    type SectionIdentityExt = ();
 
     fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
@@ -992,7 +1000,7 @@ impl platform::Platform for Elf {
                 .version_script
                 .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)?
         {
-            version = object::elf::VersymIndex::new(v, !is_default);
+            version = v.versym(!is_default);
         }
         Ok(layout::DynamicSymbolDefinition {
             symbol_id,
@@ -1040,7 +1048,7 @@ impl platform::Platform for Elf {
         Ok(())
     }
 
-    fn verify_resolution_allocation(
+    fn verify_resolution_allocation<A: Arch<Platform = Self>>(
         output_sections: &OutputSections<Elf>,
         output_order: &OutputOrder,
         output_kind: OutputKind,
@@ -1048,7 +1056,7 @@ impl platform::Platform for Elf {
         resolution: &layout::Resolution<Elf>,
         args: &ElfArgs,
     ) -> Result {
-        crate::elf_writer::verify_resolution_allocation(
+        crate::elf_writer::verify_resolution_allocation::<A>(
             output_sections,
             output_order,
             output_kind,
@@ -1091,6 +1099,39 @@ impl platform::Platform for Elf {
 
     fn unconditional_segment_defs() -> &'static [ProgramSegmentDef] {
         &[STACK_SEGMENT_DEF]
+    }
+
+    fn program_segment_should_include_section(
+        segment_def: ProgramSegmentDef,
+        info: &SectionOutputInfo<Self>,
+        section_id: OutputSectionId,
+        rosegment: bool,
+    ) -> bool {
+        match segment_def.segment_type {
+            pt::NOTE => info.section_attributes.ty == sht::NOTE,
+            pt::TLS => info.section_attributes.flags.contains(shf::TLS),
+            pt::LOAD => {
+                let mut exec = info.section_attributes.flags.contains(shf::EXECINSTR);
+                if !rosegment && !info.section_attributes.flags.contains(shf::WRITE) {
+                    exec = true;
+                }
+
+                info.section_attributes.flags.contains(shf::ALLOC)
+                    && info.section_attributes.flags.contains(shf::WRITE)
+                        == segment_def.is_writable()
+                    && exec == segment_def.is_executable()
+            }
+            pt::GNU_RELRO => {
+                info.section_attributes.flags.contains(shf::TLS)
+                    || section_id
+                        .opt_built_in_details::<Self>()
+                        .is_some_and(|details| details.is_relro)
+            }
+            other => section_id
+                .opt_built_in_details::<Self>()
+                .and_then(|details| details.target_segment_type)
+                .is_some_and(|target_segment_type| target_segment_type == other),
+        }
     }
 
     fn get_segment_flags_for_section(section_flags: &Self::SectionFlags) -> u32 {
@@ -2135,8 +2176,8 @@ impl platform::Platform for Elf {
             .ids_with_info()
             .filter(|(id, _info)| output_sections.output_index_of_section(*id).is_some())
             .map(|(_id, info)| {
-                if let SectionKind::Primary(name) = info.kind {
-                    name.len() as u64 + 1
+                if let SectionKind::Primary(identity) = info.kind {
+                    identity.section_name().len() as u64 + 1
                 } else {
                     0
                 }
@@ -2628,6 +2669,19 @@ impl platform::Platform for Elf {
 
     fn is_allowed_in_archive(kind: crate::file_kind::FileKind) -> bool {
         kind == FileKind::ElfObject
+    }
+
+    fn section_identity<'data>(
+        name: SectionName<'data>,
+        _section: &Self::SectionHeader,
+    ) -> SectionIdentity<'data, Self> {
+        SectionIdentity::new(name, ())
+    }
+
+    fn section_identity_from_name<'data>(
+        name: SectionName<'data>,
+    ) -> Option<SectionIdentity<'data, Self>> {
+        Some(SectionIdentity::new(name, ()))
     }
 }
 
@@ -3996,22 +4050,35 @@ fn merge_gnu_property_notes<'states, 'data: 'states, A: Arch>(
     let properties_per_file = states.map(|state| &state.gnu_property_notes).collect_vec();
 
     // Merge bits of each property type based on type: OR or AND operation.
-    let mut property_map = HashMap::new();
+    // Within a single file, OR the bits (accumulate all features the file has).
+    // Across files, AND the bits (only keep features all files support).
+    let mut property_map: HashMap<_, (u32, PropertyClass)> = HashMap::new();
 
     for file_props in &properties_per_file {
+        // First OR within file to accumulate all features this file has.
+        let mut file_map: HashMap<_, (u32, PropertyClass)> = HashMap::new();
         for prop in *file_props {
             let property_class = A::get_property_class(prop.ptype.0)
                 .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
-            property_map
+            file_map
                 .entry(prop.ptype)
                 .and_modify(|entry: &mut (u32, PropertyClass)| {
-                    if matches!(property_class, PropertyClass::And) {
-                        entry.0 &= prop.data;
-                    } else {
-                        entry.0 |= prop.data;
-                    }
+                    entry.0 |= prop.data;
                 })
                 .or_insert_with(|| (prop.data, property_class));
+        }
+        // Then AND across files to keep only features all files support.
+        for (ptype, (data, class)) in file_map {
+            property_map
+                .entry(ptype)
+                .and_modify(|entry: &mut (u32, PropertyClass)| {
+                    if matches!(class, PropertyClass::And) {
+                        entry.0 &= data;
+                    } else {
+                        entry.0 |= data;
+                    }
+                })
+                .or_insert_with(|| (data, class));
         }
     }
 
@@ -4964,8 +5031,6 @@ pub(crate) const STACK_SEGMENT_DEF: ProgramSegmentDef = ProgramSegmentDef {
 };
 
 impl platform::ProgramSegmentDef for ProgramSegmentDef {
-    type Platform = Elf;
-
     fn is_writable(self) -> bool {
         self.segment_flags.contains(pf::WRITABLE)
     }
@@ -5000,38 +5065,6 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             .unwrap_or(TYPE_ORDER.len() + self.segment_type.0 as usize)
     }
 
-    fn should_include_section(
-        self,
-        info: &crate::output_section_id::SectionOutputInfo<Elf>,
-        section_id: OutputSectionId,
-        rosegment: bool,
-    ) -> bool {
-        match self.segment_type {
-            pt::NOTE => info.section_attributes.ty == sht::NOTE,
-            pt::TLS => info.section_attributes.flags.contains(shf::TLS),
-            pt::LOAD => {
-                let mut exec = info.section_attributes.flags.contains(shf::EXECINSTR);
-                if !rosegment && !info.section_attributes.flags.contains(shf::WRITE) {
-                    exec = true;
-                }
-
-                info.section_attributes.flags.contains(shf::ALLOC)
-                    && info.section_attributes.flags.contains(shf::WRITE) == self.is_writable()
-                    && exec == self.is_executable()
-            }
-            pt::GNU_RELRO => {
-                info.section_attributes.flags.contains(shf::TLS)
-                    || section_id
-                        .opt_built_in_details::<Elf>()
-                        .is_some_and(|details| details.is_relro)
-            }
-            other => section_id
-                .opt_built_in_details::<Elf>()
-                .and_then(|details| details.target_segment_type)
-                .is_some_and(|target_segment_type| target_segment_type == other),
-        }
-    }
-
     fn should_cut_rw_segment_when_ending(self) -> bool {
         self.segment_type == pt::GNU_RELRO
     }
@@ -5055,9 +5088,9 @@ impl std::fmt::Display for ProgramSegmentDef {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct BuiltInSectionDetails {
-    pub(crate) kind: SectionKind<'static>,
+    pub(crate) kind: SectionKind<'static, Elf>,
     pub(crate) section_flags: SectionFlags,
     /// Sections to try to link to. The first section that we're outputting is the one used.
     pub(crate) link: &'static [OutputSectionId],
@@ -5069,7 +5102,7 @@ pub(crate) struct BuiltInSectionDetails {
 }
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
-    kind: SectionKind::Primary(SectionName(&[])),
+    kind: SectionKind::Primary(SectionIdentity::new(SectionName(&[]), ())),
     section_flags: SectionFlags(0),
     link: &[],
     min_alignment: alignment::MIN,
@@ -5086,34 +5119,40 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
 
     // A section into which we write headers.
     defs[crate::output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"")),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b""), ())),
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::PROGRAM_HEADERS.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(PROGRAM_HEADERS_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(PROGRAM_HEADERS_SECTION_NAME),
+            (),
+        )),
         section_flags: shf::ALLOC,
         min_alignment: alignment::PROGRAM_HEADER_ENTRY,
         target_segment_type: Some(pt::PHDR),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::SECTION_HEADERS.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SECTION_HEADERS_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(SECTION_HEADERS_SECTION_NAME),
+            (),
+        )),
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::SHSTRTAB.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SHSTRTAB_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(SHSTRTAB_SECTION_NAME), ())),
         ty: sht::STRTAB,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(STRTAB_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(STRTAB_SECTION_NAME), ())),
         ty: sht::STRTAB,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::GOT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(GOT_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(GOT_SECTION_NAME), ())),
         ty: sht::PROGBITS,
         section_flags: shf::WRITE.with(shf::ALLOC),
         element_size: crate::elf::GOT_ENTRY_SIZE,
@@ -5128,7 +5167,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::PLT_GOT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(PLT_GOT_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(PLT_GOT_SECTION_NAME), ())),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
         element_size: crate::elf::PLT_ENTRY_SIZE,
@@ -5136,7 +5175,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::RELA_PLT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(RELA_PLT_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(RELA_PLT_SECTION_NAME), ())),
         ty: sht::RELA,
         section_flags: shf::ALLOC.with(shf::INFO_LINK),
         element_size: RELA_ENTRY_SIZE,
@@ -5145,14 +5184,17 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::EH_FRAME.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(EH_FRAME_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(EH_FRAME_SECTION_NAME), ())),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         min_alignment: alignment::USIZE,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::EH_FRAME_HDR.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(EH_FRAME_HDR_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(EH_FRAME_HDR_SECTION_NAME),
+            (),
+        )),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         min_alignment: alignment::EH_FRAME_HDR,
@@ -5160,7 +5202,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::SFRAME.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SFRAME_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(SFRAME_SECTION_NAME), ())),
         ty: sht::GNU_SFRAME,
         section_flags: shf::ALLOC,
         min_alignment: alignment::USIZE,
@@ -5168,7 +5210,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::DYNAMIC.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(DYNAMIC_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(DYNAMIC_SECTION_NAME), ())),
         ty: sht::DYNAMIC,
         section_flags: shf::ALLOC.with(shf::WRITE),
         element_size: size_of::<DynamicEntry>() as u64,
@@ -5179,7 +5221,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::HASH.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(HASH_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(HASH_SECTION_NAME), ())),
         ty: sht::HASH,
         section_flags: shf::ALLOC,
         link: &[output_section_id::DYNSYM],
@@ -5187,7 +5229,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::GNU_HASH.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(GNU_HASH_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(GNU_HASH_SECTION_NAME), ())),
         ty: sht::GNU_HASH,
         section_flags: shf::ALLOC,
         link: &[output_section_id::DYNSYM],
@@ -5195,7 +5237,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::DYNSYM.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(DYNSYM_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(DYNSYM_SECTION_NAME), ())),
         ty: sht::DYNSYM,
         section_flags: shf::ALLOC,
         element_size: size_of::<elf::SymtabEntry>() as u64,
@@ -5204,21 +5246,24 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::DYNSTR.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(DYNSTR_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(DYNSTR_SECTION_NAME), ())),
         ty: sht::STRTAB,
         section_flags: shf::ALLOC,
         min_alignment: alignment::MIN,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::INTERP.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(INTERP_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(INTERP_SECTION_NAME), ())),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         target_segment_type: Some(pt::INTERP),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::GNU_VERSION.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(GNU_VERSION_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(GNU_VERSION_SECTION_NAME),
+            (),
+        )),
         ty: sht::GNU_VERSYM,
         section_flags: shf::ALLOC,
         element_size: size_of::<Versym>() as u64,
@@ -5227,7 +5272,10 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::GNU_VERSION_D.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(GNU_VERSION_D_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(GNU_VERSION_D_SECTION_NAME),
+            (),
+        )),
         ty: sht::GNU_VERDEF,
         section_flags: shf::ALLOC,
         min_alignment: alignment::VERSION_D,
@@ -5235,7 +5283,10 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::GNU_VERSION_R.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(GNU_VERSION_R_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(GNU_VERSION_R_SECTION_NAME),
+            (),
+        )),
         ty: sht::GNU_VERNEED,
         section_flags: shf::ALLOC,
         min_alignment: alignment::VERSION_R,
@@ -5243,7 +5294,10 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::NOTE_GNU_PROPERTY.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(NOTE_GNU_PROPERTY_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(NOTE_GNU_PROPERTY_SECTION_NAME),
+            (),
+        )),
         ty: sht::NOTE,
         section_flags: shf::ALLOC,
         min_alignment: alignment::NOTE_GNU_PROPERTY,
@@ -5251,7 +5305,10 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::NOTE_GNU_BUILD_ID.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(NOTE_GNU_BUILD_ID_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(NOTE_GNU_BUILD_ID_SECTION_NAME),
+            (),
+        )),
         ty: sht::NOTE,
         section_flags: shf::ALLOC,
         min_alignment: alignment::NOTE_GNU_BUILD_ID,
@@ -5259,7 +5316,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     };
     // Multi-part generated sections
     defs[output_section_id::SYMTAB_LOCAL.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SYMTAB_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(SYMTAB_SECTION_NAME), ())),
         ty: sht::SYMTAB,
         element_size: size_of::<SymtabEntry>() as u64,
         min_alignment: alignment::SYMTAB_ENTRY,
@@ -5271,7 +5328,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::RELA_DYN_RELATIVE.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(RELA_DYN_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(RELA_DYN_SECTION_NAME), ())),
         ty: sht::RELA,
         section_flags: shf::ALLOC,
         element_size: RELA_ENTRY_SIZE,
@@ -5284,7 +5341,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::RELR_DYN.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(RELR_DYN_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(RELR_DYN_SECTION_NAME), ())),
         ty: sht::RELR,
         section_flags: shf::ALLOC,
         element_size: RELR_ENTRY_SIZE,
@@ -5292,20 +5349,29 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::RISCV_ATTRIBUTES.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(RISCV_ATTRIBUTES_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(RISCV_ATTRIBUTES_SECTION_NAME),
+            (),
+        )),
         ty: sht::RISCV_ATTRIBUTES,
         target_segment_type: Some(pt::RISCV_ATTRIBUTES),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::RELRO_PADDING.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(RELRO_PADDING_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(RELRO_PADDING_SECTION_NAME),
+            (),
+        )),
         ty: sht::NOBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         is_relro: true,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::SYMTAB_SHNDX_LOCAL.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SYMTAB_SHNDX_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(SYMTAB_SHNDX_SECTION_NAME),
+            (),
+        )),
         ty: sht::SYMTAB_SHNDX,
         element_size: SYMTAB_SHNDX_ENTRY_SIZE,
         min_alignment: alignment::SYMTAB_SHNDX_ENTRY,
@@ -5317,19 +5383,25 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::GDB_INDEX.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(GDB_INDEX_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(GDB_INDEX_SECTION_NAME),
+            (),
+        )),
         ty: sht::PROGBITS,
         ..DEFAULT_DEFS
     };
     // Start of regular sections
     defs[output_section_id::RODATA.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(RODATA_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(RODATA_SECTION_NAME), ())),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::INIT_ARRAY.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(INIT_ARRAY_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(INIT_ARRAY_SECTION_NAME),
+            (),
+        )),
         ty: sht::INIT_ARRAY,
         section_flags: shf::ALLOC.with(shf::WRITE),
         element_size: size_of::<u64>() as u64,
@@ -5338,7 +5410,10 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::FINI_ARRAY.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(FINI_ARRAY_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(FINI_ARRAY_SECTION_NAME),
+            (),
+        )),
         ty: sht::FINI_ARRAY,
         section_flags: shf::ALLOC.with(shf::WRITE),
         element_size: size_of::<u64>() as u64,
@@ -5347,75 +5422,87 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::PREINIT_ARRAY.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(PREINIT_ARRAY_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(PREINIT_ARRAY_SECTION_NAME),
+            (),
+        )),
         ty: sht::PREINIT_ARRAY,
         section_flags: shf::ALLOC.with(shf::WRITE),
         is_relro: true,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(TEXT_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(TEXT_SECTION_NAME), ())),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::INIT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(INIT_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(INIT_SECTION_NAME), ())),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::FINI.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(FINI_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(FINI_SECTION_NAME), ())),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(DATA_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(DATA_SECTION_NAME), ())),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::TDATA.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(TDATA_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(TDATA_SECTION_NAME), ())),
         ty: sht::PROGBITS,
         section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::TBSS.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(TBSS_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(TBSS_SECTION_NAME), ())),
         ty: sht::NOBITS,
         section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::BSS.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(BSS_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(BSS_SECTION_NAME), ())),
         ty: sht::NOBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::COMMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(COMMENT_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(COMMENT_SECTION_NAME), ())),
         ty: sht::PROGBITS,
         section_flags: shf::STRINGS.with(shf::MERGE),
         element_size: 1,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::GCC_EXCEPT_TABLE.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(GCC_EXCEPT_TABLE_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(GCC_EXCEPT_TABLE_SECTION_NAME),
+            (),
+        )),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::NOTE_ABI_TAG.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(NOTE_ABI_TAG_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(NOTE_ABI_TAG_SECTION_NAME),
+            (),
+        )),
         ty: sht::NOTE,
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::DATA_REL_RO.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(DATA_REL_RO_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(DATA_REL_RO_SECTION_NAME),
+            (),
+        )),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         is_relro: true,
@@ -5614,175 +5701,270 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation<Plat
     scope: &Scope<'scope>,
     relr_writer: &mut RelrEncoder,
 ) -> Result<RelocationModifier> {
+    let Some(local_sym_index) = rel.symbol() else {
+        return Ok(RelocationModifier::Normal);
+    };
+
+    let mut classified =
+        classify_symbol_relocation::<A, R>(object, rel, section, local_sym_index, resources)?;
+
+    materialize_relocation_requirements::<A, R>(
+        common,
+        rel,
+        section,
+        resources,
+        is_debug_section,
+        relr_writer,
+        &mut classified,
+    )?;
+
+    let previous_flags =
+        note_relocation_symbol_reference::<A>(&classified, resources, queue, scope);
+
+    if !is_debug_section {
+        crate::thunks::handle_thunk_extensions_for_relocation::<A>(
+            section_part_id,
+            resources,
+            classified.local_symbol_id,
+            classified.symbol_id,
+            classified.r_type,
+        );
+    }
+
+    layout::check_for_undefined::<A>(
+        object,
+        section,
+        classified.rel_offset,
+        local_sym_index,
+        classified.flags,
+        classified.symbol_id,
+        resources,
+    )?;
+
+    if classified.flags_to_add.needs_copy_relocation() && !previous_flags.needs_copy_relocation() {
+        queue.send_copy_relocation_request::<A>(classified.symbol_id, resources, scope);
+    }
+
+    Ok(classified.next_modifier)
+}
+
+/// Symbol and relocation-kind info needed for both GC edges and output accounting.
+struct ClassifiedSymbolRelocation {
+    local_symbol_id: SymbolId,
+    symbol_id: SymbolId,
+    /// Definition (and local) value flags before this relocation's contributions.
+    flags: ValueFlags,
+    flags_to_add: ValueFlags,
+    rel_offset: u64,
+    r_type: object::elf::RelocationType,
+    rel_kind: linker_utils::elf::RelocationKind,
+    next_modifier: RelocationModifier,
+    section_is_writable: bool,
+}
+
+/// Resolve the relocated symbol and determine the effective relocation kind / initial flags.
+#[inline(always)]
+fn classify_symbol_relocation<'data, A: Arch<Platform = Elf>, R: Relocation<Platform = Elf>>(
+    object: &ObjectLayoutState<'data, Elf>,
+    rel: &R,
+    section: &<A::Platform as Platform>::SectionHeader,
+    local_sym_index: object::SymbolIndex,
+    resources: &layout::GraphResources<'data, '_, Elf>,
+) -> Result<ClassifiedSymbolRelocation> {
     let args = resources.symbol_db.args;
+    let symbol_db = resources.symbol_db;
+    let local_symbol_id = object.symbol_id_range.input_to_id(local_sym_index);
+    let symbol_id = symbol_db.definition(local_symbol_id);
+    let mut flags = resources.local_flags_for_symbol(symbol_id);
+    flags.merge(resources.local_flags_for_symbol(local_symbol_id));
+    let rel_offset = rel.offset();
+    let r_type = rel.raw_type();
+    let section_flags = section.sh_flags(LittleEndian);
+
     let mut next_modifier = RelocationModifier::Normal;
-    if let Some(local_sym_index) = rel.symbol() {
-        let symbol_db = resources.symbol_db;
-        let local_symbol_id = object.symbol_id_range.input_to_id(local_sym_index);
-        let symbol_id = symbol_db.definition(local_symbol_id);
-        let mut flags = resources.local_flags_for_symbol(symbol_id);
-        flags.merge(resources.local_flags_for_symbol(local_symbol_id));
-        let rel_offset = rel.offset();
-        let r_type = rel.raw_type();
-        let section_flags = section.sh_flags(LittleEndian);
+    let rel_info = if let Some(relaxation) = A::new_relaxation(
+        r_type,
+        object.object.raw_section_data(section)?,
+        rel_offset,
+        flags,
+        symbol_db.output_kind,
+        section_flags,
+        true,
+        None,
+    )
+    .filter(|relaxation| args.should_relax() || relaxation.is_mandatory())
+    {
+        next_modifier = relaxation.next_modifier();
+        relaxation.rel_info()
+    } else {
+        A::relocation_from_raw(r_type)?
+    };
 
-        let rel_info = if let Some(relaxation) = A::new_relaxation(
-            r_type,
-            object.object.raw_section_data(section)?,
-            rel_offset,
-            flags,
-            symbol_db.output_kind,
-            section_flags,
-            true,
-            None,
-        )
-        .filter(|relaxation| args.should_relax() || relaxation.is_mandatory())
+    Ok(ClassifiedSymbolRelocation {
+        local_symbol_id,
+        symbol_id,
+        flags,
+        flags_to_add: layout::resolution_flags(rel_info.kind),
+        rel_offset,
+        r_type,
+        rel_kind: rel_info.kind,
+        next_modifier,
+        section_is_writable: section.is_writable(),
+    })
+}
+
+/// Account for GOT/PLT/dynamic-reloc/TLS sizes implied by this relocation.
+#[inline(always)]
+fn materialize_relocation_requirements<
+    'data,
+    A: Arch<Platform = Elf>,
+    R: Relocation<Platform = Elf>,
+>(
+    common: &mut CommonGroupState<'data, Elf>,
+    rel: &R,
+    section: &<A::Platform as Platform>::SectionHeader,
+    resources: &layout::GraphResources<'data, '_, Elf>,
+    is_debug_section: bool,
+    relr_writer: &mut RelrEncoder,
+    classified: &mut ClassifiedSymbolRelocation,
+) -> Result {
+    let args = resources.symbol_db.args;
+    let symbol_db = resources.symbol_db;
+    let section_flags = section.sh_flags(LittleEndian);
+    let flags = classified.flags;
+    let symbol_id = classified.symbol_id;
+    let r_type = classified.r_type;
+    let section_is_writable = classified.section_is_writable;
+    let flags_to_add = &mut classified.flags_to_add;
+    let rel_kind = classified.rel_kind;
+
+    if !section_flags.is_alloc() {
+        // Non-alloc sections never get dynamic relocations, so there's nothing to do here.
+    } else if rel_kind.is_tls() {
+        if does_relocation_require_static_tls(rel_kind) {
+            resources
+                .has_static_tls
+                .store(true, atomic::Ordering::Relaxed);
+        }
+
+        if layout::needs_tlsld(rel_kind)
+            && !resources
+                .layout_resources_ext
+                .uses_tlsld
+                .load(atomic::Ordering::Relaxed)
         {
-            next_modifier = relaxation.next_modifier();
-            relaxation.rel_info()
-        } else {
-            A::relocation_from_raw(r_type)?
-        };
-
-        let section_is_writable = section.is_writable();
-        let mut flags_to_add = layout::resolution_flags(rel_info.kind);
-
-        if !section_flags.is_alloc() {
-            // Non-alloc sections never get dynamic relocations, so there's nothing to do here.
-        } else if rel_info.kind.is_tls() {
-            if does_relocation_require_static_tls(rel_info.kind) {
-                resources
-                    .has_static_tls
-                    .store(true, atomic::Ordering::Relaxed);
-            }
-
-            if layout::needs_tlsld(rel_info.kind)
-                && !resources
-                    .layout_resources_ext
-                    .uses_tlsld
-                    .load(atomic::Ordering::Relaxed)
-            {
-                resources
-                    .layout_resources_ext
-                    .uses_tlsld
-                    .store(true, atomic::Ordering::Relaxed);
-            }
-        } else if flags_to_add.needs_direct() && flags.is_interposable() {
-            if symbol_db.output_kind.is_shared_object()
-                && A::is_disallowed_for_interposable_symbols(r_type)
-            {
-                bail!(
-                    "relocation {} cannot be used when making a shared object; \
-                    recompile with -fPIC",
-                    A::rel_type_to_string(r_type),
-                );
-            }
-            if section_is_writable {
-                common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-            } else if flags.is_function() {
-                // Create a PLT entry for the function and refer to that instead.
-                flags_to_add.remove(ValueFlags::DIRECT);
-                flags_to_add |= ValueFlags::PLT | ValueFlags::GOT;
-            } else if !flags.is_absolute() {
-                match args.copy_relocations_enabled() {
-                    crate::args::CopyRelocations::Allowed => {
-                        flags_to_add |= ValueFlags::COPY_RELOCATION;
-                    }
-                    crate::args::CopyRelocations::Disallowed(reason) => {
-                        // We don't at present support text relocations, so if we can't apply a copy
-                        // relocation, we error instead.
-                        bail!(
-                            "Direct relocation ({}) to dynamic symbol from non-writable section, \
-                            but copy relocations are disabled because {reason}. {}",
-                            A::rel_type_to_string(r_type),
-                            resources.symbol_debug(symbol_id),
-                        );
-                    }
-                }
-            }
-        } else if flags.is_ifunc()
-            && rel_info.kind == RelocationKind::Absolute
-            && section_is_writable
-            && symbol_db.output_kind.is_relocatable()
+            resources
+                .layout_resources_ext
+                .uses_tlsld
+                .store(true, atomic::Ordering::Relaxed);
+        }
+    } else if flags_to_add.needs_direct() && flags.is_interposable() {
+        if symbol_db.output_kind.is_shared_object()
+            && A::is_disallowed_for_interposable_symbols(r_type)
         {
-            common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-        } else if symbol_db.output_kind.is_relocatable()
-            && rel_info.kind == RelocationKind::Absolute
-            && flags.is_address()
-        {
-            if section_is_writable {
-                // Odd offsets can't be encoded as RELR address entries (LSB used as
-                // bitmap marker), so fall back to RELA for them.
-                if resources.symbol_db.args.is_relr_enabled() && rel.offset().is_multiple_of(2) {
-                    relr_writer.encode(rel.offset(), |_, encoding| {
-                        if matches!(encoding, RelrEntryEncoding::New) {
-                            common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                        }
-                        Ok(())
-                    })?;
-                } else {
-                    common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
-                }
-            } else if !is_debug_section {
-                bail!(
-                    "Cannot apply relocation {} to read-only section. \
-                    Please recompile with -fPIC or link with -no-pie",
-                    A::rel_type_to_string(r_type),
-                );
-            }
-        }
-
-        // For ifunc symbols with GOT-relative references (like R_X86_64_GOTPCRELX), we need a
-        // separate GOT entry for address equality. The main GOT entry will be used by the PLT stub
-        // with an IRELATIVE relocation, while this extra entry will contain the PLT stub address so
-        // that all references to the ifunc return the same address.
-
-        let relocation_needs_got = flags_to_add.needs_got();
-
-        if flags.is_ifunc() && !symbol_db.output_kind.is_static_executable() {
-            flags_to_add |= ValueFlags::GOT | ValueFlags::PLT;
-        }
-
-        if flags.is_ifunc() && relocation_needs_got && !symbol_db.output_kind.is_relocatable() {
-            flags_to_add |= ValueFlags::IFUNC_GOT_FOR_ADDRESS;
-        }
-
-        let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
-        let previous_flags = atomic_flags.fetch_or(flags_to_add);
-
-        if !previous_flags.has_resolution() {
-            if flags.is_ifunc() && symbol_db.output_kind.is_static_executable() {
-                atomic_flags.fetch_or(ValueFlags::GOT | ValueFlags::PLT);
-            }
-
-            queue.send_symbol_request::<A>(symbol_id, resources, scope);
-        }
-
-        if !is_debug_section {
-            crate::thunks::handle_thunk_extensions_for_relocation::<A>(
-                section_part_id,
-                resources,
-                local_symbol_id,
-                symbol_id,
-                r_type,
+            bail!(
+                "relocation {} cannot be used when making a shared object; \
+                recompile with -fPIC",
+                A::rel_type_to_string(r_type),
             );
         }
-
-        layout::check_for_undefined::<A>(
-            object,
-            section,
-            rel_offset,
-            local_sym_index,
-            flags,
-            symbol_id,
-            resources,
-        )?;
-
-        if flags_to_add.needs_copy_relocation() && !previous_flags.needs_copy_relocation() {
-            queue.send_copy_relocation_request::<A>(symbol_id, resources, scope);
+        if section_is_writable {
+            common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+        } else if flags.is_function() {
+            // Create a PLT entry for the function and refer to that instead.
+            flags_to_add.remove(ValueFlags::DIRECT);
+            *flags_to_add |= ValueFlags::PLT | ValueFlags::GOT;
+        } else if !flags.is_absolute() {
+            match args.copy_relocations_enabled() {
+                crate::args::CopyRelocations::Allowed => {
+                    *flags_to_add |= ValueFlags::COPY_RELOCATION;
+                }
+                crate::args::CopyRelocations::Disallowed(reason) => {
+                    // We don't at present support text relocations, so if we can't apply a copy
+                    // relocation, we error instead.
+                    bail!(
+                        "Direct relocation ({}) to dynamic symbol from non-writable section, \
+                        but copy relocations are disabled because {reason}. {}",
+                        A::rel_type_to_string(r_type),
+                        resources.symbol_debug(symbol_id),
+                    );
+                }
+            }
+        }
+    } else if flags.is_ifunc()
+        && rel_kind == RelocationKind::Absolute
+        && section_is_writable
+        && symbol_db.output_kind.is_relocatable()
+    {
+        common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+    } else if symbol_db.output_kind.is_relocatable()
+        && rel_kind == RelocationKind::Absolute
+        && flags.is_address()
+    {
+        if section_is_writable {
+            // Odd offsets can't be encoded as RELR address entries (LSB used as
+            // bitmap marker), so fall back to RELA for them.
+            if resources.symbol_db.args.is_relr_enabled() && rel.offset().is_multiple_of(2) {
+                relr_writer.encode(rel.offset(), |_, encoding| {
+                    if matches!(encoding, RelrEntryEncoding::New) {
+                        common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                    }
+                    Ok(())
+                })?;
+            } else {
+                common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+            }
+        } else if !is_debug_section {
+            bail!(
+                "Cannot apply relocation {} to read-only section. \
+                Please recompile with -fPIC or link with -no-pie",
+                A::rel_type_to_string(r_type),
+            );
         }
     }
-    Ok(next_modifier)
+
+    // For ifunc symbols with GOT-relative references (like R_X86_64_GOTPCRELX), we need a
+    // separate GOT entry for address equality. The main GOT entry will be used by the PLT stub
+    // with an IRELATIVE relocation, while this extra entry will contain the PLT stub address so
+    // that all references to the ifunc return the same address.
+
+    let relocation_needs_got = flags_to_add.needs_got();
+
+    if flags.is_ifunc() && !symbol_db.output_kind.is_static_executable() {
+        *flags_to_add |= ValueFlags::GOT | ValueFlags::PLT;
+    }
+
+    if flags.is_ifunc() && relocation_needs_got && !symbol_db.output_kind.is_relocatable() {
+        *flags_to_add |= ValueFlags::IFUNC_GOT_FOR_ADDRESS;
+    }
+
+    Ok(())
+}
+
+/// Record that a live section references `classified.symbol_id` and enqueue graph work if needed.
+#[inline(always)]
+fn note_relocation_symbol_reference<'data, 'scope, A: Arch<Platform = Elf>>(
+    classified: &ClassifiedSymbolRelocation,
+    resources: &'scope layout::GraphResources<'data, '_, Elf>,
+    queue: &mut layout::LocalWorkQueue,
+    scope: &Scope<'scope>,
+) -> ValueFlags {
+    let symbol_id = classified.symbol_id;
+    let flags = classified.flags;
+    let flags_to_add = classified.flags_to_add;
+
+    let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
+    let previous_flags = atomic_flags.fetch_or(flags_to_add);
+
+    if !previous_flags.has_resolution() {
+        if flags.is_ifunc() && resources.symbol_db.output_kind.is_static_executable() {
+            atomic_flags.fetch_or(ValueFlags::GOT | ValueFlags::PLT);
+        }
+
+        queue.send_symbol_request::<A>(symbol_id, resources, scope);
+    }
+
+    previous_flags
 }
 
 /// Returns whether the supplied relocation type requires static TLS. If true and we're writing a

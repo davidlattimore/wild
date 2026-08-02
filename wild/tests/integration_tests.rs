@@ -77,6 +77,11 @@
 //!
 //! Contains:{string} Checks that the output binary does contain the specified string.
 //!
+//! ExpectFuncImport:{module}/{name}={count} (Wasm) Asserts that the import section has exactly
+//! {count} function imports with the given module and field name.
+//!
+//! ExpectFuncImportCount:{count} (Wasm) Asserts the total number of function imports.
+//!
 //! ExpectSection:{section_name} [properties] Checks that the specified section exists in the
 //! output binary. Optional properties:
 //!   max_entries=N: Asserts the section has at most N entries (uses the section's sh_entsize,
@@ -514,6 +519,7 @@ struct WasmModuleInfo {
     bytes: Vec<u8>,
     section_names: HashSet<String>,
     export_names: HashSet<String>,
+    function_imports: Vec<(String, String)>,
     func_types: Vec<wasmparser::FuncType>,
 }
 
@@ -527,6 +533,7 @@ impl WasmModuleInfo {
             .with_context(|| format!("Failed to read Wasm file {}", path.display()))?;
         let mut section_names = HashSet::new();
         let mut export_names = HashSet::new();
+        let mut function_imports = Vec::new();
         let mut func_types = Vec::new();
 
         for payload in Parser::new(0).parse_all(&bytes) {
@@ -548,8 +555,20 @@ impl WasmModuleInfo {
                         }
                     }
                 }
-                Payload::ImportSection(_) => {
+                Payload::ImportSection(section) => {
                     section_names.insert("Import".to_owned());
+                    for import in section.into_imports() {
+                        let import = import.with_context(|| {
+                            format!("Invalid import entry in {}", path.display())
+                        })?;
+                        if matches!(
+                            import.ty,
+                            wasmparser::TypeRef::Func(_) | wasmparser::TypeRef::FuncExact(_)
+                        ) {
+                            function_imports
+                                .push((import.module.to_owned(), import.name.to_owned()));
+                        }
+                    }
                 }
                 Payload::FunctionSection(_) => {
                     section_names.insert("Function".to_owned());
@@ -599,6 +618,7 @@ impl WasmModuleInfo {
             bytes,
             section_names,
             export_names,
+            function_imports,
             func_types,
         })
     }
@@ -627,6 +647,38 @@ impl WasmModuleInfo {
                 !self.section_names.contains(name),
                 "Section `{name}` should not exist but was found in {linker_name} output ({})",
                 self.path.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn ensure_func_imports(
+        &self,
+        expected: &[(String, String, usize)],
+        total_count: Option<usize>,
+        linker_name: &str,
+    ) -> Result {
+        if let Some(total) = total_count {
+            ensure!(
+                self.function_imports.len() == total,
+                "Expected {total} function import(s) in {linker_name} output ({}), found {}: {:?}",
+                self.path.display(),
+                self.function_imports.len(),
+                self.function_imports
+            );
+        }
+        for (module, name, count) in expected {
+            let actual = self
+                .function_imports
+                .iter()
+                .filter(|(m, n)| m == module && n == name)
+                .count();
+            ensure!(
+                actual == *count,
+                "Expected function import `{module}/{name}` count {count} in {linker_name} \
+                 output ({}), found {actual} (all: {:?})",
+                self.path.display(),
+                self.function_imports
             );
         }
         Ok(())
@@ -1665,6 +1717,10 @@ struct Assertions {
     expected_sections: Vec<ExpectedSection>,
     absent_sections: Vec<String>,
     expected_section_bytes: Vec<ExpectedSectionBytes>,
+    /// Wasm: `(module, field, expected_count)` for function imports.
+    expected_func_imports: Vec<(String, String, usize)>,
+    /// Wasm: total number of function imports in the import section.
+    expected_func_import_count: Option<usize>,
     relr_count: Option<u64>,
     expected_gdb_index_cu_count: Option<usize>,
     expected_gdb_index_symbols: Vec<String>,
@@ -2076,6 +2132,31 @@ fn process_directive(
         }
         "DoesNotContain" => config.assertions.does_not_contain.push(arg.to_owned()),
         "Contains" => config.assertions.contains_strings.push(arg.to_owned()),
+        "ExpectFuncImport" => {
+            // module/name=count
+            let (path, count_str) = arg.split_once('=').with_context(|| {
+                format!("ExpectFuncImport requires module/name=count, got `{arg}`")
+            })?;
+            let (module, name) = path.split_once('/').with_context(|| {
+                format!("ExpectFuncImport requires module/name=count, got `{arg}`")
+            })?;
+            let count: usize = count_str
+                .trim()
+                .parse()
+                .with_context(|| format!("Invalid count in ExpectFuncImport: `{count_str}`"))?;
+            config.assertions.expected_func_imports.push((
+                module.to_owned(),
+                name.to_owned(),
+                count,
+            ));
+        }
+        "ExpectFuncImportCount" => {
+            config.assertions.expected_func_import_count = Some(
+                arg.trim()
+                    .parse()
+                    .with_context(|| format!("Invalid ExpectFuncImportCount: `{arg}`"))?,
+            );
+        }
         "ExpectSection" => {
             let arg = arg.trim();
             let (name, assertions) = if let Some((name, props)) = arg.split_once(' ') {
@@ -4514,6 +4595,8 @@ impl Assertions {
             output_file_matches: self.output_file_matches.clone(),
             expected_symtab_entries: self.expected_symtab_entries.clone(),
             no_sym: self.no_sym.clone(),
+            expected_func_imports: self.expected_func_imports.clone(),
+            expected_func_import_count: self.expected_func_import_count,
             ..Default::default()
         };
         ensure!(
@@ -4538,6 +4621,11 @@ impl Assertions {
             .collect();
         info.ensure_sections(&expected_sections, linker_name)?;
         info.ensure_absent_sections(&self.absent_sections, linker_name)?;
+        info.ensure_func_imports(
+            &self.expected_func_imports,
+            self.expected_func_import_count,
+            linker_name,
+        )?;
         info.ensure_func_types_unique(linker_name)?;
         info.ensure_exports(&self.expected_symtab_entries, &self.no_sym, linker_name)?;
         self.verify_strings(&info.bytes)?;
@@ -5818,7 +5906,7 @@ impl Display for LinkCommand {
             write!(
                 f,
                 "WILD_WRITE_LAYOUT=1 WILD_WRITE_TRACE=1 OUT={} {}/run-with cargo run \
-                     --bin wild --",
+                     --bin wild -- --",
                 self.output_path.display(),
                 save_dir.display()
             )?;
@@ -5867,7 +5955,7 @@ impl Display for LinkCommand {
 
                 write!(
                     f,
-                    "{} cargo run --bin wild -- {}",
+                    "{} cargo run --bin wild -- -- {}",
                     command_str,
                     args.join(" ")
                 )

@@ -125,7 +125,9 @@ impl RelaxationKind {
 }
 
 #[must_use]
-pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
+pub const fn relocation_type_from_raw(
+    r_type: object::elf::RelocationType,
+) -> Option<RelocationKindInfo> {
     // The relocation listing following the order defined in the standard:
     // https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc#relocations
     let (kind, size, mask, range, alignment) = match r_type {

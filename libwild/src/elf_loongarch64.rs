@@ -1,4 +1,4 @@
-use crate::elf::Elf;
+use crate::elf::Elf64;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
@@ -31,14 +31,14 @@ const _ASSERTS: () = {
 
 impl crate::platform::Arch for ElfLoongArch64 {
     type Relaxation = Relaxation;
-    type Platform = Elf;
+    type Platform = Elf64;
 
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_LOONGARCH
     }
 
     #[inline(always)]
-    fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
+    fn relocation_from_raw(r_type: object::elf::RelocationType) -> Result<RelocationKindInfo> {
         linker_utils::loongarch64::relocation_type_from_raw(r_type).ok_or_else(|| {
             error!(
                 "Unsupported relocation type {}",
@@ -47,15 +47,17 @@ impl crate::platform::Arch for ElfLoongArch64 {
         })
     }
 
-    fn is_disallowed_for_interposable_symbols(r_type: u32) -> bool {
+    fn is_disallowed_for_interposable_symbols(r_type: object::elf::RelocationType) -> bool {
         matches!(r_type, object::elf::R_LARCH_32)
     }
 
-    fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
+    fn get_dynamic_relocation_type(
+        relocation: DynamicRelocationKind,
+    ) -> object::elf::RelocationType {
         relocation.loongarch64_r_type()
     }
 
-    fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
+    fn rel_type_to_string(r_type: object::elf::RelocationType) -> std::borrow::Cow<'static, str> {
         loongarch64_rel_type_to_string(r_type)
     }
 
@@ -82,7 +84,7 @@ impl crate::platform::Arch for ElfLoongArch64 {
         0
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout<Elf>) -> u64 {
+    fn tp_offset_start(layout: &crate::layout::Layout<Elf64>) -> u64 {
         layout.tls_start_address_aligned()
     }
 
@@ -101,14 +103,14 @@ impl crate::platform::Arch for ElfLoongArch64 {
         }
     }
 
-    fn high_part_relocations() -> &'static [u32] {
+    fn high_part_relocations() -> &'static [object::elf::RelocationType] {
         &[]
     }
 
     #[allow(unused_variables)]
     #[inline(always)]
     fn new_relaxation(
-        relocation_kind: u32,
+        relocation_kind: object::elf::RelocationType,
         section_bytes: &[u8],
         offset_in_section: u64,
         flags: crate::value_flags::ValueFlags,

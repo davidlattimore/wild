@@ -60,7 +60,7 @@ jobs:
 
       - name: Log in to Container Registry
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
+        uses: docker/login-action@v4.5.2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -91,7 +91,7 @@ jobs:
 
       - name: Upload base image archive
         if: github.event_name == 'pull_request' && contains(matrix.file, 'base')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: base_image-${{ matrix.container }}
           path: ${{ runner.temp }}/base_image.tar
@@ -142,7 +142,7 @@ jobs:
 
       - name: Log in to Container Registry
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
+        uses: docker/login-action@v4.5.2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -150,7 +150,7 @@ jobs:
 
       - name: Download base image archive
         if: github.event_name == 'pull_request'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: base_image-${{ matrix.base_image_container }}
           path: ${{ runner.temp }}

@@ -39,6 +39,8 @@ use hashbrown::HashMap;
 use itertools::multizip;
 use std::fmt::Debug;
 use std::fmt::Display;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::ops::Range;
 
 /// An ID for an output section. This is used for looking up section info. It's independent of
@@ -76,9 +78,9 @@ pub(crate) const UNMAPPED: OutputSectionId =
 pub(crate) const FILE_HEADER: OutputSectionId =
     CommonSinglePartSectionId::FileHeader.output_section_id();
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CustomSectionDetails<'data> {
-    pub(crate) name: SectionName<'data>,
+#[derive(Debug)]
+pub(crate) struct CustomSectionDetails<'data, P: Platform> {
+    pub(crate) identity: SectionIdentity<'data, P>,
     pub(crate) index: object::SectionIndex,
     pub(crate) alignment: Alignment,
 }
@@ -103,7 +105,7 @@ pub(crate) struct OutputSections<'data, P: Platform> {
     /// being output.
     pub(crate) output_section_indexes: Vec<Option<u32>>,
 
-    custom_by_name: HashMap<SectionName<'data>, OutputSectionId>,
+    custom_by_identity: HashMap<SectionIdentity<'data, P>, OutputSectionId>,
 
     init_fini_by_priority: HashMap<(OutputSectionId, u16), OutputSectionId>,
 
@@ -493,14 +495,14 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         segment_def: P::ProgramSegmentDef,
     ) -> bool {
         let info = self.output_info(section_id);
-        segment_def.should_include_section(info, section_id, self.rosegment)
+        P::program_segment_should_include_section(segment_def, info, section_id, self.rosegment)
     }
 }
 
 // TODO: There's also a type with this name in layout_rules. Rename one of them to avoid confusion.
 #[derive(Debug)]
 pub(crate) struct SectionOutputInfo<'data, P: Platform> {
-    pub(crate) kind: SectionKind<'data>,
+    pub(crate) kind: SectionKind<'data, P>,
     pub(crate) section_attributes: P::SectionAttributes,
     pub(crate) min_alignment: Alignment,
     pub(crate) location_info: Option<SectionLocationInfo<'data>>,
@@ -631,6 +633,45 @@ pub(crate) enum OrderEvent<'data> {
     SetSectionAddress(linker_script::Expression<'data>),
 }
 
+/// The section's complete identity. Determines whether sections are combined into the same output
+/// section.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SectionIdentity<'data, P: Platform> {
+    name: SectionName<'data>,
+    format_specific: P::SectionIdentityExt,
+}
+
+impl<'data, P: Platform> SectionIdentity<'data, P> {
+    pub(crate) const fn new(
+        name: SectionName<'data>,
+        format_specific: P::SectionIdentityExt,
+    ) -> Self {
+        Self {
+            name,
+            format_specific,
+        }
+    }
+
+    pub(crate) fn section_name(&self) -> SectionName<'data> {
+        self.name
+    }
+}
+
+impl<'data, P: Platform> PartialEq for SectionIdentity<'data, P> {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.format_specific == other.format_specific
+    }
+}
+
+impl<'data, P: Platform> Eq for SectionIdentity<'data, P> {}
+
+impl<'data, P: Platform> Hash for SectionIdentity<'data, P> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.format_specific.hash(state);
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct SectionName<'data>(pub(crate) &'data [u8]);
 
@@ -661,13 +702,13 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     }
     pub(crate) fn add_sections(
         &mut self,
-        custom_sections: &[CustomSectionDetails<'data>],
+        custom_sections: &[CustomSectionDetails<'data, P>],
         section_part_ids: &mut [PartId],
         args: &P::Args,
     ) {
         for custom in custom_sections {
             let location = args
-                .start_address_for_section(custom.name)
+                .start_address_for_section(custom.identity.section_name())
                 .map(linker_script::Expression::Number);
             let location_info = location.map(|loc| SectionLocationInfo {
                 location_counters: (0, 0),
@@ -676,7 +717,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 is_top_level: true,
             });
             let section_id = self.add_named_section(
-                custom.name,
+                custom.identity,
                 custom.alignment,
                 None,
                 location_info.as_ref(),
@@ -724,7 +765,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
 
     pub(crate) fn add_named_section(
         &mut self,
-        name: SectionName<'data>,
+        identity: SectionIdentity<'data, P>,
         min_alignment: Alignment,
         region_name: Option<&'data [u8]>,
         location_info: Option<&SectionLocationInfo<'data>>,
@@ -735,14 +776,14 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         if !self.output_kind.is_partial_object()
             && let Some(builtin_id) = (0..regular_section_base::<P>().as_usize())
                 .map(OutputSectionId::from_usize)
-                .find(|&bid| self.name(bid) == Some(name))
+                .find(|&bid| self.identity(bid) == Some(identity))
         {
             resolved_id = Some(builtin_id);
         }
 
         *self
-            .custom_by_name
-            .entry(name)
+            .custom_by_identity
+            .entry(identity)
             .and_modify(|s| {
                 let info = self.section_infos.get_mut(*s);
                 info.min_alignment = info.min_alignment.max(min_alignment);
@@ -770,7 +811,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                     builtin_id
                 } else {
                     self.section_infos.add_new(SectionOutputInfo {
-                        kind: SectionKind::Primary(name),
+                        kind: SectionKind::Primary(identity),
                         section_attributes: Default::default(),
                         min_alignment,
                         location_info: location_info.cloned(),
@@ -812,7 +853,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         Self {
             section_infos: OutputSectionMap::from_values(section_infos),
             base_address,
-            custom_by_name: HashMap::new(),
+            custom_by_identity: HashMap::new(),
             output_section_indexes: Default::default(),
             init_fini_by_priority: HashMap::new(),
             rosegment: true,
@@ -886,8 +927,8 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 if id == FILE_HEADER || P::CUSTOM_PHDR_EXCLUDED_SECTION_IDS.contains(&id) {
                     return;
                 } else if id.as_usize() < num_built_in_sections::<P>()
-                    && let Some(name) = self.name(id)
-                    && self.custom_name_to_id(name).is_some()
+                    && let Some(identity) = self.identity(id)
+                    && self.custom_identity_to_id(identity).is_some()
                 {
                     return;
                 }
@@ -982,18 +1023,24 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         self.output_index_of_section(id).is_some()
     }
 
-    pub(crate) fn name(&self, section_id: OutputSectionId) -> Option<SectionName<'data>> {
+    pub(crate) fn identity(
+        &self,
+        section_id: OutputSectionId,
+    ) -> Option<SectionIdentity<'data, P>> {
         match self.output_info(section_id).kind {
-            SectionKind::Primary(section_name) => Some(section_name),
+            SectionKind::Primary(identity) => Some(identity),
             SectionKind::Secondary(_) => None,
         }
     }
 
+    pub(crate) fn name(&self, section_id: OutputSectionId) -> Option<SectionName<'data>> {
+        self.identity(section_id)
+            .map(|identity| identity.section_name())
+    }
+
     pub(crate) fn display_name(&self, section_id: OutputSectionId) -> String {
         match self.output_info(section_id).kind {
-            SectionKind::Primary(section_name) => {
-                format!("`{}`", String::from_utf8_lossy(section_name.0))
-            }
+            SectionKind::Primary(identity) => format!("`{identity}`"),
             SectionKind::Secondary(primary_id) => {
                 format!("{} (secondary)", self.display_name(primary_id))
             }
@@ -1018,18 +1065,24 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         format!("{section_id}{merge} ({})", self.display_name(merge_target))
     }
 
-    pub(crate) fn custom_name_to_id<'a>(&self, name: SectionName<'a>) -> Option<OutputSectionId> {
-        self.custom_by_name.get(&name).copied()
+    pub(crate) fn custom_identity_to_id<'a>(
+        &self,
+        identity: SectionIdentity<'a, P>,
+    ) -> Option<OutputSectionId> {
+        self.custom_by_identity.get(&identity).copied()
     }
 
-    /// Look up a section by name across all sections — both built-in and custom.
-    pub(crate) fn section_id_by_name(&self, name: SectionName) -> Option<OutputSectionId> {
-        if let Some(id) = self.custom_by_name.get(&name).copied() {
+    /// Look up a section by name across both built-in and custom sections.
+    /// Returns None if the platform cannot construct an identity from the name alone or if no
+    /// matching section exists.
+    pub(crate) fn section_id_by_name<'a>(&self, name: SectionName<'a>) -> Option<OutputSectionId> {
+        let identity = P::section_identity_from_name(name)?;
+        if let Some(id) = self.custom_by_identity.get(&identity).copied() {
             return Some(id);
         }
         let mut found = None;
         self.section_infos.for_each(|id, _| {
-            if found.is_none() && self.name(id) == Some(name) {
+            if found.is_none() && self.identity(id) == Some(identity) {
                 found = Some(id);
             }
         });
@@ -1050,16 +1103,16 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     }
 
     #[cfg(test)]
-    pub(crate) fn for_testing() -> OutputSections<'static, crate::elf::Elf> {
-        use crate::elf::Elf;
+    pub(crate) fn for_testing() -> OutputSections<'static, crate::elf::Elf64> {
+        use crate::elf::Elf64;
 
         let output_kind = crate::output_kind::OutputKind::StaticExecutable(
             crate::args::RelocationModel::NonRelocatable,
         );
-        let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000, output_kind);
+        let mut output_sections = OutputSections::<Elf64>::with_base_address(0x1000, output_kind);
         let mut add_name = |name: &'static str| {
             output_sections.add_named_section(
-                SectionName(name.as_bytes()),
+                SectionIdentity::new(SectionName(name.as_bytes()), ()),
                 crate::alignment::MIN,
                 None,
                 None,
@@ -1072,6 +1125,12 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         add_name("data");
         add_name("bss");
         output_sections
+    }
+}
+
+impl<P: Platform> Display for SectionIdentity<'_, P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        P::fmt_section_identity(self.name, &self.format_specific, f)
     }
 }
 
@@ -1169,10 +1228,10 @@ impl<P: Platform> Display for OutputSections<'_, P> {
     }
 }
 
-impl Display for SectionKind<'_> {
+impl<P: Platform> Display for SectionKind<'_, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SectionKind::Primary(section_name) => write!(f, "{section_name}"),
+            SectionKind::Primary(identity) => write!(f, "{identity}"),
             SectionKind::Secondary(primary_id) => write!(f, "Secondary to {primary_id}"),
         }
     }

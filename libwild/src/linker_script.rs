@@ -1314,33 +1314,40 @@ fn parse_matcher_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<Mat
     })
 }
 
+fn parse_sort(input: &mut &BStr) -> winnow::Result<bool> {
+    let sort_kw = alt((
+        "SORT_BY_NAME".map(|_| true),
+        "SORT_BY_ALIGNMENT".map(|_| false),
+        "SORT".map(|_| true),
+    ))
+    .parse_next(input)?;
+    Ok(sort_kw)
+}
+
 fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<SectionPattern<'input>> {
-    // Handling SORT(...) wrapper: SORT is an alias for SORT_BY_NAME in GNU ld.
-    use winnow::combinator::opt;
-    use winnow::token::literal;
-    if opt(literal(b"SORT")).parse_next(input)?.is_some() {
-        skip_comments_and_whitespace(input)?;
+    let sort_kw = opt(parse_sort).parse_next(input)?;
+    let sorted = sort_kw.unwrap_or(false);
 
+    if sort_kw.is_some() {
+        skip_comments_and_whitespace(input)?;
         '('.parse_next(input)?;
-        skip_comments_and_whitespace(input)?;
+        winnow::combinator::not(parse_sort)
+            .parse_next(input)
+            .map_err(|_: ContextError| {
+                ContextError::from_external_error(input, LinkerScriptError::UnsupportedNestedSort)
+            })?;
+    }
 
-        // Inside SORT(...), accept a single wildcard pattern up to ')'
-        let name =
-            take_while(1.., |b: u8| b != b')' && !b.is_ascii_whitespace()).parse_next(input)?;
-        skip_comments_and_whitespace(input)?;
+    skip_comments_and_whitespace(input)?;
+    let name = take_while(1.., |b: u8| b != b')' && !b.is_ascii_whitespace()).parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    if sort_kw.is_some() {
         ')'.parse_next(input)?;
         skip_comments_and_whitespace(input)?;
-
-        Ok(SectionPattern { name, sorted: true })
-    } else {
-        let name =
-            take_while(1.., |b: u8| b != b')' && !b.is_ascii_whitespace()).parse_next(input)?;
-        skip_comments_and_whitespace(input)?;
-        Ok(SectionPattern {
-            name,
-            sorted: false,
-        })
     }
+
+    Ok(SectionPattern { name, sorted })
 }
 
 /// Call `cb` for each input file requested by `commands`.
@@ -1387,6 +1394,7 @@ fn to_str(bytes: &[u8]) -> Result<&str> {
 enum LinkerScriptError {
     InvalidAlignment,
     UnclosedComment,
+    UnsupportedNestedSort,
 }
 
 impl std::error::Error for LinkerScriptError {}
@@ -1396,6 +1404,10 @@ impl std::fmt::Display for LinkerScriptError {
         match self {
             LinkerScriptError::InvalidAlignment => write!(f, "Invalid alignment"),
             LinkerScriptError::UnclosedComment => write!(f, "Unclosed comment"),
+            LinkerScriptError::UnsupportedNestedSort => write!(
+                f,
+                "Nested sorting commands in linker scripts is not supported"
+            ),
         }
     }
 }
@@ -2292,5 +2304,19 @@ mod tests {
         .unwrap();
 
         assert_eq!(unquoted, quoted);
+    }
+
+    #[test]
+    fn test_nested_sort_is_unsupported() {
+        let script = parse_script(
+            r"
+            SECTIONS {
+                .text : {
+                    *(SORT(SORT_BY_ALIGNMENT(.text.*)))
+                }
+            }
+            ",
+        );
+        assert!(script.is_err());
     }
 }

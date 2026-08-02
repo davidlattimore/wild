@@ -6,7 +6,8 @@ If you decide to benchmark Wild against other linkers, in order to make it a fai
 should ensure that the other linkers aren't doing work on something that Wild doesn't support. In
 particular:
 
-* Wild defaults to `--gc-sections`, so for a fair comparison, that should be passed to all the linkers.
+* Wild defaults to `--gc-sections`, so for a fair comparison, that should be passed to all the
+  linkers.
 * Wild defaults to `-z now`, so best to pass that to all linkers.
 
 ## How to benchmark
@@ -23,8 +24,8 @@ comparisons you wish to make, or what change in wild you want to quantify.
 
 Follow-these steps:
 
-* Chose the crate that you wish to use in your benchmark, clone it, `cd` into it's root directory
-  and make sure it builds with `cargo build` (for a rust project)
+* Chose the crate that you wish to use in your benchmark, clone it, `cd` into its root directory and
+  make sure it builds with `cargo build` (for a rust project)
     * Examples: [`ripgrep`](https://github.com/BurntSushi/ripgrep.git)
 * Clean the build using `cargo clean`
 * To force the build of your chosen crate to link using wild, we have a couple of options:
@@ -51,7 +52,7 @@ rustflags = ["-Clink-arg=--ld-path=wild"]
 
 When you run `run-with wild`, the linker may print warnings for unsupported flags. It's a good idea
 to edit the `run-with` script to change / delete these flags. This will make comparison with other
-linkers more fair, since some of these unsupported flags may involve other linkers doing significant
+linkers fairer, since some of these unsupported flags may involve other linkers doing significant
 amounts of extra work.
 
 ### Run benchmark with hyperfine
@@ -86,9 +87,11 @@ Summary
 
 ### Run benchmark with poop
 
-An alternative tool to hyperfine, that reports some additional metrics is [`poop`](https://github.com/andrewrk/poop).
+An alternative tool to hyperfine, that reports some additional metrics is [
+`poop`](https://github.com/andrewrk/poop).
 
-Like hyperfine it takes a number of commands and runs each a number of times and gathers statistics about each tune.
+Like hyperfine it takes a number of commands and runs each a number of times and gathers statistics
+about each tune.
 
 ```shell
 poop '/tmp/wild/ripgrep/6/run-with ld' '/tmp/wild/ripgrep/6/run-with mold' '/tmp/wild/ripgrep/6/run-with wild'
@@ -144,19 +147,20 @@ poop '/tmp/wild/ripgrep/6/run-with wild' '/tmp/wild/ripgrep/6/run-with mold' '/t
 Using this method, you can benchmark:
 
 * between Wild and one or more other linkers
-* between different options passed to Wild - You can pass arbitrary additional arguments to run-with.
-  The first argument needs to be the name of the linker to use. All additional arguments are passed through to the
-  linker as-is
+* between different options passed to Wild - You can pass arbitrary additional arguments to
+  run-with. The first argument needs to be the name of the linker to use. All additional arguments
+  are passed through to the linker as-is
 
 ### Caching
 
 The use of the linux file system cache affects linker performance, as there is a lot of reasonably
-large files read and written. In a normal build, the object files being linked would be written previously by the
-compiler and may well be in the file cache. With this benchmarking method we skip the previous build steps and the
-linker incurs the penalty of reading those files into cache the first time they are read.
+large files read and written. In a normal build, the object files being linked would be written
+previously by the compiler and may well be in the file cache. With this benchmarking method we skip
+the previous build steps and the linker incurs the penalty of reading those files into cache the
+first time they are read.
 
-To reduce the effect this has on benchmarked time we run hyperfine with the `--warmup 2` option, and the results
-of the first two runs are not used in the calculations.
+To reduce the effect this has on benchmarked time we run hyperfine with the `--warmup 2` option, and
+the results of the first two runs are not used in the calculations.
 
 ### Disk write bottlenecks
 
@@ -223,9 +227,9 @@ linker = "clang"
 rustflags = ["-Clink-arg=--ld-path=wild"]
 ```
 
-Now rustc will use wild as the linker on every build. You must have wild in your PATH.
-In the following command, replace `$WILD_REPO_PATH` with the path to the directory containing the wild repo. You'll
-need to have already built wild with `cargo build --release`.
+Now rustc will use wild as the linker on every build. You must have wild in your PATH. In the
+following command, replace `$WILD_REPO_PATH` with the path to the directory containing the wild
+repo. You'll need to have already built wild with `cargo build --release`.
 
 To build rustc just cd into the rust repo root and run:
 
@@ -233,12 +237,12 @@ To build rustc just cd into the rust repo root and run:
 PATH="$WILD_REPO_PATH/target/release:$PATH" WILD_SAVE_BASE=/tmp/rustc-link ./x build rustc
 ```
 
-For more information about building rustc see [building instructions on the rustc-dev-guide](https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html).
+For more information about building rustc
+see [building instructions on the rustc-dev-guide](https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html).
 You should now have a few subdirectories under `/tmp/rustc-link`. You can identify which one is
 `rustc_driver` by looking at the last line of the `run-with` script in each directory.
 
-If the directory `/tmp/rustc-link` didn't get created, then most likely wild wasn't used to
-link.
+If the directory `/tmp/rustc-link` didn't get created, then most likely wild wasn't used to link.
 
 ### Other tools
 
@@ -369,8 +373,8 @@ dhat: At t-end:  96,320 bytes in 109 blocks
 dhat: The data has been saved to dhat-heap.json, and is viewable with dhat/dh_view.html
 ```
 
-You can then upload `dhat-heap.json` to the [online dhat
-viewer](https://nnethercote.github.io/dh_view/dh_view.html).
+You can then upload `dhat-heap.json` to
+the [online dhat viewer](https://nnethercote.github.io/dh_view/dh_view.html).
 
 For more details, see the [dhat docs](https://docs.rs/dhat/latest/dhat/).
 
