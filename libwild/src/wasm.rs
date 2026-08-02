@@ -2508,9 +2508,7 @@ struct WasmObjectLayoutInput<'data> {
 #[derive(Debug, Clone, Copy)]
 struct WasmObjectIndexBases {
     type_index_base: u32,
-    function_import_base: u32,
     defined_function_base: u32,
-    global_import_base: u32,
     defined_global_base: u32,
     memory_base: u32,
 }
@@ -2518,7 +2516,6 @@ struct WasmObjectIndexBases {
 #[derive(Debug)]
 struct WasmObjectOutputLayout<'data> {
     types: Vec<wasmparser::FuncType>,
-    imports: Vec<OutputImport<'data>>,
     function_type_indices: Vec<u32>,
     globals: Vec<OutputGlobal<'data>>,
     exports: Vec<OutputExport<'data>>,
@@ -2701,10 +2698,12 @@ impl<'data> WasmObjectLayoutInput<'data> {
 
     fn build_object_output_layout(
         &self,
+        object_index: usize,
         index_bases: WasmObjectIndexBases,
         resolutions: &ObjectImportResolutions,
         all_index_bases: &[WasmObjectIndexBases],
         indices: &LinkerDefinedIndices,
+        shared_imports: &SharedUnresolvedImports<'data>,
     ) -> Result<WasmObjectOutputLayout<'data>> {
         ensure!(
             resolutions.function_resolutions.len() == self.function_imports.len(),
@@ -2736,29 +2735,18 @@ impl<'data> WasmObjectLayoutInput<'data> {
             got_mem_globals: Vec::new(),
         };
 
-        let mut imports =
-            Vec::with_capacity(self.function_imports.len() + self.global_imports.len());
-        let mut unresolved_func_count = 0u32;
-        for (i, import) in self.function_imports.iter().enumerate() {
-            match resolutions.function_resolutions[i] {
+        for (i, resolution) in resolutions.function_resolutions.iter().enumerate() {
+            match *resolution {
                 ImportResolution::Unresolved => {
-                    let output_type_index = index_bases
-                        .type_index_base
-                        .checked_add(import.type_index)
-                        .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
-                    let output_function_index = index_bases
-                        .function_import_base
-                        .checked_add(unresolved_func_count)
-                        .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
-                    unresolved_func_count += 1;
+                    let output_function_index = shared_imports
+                        .function_index(object_index, i)
+                        .ok_or_else(|| {
+                            crate::error!(
+                                "missing shared function import index for object {object_index} \
+                                 import {i}"
+                            )
+                        })?;
                     index_map.function_indices.push(output_function_index);
-                    imports.push(OutputImport {
-                        module: import.module,
-                        name: import.name,
-                        entity: OutputImportEntity::Function {
-                            type_index: output_type_index,
-                        },
-                    });
                 }
                 ImportResolution::LinkerDefined(known) => {
                     let index = indices.function_index(known).ok_or_else(|| {
@@ -2777,15 +2765,15 @@ impl<'data> WasmObjectLayoutInput<'data> {
                     index_map.function_indices.push(index);
                 }
                 ImportResolution::ResolvedFunction {
-                    object_index,
+                    object_index: def_object_index,
                     local_defined_index,
                 } => {
                     ensure!(
-                        object_index < all_index_bases.len(),
-                        "Wasm function import resolution references object index {object_index} \
-                         out of range"
+                        def_object_index < all_index_bases.len(),
+                        "Wasm function import resolution references object index \
+                         {def_object_index} out of range"
                     );
-                    let target_bases = &all_index_bases[object_index];
+                    let target_bases = &all_index_bases[def_object_index];
                     let output_function_index = target_bases
                         .defined_function_base
                         .checked_add(local_defined_index)
@@ -2800,21 +2788,18 @@ impl<'data> WasmObjectLayoutInput<'data> {
             }
         }
 
-        let mut unresolved_global_count = 0u32;
-        for (i, import) in self.global_imports.iter().enumerate() {
-            match resolutions.global_resolutions[i] {
+        for (i, resolution) in resolutions.global_resolutions.iter().enumerate() {
+            match *resolution {
                 ImportResolution::Unresolved => {
-                    let output_global_index = index_bases
-                        .global_import_base
-                        .checked_add(unresolved_global_count)
-                        .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-                    unresolved_global_count += 1;
+                    let output_global_index = shared_imports
+                        .global_index(object_index, i)
+                        .ok_or_else(|| {
+                            crate::error!(
+                                "missing shared global import index for object {object_index} \
+                                 import {i}"
+                            )
+                        })?;
                     index_map.global_indices.push(output_global_index);
-                    imports.push(OutputImport {
-                        module: import.module,
-                        name: import.name,
-                        entity: OutputImportEntity::Global(import.ty),
-                    });
                 }
                 ImportResolution::LinkerDefined(known) => {
                     let index = indices.global_index(known).ok_or_else(|| {
@@ -2903,7 +2888,6 @@ impl<'data> WasmObjectLayoutInput<'data> {
 
         Ok(WasmObjectOutputLayout {
             types: self.types.clone(),
-            imports,
             function_type_indices,
             globals: self.globals.clone(),
             exports,
@@ -2946,8 +2930,181 @@ enum ImportResolution {
 struct ObjectImportResolutions {
     function_resolutions: Vec<ImportResolution>,
     global_resolutions: Vec<ImportResolution>,
-    unresolved_function_count: u32,
-    unresolved_global_count: u32,
+}
+
+#[derive(Debug, Clone)]
+struct SharedFunctionImport<'data> {
+    module: &'data str,
+    name: &'data str,
+    first_object: usize,
+    local_type_index: u32,
+}
+
+#[derive(Debug, Clone)]
+struct SharedGlobalImport<'data> {
+    module: &'data str,
+    name: &'data str,
+    ty: GlobalType,
+}
+
+/// Unresolved host imports coalesced by `(module, name)` across objects.
+#[derive(Debug, Default)]
+struct SharedUnresolvedImports<'data> {
+    functions: Vec<SharedFunctionImport<'data>>,
+    globals: Vec<SharedGlobalImport<'data>>,
+    function_indices: Vec<Vec<Option<u32>>>,
+    global_indices: Vec<Vec<Option<u32>>>,
+}
+
+impl<'data> SharedUnresolvedImports<'data> {
+    fn function_count(&self) -> u32 {
+        self.functions.len() as u32
+    }
+
+    fn global_count(&self) -> u32 {
+        self.globals.len() as u32
+    }
+
+    fn function_index(&self, object_index: usize, local_import: usize) -> Option<u32> {
+        self.function_indices
+            .get(object_index)?
+            .get(local_import)
+            .copied()
+            .flatten()
+    }
+
+    fn global_index(&self, object_index: usize, local_import: usize) -> Option<u32> {
+        self.global_indices
+            .get(object_index)?
+            .get(local_import)
+            .copied()
+            .flatten()
+    }
+
+    fn to_output_imports(
+        &self,
+        index_bases: &[WasmObjectIndexBases],
+    ) -> Result<Vec<OutputImport<'data>>> {
+        let mut imports = Vec::with_capacity(self.functions.len() + self.globals.len());
+        for imp in &self.functions {
+            let type_index = index_bases
+                .get(imp.first_object)
+                .ok_or_else(|| crate::error!("Wasm shared import object index out of range"))?
+                .type_index_base
+                .checked_add(imp.local_type_index)
+                .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+            imports.push(OutputImport {
+                module: imp.module,
+                name: imp.name,
+                entity: OutputImportEntity::Function { type_index },
+            });
+        }
+        for imp in &self.globals {
+            imports.push(OutputImport {
+                module: imp.module,
+                name: imp.name,
+                entity: OutputImportEntity::Global(imp.ty),
+            });
+        }
+        Ok(imports)
+    }
+}
+
+fn collect_shared_unresolved_imports<'data>(
+    inputs: &[WasmObjectLayoutInput<'data>],
+    resolutions: &[ObjectImportResolutions],
+) -> Result<SharedUnresolvedImports<'data>> {
+    let mut functions: Vec<SharedFunctionImport<'data>> = Vec::new();
+    let mut globals: Vec<SharedGlobalImport<'data>> = Vec::new();
+    let mut func_key_to_idx: HashMap<(&str, &str), u32> = HashMap::new();
+    let mut global_key_to_idx: HashMap<(&str, &str), u32> = HashMap::new();
+    let mut function_indices = Vec::with_capacity(inputs.len());
+    let mut global_indices = Vec::with_capacity(inputs.len());
+
+    for (obj_idx, (input, res)) in inputs.iter().zip(resolutions.iter()).enumerate() {
+        let mut func_map = vec![None; input.function_imports.len()];
+        for (i, import) in input.function_imports.iter().enumerate() {
+            if !matches!(
+                res.function_resolutions.get(i),
+                Some(ImportResolution::Unresolved)
+            ) {
+                continue;
+            }
+            let local_type_index = import.type_index;
+            ensure!(
+                (local_type_index as usize) < input.types.len(),
+                "Wasm type index {local_type_index} out of range for import `{}`.`{}`",
+                import.module,
+                import.name
+            );
+            let key = (import.module, import.name);
+            let shared_idx = if let Some(&idx) = func_key_to_idx.get(&key) {
+                let existing = &functions[idx as usize];
+                let existing_ty =
+                    &inputs[existing.first_object].types[existing.local_type_index as usize];
+                let this_ty = &input.types[local_type_index as usize];
+                ensure!(
+                    existing_ty == this_ty,
+                    "conflicting types for import `{}`.`{}`",
+                    import.module,
+                    import.name
+                );
+                idx
+            } else {
+                let idx =
+                    u32::try_from(functions.len()).context("too many Wasm function imports")?;
+                functions.push(SharedFunctionImport {
+                    module: import.module,
+                    name: import.name,
+                    first_object: obj_idx,
+                    local_type_index,
+                });
+                func_key_to_idx.insert(key, idx);
+                idx
+            };
+            func_map[i] = Some(shared_idx);
+        }
+        function_indices.push(func_map);
+
+        let mut global_map = vec![None; input.global_imports.len()];
+        for (i, import) in input.global_imports.iter().enumerate() {
+            if !matches!(
+                res.global_resolutions.get(i),
+                Some(ImportResolution::Unresolved)
+            ) {
+                continue;
+            }
+            let key = (import.module, import.name);
+            let shared_idx = if let Some(&idx) = global_key_to_idx.get(&key) {
+                let existing = &globals[idx as usize];
+                ensure!(
+                    existing.ty == import.ty,
+                    "conflicting types for import `{}`.`{}`",
+                    import.module,
+                    import.name
+                );
+                idx
+            } else {
+                let idx = u32::try_from(globals.len()).context("too many Wasm global imports")?;
+                globals.push(SharedGlobalImport {
+                    module: import.module,
+                    name: import.name,
+                    ty: import.ty,
+                });
+                global_key_to_idx.insert(key, idx);
+                idx
+            };
+            global_map[i] = Some(shared_idx);
+        }
+        global_indices.push(global_map);
+    }
+
+    Ok(SharedUnresolvedImports {
+        functions,
+        globals,
+        function_indices,
+        global_indices,
+    })
 }
 
 fn local_defined_function_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> u32 {
@@ -2972,7 +3129,7 @@ fn resolve_cross_object_imports<'data>(
         .par_iter()
         .map(|input| {
             verbose_timing_phase!("Resolve Wasm object imports");
-            let (function_resolutions, unresolved_function_count) = resolve_import_symbols(
+            let function_resolutions = resolve_import_symbols(
                 input.function_imports.len(),
                 WasmSymbolKind::Func,
                 input,
@@ -2980,7 +3137,7 @@ fn resolve_cross_object_imports<'data>(
                 symbol_db,
                 file_id_to_index,
             )?;
-            let (global_resolutions, unresolved_global_count) = resolve_import_symbols(
+            let global_resolutions = resolve_import_symbols(
                 input.global_imports.len(),
                 WasmSymbolKind::Global,
                 input,
@@ -2991,8 +3148,6 @@ fn resolve_cross_object_imports<'data>(
             Ok(ObjectImportResolutions {
                 function_resolutions,
                 global_resolutions,
-                unresolved_function_count,
-                unresolved_global_count,
             })
         })
         .collect()
@@ -3005,10 +3160,9 @@ fn resolve_import_symbols<'data>(
     all_inputs: &[WasmObjectLayoutInput<'data>],
     symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
-) -> Result<(Vec<ImportResolution>, u32)> {
+) -> Result<Vec<ImportResolution>> {
     ensure!(u32::try_from(import_count).is_ok(), "too many Wasm imports");
     let mut resolutions = vec![ImportResolution::Unresolved; import_count];
-    let mut unresolved_count = u32::try_from(import_count).expect("checked above");
 
     for (sym_offset, sym) in input.symbols.iter().enumerate() {
         if !sym.is_undefined() || sym.kind != kind {
@@ -3029,7 +3183,6 @@ fn resolve_import_symbols<'data>(
         if matches!(resolutions[import_idx], ImportResolution::Unresolved)
             && !matches!(resolution, ImportResolution::Unresolved)
         {
-            unresolved_count -= 1;
             resolutions[import_idx] = resolution;
         }
     }
@@ -3044,12 +3197,11 @@ fn resolve_import_symbols<'data>(
             continue;
         }
         if let Some(resolution) = linker_defined_import_resolution(name, kind, symbol_db) {
-            unresolved_count -= 1;
             resolutions[import_idx] = resolution;
         }
     }
 
-    Ok((resolutions, unresolved_count))
+    Ok(resolutions)
 }
 
 /// Try to resolve a single undefined import symbol.
@@ -3275,14 +3427,21 @@ fn setup_got_mem_and_indices<'data>(
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
     has_init_funcs: bool,
     wrap_entry: bool,
-) -> Result<(LinkerDefinedIndices, LayoutRelocScan)> {
+) -> Result<(
+    LinkerDefinedIndices,
+    LayoutRelocScan,
+    SharedUnresolvedImports<'data>,
+)> {
     let mut scan = scan_layout_relocations(layout_inputs, symbol_db, file_id_to_index)?;
 
     absorb_got_mem_imports(&scan.got_mem, layout_inputs, resolutions, symbol_db)?;
     let weak_undef_stubs = absorb_weak_undef_function_imports(layout_inputs, resolutions)?;
+    let shared_imports = collect_shared_unresolved_imports(layout_inputs, resolutions)?;
 
     let indices = LinkerDefinedIndices::compute(
         resolutions,
+        shared_imports.function_count(),
+        shared_imports.global_count(),
         weak_undef_stubs,
         LinkerDefinedIndexRequest {
             has_init_funcs,
@@ -3302,7 +3461,7 @@ fn setup_got_mem_and_indices<'data>(
         finalize_got_mem_import_resolutions(resolutions, first_got)?;
     }
 
-    Ok((indices, scan))
+    Ok((indices, scan, shared_imports))
 }
 
 /// True when every undefined Func symbol for that ordinal is weak.
@@ -3405,15 +3564,6 @@ fn absorb_weak_undef_function_imports<'data>(
                 idx
             };
             res.function_resolutions[i] = ImportResolution::WeakUndefStub { stub_index };
-            res.unresolved_function_count = res
-                .unresolved_function_count
-                .checked_sub(1)
-                .ok_or_else(|| {
-                    crate::error!(
-                        "Wasm weak-undef absorption underflow for import `{}`",
-                        import.name
-                    )
-                })?;
         }
     }
 
@@ -3655,7 +3805,6 @@ fn absorb_got_mem_imports(
                 continue;
             };
             res.global_resolutions[i] = ImportResolution::GotMemSlot(slot);
-            res.unresolved_global_count = res.unresolved_global_count.saturating_sub(1);
         }
     }
     Ok(())
@@ -3772,6 +3921,8 @@ struct LinkerDefinedIndexRequest {
 impl LinkerDefinedIndices {
     fn compute(
         import_resolutions: &[ObjectImportResolutions],
+        function_import_count: u32,
+        global_import_count: u32,
         mut weak_undef_stubs: Vec<WeakUndefFunctionStub>,
         request: LinkerDefinedIndexRequest,
     ) -> Result<Self> {
@@ -3781,8 +3932,6 @@ impl LinkerDefinedIndices {
         let mut needs_tls_base = false;
         let mut needs_ctors = request.has_init_funcs;
         let mut needs_dtors = false;
-        let mut function_import_count = 0u32;
-        let mut global_import_count = 0u32;
 
         for resolutions in import_resolutions {
             let absorption = LinkerImportAbsorption::from_resolutions(resolutions);
@@ -3792,14 +3941,6 @@ impl LinkerDefinedIndices {
             needs_table_base |= absorption.needs_table_base;
             needs_stack_pointer |= absorption.needs_stack_pointer;
             needs_tls_base |= absorption.needs_tls_base;
-
-            function_import_count = function_import_count
-                .checked_add(resolutions.unresolved_function_count)
-                .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
-
-            global_import_count = global_import_count
-                .checked_add(resolutions.unresolved_global_count)
-                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
         }
 
         let mut next_global = global_import_count;
@@ -4473,7 +4614,7 @@ where
         && !call_ctors_used_in_objects(&layout_inputs)
         && entry_is_defined_function(&layout_inputs, symbol_db);
 
-    let (indices, reloc_scan) = setup_got_mem_and_indices(
+    let (indices, reloc_scan, shared_imports) = setup_got_mem_and_indices(
         &layout_inputs,
         &mut import_resolutions,
         symbol_db,
@@ -4482,8 +4623,7 @@ where
         wrap_entry,
     )?;
     let got_mem = &reloc_scan.got_mem;
-    let index_bases =
-        allocate_wasm_object_index_bases(&layout_inputs, &import_resolutions, &indices)?;
+    let index_bases = allocate_wasm_object_index_bases(&layout_inputs, &shared_imports, &indices)?;
     let mut object_layouts = {
         timing_phase!("Build per-object Wasm layouts");
         layout_inputs
@@ -4493,10 +4633,12 @@ where
             .map(|(obj_idx, (input, resolutions))| {
                 verbose_timing_phase!("Build Wasm object output layout");
                 input.build_object_output_layout(
+                    obj_idx,
                     index_bases[obj_idx],
                     resolutions,
                     &index_bases,
                     &indices,
+                    &shared_imports,
                 )
             })
             .collect::<Result<Vec<_>>>()?
@@ -4531,13 +4673,11 @@ where
 
         {
             timing_phase!("Merge Wasm section lists");
+            layout.imports = shared_imports.to_output_imports(&index_bases)?;
             for object_layout in &mut object_layouts {
                 layout
                     .output_types
                     .extend(std::mem::take(&mut object_layout.types));
-                layout
-                    .imports
-                    .extend(std::mem::take(&mut object_layout.imports));
                 layout
                     .function_type_indices
                     .extend(std::mem::take(&mut object_layout.function_type_indices));
@@ -5005,41 +5145,30 @@ fn compute_data_addresses(
 
 fn allocate_wasm_object_index_bases(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
-    import_resolutions: &[ObjectImportResolutions],
+    shared_imports: &SharedUnresolvedImports<'_>,
     indices: &LinkerDefinedIndices,
 ) -> Result<Vec<WasmObjectIndexBases>> {
     let mut index_bases = Vec::with_capacity(layout_inputs.len());
     let mut next_type_index = 0u32;
-    let mut next_function_import_index = 0u32;
-    let mut next_global_import_index = 0u32;
+    let function_import_count = shared_imports.function_count();
+    let global_import_count = shared_imports.global_count();
 
-    for (input, resolutions) in layout_inputs.iter().zip(import_resolutions) {
+    for input in layout_inputs {
         index_bases.push(WasmObjectIndexBases {
             type_index_base: next_type_index,
-            function_import_base: next_function_import_index,
             defined_function_base: 0,
-            global_import_base: next_global_import_index,
             defined_global_base: 0,
-            // Imported and defined memories are merged into a single output memory at index 0.
             memory_base: 0,
         });
         next_type_index = next_type_index
             .checked_add(u32::try_from(input.types.len()).context("too many Wasm types")?)
             .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
-
-        next_function_import_index = next_function_import_index
-            .checked_add(resolutions.unresolved_function_count)
-            .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
-        next_global_import_index = next_global_import_index
-            .checked_add(resolutions.unresolved_global_count)
-            .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
     }
 
-    // Object-defined entities start after imports and any reserved linker-defined entities.
-    let mut next_defined_function_index = next_function_import_index
+    let mut next_defined_function_index = function_import_count
         .checked_add(indices.num_defined_functions)
         .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
-    let mut next_defined_global_index = next_global_import_index
+    let mut next_defined_global_index = global_import_count
         .checked_add(indices.num_defined_globals)
         .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
     for (input, index_base) in layout_inputs.iter().zip(index_bases.iter_mut()) {
