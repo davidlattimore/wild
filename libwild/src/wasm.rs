@@ -247,8 +247,9 @@ pub(crate) struct File<'data> {
     #[debug(skip)]
     pub(crate) symbols: Vec<WasmSymbol>,
 
+    /// Per-data-segment alignments from the linking `SegmentInfo` subsection.
     #[debug(skip)]
-    pub(crate) segments: Vec<WasmSegmentInfo>,
+    pub(crate) segment_alignments: Vec<Alignment>,
 
     /// Init functions from the linking section (`InitFuncs`), in input order.
     #[debug(skip)]
@@ -371,12 +372,6 @@ impl WasmSymbol {
         let s = self.name_start as usize;
         s..s + self.name_len as usize
     }
-}
-
-/// Per-data-segment metadata from the `linking` section.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct WasmSegmentInfo {
-    pub(crate) alignment: Alignment,
 }
 
 /// A `reloc.*` custom section header.
@@ -538,25 +533,6 @@ pub(crate) struct WasmGlobalImport<'data> {
     pub(crate) ty: GlobalType,
 }
 
-/// A single imported memory.
-#[derive(Debug, Copy, Clone)]
-pub(crate) struct WasmMemoryImport {
-    pub(crate) ty: MemoryType,
-}
-
-/// A single imported table (typically `env.__indirect_function_table`).
-#[derive(Debug, Copy, Clone)]
-pub(crate) struct WasmTableImport {
-    pub(crate) ty: wasmparser::TableType,
-}
-
-/// A function defined inside the module (not imported). Stored as the index into the `type`
-/// section that gives its signature; the function body lives in the `code` section.
-#[derive(Debug, Copy, Clone)]
-pub(crate) struct WasmModuleFunction {
-    pub(crate) type_index: u32,
-}
-
 /// A global defined inside the module (not imported).
 #[derive(Debug, Clone)]
 pub(crate) struct WasmModuleGlobal<'data> {
@@ -587,12 +563,6 @@ pub(crate) struct WasmDataSegmentLayout<'data> {
     pub(crate) output_memory_offset: u32,
     /// Encoded size of this segment within the output data section payload.
     pub(crate) encoded_output_size: u32,
-}
-
-/// Per-object data segment layout.
-#[derive(Debug, Default)]
-pub(crate) struct WasmObjectDataLayout<'data> {
-    pub(crate) segments: Vec<WasmDataSegmentLayout<'data>>,
 }
 
 #[derive(Debug, Clone)]
@@ -686,18 +656,16 @@ impl<'data> File<'data> {
             .transpose()
     }
 
-    /// Functions defined in this module (excluding imports), in `function` section order.
-    pub(crate) fn module_functions(&self) -> Result<Vec<WasmModuleFunction>> {
+    /// Type indices of functions defined in this module (excluding imports), in `function`
+    /// section order. The function body for each entry lives in the `code` section.
+    pub(crate) fn module_functions(&self) -> Result<Vec<u32>> {
         let Some(reader) = self.function_section_reader()? else {
             return Ok(Vec::new());
         };
 
         reader
             .into_iter()
-            .map(|res| {
-                res.map(|type_index| WasmModuleFunction { type_index })
-                    .map_err(Into::into)
-            })
+            .map(|res| res.map_err(Into::into))
             .collect()
     }
 
@@ -1554,7 +1522,7 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) data_end: u32,
     pub(crate) unsupported_output: Vec<&'static str>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
-    pub(crate) object_data_layouts: Vec<WasmObjectDataLayout<'data>>,
+    pub(crate) object_data_layouts: Vec<Vec<WasmDataSegmentLayout<'data>>>,
     pub(crate) per_object_symbols: Vec<&'data [WasmSymbol]>,
     pub(crate) encoded_sections: WasmEncodedSections,
     pub(crate) code_section_size: u64,
@@ -2125,7 +2093,7 @@ fn layout_object_data<'data>(
     index_map: &WasmObjectIndexMap,
     memory_cursor: &mut u32,
     section_cursor: &mut u32,
-) -> Result<WasmObjectDataLayout<'data>> {
+) -> Result<Vec<WasmDataSegmentLayout<'data>>> {
     let mut segment_relocations =
         classify_data_relocations(&input.data_segments, &input.data_relocations);
     let mut segments = Vec::with_capacity(input.data_segments.len());
@@ -2165,13 +2133,13 @@ fn layout_object_data<'data>(
             encoded_output_size,
         });
     }
-    Ok(WasmObjectDataLayout { segments })
+    Ok(segments)
 }
 
-fn compute_data_section_size(object_data_layouts: &[WasmObjectDataLayout<'_>]) -> u64 {
+fn compute_data_section_size(object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>]) -> u64 {
     let segment_count: u32 = object_data_layouts
         .iter()
-        .map(|obj| u32::try_from(obj.segments.len()).unwrap_or(u32::MAX))
+        .map(|obj| u32::try_from(obj.len()).unwrap_or(u32::MAX))
         .sum();
     if segment_count == 0 {
         return 0;
@@ -2179,7 +2147,7 @@ fn compute_data_section_size(object_data_layouts: &[WasmObjectDataLayout<'_>]) -
     let count_leb_size = uleb128_size(u64::from(segment_count)) as u64;
     let segments_total: u64 = object_data_layouts
         .iter()
-        .flat_map(|obj| obj.segments.iter())
+        .flatten()
         .map(|segment| u64::from(segment.encoded_output_size))
         .sum();
     let payload_size = count_leb_size + segments_total;
@@ -2353,9 +2321,9 @@ struct WasmObjectLayoutInput<'data> {
     types: Vec<wasmparser::FuncType>,
     function_imports: Vec<WasmFunctionImport<'data>>,
     global_imports: Vec<WasmGlobalImport<'data>>,
-    memory_imports: Vec<WasmMemoryImport>,
-    table_imports: Vec<WasmTableImport>,
-    module_functions: Vec<WasmModuleFunction>,
+    memory_imports: Vec<MemoryType>,
+    table_imports: Vec<wasmparser::TableType>,
+    module_functions: Vec<u32>,
     globals: Vec<OutputGlobal<'data>>,
     exports: Vec<OutputExport<'data>>,
     function_bodies: Vec<WasmFunctionBody<'data>>,
@@ -2432,10 +2400,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
                         });
                     }
                     TypeRef::Table(ty) => {
-                        table_imports.push(WasmTableImport { ty });
+                        table_imports.push(ty);
                     }
                     TypeRef::Memory(memory) => {
-                        memory_imports.push(WasmMemoryImport { ty: memory });
+                        memory_imports.push(memory);
                     }
                     TypeRef::Tag(_) => bail!("Wasm tag imports are not emitted"),
                 }
@@ -2544,7 +2512,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             unsupported_output,
             code_relocations,
             data_segments,
-            segment_alignments: file.segments.iter().map(|s| s.alignment).collect(),
+            segment_alignments: file.segment_alignments.clone(),
             data_relocations,
             symbols: file.symbols.as_slice(),
             init_funcs: file.init_funcs.as_slice(),
@@ -2695,10 +2663,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
         }
 
         let mut function_type_indices = Vec::with_capacity(self.module_functions.len());
-        for (i, function) in self.module_functions.iter().enumerate() {
+        for (i, &local_type_index) in self.module_functions.iter().enumerate() {
             let output_type_index = index_bases
                 .type_index_base
-                .checked_add(function.type_index)
+                .checked_add(local_type_index)
                 .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
             let output_function_index = index_bases
                 .defined_function_base
@@ -4028,11 +3996,10 @@ fn function_type_for_symbol<'a>(
         input.function_imports[sym_index].type_index
     } else {
         let local = sym_index - n_imports;
-        input
+        *input
             .module_functions
             .get(local)
             .ok_or_else(|| crate::error!("Wasm function index {} out of range", sym.index))?
-            .type_index
     };
     input
         .types
@@ -4232,7 +4199,7 @@ fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>]) -> MemoryType
     let mut initial = 2u64;
     for input in inputs {
         for import in &input.memory_imports {
-            initial = initial.max(import.ty.initial);
+            initial = initial.max(import.initial);
         }
         for memory in &input.memories {
             initial = initial.max(memory.initial);
@@ -4748,11 +4715,11 @@ fn finalize_indirect_function_table(
     let mut initial = element_functions.len() as u64 + 1;
     for input in layout_inputs {
         for imp in &input.table_imports {
-            initial = initial.max(imp.ty.initial);
+            initial = initial.max(imp.initial);
             ensure!(
-                imp.ty.element_type.is_func_ref(),
+                imp.element_type.is_func_ref(),
                 "only funcref table imports are supported (got {:?})",
-                imp.ty.element_type
+                imp.element_type
             );
         }
     }
@@ -4821,7 +4788,7 @@ pub(crate) fn finalize_reloc_value(reloc: &WasmRelocation, base: u32) -> Result<
 }
 
 fn data_symbol_memory_address(
-    object_data_layout: &WasmObjectDataLayout<'_>,
+    object_data_layout: &[WasmDataSegmentLayout<'_>],
     sym: &WasmSymbol,
 ) -> Result<u32> {
     ensure!(
@@ -4829,7 +4796,6 @@ fn data_symbol_memory_address(
         "memory address relocation references non-data symbol"
     );
     let segment = object_data_layout
-        .segments
         .get(sym.index as usize)
         .filter(|segment| segment.segment_index == sym.index)
         .ok_or_else(|| crate::error!("Wasm data symbol segment {} not found", sym.index))?;
@@ -4914,7 +4880,7 @@ impl WasmLinkerSymbol {
 fn compute_data_addresses(
     object_index_maps: &mut [WasmObjectIndexMap],
     per_object_symbols: &[&[WasmSymbol]],
-    object_data_layouts: &[WasmObjectDataLayout<'_>],
+    object_data_layouts: &[Vec<WasmDataSegmentLayout<'_>>],
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
@@ -5610,7 +5576,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
 
     let mut sections: Vec<SectionHeader> = Vec::new();
     let mut symbols: Vec<WasmSymbol> = Vec::new();
-    let mut segments: Vec<WasmSegmentInfo> = Vec::new();
+    let mut segment_alignments: Vec<Alignment> = Vec::new();
     let mut init_funcs: Vec<WasmInitFunc> = Vec::new();
     let mut reloc_sections: Vec<WasmRelocSection> = Vec::new();
     let mut target_features: Vec<WasmTargetFeature<'data>> = Vec::new();
@@ -5636,7 +5602,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
                         input,
                         &linking,
                         &mut symbols,
-                        &mut segments,
+                        &mut segment_alignments,
                         &mut init_funcs,
                     )?;
                 }
@@ -5671,7 +5637,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         sections,
         standard_section_index,
         symbols,
-        segments,
+        segment_alignments,
         init_funcs,
         reloc_sections,
         target_features,
@@ -5750,7 +5716,7 @@ fn parse_linking_subsections<'data>(
     data: &'data [u8],
     linking: &wasmparser::LinkingSectionReader<'data>,
     symbols: &mut Vec<WasmSymbol>,
-    segments: &mut Vec<WasmSegmentInfo>,
+    segment_alignments: &mut Vec<Alignment>,
     init_funcs: &mut Vec<WasmInitFunc>,
 ) -> Result {
     let data_start = data.as_ptr() as usize;
@@ -5769,9 +5735,7 @@ fn parse_linking_subsections<'data>(
             Linking::SegmentInfo(map) => {
                 for seg in map {
                     let seg = seg?;
-                    segments.push(WasmSegmentInfo {
-                        alignment: Alignment::from_exponent(seg.alignment)?,
-                    });
+                    segment_alignments.push(Alignment::from_exponent(seg.alignment)?);
                 }
             }
             Linking::InitFuncs(map) => {
