@@ -2929,8 +2929,6 @@ enum ImportResolution {
 struct ObjectImportResolutions {
     function_resolutions: Vec<ImportResolution>,
     global_resolutions: Vec<ImportResolution>,
-    unresolved_function_count: u32,
-    unresolved_global_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -3130,7 +3128,7 @@ fn resolve_cross_object_imports<'data>(
         .par_iter()
         .map(|input| {
             verbose_timing_phase!("Resolve Wasm object imports");
-            let (function_resolutions, unresolved_function_count) = resolve_import_symbols(
+            let function_resolutions = resolve_import_symbols(
                 input.function_imports.len(),
                 WasmSymbolKind::Func,
                 input,
@@ -3138,7 +3136,7 @@ fn resolve_cross_object_imports<'data>(
                 symbol_db,
                 file_id_to_index,
             )?;
-            let (global_resolutions, unresolved_global_count) = resolve_import_symbols(
+            let global_resolutions = resolve_import_symbols(
                 input.global_imports.len(),
                 WasmSymbolKind::Global,
                 input,
@@ -3149,8 +3147,6 @@ fn resolve_cross_object_imports<'data>(
             Ok(ObjectImportResolutions {
                 function_resolutions,
                 global_resolutions,
-                unresolved_function_count,
-                unresolved_global_count,
             })
         })
         .collect()
@@ -3163,10 +3159,9 @@ fn resolve_import_symbols<'data>(
     all_inputs: &[WasmObjectLayoutInput<'data>],
     symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
-) -> Result<(Vec<ImportResolution>, u32)> {
+) -> Result<Vec<ImportResolution>> {
     ensure!(u32::try_from(import_count).is_ok(), "too many Wasm imports");
     let mut resolutions = vec![ImportResolution::Unresolved; import_count];
-    let mut unresolved_count = u32::try_from(import_count).expect("checked above");
 
     for (sym_offset, sym) in input.symbols.iter().enumerate() {
         if !sym.is_undefined() || sym.kind != kind {
@@ -3187,7 +3182,6 @@ fn resolve_import_symbols<'data>(
         if matches!(resolutions[import_idx], ImportResolution::Unresolved)
             && !matches!(resolution, ImportResolution::Unresolved)
         {
-            unresolved_count -= 1;
             resolutions[import_idx] = resolution;
         }
     }
@@ -3202,12 +3196,11 @@ fn resolve_import_symbols<'data>(
             continue;
         }
         if let Some(resolution) = linker_defined_import_resolution(name, kind, symbol_db) {
-            unresolved_count -= 1;
             resolutions[import_idx] = resolution;
         }
     }
 
-    Ok((resolutions, unresolved_count))
+    Ok(resolutions)
 }
 
 /// Try to resolve a single undefined import symbol.
@@ -3570,15 +3563,6 @@ fn absorb_weak_undef_function_imports<'data>(
                 idx
             };
             res.function_resolutions[i] = ImportResolution::WeakUndefStub { stub_index };
-            res.unresolved_function_count = res
-                .unresolved_function_count
-                .checked_sub(1)
-                .ok_or_else(|| {
-                    crate::error!(
-                        "Wasm weak-undef absorption underflow for import `{}`",
-                        import.name
-                    )
-                })?;
         }
     }
 
@@ -3820,7 +3804,6 @@ fn absorb_got_mem_imports(
                 continue;
             };
             res.global_resolutions[i] = ImportResolution::GotMemSlot(slot);
-            res.unresolved_global_count = res.unresolved_global_count.saturating_sub(1);
         }
     }
     Ok(())
