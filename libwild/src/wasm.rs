@@ -1,6 +1,3 @@
-// TODO
-#![allow(unused)]
-
 use crate::FileSystem;
 use crate::alignment::Alignment;
 use crate::args::wasm::WasmArgs;
@@ -56,7 +53,6 @@ use wasmparser::MemoryType;
 use wasmparser::Parser;
 use wasmparser::Payload;
 use wasmparser::RelocationEntry;
-use wasmparser::SegmentFlags;
 use wasmparser::SymbolFlags;
 use wasmparser::SymbolInfo;
 use wasmparser::TypeRef;
@@ -109,8 +105,12 @@ pub(crate) mod part_id {
     pub(crate) const WASM_MEMORY: PartId = SinglePartSectionId::WasmMemory.part_id();
     pub(crate) const WASM_GLOBAL: PartId = SinglePartSectionId::WasmGlobal.part_id();
     pub(crate) const WASM_EXPORT: PartId = SinglePartSectionId::WasmExport.part_id();
+    // TODO(wasm): Implement start-section emission.
+    #[expect(dead_code)]
     pub(crate) const WASM_START: PartId = SinglePartSectionId::WasmStart.part_id();
     pub(crate) const WASM_ELEMENT: PartId = SinglePartSectionId::WasmElement.part_id();
+    // TODO(wasm): Implement data-count emission.
+    #[expect(dead_code)]
     pub(crate) const WASM_DATA_COUNT: PartId = SinglePartSectionId::WasmDataCount.part_id();
     pub(crate) const WASM_CODE: PartId = SinglePartSectionId::WasmCode.part_id();
     pub(crate) const WASM_DATA: PartId = SinglePartSectionId::WasmData.part_id();
@@ -237,8 +237,6 @@ pub(crate) struct File<'data> {
     #[debug(skip)]
     pub(crate) data: &'data [u8],
 
-    pub(crate) version: u32,
-
     #[debug(skip)]
     pub(crate) sections: Vec<SectionHeader>,
 
@@ -250,7 +248,7 @@ pub(crate) struct File<'data> {
     pub(crate) symbols: Vec<WasmSymbol>,
 
     #[debug(skip)]
-    pub(crate) segments: Vec<WasmSegmentInfo<'data>>,
+    pub(crate) segments: Vec<WasmSegmentInfo>,
 
     /// Init functions from the linking section (`InitFuncs`), in input order.
     #[debug(skip)]
@@ -258,8 +256,6 @@ pub(crate) struct File<'data> {
 
     #[debug(skip)]
     pub(crate) reloc_sections: Vec<WasmRelocSection>,
-
-    pub(crate) linking_version: Option<u32>,
 
     /// Entries from the `target_features` custom section, if present.
     #[debug(skip)]
@@ -297,10 +293,6 @@ pub(crate) struct SectionHeader {
 }
 
 impl SectionHeader {
-    pub(crate) fn is_custom(&self) -> bool {
-        self.id == 0
-    }
-
     pub(crate) fn payload_range_usize(&self) -> Range<usize> {
         self.payload_range.start as usize..self.payload_range.end as usize
     }
@@ -371,10 +363,6 @@ impl WasmSymbol {
         self.raw_flags().contains(SymbolFlags::VISIBILITY_HIDDEN)
     }
 
-    pub(crate) fn is_exported(&self) -> bool {
-        self.raw_flags().contains(SymbolFlags::EXPORTED)
-    }
-
     fn has_name(&self) -> bool {
         self.name_len != 0
     }
@@ -387,10 +375,8 @@ impl WasmSymbol {
 
 /// Per-data-segment metadata from the `linking` section.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct WasmSegmentInfo<'data> {
-    pub(crate) name: &'data str,
+pub(crate) struct WasmSegmentInfo {
     pub(crate) alignment: Alignment,
-    pub(crate) flags: SegmentFlags,
 }
 
 /// A `reloc.*` custom section header.
@@ -437,11 +423,6 @@ impl WasmRelocation {
             index: entry.index,
             addend: entry.addend,
         }
-    }
-
-    /// Whether `index` refers to a symbol rather than a type index.
-    pub(crate) fn refers_to_symbol(&self) -> bool {
-        self.ty != R_WASM_TYPE_INDEX_LEB
     }
 
     /// Width in bytes of the slot this relocation overwrites.
@@ -559,17 +540,13 @@ pub(crate) struct WasmGlobalImport<'data> {
 
 /// A single imported memory.
 #[derive(Debug, Copy, Clone)]
-pub(crate) struct WasmMemoryImport<'data> {
-    pub(crate) module: &'data str,
-    pub(crate) name: &'data str,
+pub(crate) struct WasmMemoryImport {
     pub(crate) ty: MemoryType,
 }
 
 /// A single imported table (typically `env.__indirect_function_table`).
 #[derive(Debug, Copy, Clone)]
-pub(crate) struct WasmTableImport<'data> {
-    pub(crate) module: &'data str,
-    pub(crate) name: &'data str,
+pub(crate) struct WasmTableImport {
     pub(crate) ty: wasmparser::TableType,
 }
 
@@ -601,7 +578,6 @@ pub(crate) struct WasmDataSegment<'data> {
 pub(crate) struct WasmDataSegmentLayout<'data> {
     /// Index of this segment within the object's data section.
     pub(crate) segment_index: u32,
-    pub(crate) kind: DataKind<'data>,
     pub(crate) data: &'data [u8],
     /// Relocations targeting this segment's payload bytes (segment-local offsets).
     pub(crate) relocations: Vec<WasmRelocation>,
@@ -609,8 +585,6 @@ pub(crate) struct WasmDataSegmentLayout<'data> {
     pub(crate) output_memory_index: u32,
     /// Byte offset within the output module's linear memory where the payload is placed.
     pub(crate) output_memory_offset: u32,
-    /// Byte offset of this segment's encoding within the output data section payload.
-    pub(crate) output_section_offset: u32,
     /// Encoded size of this segment within the output data section payload.
     pub(crate) encoded_output_size: u32,
 }
@@ -618,7 +592,6 @@ pub(crate) struct WasmDataSegmentLayout<'data> {
 /// Per-object data segment layout.
 #[derive(Debug, Default)]
 pub(crate) struct WasmObjectDataLayout<'data> {
-    pub(crate) file_id: crate::input_data::FileId,
     pub(crate) segments: Vec<WasmDataSegmentLayout<'data>>,
 }
 
@@ -713,46 +686,6 @@ impl<'data> File<'data> {
             .transpose()
     }
 
-    /// Imported functions in declaration order. Imports of other kinds are skipped.
-    pub(crate) fn function_imports(&self) -> Result<Vec<WasmFunctionImport<'data>>> {
-        let Some(reader) = self.import_section_reader()? else {
-            return Ok(Vec::new());
-        };
-        let mut out = Vec::new();
-        for import in reader.into_imports() {
-            let import = import?;
-            if let TypeRef::Func(type_index) = import.ty {
-                out.push(WasmFunctionImport {
-                    module: import.module,
-                    name: import.name,
-                    type_index,
-                });
-            }
-        }
-
-        Ok(out)
-    }
-
-    /// Imported globals in declaration order. Imports of other kinds are skipped.
-    pub(crate) fn global_imports(&self) -> Result<Vec<WasmGlobalImport<'data>>> {
-        let Some(reader) = self.import_section_reader()? else {
-            return Ok(Vec::new());
-        };
-        let mut out = Vec::new();
-        for import in reader.into_imports() {
-            let import = import?;
-            if let TypeRef::Global(ty) = import.ty {
-                out.push(WasmGlobalImport {
-                    module: import.module,
-                    name: import.name,
-                    ty,
-                });
-            }
-        }
-
-        Ok(out)
-    }
-
     /// Functions defined in this module (excluding imports), in `function` section order.
     pub(crate) fn module_functions(&self) -> Result<Vec<WasmModuleFunction>> {
         let Some(reader) = self.function_section_reader()? else {
@@ -843,49 +776,6 @@ impl<'data> File<'data> {
         }
         Ok(segments)
     }
-
-    /// Number of imported entries in the `function` index space.
-    pub(crate) fn function_import_count(&self) -> Result<u32> {
-        self.count_imports_of(|ty| matches!(ty, TypeRef::Func(_)))
-    }
-
-    /// Number of imported entries in the `global` index space.
-    pub(crate) fn global_import_count(&self) -> Result<u32> {
-        self.count_imports_of(|ty| matches!(ty, TypeRef::Global(_)))
-    }
-
-    /// Size of the `function` index space: imports + module-defined functions.
-    pub(crate) fn total_function_count(&self) -> Result<u32> {
-        let module_count = self
-            .function_section_reader()?
-            .as_ref()
-            .map_or(0, |r| r.count());
-
-        Ok(self.function_import_count()? + module_count)
-    }
-
-    /// Size of the `global` index space: imports + module-defined globals.
-    pub(crate) fn total_global_count(&self) -> Result<u32> {
-        let module_count = self
-            .global_section_reader()?
-            .as_ref()
-            .map_or(0, |r| r.count());
-        Ok(self.global_import_count()? + module_count)
-    }
-
-    fn count_imports_of(&self, mut matches_kind: impl FnMut(&TypeRef) -> bool) -> Result<u32> {
-        let Some(reader) = self.import_section_reader()? else {
-            return Ok(0);
-        };
-        let mut count: u32 = 0;
-        for import in reader.into_imports() {
-            if matches_kind(&import?.ty) {
-                count += 1;
-            }
-        }
-
-        Ok(count)
-    }
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
@@ -897,7 +787,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn parse(
         input: &crate::input_data::InputBytes<'data>,
-        args: &<Self::Platform as platform::Platform>::Args,
+        _args: &<Self::Platform as platform::Platform>::Args,
     ) -> crate::error::Result<Self> {
         Self::parse_bytes(input.data, false)
     }
@@ -1125,7 +1015,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn symbol_version_debug(&self, symbol_index: object::SymbolIndex) -> Option<String> {
+    fn symbol_version_debug(&self, _symbol_index: object::SymbolIndex) -> Option<String> {
         // Wasm doesn't have ELF-style symbol versioning.
         None
     }
@@ -1176,8 +1066,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn process_gnu_note_section(
         &self,
-        state: &mut <Self::Platform as platform::Platform>::ObjectLayoutStateExt<'data>,
-        section_index: object::SectionIndex,
+        _state: &mut <Self::Platform as platform::Platform>::ObjectLayoutStateExt<'data>,
+        _section_index: object::SectionIndex,
     ) -> crate::error::Result {
         // Wasm objects don't carry GNU property notes.
         Ok(())
@@ -1423,7 +1313,7 @@ impl platform::SectionAttributes for SectionAttributes {
 pub(crate) struct NonAddressableIndexes {}
 
 impl platform::NonAddressableIndexes for NonAddressableIndexes {
-    fn new<P: platform::Platform>(symbol_db: &crate::symbol_db::SymbolDb<P>) -> Self {
+    fn new<P: platform::Platform>(_symbol_db: &crate::symbol_db::SymbolDb<P>) -> Self {
         Self {}
     }
 }
@@ -1486,14 +1376,12 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
 
 pub(crate) struct BuiltInSectionDetails {
     pub(crate) kind: SectionKind<'static, Wasm>,
-    pub(crate) target_segment_type: Option<SegmentType>,
 }
 
 impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     kind: SectionKind::Primary(SectionIdentity::new(SectionName(&[]), ())),
-    target_segment_type: None,
 };
 
 const NUM_BUILT_IN_SECTIONS: usize = crate::output_section_id::num_built_in_sections::<Wasm>();
@@ -1508,65 +1396,50 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     // The module preamble.
     defs[crate::output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"WASM_HEADER"), ())),
-        target_segment_type: Some(SegmentType::Header),
     };
 
     // Standard Wasm sections.
     defs[osid::WASM_TYPE.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"type"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_IMPORT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"import"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_FUNCTION.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"function"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_TABLE.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"table"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_MEMORY.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"memory"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_GLOBAL.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"global"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_EXPORT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"export"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_START.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"start"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_ELEMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"element"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_DATA_COUNT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"data_count"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_CODE.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"code"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_DATA.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"data"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_NAME.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"name"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
     defs[osid::WASM_TARGET_FEATURES.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"target_features"), ())),
-        target_segment_type: Some(SegmentType::Module),
     };
 
     defs
@@ -1648,7 +1521,7 @@ pub(crate) struct VerneedTable<'data> {
 }
 
 impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
-    fn version_name(&self, local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
+    fn version_name(&self, _local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
         None
     }
 }
@@ -2271,7 +2144,6 @@ fn layout_object_data<'data>(
         *memory_cursor = u32::try_from(align.align_up(u64::from(*memory_cursor)))
             .map_err(|_| crate::error!("Wasm data segment alignment overflow"))?;
         let output_memory_offset = *memory_cursor;
-        let output_section_offset = *section_cursor;
         let encoded_output_size = output_data_segment_encoded_size(
             &segment.kind,
             segment.data.len(),
@@ -2286,19 +2158,14 @@ fn layout_object_data<'data>(
             .ok_or_else(|| crate::error!("Wasm data section offset overflow"))?;
         segments.push(WasmDataSegmentLayout {
             segment_index: u32::try_from(segment_index).context("too many Wasm data segments")?,
-            kind: segment.kind.clone(),
             data: segment.data,
             relocations: std::mem::take(&mut segment_relocations[segment_index]),
             output_memory_index,
             output_memory_offset,
-            output_section_offset,
             encoded_output_size,
         });
     }
-    Ok(WasmObjectDataLayout {
-        file_id: input.file_id,
-        segments,
-    })
+    Ok(WasmObjectDataLayout { segments })
 }
 
 fn compute_data_section_size(object_data_layouts: &[WasmObjectDataLayout<'_>]) -> u64 {
@@ -2486,8 +2353,8 @@ struct WasmObjectLayoutInput<'data> {
     types: Vec<wasmparser::FuncType>,
     function_imports: Vec<WasmFunctionImport<'data>>,
     global_imports: Vec<WasmGlobalImport<'data>>,
-    memory_imports: Vec<WasmMemoryImport<'data>>,
-    table_imports: Vec<WasmTableImport<'data>>,
+    memory_imports: Vec<WasmMemoryImport>,
+    table_imports: Vec<WasmTableImport>,
     module_functions: Vec<WasmModuleFunction>,
     globals: Vec<OutputGlobal<'data>>,
     exports: Vec<OutputExport<'data>>,
@@ -2510,7 +2377,6 @@ struct WasmObjectIndexBases {
     type_index_base: u32,
     defined_function_base: u32,
     defined_global_base: u32,
-    memory_base: u32,
 }
 
 #[derive(Debug)]
@@ -2566,18 +2432,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
                         });
                     }
                     TypeRef::Table(ty) => {
-                        table_imports.push(WasmTableImport {
-                            module: import.module,
-                            name: import.name,
-                            ty,
-                        });
+                        table_imports.push(WasmTableImport { ty });
                     }
                     TypeRef::Memory(memory) => {
-                        memory_imports.push(WasmMemoryImport {
-                            module: import.module,
-                            name: import.name,
-                            ty: memory,
-                        });
+                        memory_imports.push(WasmMemoryImport { ty: memory });
                     }
                     TypeRef::Tag(_) => bail!("Wasm tag imports are not emitted"),
                 }
@@ -3944,38 +3802,32 @@ impl LinkerDefinedIndices {
         }
 
         let mut next_global = global_import_count;
-        let mut next_defined_global_slot = 0u32;
+        // Defined-global slot before `__stack_pointer` (used for its init expression).
+        let stack_pointer_defined_slot = needs_stack_pointer
+            .then_some(u32::from(needs_memory_base) + u32::from(needs_table_base));
         let memory_base_global = needs_memory_base.then(|| {
             let idx = next_global;
             next_global += 1;
-            next_defined_global_slot += 1;
             idx
         });
         let table_base_global = needs_table_base.then(|| {
             let idx = next_global;
             next_global += 1;
-            next_defined_global_slot += 1;
             idx
         });
-        let stack_pointer_defined_slot = needs_stack_pointer.then_some(next_defined_global_slot);
         let stack_pointer_global = needs_stack_pointer.then(|| {
             let idx = next_global;
             next_global += 1;
-            next_defined_global_slot += 1;
             idx
         });
         let tls_base_global = needs_tls_base.then(|| {
             let idx = next_global;
             next_global += 1;
-            next_defined_global_slot += 1;
             idx
         });
         let got_mem_global_base = if request.got_mem_count > 0 {
             let base = next_global;
             next_global = next_global
-                .checked_add(request.got_mem_count)
-                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-            next_defined_global_slot = next_defined_global_slot
                 .checked_add(request.got_mem_count)
                 .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
             Some(base)
@@ -4175,7 +4027,7 @@ fn function_type_for_symbol<'a>(
     let type_index = if sym_index < n_imports {
         input.function_imports[sym_index].type_index
     } else {
-        let local = (sym_index - n_imports);
+        let local = sym_index - n_imports;
         input
             .module_functions
             .get(local)
@@ -4987,12 +4839,6 @@ fn data_symbol_memory_address(
         .ok_or_else(|| crate::error!("Wasm data symbol address overflow"))
 }
 
-/// Result of resolving a linker-defined data symbol name.
-#[derive(Debug, Clone, Copy)]
-struct LinkerDefinedDataAddress {
-    address: u32,
-}
-
 /// Wasm symbols synthesized by the linker.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter, strum::EnumString, strum::IntoStaticStr,
@@ -5026,10 +4872,6 @@ pub(crate) enum WasmLinkerSymbol {
 impl WasmLinkerSymbol {
     fn name(self) -> &'static [u8] {
         <&'static str>::from(self).as_bytes()
-    }
-
-    fn parse_bytes(name: &[u8]) -> Option<Self> {
-        std::str::from_utf8(name).ok()?.parse().ok()
     }
 
     fn parse(name: &str) -> Option<Self> {
@@ -5067,21 +4909,6 @@ impl WasmLinkerSymbol {
             | Self::CallDtors => None,
         })
     }
-}
-
-fn linker_defined_data_symbol_address(
-    name: &[u8],
-    data_end: u32,
-    stack_size: u32,
-    heap_end: Option<u32>,
-    stack_first: bool,
-) -> Result<Option<LinkerDefinedDataAddress>> {
-    let Some(sym) = WasmLinkerSymbol::parse_bytes(name) else {
-        return Ok(None);
-    };
-    Ok(sym
-        .data_address(data_end, stack_size, heap_end, stack_first)?
-        .map(|address| LinkerDefinedDataAddress { address }))
 }
 
 fn compute_data_addresses(
@@ -5158,7 +4985,6 @@ fn allocate_wasm_object_index_bases(
             type_index_base: next_type_index,
             defined_function_base: 0,
             defined_global_base: 0,
-            memory_base: 0,
         });
         next_type_index = next_type_index
             .checked_add(u32::try_from(input.types.len()).context("too many Wasm types")?)
@@ -5223,14 +5049,6 @@ fn remap_wasm_index(indices: &[u32], index: u32, kind: &str) -> Result<u32> {
         .ok_or_else(|| crate::error!("Wasm {kind} index {index} out of range"))
 }
 
-fn wasm_index_range(base: u32, len: usize, kind: &str) -> Result<Vec<u32>> {
-    let len = u32::try_from(len).with_context(|| format!("too many Wasm {kind}"))?;
-    let end = base
-        .checked_add(len)
-        .ok_or_else(|| crate::error!("too many Wasm {kind}"))?;
-    Ok((base..end).collect())
-}
-
 impl platform::Platform for Wasm {
     const NUM_SINGLE_PART_SECTIONS: u32 = SinglePartSectionId::Count as u32;
     const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 0;
@@ -5290,7 +5108,7 @@ impl platform::Platform for Wasm {
         output.write(layout, crate::wasm_writer::write::<A>)
     }
 
-    fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
+    fn section_attributes(_header: &Self::SectionHeader) -> Self::SectionAttributes {
         SectionAttributes::default()
     }
 
@@ -5312,19 +5130,19 @@ impl platform::Platform for Wasm {
     }
 
     fn finalise_group_layout(
-        memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> Self::GroupLayoutExt {
     }
 
     fn frame_data_base_address(
-        memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> u64 {
         0
     }
 
     fn finalise_find_required_sections<'data>(
-        groups: &mut [crate::layout::GroupState<Self>],
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _groups: &mut [crate::layout::GroupState<Self>],
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> crate::error::Result {
         Ok(())
     }
@@ -5387,7 +5205,7 @@ impl platform::Platform for Wasm {
     }
 
     fn layout_resources_ext<'data>(
-        groups: &[crate::grouping::Group<'data, Self>],
+        _groups: &[crate::grouping::Group<'data, Self>],
     ) -> Self::LayoutResourcesExt<'data> {
     }
 
@@ -5528,12 +5346,12 @@ impl platform::Platform for Wasm {
     }
 
     fn load_exception_frame_data<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        eh_frame_section_index: object::SectionIndex,
-        resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
-        queue: &mut crate::layout::LocalWorkQueue,
-        scope: &rayon::Scope<'scope>,
+        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _eh_frame_section_index: object::SectionIndex,
+        _resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
+        _queue: &mut crate::layout::LocalWorkQueue,
+        _scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
         // Wasm doesn't have ELF-style `.eh_frame`.
         Ok(())
@@ -5551,24 +5369,24 @@ impl platform::Platform for Wasm {
     }
 
     fn new_epilogue_layout<'data>(
-        args: &Self::Args,
-        output_kind: crate::output_kind::OutputKind,
-        dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'data, Self>],
-        group_states: &[layout::GroupState<'data, Self>],
+        _args: &Self::Args,
+        _output_kind: crate::output_kind::OutputKind,
+        _dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'data, Self>],
+        _group_states: &[layout::GroupState<'data, Self>],
     ) -> Self::EpilogueLayoutExt {
     }
 
     fn apply_non_addressable_indexes_epilogue(
-        counts: &mut Self::NonAddressableCounts,
-        state: &mut Self::EpilogueLayoutExt,
+        _counts: &mut Self::NonAddressableCounts,
+        _state: &mut Self::EpilogueLayoutExt,
     ) {
         // No-op: Wasm has no version table.
     }
 
     fn apply_non_addressable_indexes<'data, 'groups>(
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        counts: &Self::NonAddressableCounts,
-        mem_sizes_iter: impl Iterator<
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _counts: &Self::NonAddressableCounts,
+        _mem_sizes_iter: impl Iterator<
             Item = &'groups mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         >,
     ) {
@@ -5674,9 +5492,9 @@ impl platform::Platform for Wasm {
     }
 
     fn finalise_prelude_layout<'data>(
-        prelude: &crate::layout::PreludeLayoutState<Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
+        _prelude: &crate::layout::PreludeLayoutState<Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
     ) -> crate::error::Result<Self::PreludeLayoutExt> {
         Ok(())
     }
@@ -5699,8 +5517,8 @@ impl platform::Platform for Wasm {
 
     fn raw_symbol_name<'data>(
         name_bytes: &'data [u8],
-        verneed_table: &Self::VerneedTable<'data>,
-        symbol_index: object::SymbolIndex,
+        _verneed_table: &Self::VerneedTable<'data>,
+        _symbol_index: object::SymbolIndex,
     ) -> Self::RawSymbolName<'data> {
         RawSymbolName { name: name_bytes }
     }
@@ -5792,10 +5610,9 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
 
     let mut sections: Vec<SectionHeader> = Vec::new();
     let mut symbols: Vec<WasmSymbol> = Vec::new();
-    let mut segments: Vec<WasmSegmentInfo<'data>> = Vec::new();
+    let mut segments: Vec<WasmSegmentInfo> = Vec::new();
     let mut init_funcs: Vec<WasmInitFunc> = Vec::new();
     let mut reloc_sections: Vec<WasmRelocSection> = Vec::new();
-    let mut linking_version: Option<u32> = None;
     let mut target_features: Vec<WasmTargetFeature<'data>> = Vec::new();
     let mut standard_section_index = [None; STANDARD_SECTION_LOOKUP_LEN];
 
@@ -5815,7 +5632,6 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
 
             if section_name == LINKING_SECTION_NAME {
                 if let KnownCustom::Linking(linking) = reader.as_known() {
-                    linking_version = Some(linking.version());
                     parse_linking_subsections(
                         input,
                         &linking,
@@ -5852,14 +5668,12 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
 
     Ok(File {
         data: input,
-        version,
         sections,
         standard_section_index,
         symbols,
         segments,
         init_funcs,
         reloc_sections,
-        linking_version,
         target_features,
     })
 }
@@ -5936,7 +5750,7 @@ fn parse_linking_subsections<'data>(
     data: &'data [u8],
     linking: &wasmparser::LinkingSectionReader<'data>,
     symbols: &mut Vec<WasmSymbol>,
-    segments: &mut Vec<WasmSegmentInfo<'data>>,
+    segments: &mut Vec<WasmSegmentInfo>,
     init_funcs: &mut Vec<WasmInitFunc>,
 ) -> Result {
     let data_start = data.as_ptr() as usize;
@@ -5956,9 +5770,7 @@ fn parse_linking_subsections<'data>(
                 for seg in map {
                     let seg = seg?;
                     segments.push(WasmSegmentInfo {
-                        name: seg.name,
                         alignment: Alignment::from_exponent(seg.alignment)?,
-                        flags: seg.flags,
                     });
                 }
             }
@@ -6170,77 +5982,47 @@ mod tests {
         let data_end = 1024u32;
         let page = wasm_page_size();
         let heap_end = heap_end_from_initial_pages(2).unwrap();
-        let de = linker_defined_data_symbol_address(
-            b"__data_end",
-            data_end,
-            DEFAULT_STACK_SIZE,
-            Some(heap_end),
-            false,
-        )
-        .unwrap()
-        .expect("__data_end");
-        assert_eq!(de.address, data_end);
+        let de = WasmLinkerSymbol::DataEnd
+            .data_address(data_end, DEFAULT_STACK_SIZE, Some(heap_end), false)
+            .unwrap()
+            .expect("__data_end");
+        assert_eq!(de, data_end);
 
-        let hb = linker_defined_data_symbol_address(
-            b"__heap_base",
-            data_end,
-            DEFAULT_STACK_SIZE,
-            Some(heap_end),
-            false,
-        )
-        .unwrap()
-        .expect("__heap_base");
+        let hb = WasmLinkerSymbol::HeapBase
+            .data_address(data_end, DEFAULT_STACK_SIZE, Some(heap_end), false)
+            .unwrap()
+            .expect("__heap_base");
         assert_eq!(
-            hb.address,
+            hb,
             stack_high_after_data(data_end, DEFAULT_STACK_SIZE).unwrap()
         );
 
-        let page_end = linker_defined_data_symbol_address(
-            b"__wasm_first_page_end",
-            data_end,
-            DEFAULT_STACK_SIZE,
-            Some(heap_end),
-            false,
-        )
-        .unwrap()
-        .expect("__wasm_first_page_end");
-        assert_eq!(u64::from(page_end.address), page);
+        let page_end = WasmLinkerSymbol::WasmFirstPageEnd
+            .data_address(data_end, DEFAULT_STACK_SIZE, Some(heap_end), false)
+            .unwrap()
+            .expect("__wasm_first_page_end");
+        assert_eq!(u64::from(page_end), page);
 
-        let he = linker_defined_data_symbol_address(
-            b"__heap_end",
-            data_end,
-            DEFAULT_STACK_SIZE,
-            Some(heap_end),
-            false,
-        )
-        .unwrap()
-        .expect("__heap_end");
-        assert_eq!(he.address, heap_end);
-        assert!(he.address >= hb.address);
-        assert_eq!(u64::from(he.address) % page, 0);
+        let he = WasmLinkerSymbol::HeapEnd
+            .data_address(data_end, DEFAULT_STACK_SIZE, Some(heap_end), false)
+            .unwrap()
+            .expect("__heap_end");
+        assert_eq!(he, heap_end);
+        assert!(he >= hb);
+        assert_eq!(u64::from(he) % page, 0);
 
         // If there is no output memory, `__heap_end` is not synthesised.
         assert!(
-            linker_defined_data_symbol_address(
-                b"__heap_end",
-                data_end,
-                DEFAULT_STACK_SIZE,
-                None,
-                false,
-            )
-            .unwrap()
-            .is_none()
+            WasmLinkerSymbol::HeapEnd
+                .data_address(data_end, DEFAULT_STACK_SIZE, None, false)
+                .unwrap()
+                .is_none()
         );
         assert!(
-            linker_defined_data_symbol_address(
-                b"__wasm_first_page_end",
-                data_end,
-                DEFAULT_STACK_SIZE,
-                None,
-                false,
-            )
-            .unwrap()
-            .is_some()
+            WasmLinkerSymbol::WasmFirstPageEnd
+                .data_address(data_end, DEFAULT_STACK_SIZE, None, false)
+                .unwrap()
+                .is_some()
         );
     }
 
@@ -6248,20 +6030,15 @@ mod tests {
     fn stack_first_heap_base_follows_data_not_stack() {
         let data_end = 1_048_576 + 100;
         let stack_size = 1_048_576u32;
-        let hb = linker_defined_data_symbol_address(
-            b"__heap_base",
-            data_end,
-            stack_size,
-            Some(2 * 65_536),
-            true,
-        )
-        .unwrap()
-        .expect("__heap_base");
-        assert_eq!(hb.address, heap_base_after_data(data_end).unwrap());
-        assert!(hb.address - data_end < 16);
+        let hb = WasmLinkerSymbol::HeapBase
+            .data_address(data_end, stack_size, Some(2 * 65_536), true)
+            .unwrap()
+            .expect("__heap_base");
+        assert_eq!(hb, heap_base_after_data(data_end).unwrap());
+        assert!(hb - data_end < 16);
         // Without stack-first, heap would be roughly data_end + stack_size.
         let post_data = stack_high_after_data(data_end, stack_size).unwrap();
-        assert!(post_data > hb.address + stack_size / 2);
+        assert!(post_data > hb + stack_size / 2);
     }
 
     #[test]
