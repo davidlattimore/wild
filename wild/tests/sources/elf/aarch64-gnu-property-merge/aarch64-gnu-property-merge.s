@@ -1,12 +1,31 @@
-// Test that GNU property notes are correctly merged:
-// - OR within same file (accumulate features)
-// - AND across files (intersection of features)
+// Test that GNU property notes within a file are OR'd before AND-ing across files.
+// A single note with BTI(1) and PAC(2) entries should produce BTI|PAC=3 in output,
+// not BTI&PAC=0 which would incorrectly discard the .note.gnu.property section.
+// We use lld as reference linker because GNU ld cross linker does not output
+// .note.gnu.property in static mode.
 //#Arch:aarch64
 //#Mode:static
+//#ReferenceLinkers:lld
 //#LinkArgs:--no-gc-sections
-//#Relocatable:aarch64-gnu-property-merge-input.s
 //#RunEnabled:false
+//#ExpectSection:.note.gnu.property
 
 .globl _start
 _start:
     ret
+
+.section ".note.gnu.property", "a"
+.p2align 3
+.long 4           // namesz
+.long 0x20        // descsz = 32 bytes (two 16-byte property entries)
+.long 5           // type NT_GNU_PROPERTY_TYPE_0
+.asciz "GNU"
+.p2align 3
+.long 0xc0000000  // GNU_PROPERTY_AARCH64_FEATURE_1_AND
+.long 4           // pr_datasz
+.long 1           // BTI
+.long 0           // padding
+.long 0xc0000000  // GNU_PROPERTY_AARCH64_FEATURE_1_AND
+.long 4           // pr_datasz
+.long 2           // PAC
+.long 0           // padding
