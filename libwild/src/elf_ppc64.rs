@@ -108,7 +108,7 @@ impl crate::platform::Arch for ElfPpc64 {
         section: &<Self::Platform as Platform>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<crate::platform::SourceInfo> {
-        crate::dwarf_address_info::get_source_info::<Self>(
+        crate::dwarf_address_info::get_source_info::<crate::elf::Class64, Self>(
             object,
             relocations,
             section,

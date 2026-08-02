@@ -22,41 +22,20 @@ pub(crate) const MAX: Alignment = Alignment {
     exponent: MAX_ALIGNMENT_EXPONENT,
 };
 
-/// Alignment for entries in the symbol table.
-pub(crate) const SYMTAB_ENTRY: Alignment = Alignment { exponent: 3 };
-
 /// Alignment for entries in the .symtab.shndx section.
 pub(crate) const SYMTAB_SHNDX_ENTRY: Alignment = Alignment { exponent: 2 };
-
-/// Alignment for entries in the global offset table.
-pub(crate) const GOT_ENTRY: Alignment = Alignment { exponent: 3 };
-
-/// The minimum alignment of a rela entry.
-pub(crate) const RELA_ENTRY: Alignment = Alignment { exponent: 3 };
-
-/// The minimum alignment of a relr entry.
-pub(crate) const RELR_ENTRY: Alignment = Alignment { exponent: 3 };
-
-/// Alignment of the .gnu.hash section.
-pub(crate) const GNU_HASH: Alignment = Alignment { exponent: 3 };
 
 /// Alignment of the .hash section.
 pub(crate) const SYSV_HASH: Alignment = Alignment { exponent: 2 };
 
-/// The minimum alignment of a phdr entry.
-pub(crate) const PROGRAM_HEADER_ENTRY: Alignment = Alignment { exponent: 3 };
-
 /// The minimum alignment of a PLT entry.
 pub(crate) const PLT: Alignment = Alignment { exponent: 4 };
 
-pub(crate) const VERSION_D: Alignment = Alignment { exponent: 3 };
-pub(crate) const VERSION_R: Alignment = Alignment { exponent: 3 };
 pub(crate) const VERSYM: Alignment = Alignment { exponent: 1 };
 
 pub(crate) const USIZE: Alignment = Alignment { exponent: 3 };
 
 pub(crate) const EH_FRAME_HDR: Alignment = Alignment { exponent: 2 };
-pub(crate) const NOTE_GNU_PROPERTY: Alignment = Alignment { exponent: 3 };
 pub(crate) const NOTE_GNU_BUILD_ID: Alignment = Alignment { exponent: 2 };
 
 // GNU_STACK.alignment and Wasm stack alignment
@@ -97,7 +76,7 @@ impl Alignment {
         self.value() - 1
     }
 
-    pub(crate) fn align_up(self, value: u64) -> u64 {
+    pub(crate) const fn align_up(self, value: u64) -> u64 {
         value.next_multiple_of(self.value())
     }
 

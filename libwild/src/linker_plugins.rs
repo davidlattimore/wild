@@ -15,6 +15,7 @@ use crate::args::Modifiers;
 use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::elf::Elf;
+use crate::elf::ElfClass;
 use crate::elf::RawSymbolName;
 use crate::env;
 use crate::error;
@@ -83,6 +84,7 @@ enum Store<'data> {
 struct LoadInfo<'data> {
     args: &'data ElfArgs,
     arena: &'data Arena<LoadedPlugin>,
+    get_symbols_v3: GetSymbols,
 }
 
 /// Manages the lifetime of the linker plugin. Once dropped, the plugin will be deinitialised and
@@ -145,7 +147,7 @@ pub(crate) struct PluginOutputs {
 }
 
 impl<'data> LinkerPlugin<'data> {
-    pub(crate) fn from_args(
+    pub(crate) fn from_args<C: ElfClass>(
         args: &'data ElfArgs,
         arena: &'data Arena<LoadedPlugin>,
         herd: &'data Herd,
@@ -163,7 +165,11 @@ impl<'data> LinkerPlugin<'data> {
 
                 Ok(Some(LinkerPlugin {
                     path: PathBuf::from(&path),
-                    store: Store::Unloaded(LoadInfo { args, arena }),
+                    store: Store::Unloaded(LoadInfo {
+                        args,
+                        arena,
+                        get_symbols_v3: get_symbols_v3::<C>,
+                    }),
                     herd,
                     wrap_symbols,
                 }))
@@ -197,13 +203,13 @@ impl<'data> LinkerPlugin<'data> {
 
     /// Notify the plugin that all symbols have now been read. This will cause it to build
     /// additional object files that it will then pass to us for processing.
-    pub(crate) fn all_symbols_read<P: Platform, F: FileSystem>(
+    pub(crate) fn all_symbols_read<F: FileSystem, C: ElfClass>(
         &mut self,
-        symbol_db: &mut SymbolDb<'data, P>,
-        resolver: &mut Resolver<'data, P>,
+        symbol_db: &mut SymbolDb<'data, Elf<C>>,
+        resolver: &mut Resolver<'data, Elf<C>>,
         file_loader: &mut FileLoader<'data, F>,
         per_symbol_flags: &mut PerSymbolFlags,
-        output_sections: &mut OutputSections<'data, P>,
+        output_sections: &mut OutputSections<'data, Elf<C>>,
         layout_rules_builder: &mut LayoutRulesBuilder<'data>,
     ) -> Result {
         // If no LTO files were activated, and we proceed with LTO, the GCC plugin tries to invoke
@@ -368,7 +374,7 @@ impl<'data> WrapSymbols<'data> {
 }
 
 impl LoadedPlugin {
-    fn new(plugin_path: &Path, args: &ElfArgs) -> Result<LoadedPlugin> {
+    fn new(plugin_path: &Path, args: &ElfArgs, get_symbols_v3: GetSymbols) -> Result<LoadedPlugin> {
         timing_phase!("Load linker plugin");
 
         if cfg!(target_feature = "crt-static") {
@@ -520,6 +526,7 @@ fn check_for_errors() -> Result {
 type ClaimFileHook = unsafe extern "C" fn(*const LdPluginInputFile, *mut libc::c_int) -> Status;
 type CleanupHook = extern "C" fn() -> Status;
 type AllSymbolsReadHook = extern "C" fn() -> Status;
+type GetSymbols = extern "C" fn(*const libc::c_void, libc::c_int, *mut RawPluginSymbol) -> Status;
 
 #[derive(Default)]
 struct Callbacks {
@@ -876,13 +883,13 @@ extern "C" fn add_symbols(
     })
 }
 
-extern "C" fn get_symbols_v3(
+extern "C" fn get_symbols_v3<C: ElfClass>(
     handle: *const libc::c_void,
     num_symbols: libc::c_int,
     symbols: *mut RawPluginSymbol,
 ) -> Status {
     catch_panics(|| {
-        AllSymbolsReadContext::with_current(|ctx| {
+        AllSymbolsReadContext::<Elf<C>>::with_current(|ctx| {
             let handle = unsafe { &*handle.cast::<FileHandle>() };
 
             let Some(file_id) = handle.file_id.load() else {
@@ -919,9 +926,9 @@ extern "C" fn get_symbols_v3(
     })
 }
 
-fn get_symbol_resolution<'data>(
+fn get_symbol_resolution<'data, C: ElfClass>(
     sym: &mut RawPluginSymbol,
-    symbol_db: &SymbolDb<'data, Elf>,
+    symbol_db: &SymbolDb<'data, Elf<C>>,
     symbol_id_range: SymbolIdRange,
     per_symbol_flags: &PerSymbolFlags,
 ) -> PluginSymbolResolution {
@@ -1375,11 +1382,14 @@ impl<'data> Store<'data> {
                 // Unwrap can't fail because we checked previously that there was a plugin path.
                 let path = Path::new(load_info.args.plugin_path.as_ref().unwrap());
 
-                *self = Store::Loaded(load_info.arena.alloc(
-                    LoadedPlugin::new(path, load_info.args).with_context(|| {
-                        format!("Failed to initialise linker plugin `{}`", path.display())
-                    })?,
-                ));
+                *self = Store::Loaded(
+                    load_info.arena.alloc(
+                        LoadedPlugin::new(path, load_info.args, load_info.get_symbols_v3)
+                            .with_context(|| {
+                                format!("Failed to initialise linker plugin `{}`", path.display())
+                            })?,
+                    ),
+                );
                 let Store::Loaded(loaded) = self else {
                     unreachable!();
                 };
@@ -1402,9 +1412,9 @@ fn increase_file_limit() -> Result {
     Ok(())
 }
 
-pub(crate) fn resolve_lto_symbols<'data, 'scope>(
+pub(crate) fn resolve_lto_symbols<'data, 'scope, C: ElfClass>(
     obj: &crate::linker_plugins::LtoInput<'data>,
-    resources: &'scope ResolutionResources<'data, 'scope, Elf>,
+    resources: &'scope ResolutionResources<'data, 'scope, Elf<C>>,
     definitions_out: &mut [SymbolId],
     scope: &Scope<'scope>,
 ) -> Result {
@@ -1415,7 +1425,7 @@ pub(crate) fn resolve_lto_symbols<'data, 'scope>(
         .try_for_each(
             |((local_symbol_index, local_symbol), definition)| -> Result {
                 if !local_symbol.is_definition() {
-                    let mut name_info = Elf::parse_raw_symbol_name(local_symbol.name.bytes());
+                    let mut name_info = Elf::<C>::parse_raw_symbol_name(local_symbol.name.bytes());
                     if let Some(version) = local_symbol.version {
                         name_info.version_name = Some(version);
                     }
