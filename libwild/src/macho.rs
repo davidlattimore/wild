@@ -24,6 +24,7 @@ use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
 use crate::macho::output_section_id::CHAINED_FIXUP_TABLE;
 use crate::macho::output_section_id::CODE_SIGNATURE;
+use crate::macho::output_section_id::EXPORTS_TRIE;
 use crate::macho::output_section_id::LOAD_COMMANDS;
 use crate::macho::output_section_id::STRTAB;
 use crate::macho::output_section_id::SYMTAB_GLOBAL;
@@ -104,6 +105,7 @@ enum SinglePartSectionId {
     LoadCommands,
     CodeSignature,
     ChainedFixupTable,
+    ExportsTrie,
 
     // Must be last.
     Count,
@@ -120,6 +122,7 @@ pub(crate) mod part_id {
     pub(crate) const LOAD_COMMANDS: PartId = SinglePartSectionId::LoadCommands.part_id();
     pub(crate) const CODE_SIGNATURE: PartId = SinglePartSectionId::CodeSignature.part_id();
     pub(crate) const CHAINED_FIXUP_TABLE: PartId = SinglePartSectionId::ChainedFixupTable.part_id();
+    pub(crate) const EXPORTS_TRIE: PartId = SinglePartSectionId::ExportsTrie.part_id();
 }
 
 pub(crate) mod output_section_id {
@@ -139,6 +142,8 @@ pub(crate) mod output_section_id {
         SinglePartSectionId::CodeSignature.output_section_id();
     pub(crate) const CHAINED_FIXUP_TABLE: OutputSectionId =
         SinglePartSectionId::ChainedFixupTable.output_section_id();
+    pub(crate) const EXPORTS_TRIE: OutputSectionId =
+        SinglePartSectionId::ExportsTrie.output_section_id();
 }
 
 const LE: Endianness = Endianness::Little;
@@ -1012,6 +1017,7 @@ impl platform::Platform for MachO {
         output_section_id::LINK_EDIT_SEGMENT,
         output_section_id::LOAD_COMMANDS,
         output_section_id::CHAINED_FIXUP_TABLE,
+        output_section_id::EXPORTS_TRIE,
         output_section_id::CODE_SIGNATURE,
     ];
 
@@ -1246,10 +1252,14 @@ impl platform::Platform for MachO {
     }
 
     fn create_dynamic_symbol_definition<'data>(
-        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        _symbol_id: crate::symbol_db::SymbolId,
+        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        symbol_id: crate::symbol_db::SymbolId,
     ) -> Result<crate::layout::DynamicSymbolDefinition<'data, Self>> {
-        todo!()
+        Ok(crate::layout::DynamicSymbolDefinition {
+            symbol_id,
+            name: symbol_db.symbol_name(symbol_id)?.bytes(),
+            format_specific: (),
+        })
     }
 
     fn update_segment_keep_list(
@@ -1275,7 +1285,7 @@ impl platform::Platform for MachO {
     ) -> bool {
         match (section_id, section_info.kind) {
             (FILE_HEADER | LOAD_COMMANDS, _) => segment_def.name == SegmentName::TEXT,
-            (STRTAB | CHAINED_FIXUP_TABLE | SYMTAB_GLOBAL | CODE_SIGNATURE, _) => {
+            (STRTAB | CHAINED_FIXUP_TABLE | SYMTAB_GLOBAL | EXPORTS_TRIE | CODE_SIGNATURE, _) => {
                 segment_def.name == SegmentName::LINKEDIT
             }
             (_, SectionKind::Primary(identity)) => {
@@ -1457,7 +1467,7 @@ impl platform::Platform for MachO {
     fn finalise_sizes_epilogue<'data>(
         state: &mut Self::EpilogueLayoutExt,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        _dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
+        dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
         _format_specific: &Self::FinaliseSizesExt<'data>,
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
@@ -1481,6 +1491,27 @@ impl platform::Platform for MachO {
         mem_sizes.increment(
             part_id::CHAINED_FIXUP_TABLE,
             alignment::USIZE.align_up(fixup_table_size),
+        );
+
+        // Currently we determine the output file size before we assign symbol addresses. This lets
+        // us do file creation in parallel with address assignment, however it means that we can't
+        // take addresses into account when determining section sizes. The export trie, due to using
+        // uleb128 encoding for addresses, needs addresses in order to determine an exact size. We
+        // work around this for now by assuming all addresses will be u64::MAX. This gives us an
+        // upper bound on how large the trie will be, but wastes some space in the file. TODO:
+        // Figure out a good way to fix this.
+        let mut exports = dynamic_symbol_definitions
+            .iter()
+            .map(|symbol| crate::trie::Symbol {
+                name: symbol.name,
+                address: u64::MAX,
+                flags: object::macho::ExportSymbolFlags(0),
+            })
+            .collect_vec();
+
+        mem_sizes.increment(
+            part_id::EXPORTS_TRIE,
+            crate::trie::build(&mut exports).len() as u64,
         );
     }
 
@@ -1566,6 +1597,9 @@ impl platform::Platform for MachO {
         }
 
         allocate_load_cmd(size_of::<DyldChainedFixupsCommand>());
+        if resources.symbol_db.output_kind.needs_dynsym() {
+            allocate_load_cmd(size_of::<object::macho::LinkeditDataCommand<Endianness>>());
+        }
         allocate_load_cmd(size_of::<SymtabCommand>());
         allocate_load_cmd(size_of::<CodeSignatureCommand>());
         allocate_load_cmd(size_of::<UuidCommand>());
@@ -1816,6 +1850,7 @@ impl platform::Platform for MachO {
         // The rest (e.g. symbol table, string table).
         builder.add_section(output_section_id::STRTAB);
         builder.add_section(output_section_id::CHAINED_FIXUP_TABLE);
+        builder.add_section(output_section_id::EXPORTS_TRIE);
         builder.add_section(output_section_id::SYMTAB_GLOBAL);
         builder.add_section(output_section_id::CODE_SIGNATURE);
 
@@ -1941,6 +1976,10 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
             None,
         )),
         min_alignment: alignment::USIZE,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::EXPORTS_TRIE.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"EXPORTS_TRIE"), None)),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {

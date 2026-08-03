@@ -92,6 +92,7 @@ use object::macho::DYLD_CHAINED_PTR_64_OFFSET;
 use object::macho::LC_BUILD_VERSION;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
+use object::macho::LC_DYLD_EXPORTS_TRIE;
 use object::macho::LC_LOAD_DYLIB;
 use object::macho::LC_LOAD_DYLINKER;
 use object::macho::LC_MAIN;
@@ -122,12 +123,14 @@ const LE: Endianness = Endianness::Little;
 
 type MachOLayout<'data> = Layout<'data, MachO>;
 type SymtabEntry = object::macho::Nlist64<Endianness>;
+type ExportsTrieCommand = object::macho::LinkeditDataCommand<Endianness>;
 
 pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
     sized_output: &mut SizedOutput<impl OutputFileData>,
     layout: &MachOLayout<'data>,
 ) -> Result {
     timing_phase!("Write data to file");
+    let exports_trie = build_exports_trie(layout)?;
     let (mut section_buffers, mut padding) =
         split_output_into_sections(layout, &mut sized_output.out);
     padding.fill_zero();
@@ -149,6 +152,7 @@ pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
                     layout,
                     &sized_output.trace,
                     &mut symbol_writer,
+                    &exports_trie,
                 )
                 .with_context(|| format!("Failed copying from {file} to output file"))?;
             }
@@ -172,13 +176,14 @@ fn write_file<'data, A: Arch<Platform = MachO>>(
     layout: &MachOLayout<'data>,
     _trace: &TraceOutput,
     symbol_writer: &mut MachOSymbolTableWriter,
+    exports_trie: &[u8],
 ) -> Result {
     match file {
         FileLayout::Object(s) => {
             write_object::<A>(s, buffers, layout, symbol_writer)?;
         }
-        FileLayout::Prelude(s) => write_prelude(s, buffers, layout)?,
-        FileLayout::Epilogue(s) => write_epilogue(s, buffers, layout)?,
+        FileLayout::Prelude(s) => write_prelude(s, buffers, layout, exports_trie)?,
+        FileLayout::Epilogue(s) => write_epilogue(s, buffers, layout, exports_trie)?,
         _ => {
             // TODO
         }
@@ -200,6 +205,7 @@ fn write_prelude<'data>(
     prelude: &PreludeLayout<MachO>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &MachOLayout<'data>,
+    exports_trie: &[u8],
 ) -> Result {
     verbose_timing_phase!("Write prelude");
     debug_assert_eq!(
@@ -246,6 +252,10 @@ fn write_prelude<'data>(
 
     write_dyld_chained_fixups_command(layout, take_mut(&mut load_command_buffer)?);
 
+    if layout.symbol_db.output_kind.needs_dynsym() {
+        write_exports_trie_command(layout, exports_trie, take_mut(&mut load_command_buffer)?)?;
+    }
+
     write_symtab_command(layout, take_mut(&mut load_command_buffer)?);
 
     write_code_signature_command(layout, take_mut(&mut load_command_buffer)?);
@@ -265,11 +275,91 @@ fn write_epilogue(
     _epilogue: &EpilogueLayout<MachO>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &MachOLayout<'_>,
+    exports_trie: &[u8],
 ) -> Result {
     verbose_timing_phase!("Write epilogue");
     write_chained_fixup_table(layout, buffers.get_mut(part_id::CHAINED_FIXUP_TABLE))?;
+    let out = buffers.get_mut(part_id::EXPORTS_TRIE);
+    ensure!(
+        exports_trie.len() <= out.len(),
+        "Mach-O exports trie exceeded its reserved size"
+    );
+    out[..exports_trie.len()].copy_from_slice(exports_trie);
+    out[exports_trie.len()..].fill(0);
 
     Ok(())
+}
+
+fn build_exports_trie(layout: &MachOLayout<'_>) -> Result<Vec<u8>> {
+    if !layout.symbol_db.output_kind.needs_dynsym() {
+        return Ok(Vec::new());
+    }
+
+    let text_segment = layout
+        .segment_layouts
+        .segments
+        .iter()
+        .find(|segment| layout.program_segments.segment_def(segment.id).name == SegmentName::TEXT)
+        .context("Missing Mach-O __TEXT segment")?;
+
+    let image_base = text_segment.sizes.mem_offset;
+
+    let mut symbols = layout
+        .dynamic_symbol_definitions
+        .iter()
+        .map(|symbol| {
+            let resolution = layout
+                .symbol_resolutions
+                .get(symbol.symbol_id)
+                .with_context(|| {
+                    format!(
+                        "Missing resolution for exported symbol `{}`",
+                        String::from_utf8_lossy(symbol.name)
+                    )
+                })?;
+
+            let (address, mut flags) = if resolution.is_absolute() {
+                (
+                    resolution.raw_value,
+                    object::macho::EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE.into(),
+                )
+            } else {
+                (
+                    resolution
+                        .raw_value
+                        .checked_sub(image_base)
+                        .with_context(|| {
+                            format!(
+                                "Exported symbol `{}` is before the Mach-O image base",
+                                String::from_utf8_lossy(symbol.name)
+                            )
+                        })?,
+                    object::macho::ExportSymbolFlags(0),
+                )
+            };
+
+            if exported_symbol_is_weak(layout, symbol.symbol_id)? {
+                flags |= object::macho::EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION;
+            }
+
+            Ok(crate::trie::Symbol {
+                name: symbol.name,
+                address,
+                flags,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(crate::trie::build(&mut symbols))
+}
+
+fn exported_symbol_is_weak(layout: &MachOLayout<'_>, symbol_id: SymbolId) -> Result<bool> {
+    let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
+    let FileLayout::Object(object) = layout.file_layout(file_id) else {
+        return Ok(false);
+    };
+    let symbol_index = object.symbol_id_range.id_to_input(symbol_id);
+    Ok(object.object.symbol(symbol_index)?.is_weak())
 }
 
 fn write_got_entries(layout: &MachOLayout<'_>, got: &mut [u8]) -> Result {
@@ -767,6 +857,34 @@ fn write_dyld_chained_fixups_command(layout: &MachOLayout, command: &mut DyldCha
     command
         .datasize
         .set(LE, chained_fixup_table.file_size as u32);
+}
+
+fn write_exports_trie_command(
+    layout: &MachOLayout,
+    exports_trie: &[u8],
+    command: &mut ExportsTrieCommand,
+) -> Result {
+    let exports_trie_layout = layout.section_layouts.get(output_section_id::EXPORTS_TRIE);
+
+    command.cmd.set(LE, LC_DYLD_EXPORTS_TRIE);
+    command
+        .cmdsize
+        .set(LE, size_of::<ExportsTrieCommand>() as u32);
+    command.dataoff.set(
+        LE,
+        exports_trie_layout
+            .file_offset
+            .try_into()
+            .context("Mach-O exports trie offset exceeds 32 bits")?,
+    );
+    command.datasize.set(
+        LE,
+        exports_trie
+            .len()
+            .try_into()
+            .context("Mach-O exports trie size exceeds 32 bits")?,
+    );
+    Ok(())
 }
 
 fn write_symtab_command(layout: &MachOLayout, command: &mut SymtabCommand) {
