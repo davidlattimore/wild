@@ -85,6 +85,15 @@ use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use crate::version_script::VersionScript;
+use crate::writable_elf::WritableCompressionHeader;
+use crate::writable_elf::WritableDynamicEntry;
+use crate::writable_elf::WritableFileHeader;
+use crate::writable_elf::WritableNoteHeader;
+use crate::writable_elf::WritableProgramHeader;
+use crate::writable_elf::WritableRela;
+use crate::writable_elf::WritableRelr;
+use crate::writable_elf::WritableSectionHeader;
+use crate::writable_elf::WritableSymbol;
 use foldhash::HashSet;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
@@ -129,6 +138,7 @@ use rayon::Scope;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::borrow::Cow;
+use std::marker::PhantomData;
 use std::mem::offset_of;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
@@ -146,34 +156,6 @@ pub(crate) const GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
 pub(crate) const TOC_SYMBOL_NAME: &str = ".TOC.";
 
 pub(crate) const THUNK_SYMBOL_PREFIX: &str = "__thunk_";
-
-pub(crate) type FileHeader = object::elf::FileHeader64<LittleEndian>;
-pub(crate) type ProgramHeader = object::elf::ProgramHeader64<LittleEndian>;
-pub(crate) type SectionHeader = object::elf::SectionHeader64<LittleEndian>;
-pub(crate) type SymtabEntry = object::elf::Sym64<LittleEndian>;
-pub(crate) type DynamicEntry = object::elf::Dyn64<LittleEndian>;
-pub(crate) type Rela = object::elf::Rela64<LittleEndian>;
-pub(crate) type Relr = object::elf::Relr64<LittleEndian>;
-pub(crate) type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
-pub(crate) type Verdef = object::elf::Verdef<LittleEndian>;
-pub(crate) type Verdaux = object::elf::Verdaux<LittleEndian>;
-pub(crate) type Verneed = object::elf::Verneed<LittleEndian>;
-pub(crate) type Vernaux = object::elf::Vernaux<LittleEndian>;
-pub(crate) type Versym = object::elf::Versym<LittleEndian>;
-pub(crate) type VerdefIterator<'data> = object::read::elf::VerdefIterator<'data, FileHeader>;
-pub(crate) type VerneedIterator<'data> = object::read::elf::VerneedIterator<'data, FileHeader>;
-pub(crate) type NoteHeader = object::elf::NoteHeader64<LittleEndian>;
-
-type SectionTable<'data> = object::read::elf::SectionTable<'data, FileHeader>;
-type SymbolTable<'data> = object::read::elf::SymbolTable<'data, FileHeader>;
-
-#[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct Elf;
-
-pub(crate) type Elf64 = Elf;
-pub(crate) type File64<'data> = File<'data>;
-pub(crate) type FileHeader64 = FileHeader;
-pub(crate) type RelocationList64<'data> = RelocationList<'data>;
 
 pub(crate) fn link_for_arch<'data, F: FileSystem>(
     linker: &'data crate::Linker<F>,
@@ -203,6 +185,126 @@ pub(crate) fn link_for_arch<'data, F: FileSystem>(
         }
     }
 }
+
+pub(crate) trait ElfWord: Copy + FromBytes + IntoBytes + Into<u64> + Send + Sync {
+    fn from_u64(value: u64) -> Result<Self>;
+    fn from_le_bytes(bytes: &[u8]) -> Self;
+}
+
+impl ElfWord for u32 {
+    fn from_u64(value: u64) -> Result<Self> {
+        u32::try_from(value).map_err(|_| error!("ELF word value 0x{value:x} does not fit in ELF32"))
+    }
+
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        u32::from_le_bytes(bytes.try_into().unwrap())
+    }
+}
+
+impl ElfWord for u64 {
+    fn from_u64(value: u64) -> Result<Self> {
+        Ok(value)
+    }
+
+    fn from_le_bytes(bytes: &[u8]) -> Self {
+        u64::from_le_bytes(bytes.try_into().unwrap())
+    }
+}
+
+pub(crate) trait ElfClass: Copy + Default + Send + Sync + std::fmt::Debug + 'static {
+    type FileHeader: object::read::elf::FileHeader<
+            Endian = LittleEndian,
+            Word: ElfWord,
+            CompressionHeader: WritableCompressionHeader + Default,
+            NoteHeader: WritableNoteHeader,
+            ProgramHeader: WritableProgramHeader,
+            Relr: WritableRelr,
+            SectionHeader: platform::SectionHeader + WritableSectionHeader,
+            Sym: ElfSymbol<Class = Self>,
+            Dyn: WritableDynamicEntry + Send + Sync,
+            Rela: WritableRela + Send + Sync + Copy + 'static,
+        > + WritableFileHeader;
+
+    const FILE_HEADER_SIZE: u16 = size_of::<Self::FileHeader>() as u16;
+    const PROGRAM_HEADER_SIZE: u16 = size_of::<ProgramHeader<Self>>() as u16;
+    const SECTION_HEADER_SIZE: u16 = size_of::<SectionHeader<Self>>() as u16;
+    const ADDRESS_SIZE: u64 = size_of::<Word<Self>>() as u64;
+    const ADDRESS_ALIGNMENT: Alignment = Alignment {
+        exponent: Self::ADDRESS_SIZE.trailing_zeros() as u8,
+    };
+    const GOT_ENTRY_SIZE: u64 = Self::ADDRESS_SIZE;
+    const RELA_ENTRY_SIZE: u64 = size_of::<Rela<Self>>() as u64;
+    const RELR_ENTRY_SIZE: u64 = size_of::<Relr<Self>>() as u64;
+    const SYMTAB_ENTRY_SIZE: u64 = size_of::<SymtabEntry<Self>>() as u64;
+    const DYNAMIC_ENTRY_SIZE: u64 = size_of::<DynamicEntry<Self>>() as u64;
+    const NOTE_HEADER_SIZE: u64 = size_of::<NoteHeader<Self>>() as u64;
+    const GNU_HASH_BLOOM_SIZE: u64 = Self::ADDRESS_SIZE;
+    const PROGRAM_HEADER_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
+    const GOT_ENTRY_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
+    const RELA_ENTRY_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
+    const RELR_ENTRY_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
+    const GNU_HASH_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
+    const SYMTAB_ENTRY_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
+    const VERSION_D_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
+    const VERSION_R_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
+    const GNU_PROPERTY_ALIGNMENT: Alignment = Self::ADDRESS_ALIGNMENT;
+    const GNU_PROPERTY_ENTRY_SIZE: u64 =
+        Self::GNU_PROPERTY_ALIGNMENT.align_up(size_of::<NoteProperty>() as u64);
+}
+
+pub(crate) trait ElfSymbol:
+    object::read::elf::Sym<Endian = LittleEndian>
+    + WritableSymbol
+    + Default
+    + std::fmt::Debug
+    + Copy
+    + Send
+    + Sync
+    + 'static
+{
+    type Class: ElfClass;
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+pub(crate) struct Class64;
+
+impl ElfClass for Class64 {
+    type FileHeader = object::elf::FileHeader64<LittleEndian>;
+}
+
+impl ElfSymbol for object::elf::Sym64<LittleEndian> {
+    type Class = Class64;
+}
+
+pub(crate) type FileHeader<C> = <C as ElfClass>::FileHeader;
+pub(crate) type Word<C> = <FileHeader<C> as object::read::elf::FileHeader>::Word;
+pub(crate) type ProgramHeader<C> = <FileHeader<C> as object::read::elf::FileHeader>::ProgramHeader;
+pub(crate) type SectionHeader<C> = <FileHeader<C> as object::read::elf::FileHeader>::SectionHeader;
+pub(crate) type SymtabEntry<C> = <FileHeader<C> as object::read::elf::FileHeader>::Sym;
+pub(crate) type DynamicEntry<C> = <FileHeader<C> as object::read::elf::FileHeader>::Dyn;
+pub(crate) type CompressionHeaderEntry<C> =
+    <FileHeader<C> as object::read::elf::FileHeader>::CompressionHeader;
+pub(crate) type Rela<C> = <FileHeader<C> as object::read::elf::FileHeader>::Rela;
+pub(crate) type Relr<C> = <FileHeader<C> as object::read::elf::FileHeader>::Relr;
+pub(crate) type NoteHeader<C> = <FileHeader<C> as object::read::elf::FileHeader>::NoteHeader;
+pub(crate) type FileHeader64 = FileHeader<Class64>;
+pub(crate) type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
+pub(crate) type Verdef = object::elf::Verdef<LittleEndian>;
+pub(crate) type Verdaux = object::elf::Verdaux<LittleEndian>;
+pub(crate) type Verneed = object::elf::Verneed<LittleEndian>;
+pub(crate) type Vernaux = object::elf::Vernaux<LittleEndian>;
+pub(crate) type Versym = object::elf::Versym<LittleEndian>;
+pub(crate) type VerdefIterator<'data, C> = object::read::elf::VerdefIterator<'data, FileHeader<C>>;
+type VerneedIterator<'data, C> = object::read::elf::VerneedIterator<'data, FileHeader<C>>;
+type SectionTable<'data, C> = object::read::elf::SectionTable<'data, FileHeader<C>>;
+type SymbolTable<'data, C> = object::read::elf::SymbolTable<'data, FileHeader<C>>;
+
+#[derive(Debug, Copy, Clone, Default)]
+pub(crate) struct Elf<C: ElfClass>(PhantomData<C>);
+
+pub(crate) type Elf64 = Elf<Class64>;
+pub(crate) type File64<'data> = File<'data, Class64>;
+pub(crate) type RelocationList64<'data> = RelocationList<'data, Class64>;
 
 #[repr(u32)]
 #[derive(Clone, Copy)]
@@ -266,6 +368,11 @@ enum RegularSectionId {
     // Must be last.
     Count,
 }
+
+const ELF_NUM_SINGLE_PART_SECTIONS: u32 = SinglePartSectionId::Count as u32;
+const ELF_NUM_BUILT_IN_REGULAR_SECTIONS: usize = RegularSectionId::Count as usize;
+const ELF_NUM_BUILT_IN_SECTIONS: usize =
+    ELF_NUM_SINGLE_PART_SECTIONS as usize + ELF_NUM_BUILT_IN_REGULAR_SECTIONS;
 
 pub(crate) mod part_id {
     use super::SinglePartSectionId;
@@ -378,26 +485,26 @@ pub(crate) mod output_section_id {
 }
 
 #[derive(derive_more::Debug)]
-pub(crate) struct File<'data> {
+pub(crate) struct File<'data, C: ElfClass> {
     pub(crate) arch: Architecture,
     #[debug(skip)]
     pub(crate) data: &'data [u8],
     #[debug(skip)]
-    pub(crate) sections: SectionTable<'data>,
+    pub(crate) sections: SectionTable<'data, C>,
     /// This may be symtab or dynsym depending on the file type.
     #[debug(skip)]
-    pub(crate) symbols: SymbolTable<'data>,
+    pub(crate) symbols: SymbolTable<'data, C>,
     #[debug(skip)]
     pub(crate) versym: &'data [Versym],
 
     /// An iterator over the version definitions and the corresponding linked string table index.
-    pub(crate) verdef: Option<(VerdefIterator<'data>, object::SectionIndex)>,
+    pub(crate) verdef: Option<(VerdefIterator<'data, C>, object::SectionIndex)>,
 
     /// Number of verdef versions according to `sh_info` of `.gnu._version_d` section.
     pub(crate) verdefnum: u32,
 
     /// An iterator over the version references and the corresponding linked string table index.
-    pub(crate) verneed: Option<(VerneedIterator<'data>, object::SectionIndex)>,
+    pub(crate) verneed: Option<(VerneedIterator<'data, C>, object::SectionIndex)>,
 
     /// e_flags from the header.
     pub(crate) eflags: object::elf::FileFlags,
@@ -405,56 +512,82 @@ pub(crate) struct File<'data> {
     pub(crate) dynamic_tag_values: Option<DynamicTagValues<'data>>,
 }
 
-impl Relocation for Rela {
-    type Sequence<'data> = &'data [Rela];
-    type Platform = Elf;
+#[derive(Clone, Copy)]
+pub(crate) struct ElfRela<C: ElfClass> {
+    raw: Rela<C>,
+}
 
-    fn symbol(&self) -> Option<object::SymbolIndex> {
-        object::read::elf::Rela::symbol(self, LittleEndian, false)
-    }
-
-    fn raw_type(&self) -> object::elf::RelocationType {
-        object::read::elf::Rela::r_type(self, LittleEndian, false)
-    }
-
-    fn offset(&self) -> u64 {
-        object::read::elf::Rela::r_offset(self, LittleEndian)
-    }
-
-    fn addend(&self) -> i64 {
-        object::read::elf::Rela::r_addend(self, LittleEndian)
+impl<C: ElfClass> ElfRela<C> {
+    pub(crate) fn new(raw: Rela<C>) -> Self {
+        Self { raw }
     }
 }
 
-impl Relocation for Crel {
-    type Sequence<'data> = Vec<Crel>;
-    type Platform = Elf;
+impl<C: ElfClass> Relocation for ElfRela<C> {
+    type Sequence<'data> = RelaSequence<'data, C>;
+    type Platform = Elf<C>;
 
     fn symbol(&self) -> Option<object::SymbolIndex> {
-        object::read::elf::Crel::symbol(self)
+        object::read::elf::Rela::symbol(&self.raw, LittleEndian, false)
     }
 
     fn raw_type(&self) -> object::elf::RelocationType {
-        self.r_type
+        object::read::elf::Rela::r_type(&self.raw, LittleEndian, false)
     }
 
     fn offset(&self) -> u64 {
-        self.r_offset
+        object::read::elf::Rela::r_offset(&self.raw, LittleEndian).into()
     }
 
     fn addend(&self) -> i64 {
-        self.r_addend
+        object::read::elf::Rela::r_addend(&self.raw, LittleEndian).into()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ElfCrel<C: ElfClass> {
+    raw: Crel,
+    class: PhantomData<C>,
+}
+
+impl<C: ElfClass> ElfCrel<C> {
+    pub(crate) fn new(raw: Crel) -> Self {
+        Self {
+            raw,
+            class: PhantomData,
+        }
+    }
+}
+
+impl<C: ElfClass> Relocation for ElfCrel<C> {
+    type Sequence<'data> = Vec<Self>;
+    type Platform = Elf<C>;
+
+    fn symbol(&self) -> Option<object::SymbolIndex> {
+        object::read::elf::Crel::symbol(&self.raw)
+    }
+
+    fn raw_type(&self) -> object::elf::RelocationType {
+        self.raw.r_type
+    }
+
+    fn offset(&self) -> u64 {
+        self.raw.r_offset
+    }
+
+    fn addend(&self) -> i64 {
+        self.raw.r_addend
     }
 }
 
 /// A list of relocations that supports iteration.
 #[derive(Clone)]
-pub(crate) enum RelocationList<'data> {
-    Rela(&'data [Rela]),
+pub(crate) enum RelocationList<'data, C: ElfClass> {
+    Rela(&'data [Rela<C>]),
     Crel(CrelIterator<'data>),
 }
 
-impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
+impl<'data, C: ElfClass> platform::RelocationList<'data> for RelocationList<'data, C> {
     fn num_relocations(&self) -> usize {
         match self {
             RelocationList::Rela(rela) => rela.len(),
@@ -463,26 +596,29 @@ impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
     }
 }
 
-impl<'data> RelocationSequence<'data> for &'data [Rela] {
-    type Rel = Rela;
+#[derive(Clone, Copy)]
+pub(crate) struct RelaSequence<'data, C: ElfClass>(&'data [Rela<C>]);
 
-    fn rel_iter(&self) -> impl Iterator<Item = Rela> {
-        self.iter().copied()
+impl<'data, C: ElfClass> RelocationSequence<'data> for RelaSequence<'data, C> {
+    type Rel = ElfRela<C>;
+
+    fn rel_iter(&self) -> impl Iterator<Item = ElfRela<C>> {
+        self.0.iter().copied().map(|raw| ElfRela { raw })
     }
 
     fn subsequence(&self, range: Range<usize>) -> Self {
-        &self[range]
+        Self(&self.0[range])
     }
 
     fn num_relocations(&self) -> usize {
-        self.len()
+        self.0.len()
     }
 }
 
-impl<'data> RelocationSequence<'data> for Vec<Crel> {
-    type Rel = Crel;
+impl<'data, C: ElfClass> RelocationSequence<'data> for Vec<ElfCrel<C>> {
+    type Rel = ElfCrel<C>;
 
-    fn rel_iter(&self) -> impl Iterator<Item = Crel> {
+    fn rel_iter(&self) -> impl Iterator<Item = ElfCrel<C>> {
         self.clone().into_iter()
     }
 
@@ -497,7 +633,7 @@ impl<'data> RelocationSequence<'data> for Vec<Crel> {
 
 // Not needing Drop opens the option of storing this type in an arena that doesn't support dropping
 // its contents.
-const _: () = assert!(!core::mem::needs_drop::<File>());
+const _: () = assert!(!core::mem::needs_drop::<File64>());
 
 /// Returns the name to use when writing a symbol into .symtab's string table.
 /// Unlike .dynsym (which encodes version info separately in .gnu.version), .symtab has no
@@ -507,9 +643,9 @@ pub(crate) fn symtab_name_for_strtab(raw_name: &[u8]) -> &[u8] {
     raw_name
 }
 
-impl platform::Platform for Elf {
-    const NUM_SINGLE_PART_SECTIONS: u32 = SinglePartSectionId::Count as u32;
-    const NUM_BUILT_IN_REGULAR_SECTIONS: usize = RegularSectionId::Count as usize;
+impl<C: ElfClass> platform::Platform for Elf<C> {
+    const NUM_SINGLE_PART_SECTIONS: u32 = ELF_NUM_SINGLE_PART_SECTIONS;
+    const NUM_BUILT_IN_REGULAR_SECTIONS: usize = ELF_NUM_BUILT_IN_REGULAR_SECTIONS;
 
     const TEXT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::TEXT);
     const DATA_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::DATA);
@@ -580,19 +716,19 @@ impl platform::Platform for Elf {
 
     const HAS_NULL_SYMBOL_ENTRY: bool = true;
 
-    type File<'data> = File<'data>;
+    type File<'data> = File<'data, C>;
     type FileFlags = object::elf::FileFlags;
-    type SymtabEntry = SymtabEntry;
+    type SymtabEntry = SymtabEntry<C>;
     type PlatformSpecificSymbol = core::convert::Infallible;
-    type SectionHeader = SectionHeader;
+    type SectionHeader = SectionHeader<C>;
     type SectionFlags = SectionFlags;
-    type SectionAttributes = SectionAttributes;
+    type SectionAttributes = SectionAttributes<C>;
     type SectionType = SectionType;
     type SegmentType = SegmentType;
     type ProgramSegmentDef = ProgramSegmentDef;
-    type BuiltInSectionDetails = BuiltInSectionDetails;
+    type BuiltInSectionDetails = BuiltInSectionDetails<C>;
     type RelocationSections = RelocationSections;
-    type DynamicEntry = DynamicEntry;
+    type DynamicEntry = DynamicEntry<C>;
     type DynamicSymbolDefinitionExt = DynamicSymbolDefinitionExt;
     type RelocationInfo = object::elf::RelocationType;
     type FinaliseSizesExt<'data> = LayoutExt;
@@ -608,15 +744,15 @@ impl platform::Platform for Elf {
     type PreludeLayoutStateExt = PreludeLayoutStateExt;
     type PreludeLayoutExt = PreludeLayoutExt;
     type ArchIdentifier = object::elf::Machine;
-    type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
+    type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader<C>>;
     type DynamicTagValues<'data> = crate::elf::DynamicTagValues<'data>;
-    type RelocationList<'data> = RelocationList<'data>;
+    type RelocationList<'data> = RelocationList<'data, C>;
     type VersionNames<'data> = VersionNames<'data>;
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VerneedTable<'data> = VerneedTable<'data>;
-    type ObjectLayoutStateExt<'data> = ObjectLayoutStateExt<'data>;
-    type DynamicLayoutStateExt<'data> = DynamicLayoutStateExt<'data>;
-    type DynamicLayoutExt<'data> = DynamicLayoutExt<'data>;
+    type ObjectLayoutStateExt<'data> = ObjectLayoutStateExt<'data, C>;
+    type DynamicLayoutStateExt<'data> = DynamicLayoutStateExt<'data, C>;
+    type DynamicLayoutExt<'data> = DynamicLayoutExt<'data, C>;
     type LayoutResourcesExt<'data> = LayoutResourcesExt<'data>;
     type Args = ElfArgs;
     type ResolutionExt = ResolutionExt;
@@ -628,13 +764,13 @@ impl platform::Platform for Elf {
         output: &crate::file_writer::Output<F>,
         layout: &layout::Layout<'data, Self>,
     ) -> Result {
-        output.write(layout, elf_writer::write::<A>)
+        output.write(layout, elf_writer::write::<C, A>)
     }
 
     fn maybe_compress_debug_sections<'data, A: Arch<Platform = Self>>(
         layout: &mut layout::Layout<'data, Self>,
     ) -> Result {
-        crate::compression::maybe_compress_debug_sections_elf::<A>(layout)
+        crate::compression::maybe_compress_debug_sections_elf::<C, A>(layout)
     }
 
     fn maybe_init_linker_plugin<'data>(
@@ -642,7 +778,7 @@ impl platform::Platform for Elf {
         linker_plugin_arena: &'data colosseum::sync::Arena<crate::linker_plugins::LoadedPlugin>,
         herd: &'data bumpalo_herd::Herd,
     ) -> Result<Option<crate::linker_plugins::LinkerPlugin<'data>>> {
-        crate::linker_plugins::LinkerPlugin::from_args(args, linker_plugin_arena, herd)
+        crate::linker_plugins::LinkerPlugin::from_args::<C>(args, linker_plugin_arena, herd)
     }
 
     fn plugin_all_symbols_read<'data, F: FileSystem>(
@@ -700,21 +836,21 @@ impl platform::Platform for Elf {
     }
 
     fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails] {
-        &SECTION_DEFINITIONS
+        &Self::SECTION_DEFINITIONS
     }
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
         SectionAttributes {
             flags: header.sh_flags(LittleEndian),
             ty: header.sh_type(LittleEndian),
-            entsize: header.sh_entsize.get(LittleEndian),
+            entsize: header.sh_entsize(LittleEndian).into(),
+            class: PhantomData,
         }
     }
 
     fn validate_sizes(mem_sizes: &OutputSectionPartMap<u64>) -> Result {
         if *mem_sizes.get(part_id::GNU_VERSION) > 0 {
-            let num_dynamic_symbols =
-                mem_sizes.get(part_id::DYNSYM) / crate::elf::SYMTAB_ENTRY_SIZE;
+            let num_dynamic_symbols = mem_sizes.get(part_id::DYNSYM) / C::SYMTAB_ENTRY_SIZE;
             let num_versym = mem_sizes.get(part_id::GNU_VERSION) / size_of::<Versym>() as u64;
             if num_versym != num_dynamic_symbols {
                 bail!(
@@ -741,8 +877,8 @@ impl platform::Platform for Elf {
     }
 
     fn finalise_find_required_sections<'data>(
-        groups: &mut [layout::GroupState<Elf>],
-        symbol_db: &SymbolDb<'data, Elf>,
+        groups: &mut [layout::GroupState<Elf<C>>],
+        symbol_db: &SymbolDb<'data, Elf<C>>,
     ) -> Result {
         tracing::debug!(target: "metrics", total = groups
             .iter()
@@ -765,10 +901,7 @@ impl platform::Platform for Elf {
         state: &mut layout::DynamicLayoutState<'data, Self>,
         common: &mut CommonGroupState<'data, Self>,
     ) {
-        common.allocate(
-            part_id::DYNAMIC,
-            size_of::<crate::elf::DynamicEntry>() as u64,
-        );
+        common.allocate(part_id::DYNAMIC, C::DYNAMIC_ENTRY_SIZE);
 
         common.allocate(part_id::DYNSTR, state.lib_name.len() as u64 + 1);
 
@@ -786,12 +919,12 @@ impl platform::Platform for Elf {
             .load(atomic::Ordering::Relaxed)
         {
             // Allocate space for a TLS module number and offset for use with TLSLD relocations.
-            common.allocate(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
+            common.allocate(part_id::GOT, C::GOT_ENTRY_SIZE * 2);
             prelude.format_specific.needs_tlsld_got_entry = true;
             // For shared objects, we'll need to use a DTPMOD relocation to fill in the TLS module
             // number.
             if !resources.symbol_db.output_kind.is_executable() {
-                common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
+                common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
             }
         }
     }
@@ -804,8 +937,8 @@ impl platform::Platform for Elf {
     }
 
     fn finalise_object_sizes<'data>(
-        object: &mut layout::ObjectLayoutState<'data, Elf>,
-        common: &mut layout::CommonGroupState<'data, Elf>,
+        object: &mut layout::ObjectLayoutState<'data, Elf<C>>,
+        common: &mut layout::CommonGroupState<'data, Elf<C>>,
     ) {
         // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
         // that we "won".
@@ -816,13 +949,13 @@ impl platform::Platform for Elf {
     }
 
     fn finalise_object_layout<'data>(
-        object: &layout::ObjectLayoutState<'data, Elf>,
+        object: &layout::ObjectLayoutState<'data, Elf<C>>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     ) {
         memory_offsets.increment(part_id::EH_FRAME, object.format_specific.eh_frame_size);
     }
 
-    fn file_thunk_config<'data>(file: &File<'data>) -> Option<ThunkConfig> {
+    fn file_thunk_config<'data>(file: &File<'data, C>) -> Option<ThunkConfig> {
         thunk_config_for_object(file)
     }
 
@@ -897,7 +1030,7 @@ impl platform::Platform for Elf {
             } else {
                 address = 0;
                 let symbol_index =
-                    Elf::take_dynsym_index(memory_offsets, resources.section_layouts)?;
+                    Self::take_dynsym_index(memory_offsets, resources.section_layouts)?;
 
                 dynamic_symbol_index = Some(
                     NonZeroU32::new(symbol_index)
@@ -926,7 +1059,7 @@ impl platform::Platform for Elf {
     }
 
     fn compute_object_addresses<'data>(
-        object: &layout::ObjectLayoutState<'data, Elf>,
+        object: &layout::ObjectLayoutState<'data, Elf<C>>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     ) {
         // Note, this is currently identical to finalise_object_layout above. The two functions are
@@ -957,24 +1090,29 @@ impl platform::Platform for Elf {
         }
         match state.relocations(section_index)? {
             RelocationList::Rela(relocations) => {
-                load_section_relocations::<A, Rela>(
+                load_section_relocations::<C, A, ElfRela<C>>(
                     state,
                     common,
                     queue,
                     resources,
                     section_index,
-                    relocations.rel_iter(),
+                    RelaSequence(relocations).rel_iter(),
                     scope,
                 )?;
             }
             RelocationList::Crel(relocations) => {
-                load_section_relocations::<A, Crel>(
+                load_section_relocations::<C, A, ElfCrel<C>>(
                     state,
                     common,
                     queue,
                     resources,
                     section_index,
-                    relocations.filter_map(|r| r.ok()),
+                    relocations.filter_map(|r| {
+                        r.ok().map(|raw| ElfCrel {
+                            raw,
+                            class: PhantomData,
+                        })
+                    }),
                     scope,
                 )?;
             }
@@ -1013,11 +1151,11 @@ impl platform::Platform for Elf {
     }
 
     fn validate_section<'data>(
-        section_info: &SectionOutputInfo<Elf>,
+        section_info: &SectionOutputInfo<Elf<C>>,
         section_flags: SectionFlags,
         section_layout: &OutputRecordLayout,
         merge_target: OutputSectionId,
-        output_sections: &OutputSections<'data, Elf>,
+        output_sections: &OutputSections<'data, Elf<C>>,
         section_id: OutputSectionId,
     ) -> Result {
         // TODO: Remove the NOTE exception. Non-alloc sections should be placed outside of program
@@ -1049,14 +1187,14 @@ impl platform::Platform for Elf {
     }
 
     fn verify_resolution_allocation<A: Arch<Platform = Self>>(
-        output_sections: &OutputSections<Elf>,
+        output_sections: &OutputSections<Elf<C>>,
         output_order: &OutputOrder,
         output_kind: OutputKind,
         mem_sizes: &OutputSectionPartMap<u64>,
-        resolution: &layout::Resolution<Elf>,
+        resolution: &layout::Resolution<Elf<C>>,
         args: &ElfArgs,
     ) -> Result {
-        crate::elf_writer::verify_resolution_allocation::<A>(
+        crate::elf_writer::verify_resolution_allocation::<C, A>(
             output_sections,
             output_order,
             output_kind,
@@ -1149,7 +1287,7 @@ impl platform::Platform for Elf {
     }
 
     fn create_linker_defined_symbols(
-        symbols: &mut crate::parsing::InternalSymbolsBuilder<Elf>,
+        symbols: &mut crate::parsing::InternalSymbolsBuilder<Elf<C>>,
         output_kind: OutputKind,
         args: &ElfArgs,
     ) {
@@ -1257,8 +1395,8 @@ impl platform::Platform for Elf {
         // We define _TLS_MODULE_BASE_ either at the start or end of the TLS segment, depending on
         // whether we're building a shared object or an executable. This symbol is used for TLSDESC.
         // See https://www.fsfla.org/~lxoliva/writeups/TLS/RFC-TLSDESC-x86.txt for more details.
-        let mut elf_symbol = SymtabEntry::default();
-        elf_symbol.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_TLS);
+        let mut elf_symbol = SymtabEntry::<C>::default();
+        elf_symbol.set_binding_and_type(object::elf::STB_GLOBAL, object::elf::STT_TLS);
         symbols.add_symbol(InternalSymDefInfo {
             placement: if output_kind == OutputKind::SharedObject {
                 SymbolPlacement::SectionStart(output_section_id::TDATA)
@@ -1271,14 +1409,15 @@ impl platform::Platform for Elf {
     }
 
     fn built_in_section_infos<'data>()
-    -> Vec<crate::output_section_id::SectionOutputInfo<'data, Elf>> {
-        SECTION_DEFINITIONS
+    -> Vec<crate::output_section_id::SectionOutputInfo<'data, Elf<C>>> {
+        Self::SECTION_DEFINITIONS
             .iter()
             .map(|d| SectionOutputInfo {
                 section_attributes: SectionAttributes {
                     flags: d.section_flags,
                     ty: d.ty,
                     entsize: d.element_size,
+                    class: PhantomData,
                 },
                 kind: d.kind,
                 min_alignment: d.min_alignment,
@@ -1300,7 +1439,7 @@ impl platform::Platform for Elf {
         'data: 'files,
         'data: 'states,
     {
-        LayoutExt::new::<A>(groups, args)
+        LayoutExt::new::<C, A>(groups, args)
     }
 
     fn create_layout_ext<'data>(
@@ -1310,11 +1449,11 @@ impl platform::Platform for Elf {
         Ok(finalise_sizes_ext)
     }
 
-    fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Elf>>(
-        object: &mut crate::layout::ObjectLayoutState<'data, Elf>,
-        common: &mut crate::layout::CommonGroupState<'data, Elf>,
+    fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Self>>(
+        object: &mut crate::layout::ObjectLayoutState<'data, Elf<C>>,
+        common: &mut crate::layout::CommonGroupState<'data, Elf<C>>,
         eh_frame_section_index: object::SectionIndex,
-        resources: &'scope crate::layout::GraphResources<'data, '_, Elf>,
+        resources: &'scope crate::layout::GraphResources<'data, '_, Elf<C>>,
         queue: &mut crate::layout::LocalWorkQueue,
         scope: &rayon::Scope<'scope>,
     ) -> Result {
@@ -1324,7 +1463,7 @@ impl platform::Platform for Elf {
         let frame_index_offset = object.format_specific.exception_frames.len();
         let exception_frames = match object.relocations(eh_frame_section_index)? {
             RelocationList::Rela(relocations) => {
-                ExceptionFrames::Rela(process_eh_frame_relocations::<A, Rela>(
+                ExceptionFrames::Rela(process_eh_frame_relocations::<C, A, ElfRela<C>>(
                     object,
                     common,
                     resources,
@@ -1333,12 +1472,12 @@ impl platform::Platform for Elf {
                     eh_frame_section_index,
                     frame_index_offset,
                     data,
-                    &relocations,
+                    &RelaSequence(relocations),
                     scope,
                 )?)
             }
             RelocationList::Crel(crel_iterator) => {
-                ExceptionFrames::Crel(process_eh_frame_relocations::<A, Crel>(
+                ExceptionFrames::Crel(process_eh_frame_relocations::<C, A, ElfCrel<C>>(
                     object,
                     common,
                     resources,
@@ -1347,7 +1486,14 @@ impl platform::Platform for Elf {
                     eh_frame_section_index,
                     frame_index_offset,
                     data,
-                    &crel_iterator.collect::<Result<Vec<Crel>, _>>()?,
+                    &crel_iterator
+                        .map(|raw| {
+                            raw.map(|raw| ElfCrel {
+                                raw,
+                                class: PhantomData,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
                     scope,
                 )?)
             }
@@ -1361,32 +1507,36 @@ impl platform::Platform for Elf {
     }
 
     fn non_empty_section_loaded<'data, 'scope, A: Arch<Platform = Self>>(
-        object: &mut layout::ObjectLayoutState<'data, Elf>,
-        common: &mut layout::CommonGroupState<'data, Elf>,
+        object: &mut layout::ObjectLayoutState<'data, Elf<C>>,
+        common: &mut layout::CommonGroupState<'data, Elf<C>>,
         queue: &mut layout::LocalWorkQueue,
         unloaded: crate::resolution::UnloadedSection,
-        resources: &'scope layout::GraphResources<'data, 'scope, Elf>,
+        resources: &'scope layout::GraphResources<'data, 'scope, Elf<C>>,
         scope: &Scope<'scope>,
     ) -> Result {
         let sizes = match &object.format_specific.exception_frames {
-            ExceptionFrames::Rela(exception_frames) => process_section_exception_frames::<A, Rela>(
-                object,
-                unloaded.last_frame_index,
-                common,
-                resources,
-                queue,
-                scope,
-                exception_frames,
-            )?,
-            ExceptionFrames::Crel(exception_frames) => process_section_exception_frames::<A, Crel>(
-                object,
-                unloaded.last_frame_index,
-                common,
-                resources,
-                queue,
-                scope,
-                exception_frames,
-            )?,
+            ExceptionFrames::Rela(exception_frames) => {
+                process_section_exception_frames::<C, A, ElfRela<C>>(
+                    object,
+                    unloaded.last_frame_index,
+                    common,
+                    resources,
+                    queue,
+                    scope,
+                    exception_frames,
+                )?
+            }
+            ExceptionFrames::Crel(exception_frames) => {
+                process_section_exception_frames::<C, A, ElfCrel<C>>(
+                    object,
+                    unloaded.last_frame_index,
+                    common,
+                    resources,
+                    queue,
+                    scope,
+                    exception_frames,
+                )?
+            }
         };
 
         object.format_specific.eh_frame_size += sizes.eh_frame_size;
@@ -1468,7 +1618,7 @@ impl platform::Platform for Elf {
         symbol_db: &SymbolDb<'data, Self>,
     ) {
         if symbol_db.output_kind.needs_dynamic() {
-            let dynamic_entry_size = size_of::<crate::elf::DynamicEntry>();
+            let dynamic_entry_size = C::DYNAMIC_ENTRY_SIZE as usize;
             mem_sizes.increment(
                 part_id::DYNAMIC,
                 (elf_writer::NUM_EPILOGUE_DYNAMIC_ENTRIES * dynamic_entry_size) as u64,
@@ -1495,17 +1645,17 @@ impl platform::Platform for Elf {
             );
             mem_sizes.increment(
                 part_id::DYNSYM,
-                (dynamic_symbol_definitions.len() * size_of::<SymtabEntry>()) as u64,
+                dynamic_symbol_definitions.len() as u64 * C::SYMTAB_ENTRY_SIZE,
             );
         }
 
-        if let Some(build_id_sec_size) = state.gnu_build_id_note_section_size() {
+        if let Some(build_id_sec_size) = state.gnu_build_id_note_section_size::<C>() {
             mem_sizes.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
         mem_sizes.increment(
             part_id::NOTE_GNU_PROPERTY,
-            gnu_property_notes_section_size(&properties.gnu_property_notes),
+            gnu_property_notes_section_size::<C>(&properties.gnu_property_notes),
         );
 
         mem_sizes.increment(
@@ -1514,7 +1664,7 @@ impl platform::Platform for Elf {
         );
 
         if let Some(gnu_hash_layout) = state.gnu_hash_layout {
-            gnu_hash_layout.allocate(mem_sizes);
+            gnu_hash_layout.allocate::<C>(mem_sizes);
         }
 
         let version_count = symbol_db.version_script.version_count();
@@ -1579,14 +1729,14 @@ impl platform::Platform for Elf {
     ) -> Result {
         memory_offsets.increment(
             part_id::DYNSYM,
-            dynamic_symbol_defs.len() as u64 * elf::SYMTAB_ENTRY_SIZE,
+            dynamic_symbol_defs.len() as u64 * C::SYMTAB_ENTRY_SIZE,
         );
 
         if epilogue_state.needs_eh_frame_terminator {
             memory_offsets.increment(part_id::EH_FRAME, size_of::<u32>() as u64);
         }
 
-        if let Some(build_id_sec_size) = epilogue_state.gnu_build_id_note_section_size() {
+        if let Some(build_id_sec_size) = epilogue_state.gnu_build_id_note_section_size::<C>() {
             memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
@@ -1596,7 +1746,7 @@ impl platform::Platform for Elf {
 
         memory_offsets.increment(
             part_id::NOTE_GNU_PROPERTY,
-            crate::elf::gnu_property_notes_section_size(&common_state.gnu_property_notes),
+            crate::elf::gnu_property_notes_section_size::<C>(&common_state.gnu_property_notes),
         );
 
         memory_offsets.increment(
@@ -1646,10 +1796,10 @@ impl platform::Platform for Elf {
         }
         if args.is_relr_enabled() {
             let got_relr_size = *current_sizes.get(part_id::GOT_RELR);
-            let n = got_relr_size / RELR_ENTRY_SIZE;
-            let relr_entries = got_relr_bitmap_relr_count(n);
+            let n = got_relr_size / C::GOT_ENTRY_SIZE;
+            let relr_entries = got_relr_bitmap_relr_count::<C>(n);
             if relr_entries > 0 {
-                extra_sizes.increment(part_id::RELR_DYN, relr_entries * RELR_ENTRY_SIZE);
+                extra_sizes.increment(part_id::RELR_DYN, relr_entries * C::RELR_ENTRY_SIZE);
             }
         }
         Ok(())
@@ -1751,12 +1901,11 @@ impl platform::Platform for Elf {
             if flags.needs_copy_relocation() {
                 // The dynamic symbol is a definition, so is handled by the epilogue. We only
                 // need to deal with the symtab entry here.
-                let entry_size = size_of::<Self::SymtabEntry>() as u64;
-                common.allocate(part_id::SYMTAB_GLOBAL, entry_size);
+                common.allocate(part_id::SYMTAB_GLOBAL, C::SYMTAB_ENTRY_SIZE);
                 common.allocate(part_id::STRTAB, name.len() as u64 + 1);
             } else {
                 common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
-                common.allocate(part_id::DYNSYM, crate::elf::SYMTAB_ENTRY_SIZE);
+                common.allocate(part_id::DYNSYM, C::SYMTAB_ENTRY_SIZE);
             }
         }
 
@@ -1765,7 +1914,7 @@ impl platform::Platform for Elf {
             let name = Self::RawSymbolName::parse(name.bytes()).name();
             let name_len = name.len() + 4; // "$got" or "$plt" suffix
 
-            let entry_size = size_of::<elf::SymtabEntry>() as u64;
+            let entry_size = C::SYMTAB_ENTRY_SIZE;
             common.allocate(part_id::SYMTAB_LOCAL, entry_size);
             common.allocate(part_id::STRTAB, name_len as u64 + 1);
 
@@ -1790,68 +1939,68 @@ impl platform::Platform for Elf {
         if flags.needs_got() && !flags.is_tls() {
             let is_got_relr = is_got_relr_eligible(flags, has_dynamic_symbol, args, output_kind);
             if is_got_relr {
-                mem_sizes.increment(part_id::GOT_RELR, elf::GOT_ENTRY_SIZE);
+                mem_sizes.increment(part_id::GOT_RELR, C::GOT_ENTRY_SIZE);
             } else {
-                mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
+                mem_sizes.increment(part_id::GOT, C::GOT_ENTRY_SIZE);
             }
             if flags.needs_plt() {
                 mem_sizes.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
             }
             if flags.is_ifunc() {
-                mem_sizes.increment(part_id::RELA_PLT, elf::RELA_ENTRY_SIZE);
+                mem_sizes.increment(part_id::RELA_PLT, C::RELA_ENTRY_SIZE);
             } else if has_dynamic_symbol {
-                mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+                mem_sizes.increment(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
             } else if flags.is_address() && output_kind.is_relocatable() {
                 if args.is_relr_enabled() && !is_got_relr {
                     // Flat RELR for section boundary symbols (not bitmap-packed)
-                    mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                    mem_sizes.increment(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
                 } else if !args.is_relr_enabled() {
-                    mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                    mem_sizes.increment(part_id::RELA_DYN_RELATIVE, C::RELA_ENTRY_SIZE);
                 }
                 // is_got_relr=true: RELR entries counted by post_compute_sizes
             }
         }
 
         if flags.needs_ifunc_got_for_address() {
-            mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
+            mem_sizes.increment(part_id::GOT, C::GOT_ENTRY_SIZE);
             if output_kind.is_relocatable() {
                 if args.is_relr_enabled() {
-                    mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                    mem_sizes.increment(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
                 } else {
-                    mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                    mem_sizes.increment(part_id::RELA_DYN_RELATIVE, C::RELA_ENTRY_SIZE);
                 }
             }
         }
 
         if flags.needs_got_tls_offset() {
-            mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
+            mem_sizes.increment(part_id::GOT, C::GOT_ENTRY_SIZE);
             if flags.is_interposable() || output_kind.is_shared_object() {
-                mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+                mem_sizes.increment(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
             }
         }
 
         if flags.needs_got_tls_module() {
-            mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
+            mem_sizes.increment(part_id::GOT, C::GOT_ENTRY_SIZE * 2);
             // For executables, the TLS module ID is known at link time. For shared objects, we need
             // a runtime relocation to fill it in.
             if !output_kind.is_executable() || flags.is_dynamic() {
-                mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+                mem_sizes.increment(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
             }
             if has_dynamic_symbol {
-                mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+                mem_sizes.increment(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
             }
         }
 
         if flags.needs_got_tls_descriptor() {
-            mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
-            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+            mem_sizes.increment(part_id::GOT, C::GOT_ENTRY_SIZE * 2);
+            mem_sizes.increment(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
         }
     }
 
     fn allocate_object_symtab_space<'data>(
-        state: &ObjectLayoutState<'data, Elf>,
-        common: &mut CommonGroupState<'data, Elf>,
-        symbol_db: &SymbolDb<'data, Elf>,
+        state: &ObjectLayoutState<'data, Elf<C>>,
+        common: &mut CommonGroupState<'data, Elf<C>>,
+        symbol_db: &SymbolDb<'data, Elf<C>>,
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) -> Result {
         let mut num_locals = 0;
@@ -1891,7 +2040,7 @@ impl platform::Platform for Elf {
                 strings_size += symtab_name_for_strtab(name).len() + 1;
             }
         }
-        let entry_size = size_of::<elf::SymtabEntry>() as u64;
+        let entry_size = C::SYMTAB_ENTRY_SIZE;
         common.allocate(part_id::SYMTAB_LOCAL, num_locals * entry_size);
         common.allocate(part_id::SYMTAB_GLOBAL, num_globals * entry_size);
         common.allocate(part_id::STRTAB, strings_size as u64);
@@ -1900,7 +2049,7 @@ impl platform::Platform for Elf {
 
     fn allocate_internal_symbol(
         symbol_id: SymbolId,
-        def_info: &InternalSymDefInfo<Elf>,
+        def_info: &InternalSymDefInfo<Elf<C>>,
         sizes: &mut OutputSectionPartMap<u64>,
         symbol_db: &SymbolDb<Self>,
     ) -> Result {
@@ -1910,7 +2059,7 @@ impl platform::Platform for Elf {
         } else {
             part_id::SYMTAB_GLOBAL
         };
-        sizes.increment(symtab_part, size_of::<elf::SymtabEntry>() as u64);
+        sizes.increment(symtab_part, C::SYMTAB_ENTRY_SIZE);
         let symbol_name = symbol_db.symbol_name(symbol_id)?;
         let symbol_name = symtab_name_for_strtab(symbol_name.bytes());
         sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
@@ -1932,7 +2081,7 @@ impl platform::Platform for Elf {
             .sum();
         sizes.increment(
             part_id::SYMTAB_LOCAL,
-            symbols.len() as u64 * size_of::<elf::SymtabEntry>() as u64,
+            symbols.len() as u64 * C::SYMTAB_ENTRY_SIZE,
         );
         sizes.increment(part_id::STRTAB, total_name_bytes as u64);
     }
@@ -1941,31 +2090,31 @@ impl platform::Platform for Elf {
         // The first entry in the symbol table must be null. Similarly, the first string in the
         // strings table must be empty.
         if !symbol_db.args.should_strip_all() {
-            common.allocate(part_id::SYMTAB_LOCAL, size_of::<elf::SymtabEntry>() as u64);
+            common.allocate(part_id::SYMTAB_LOCAL, C::SYMTAB_ENTRY_SIZE);
             common.allocate(part_id::STRTAB, 1);
         }
 
         if symbol_db.output_kind.needs_dynsym() {
             // Allocate space for the null symbol.
             common.allocate(part_id::DYNSTR, 1);
-            common.allocate(part_id::DYNSYM, size_of::<elf::SymtabEntry>() as u64);
+            common.allocate(part_id::DYNSYM, C::SYMTAB_ENTRY_SIZE);
         }
     }
 
     fn finalise_prelude_layout<'data>(
         prelude: &layout::PreludeLayoutState<Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resources: &layout::FinaliseLayoutResources<'_, 'data, Elf>,
+        resources: &layout::FinaliseLayoutResources<'_, 'data, Elf<C>>,
     ) -> Result<Self::PreludeLayoutExt> {
         // Take the null symbol's index.
         if resources.symbol_db.output_kind.needs_dynsym() {
-            Elf::take_dynsym_index(memory_offsets, resources.section_layouts)?;
+            Self::take_dynsym_index(memory_offsets, resources.section_layouts)?;
         }
 
         let tlsld_got_entry = prelude.format_specific.needs_tlsld_got_entry.then(|| {
             let address = NonZeroU64::new(*memory_offsets.get(part_id::GOT))
                 .expect("GOT address must never be zero");
-            memory_offsets.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
+            memory_offsets.increment(part_id::GOT, C::GOT_ENTRY_SIZE * 2);
             address
         });
 
@@ -1978,10 +2127,10 @@ impl platform::Platform for Elf {
         raw_value: u64,
         dynamic_symbol_index: Option<NonZeroU32>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        args: &<Elf as Platform>::Args,
+        args: &<Elf<C> as Platform>::Args,
         output_kind: OutputKind,
-    ) -> Resolution<Elf> {
-        let mut resolution: Resolution<Elf> = Resolution {
+    ) -> Resolution<Elf<C>> {
+        let mut resolution: Resolution<Elf<C>> = Resolution {
             raw_value,
             dynamic_symbol_index,
             format_specific: ResolutionExt {
@@ -2009,9 +2158,9 @@ impl platform::Platform for Elf {
                 flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
             let is_got_relr = is_got_relr_eligible(flags, has_dynamic_symbol, args, output_kind);
             resolution.format_specific.got_address = if is_got_relr && num_got_entries == 1 {
-                Some(allocate_got_relr(memory_offsets))
+                Some(allocate_got_relr::<C>(memory_offsets))
             } else {
-                Some(allocate_got(num_got_entries, memory_offsets))
+                Some(allocate_got::<C>(num_got_entries, memory_offsets))
             };
         } else if flags.is_tls() {
             // Handle the TLS GOT addresses where we can combine up to 3 different access methods.
@@ -2027,15 +2176,15 @@ impl platform::Platform for Elf {
             }
             debug_assert!(num_got_slots > 0);
             resolution.format_specific.got_address =
-                Some(allocate_got(num_got_slots, memory_offsets));
+                Some(allocate_got::<C>(num_got_slots, memory_offsets));
         } else if flags.needs_got() {
             let has_dynamic_symbol =
                 flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
             let is_got_relr = is_got_relr_eligible(flags, has_dynamic_symbol, args, output_kind);
             resolution.format_specific.got_address = if is_got_relr {
-                Some(allocate_got_relr(memory_offsets))
+                Some(allocate_got_relr::<C>(memory_offsets))
             } else {
-                Some(allocate_got(1, memory_offsets))
+                Some(allocate_got::<C>(1, memory_offsets))
             };
         }
 
@@ -2044,8 +2193,8 @@ impl platform::Platform for Elf {
 
     fn validate_resolution(
         name: &[u8],
-        resolution: &crate::layout::Resolution<Elf>,
-        got: &SectionHeader,
+        resolution: &crate::layout::Resolution<Elf<C>>,
+        got: &SectionHeader<C>,
         got_data: &[u8],
     ) -> Result {
         let flags = resolution.flags;
@@ -2057,8 +2206,9 @@ impl platform::Platform for Elf {
             return Ok(());
         }
         if let Some(got_address) = resolution.format_specific.got_address {
-            let start_offset = (got_address.get() - got.sh_addr(LittleEndian)) as usize;
-            let end_offset = start_offset + size_of::<u64>();
+            let start_offset =
+                (got_address.get() - Into::<u64>::into(got.sh_addr(LittleEndian))) as usize;
+            let end_offset = start_offset + C::GOT_ENTRY_SIZE as usize;
             if end_offset > got_data.len() {
                 bail!("GOT offset beyond end of GOT 0x{end_offset}");
             }
@@ -2066,7 +2216,7 @@ impl platform::Platform for Elf {
                 return Ok(());
             }
             let expected = resolution.raw_value;
-            let address = u64::read_from_bytes(&got_data[start_offset..end_offset]).unwrap();
+            let address = Word::<C>::from_le_bytes(&got_data[start_offset..end_offset]).into();
             if expected != address {
                 let name = String::from_utf8_lossy(name);
                 bail!(
@@ -2166,12 +2316,15 @@ impl platform::Platform for Elf {
         _resources: &layout::FinaliseSizesResources<'data, '_, Self>,
         _args: &Self::Args,
     ) {
+        sizes.increment(crate::part_id::FILE_HEADER, u64::from(C::FILE_HEADER_SIZE));
         sizes.increment(
-            crate::part_id::FILE_HEADER,
-            u64::from(elf::FILE_HEADER_SIZE),
+            part_id::PROGRAM_HEADERS,
+            program_headers_size::<C>(header_info),
         );
-        sizes.increment(part_id::PROGRAM_HEADERS, program_headers_size(header_info));
-        sizes.increment(part_id::SECTION_HEADERS, section_headers_size(header_info));
+        sizes.increment(
+            part_id::SECTION_HEADERS,
+            section_headers_size::<C>(header_info),
+        );
         prelude.format_specific.shstrtab_size = output_sections
             .ids_with_info()
             .filter(|(id, _info)| output_sections.output_index_of_section(*id).is_some())
@@ -2187,9 +2340,9 @@ impl platform::Platform for Elf {
     }
 
     fn copy_relocate_symbol<'scope, 'data>(
-        state: &mut layout::DynamicLayoutState<Elf>,
+        state: &mut layout::DynamicLayoutState<Elf<C>>,
         symbol_id: SymbolId,
-        resources: &layout::GraphResources<'data, 'scope, Elf>,
+        resources: &layout::GraphResources<'data, 'scope, Elf<C>>,
     ) -> Result {
         let symbol = state
             .object
@@ -2229,10 +2382,10 @@ impl platform::Platform for Elf {
         let index = u32::try_from(
             (memory_offsets.get(part_id::DYNSYM)
                 - section_layouts.get(output_section_id::DYNSYM).mem_offset)
-                / crate::elf::SYMTAB_ENTRY_SIZE,
+                / C::SYMTAB_ENTRY_SIZE,
         )
         .context("Too many dynamic symbols")?;
-        memory_offsets.increment(part_id::DYNSYM, crate::elf::SYMTAB_ENTRY_SIZE);
+        memory_offsets.increment(part_id::DYNSYM, C::SYMTAB_ENTRY_SIZE);
         Ok(index)
     }
 
@@ -2532,7 +2685,7 @@ impl platform::Platform for Elf {
 
         let section_attr = output_sections.output_info(section_id).section_attributes;
         let segment_type = section_id
-            .opt_built_in_details::<Elf>()
+            .opt_built_in_details::<Elf<C>>()
             .and_then(|d| d.target_segment_type)
             .unwrap_or(linker_utils::elf::pt::LOAD);
         if section_attr.is_null() {
@@ -2557,7 +2710,7 @@ impl platform::Platform for Elf {
         }
 
         if section_name.is_empty() {
-            return crate::layout_rules::unnamed_section_output::<Elf>(section);
+            return crate::layout_rules::unnamed_section_output::<Elf<C>>(section);
         }
 
         match section_name {
@@ -2592,19 +2745,17 @@ impl platform::Platform for Elf {
         group_sizes: &mut OutputSectionPartMap<u64>,
         total_sizes: &mut OutputSectionPartMap<u64>,
     ) {
-        let symtab_entry_size = size_of::<Self::SymtabEntry>() as u64;
-        let symtab_shndx_entry_size = size_of::<Self::SymtabShndxEntry>() as u64;
-        let locals = group_sizes.get(part_id::SYMTAB_LOCAL) / symtab_entry_size;
-        let globals = group_sizes.get(part_id::SYMTAB_GLOBAL) / symtab_entry_size;
+        let locals = group_sizes.get(part_id::SYMTAB_LOCAL) / C::SYMTAB_ENTRY_SIZE;
+        let globals = group_sizes.get(part_id::SYMTAB_GLOBAL) / C::SYMTAB_ENTRY_SIZE;
 
         let mut extra_sizes = OutputSectionPartMap::with_size(group_sizes.num_parts());
         extra_sizes.increment(
             part_id::SYMTAB_SHNDX_LOCAL,
-            locals * symtab_shndx_entry_size,
+            locals * SYMTAB_SHNDX_ENTRY_SIZE,
         );
         extra_sizes.increment(
             part_id::SYMTAB_SHNDX_GLOBAL,
-            globals * symtab_shndx_entry_size,
+            globals * SYMTAB_SHNDX_ENTRY_SIZE,
         );
 
         group_sizes.merge(&extra_sizes);
@@ -2633,7 +2784,7 @@ impl platform::Platform for Elf {
     }
 
     fn get_sizeof_headers(header_info: &layout::HeaderInfo) -> u64 {
-        u64::from(FILE_HEADER_SIZE) + program_headers_size(header_info)
+        u64::from(C::FILE_HEADER_SIZE) + program_headers_size::<C>(header_info)
     }
 
     fn handle_debug_index_section<'data>(
@@ -2690,9 +2841,9 @@ impl platform::Platform for Elf {
 /// support relr. glibc will error at startup if we use relr and don't reference the version. If
 /// we're not linking against glibc, then the symbol (and version) will be absent. This is not an
 /// error and the binary will work fine provided the dynamic loader supports relr.
-fn load_glibc_abi_dt_relr_version(
-    groups: &mut [layout::GroupState<'_, Elf>],
-    symbol_db: &SymbolDb<Elf>,
+fn load_glibc_abi_dt_relr_version<C: ElfClass>(
+    groups: &mut [layout::GroupState<'_, Elf<C>>],
+    symbol_db: &SymbolDb<Elf<C>>,
 ) -> Result {
     if let Some(symbol_id) =
         symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(b"GLIBC_ABI_DT_RELR"))
@@ -2711,8 +2862,66 @@ fn load_glibc_abi_dt_relr_version(
     Ok(())
 }
 
-impl<'data> platform::ObjectFile<'data> for File<'data> {
-    type Platform = Elf;
+impl<'data, C: ElfClass> File<'data, C> {
+    fn parse_elf_bytes(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
+        let header = C::FileHeader::parse(data)?;
+        let endian = header.endian()?;
+        let architecture = header.e_machine(endian).try_into()?;
+        let sections = header.sections(endian, data)?;
+        let eflags = header.e_flags(endian);
+
+        let mut symbols = SymbolTable::<C>::default();
+        let mut versym: &[Versym] = &[];
+        let mut verdef = None;
+        let mut verdefnum = 0;
+        let mut verneed = None;
+
+        // Find all the sections that we're interested in a single scan of the section table so
+        // as to avoid multiple scans.
+        for (section_index, section) in sections.enumerate() {
+            match section.sh_type(endian) {
+                sht::DYNSYM if is_dynamic => {
+                    symbols =
+                        SymbolTable::<C>::parse(endian, data, &sections, section_index, section)?;
+                }
+                sht::SYMTAB if !is_dynamic => {
+                    symbols =
+                        SymbolTable::<C>::parse(endian, data, &sections, section_index, section)?;
+                }
+                sht::GNU_VERSYM => {
+                    versym = section.data_as_array(endian, data)?;
+                }
+                sht::GNU_VERDEF => {
+                    verdef = section.gnu_verdef(endian, data)?;
+                    verdefnum = section.sh_info(endian);
+                }
+                sht::GNU_VERNEED => {
+                    verneed = section.gnu_verneed(endian, data)?;
+                }
+                _ => {}
+            }
+        }
+
+        let dynamic_tag_values =
+            is_dynamic.then(|| DynamicTagValues::read::<C>(&sections, data, &symbols));
+
+        Ok(Self {
+            arch: architecture,
+            data,
+            sections,
+            symbols,
+            versym,
+            verdef,
+            verdefnum,
+            verneed,
+            eflags,
+            dynamic_tag_values,
+        })
+    }
+}
+
+impl<'data, C: ElfClass> platform::ObjectFile<'data> for File<'data, C> {
+    type Platform = Elf<C>;
 
     fn parse(input: &InputBytes<'data>, args: &ElfArgs) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
@@ -2732,64 +2941,14 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn parse_bytes(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
-        let header = FileHeader::parse(data)?;
-        let endian = header.endian()?;
-        let architecture = header.e_machine(endian).try_into()?;
-        let sections = header.sections(endian, data)?;
-        let eflags = header.e_flags(endian);
-
-        let mut symbols = SymbolTable::default();
-        let mut versym: &[Versym] = &[];
-        let mut verdef = None;
-        let mut verdefnum = 0;
-        let mut verneed = None;
-
-        // Find all the sections that we're interested in a single scan of the section table so
-        // as to avoid multiple scans.
-        for (section_index, section) in sections.enumerate() {
-            match section.sh_type(endian) {
-                sht::DYNSYM if is_dynamic => {
-                    symbols = SymbolTable::parse(endian, data, &sections, section_index, section)?;
-                }
-                sht::SYMTAB if !is_dynamic => {
-                    symbols = SymbolTable::parse(endian, data, &sections, section_index, section)?;
-                }
-                sht::GNU_VERSYM => {
-                    versym = section.data_as_array(endian, data)?;
-                }
-                sht::GNU_VERDEF => {
-                    verdef = section.gnu_verdef(endian, data)?;
-                    verdefnum = section.sh_info(endian);
-                }
-                sht::GNU_VERNEED => {
-                    verneed = section.gnu_verneed(endian, data)?;
-                }
-                _ => {}
-            }
-        }
-
-        let dynamic_tag_values =
-            is_dynamic.then(|| DynamicTagValues::read(&sections, data, &symbols));
-
-        Ok(Self {
-            arch: architecture,
-            data,
-            sections,
-            symbols,
-            versym,
-            verdef,
-            verdefnum,
-            verneed,
-            eflags,
-            dynamic_tag_values,
-        })
+        Self::parse_elf_bytes(data, is_dynamic)
     }
 
-    fn section(&self, index: object::SectionIndex) -> Result<&SectionHeader> {
+    fn section(&self, index: object::SectionIndex) -> Result<&SectionHeader<C>> {
         Ok(self.sections.section(index)?)
     }
 
-    fn section_by_name(&self, name: &str) -> Option<(object::SectionIndex, &SectionHeader)> {
+    fn section_by_name(&self, name: &str) -> Option<(object::SectionIndex, &SectionHeader<C>)> {
         self.sections.section_by_name(LittleEndian, name.as_bytes())
     }
 
@@ -2805,13 +2964,13 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         )
     }
 
-    fn raw_section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+    fn raw_section_data(&self, section: &SectionHeader<C>) -> Result<&'data [u8]> {
         Ok(section.data(LittleEndian, self.data)?)
     }
 
     fn section_data(
         &self,
-        section: &SectionHeader,
+        section: &SectionHeader<C>,
         member: &bumpalo_herd::Member<'data>,
         loaded_metrics: &LoadedMetrics,
     ) -> Result<&'data [u8]> {
@@ -2826,7 +2985,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 .fetch_add(data.len(), Ordering::Relaxed);
             let len = self.section_size(section)?;
             let decompressed = member.alloc_slice_fill_default(len as usize);
-            decompress_into(compression, &data[COMPRESSION_HEADER_SIZE..], decompressed)?;
+            decompress_into(
+                compression,
+                &data[size_of::<CompressionHeaderEntry<C>>()..],
+                decompressed,
+            )?;
             loaded_metrics
                 .decompressed_bytes
                 .fetch_add(decompressed.len(), Ordering::Relaxed);
@@ -2836,18 +2999,22 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
     }
 
-    fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
+    fn copy_section_data(&self, section: &SectionHeader<C>, out: &mut [u8]) -> Result {
         let data = section.data(LittleEndian, self.data)?;
 
         if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
-            decompress_into(compression, &data[COMPRESSION_HEADER_SIZE..], out)?;
+            decompress_into(
+                compression,
+                &data[size_of::<CompressionHeaderEntry<C>>()..],
+                out,
+            )?;
         } else {
             copy_section_data(data, out);
         }
         Ok(())
     }
 
-    fn section_data_cow(&self, section: &SectionHeader) -> Result<Cow<'data, [u8]>> {
+    fn section_data_cow(&self, section: &SectionHeader<C>) -> Result<Cow<'data, [u8]>> {
         let data = section.data(LittleEndian, self.data)?;
 
         if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
@@ -2855,7 +3022,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             let mut decompressed = vec![0; len as usize];
             decompress_into(
                 compression,
-                &data[COMPRESSION_HEADER_SIZE..],
+                &data[size_of::<CompressionHeaderEntry<C>>()..],
                 &mut decompressed,
             )?;
             Ok(Cow::Owned(decompressed))
@@ -2864,17 +3031,17 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
     }
 
-    fn section_size(&self, section: &SectionHeader) -> Result<u64> {
+    fn section_size(&self, section: &SectionHeader<C>) -> Result<u64> {
         Ok(section.compression(LittleEndian, self.data)?.map_or_else(
-            || section.sh_size.get(LittleEndian),
-            |compression| compression.0.ch_size(LittleEndian),
+            || section.sh_size(LittleEndian).into(),
+            |compression| compression.0.ch_size(LittleEndian).into(),
         ))
     }
 
-    fn section_alignment(&self, section: &SectionHeader) -> Result<u64> {
+    fn section_alignment(&self, section: &SectionHeader<C>) -> Result<u64> {
         Ok(section.compression(LittleEndian, self.data)?.map_or_else(
-            || section.sh_addralign(LittleEndian),
-            |compression| compression.0.ch_addralign(LittleEndian),
+            || section.sh_addralign(LittleEndian).into(),
+            |compression| compression.0.ch_addralign(LittleEndian).into(),
         ))
     }
 
@@ -2882,7 +3049,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         &self,
         index: object::SectionIndex,
         relocations: &RelocationSections,
-    ) -> Result<RelocationList<'data>> {
+    ) -> Result<RelocationList<'data, C>> {
         let Some(section_index) = relocations.get(index) else {
             return Ok(RelocationList::Rela(&[]));
         };
@@ -2898,24 +3065,24 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         )
     }
 
-    fn symbol(&self, index: object::SymbolIndex) -> Result<&SymtabEntry> {
+    fn symbol(&self, index: object::SymbolIndex) -> Result<&SymtabEntry<C>> {
         Ok(self.symbols.symbol(index)?)
     }
 
-    fn symbol_name(&self, symbol: &SymtabEntry) -> Result<&'data [u8]> {
+    fn symbol_name(&self, symbol: &SymtabEntry<C>) -> Result<&'data [u8]> {
         Ok(self.symbols.symbol_name(LittleEndian, symbol)?)
     }
 
     fn symbol_section(
         &self,
-        symbol: &SymtabEntry,
+        symbol: &SymtabEntry<C>,
         index: object::SymbolIndex,
     ) -> Result<Option<object::SectionIndex>> {
         Ok(self.symbols.symbol_section(LittleEndian, symbol, index)?)
     }
 
-    fn dynamic_tags(&self) -> Result<&'data [DynamicEntry]> {
-        dynamic_tags(&self.sections, self.data)
+    fn dynamic_tags(&self) -> Result<&'data [DynamicEntry<C>]> {
+        dynamic_tags::<C>(&self.sections, self.data)
     }
 
     fn parse_relocations(&self) -> Result<RelocationSections> {
@@ -2985,11 +3152,13 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         None
     }
 
-    fn section_iter<'a>(&'a self) -> core::slice::Iter<'a, SectionHeader> {
+    fn section_iter<'a>(&'a self) -> core::slice::Iter<'a, SectionHeader<C>> {
         self.sections.iter()
     }
 
-    fn enumerate_sections(&self) -> impl Iterator<Item = (object::SectionIndex, &SectionHeader)> {
+    fn enumerate_sections(
+        &self,
+    ) -> impl Iterator<Item = (object::SectionIndex, &SectionHeader<C>)> {
         self.sections.enumerate()
     }
 
@@ -3028,7 +3197,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn get_symbol_name_and_version(
         &self,
-        symbol: &SymtabEntry,
+        symbol: &SymtabEntry<C>,
         local_index: usize,
         version_names: &VersionNames<'data>,
     ) -> Result<RawSymbolName<'data>> {
@@ -3058,7 +3227,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         })
     }
 
-    fn symbols_iter(&self) -> impl Iterator<Item = &SymtabEntry> {
+    fn symbols_iter(&self) -> impl Iterator<Item = &SymtabEntry<C>> {
         self.symbols.iter()
     }
 
@@ -3072,7 +3241,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn process_gnu_note_section(
         &self,
-        state: &mut ObjectLayoutStateExt<'data>,
+        state: &mut ObjectLayoutStateExt<'data, C>,
         section_index: object::SectionIndex,
     ) -> Result {
         let section = self.section(section_index)?;
@@ -3113,7 +3282,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn dynamic_symbol_used(
         &self,
         symbol_index: object::SymbolIndex,
-        file: &mut layout::DynamicLayoutState<'data, Elf>,
+        file: &mut layout::DynamicLayoutState<'data, Elf<C>>,
     ) -> Result {
         if let Some(version_index) = self.versym.get(symbol_index.0) {
             file.format_specific
@@ -3126,7 +3295,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn finalise_sizes_dynamic(
         &self,
         lib_name: &[u8],
-        state: &mut DynamicLayoutStateExt<'data>,
+        state: &mut DynamicLayoutStateExt<'data, C>,
         mem_sizes: &mut OutputSectionPartMap<u64>,
     ) -> Result {
         let e = LittleEndian;
@@ -3204,7 +3373,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         &self,
         indexes: &mut NonAddressableIndexes,
         counts: &mut NonAddressableCounts,
-        state: &mut DynamicLayoutStateExt,
+        state: &mut DynamicLayoutStateExt<'_, C>,
     ) -> Result {
         state.non_addressable_indexes = *indexes;
         if let Some(info) = state.verneed_info.as_ref()
@@ -3219,7 +3388,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn should_enforce_undefined(&self, resources: &layout::GraphResources<'data, '_, Elf>) -> bool {
+    fn should_enforce_undefined(
+        &self,
+        resources: &layout::GraphResources<'data, '_, Elf<C>>,
+    ) -> bool {
         let is_executable = resources.symbol_db.output_kind.is_executable();
 
         !resources.symbol_db. args.allow_shlib_undefined
@@ -3240,7 +3412,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 }
 
-impl DynamicLayoutStateExt<'_> {
+impl<C: ElfClass> DynamicLayoutStateExt<'_, C> {
     /// Marks the specified version as needed, provided it's not a local or global version.
     fn mark_version_as_needed(&mut self, version_index: Versym) -> Result {
         let version_index = version_index.0.get(LittleEndian).index();
@@ -3259,14 +3431,15 @@ impl DynamicLayoutStateExt<'_> {
 fn process_eh_frame_relocations<
     'data,
     'scope,
-    A: Arch<Platform = Elf>,
-    R: Relocation<Platform = Elf>,
+    C: ElfClass,
+    A: Arch<Platform = Elf<C>>,
+    R: Relocation<Platform = Elf<C>>,
 >(
-    object: &mut layout::ObjectLayoutState<'data, Elf>,
-    common: &mut layout::CommonGroupState<'data, Elf>,
-    resources: &'scope layout::GraphResources<'data, '_, Elf>,
+    object: &mut layout::ObjectLayoutState<'data, Elf<C>>,
+    common: &mut layout::CommonGroupState<'data, Elf<C>>,
+    resources: &'scope layout::GraphResources<'data, '_, Elf<C>>,
     queue: &mut layout::LocalWorkQueue,
-    eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
+    eh_frame_section: &'data SectionHeader<C>,
     eh_frame_section_index: object::SectionIndex,
     frame_index_offset: usize,
     data: &'data [u8],
@@ -3315,12 +3488,12 @@ fn process_eh_frame_relocations<
 
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                process_relocation::<A, <R::Sequence<'data> as RelocationSequence>::Rel>(
+                process_relocation::<C, A, <R::Sequence<'data> as RelocationSequence>::Rel>(
                     object,
                     common,
                     rel,
                     eh_frame_section,
-                    output_section_id::EH_FRAME.base_part_id::<Elf>(),
+                    output_section_id::EH_FRAME.base_part_id::<Elf<C>>(),
                     resources,
                     queue,
                     false,
@@ -3400,13 +3573,14 @@ fn process_eh_frame_relocations<
 fn process_section_exception_frames<
     'data,
     'scope,
-    A: Arch<Platform = Elf>,
-    R: Relocation<Platform = Elf>,
+    C: ElfClass,
+    A: Arch<Platform = Elf<C>>,
+    R: Relocation<Platform = Elf<C>>,
 >(
-    object: &layout::ObjectLayoutState<'data, Elf>,
+    object: &layout::ObjectLayoutState<'data, Elf<C>>,
     frame_index: Option<FrameIndex>,
-    common: &mut layout::CommonGroupState<'data, Elf>,
-    resources: &'scope layout::GraphResources<'data, '_, Elf>,
+    common: &mut layout::CommonGroupState<'data, Elf<C>>,
+    resources: &'scope layout::GraphResources<'data, '_, Elf<C>>,
     queue: &mut layout::LocalWorkQueue,
     scope: &Scope<'scope>,
     exception_frames: &[ExceptionFrame<'data, R>],
@@ -3426,12 +3600,12 @@ fn process_section_exception_frames<
         // section.
         let eh_frame_section = object.object.section(frame_data.eh_frame_section_index)?;
         for rel in frame_data.relocations.rel_iter() {
-            process_relocation::<A, <R::Sequence<'data> as RelocationSequence>::Rel>(
+            process_relocation::<C, A, <R::Sequence<'data> as RelocationSequence>::Rel>(
                 object,
                 common,
                 &rel,
                 eh_frame_section,
-                output_section_id::EH_FRAME.base_part_id::<Elf>(),
+                output_section_id::EH_FRAME.base_part_id::<Elf<C>>(),
                 resources,
                 queue,
                 true,
@@ -3449,11 +3623,11 @@ fn process_section_exception_frames<
     })
 }
 
-fn allocate_sysv_hash(
+fn allocate_sysv_hash<C: ElfClass>(
     state: &mut EpilogueLayoutExt,
     current_sizes: &OutputSectionPartMap<u64>,
     extra_sizes: &mut OutputSectionPartMap<u64>,
-    dynamic_symbol_defs: &[DynamicSymbolDefinition<Elf>],
+    dynamic_symbol_defs: &[DynamicSymbolDefinition<Elf<C>>],
 ) -> Result {
     let num_defs = dynamic_symbol_defs.len();
     if num_defs == 0 {
@@ -3463,7 +3637,7 @@ fn allocate_sysv_hash(
     let bucket_count = (num_defs / 2).max(1).next_power_of_two() as u32;
     // Whereas `num_defs` above is the number of definitions, this is the number of dynamic
     // symbols, which also includes undefined dynamic symbols.
-    let num_dynsym = *current_sizes.get(part_id::DYNSYM) / SYMTAB_ENTRY_SIZE;
+    let num_dynsym = *current_sizes.get(part_id::DYNSYM) / C::SYMTAB_ENTRY_SIZE;
     let chain_count = num_dynsym
         .try_into()
         .context("Too many dynamic symbols for .hash")?;
@@ -3495,7 +3669,7 @@ fn compute_version_mapping(
     out
 }
 
-impl platform::SectionHeader for SectionHeader {
+impl platform::SectionHeader for object::elf::SectionHeader64<LittleEndian> {
     fn is_alloc(&self) -> bool {
         self.sh_flags(LittleEndian).is_alloc()
     }
@@ -3569,19 +3743,19 @@ impl platform::SectionFlags for SectionFlags {
     }
 }
 
-impl platform::Symbol for SymtabEntry {
+impl<T: ElfSymbol> platform::Symbol for T {
     fn as_common(&self) -> Option<CommonSymbol> {
         let e = LittleEndian;
         if !object::read::elf::Sym::is_common(self, e) {
             return None;
         }
 
-        // Common symbols misuse the value field (which we access via `address()`) to store the
-        // alignment.
-        let Ok(alignment) = Alignment::new(object::read::elf::Sym::st_value(self, e)) else {
+        // Common symbols misuse the value field (which we access via `address()`) to store
+        // the alignment.
+        let Ok(alignment) = Alignment::new(object::read::elf::Sym::st_value(self, e).into()) else {
             return None;
         };
-        let size = alignment.align_up(object::read::elf::Sym::st_size(self, e));
+        let size = alignment.align_up(object::read::elf::Sym::st_size(self, e).into());
 
         let output_section_id = if self.st_type() == object::elf::STT_TLS {
             output_section_id::TBSS
@@ -3589,7 +3763,7 @@ impl platform::Symbol for SymtabEntry {
             output_section_id::BSS
         };
 
-        let part_id = output_section_id.part_id_with_alignment::<Elf>(alignment);
+        let part_id = output_section_id.part_id_with_alignment::<Elf<T::Class>>(alignment);
 
         Some(CommonSymbol { size, part_id })
     }
@@ -3615,11 +3789,11 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn value(&self) -> u64 {
-        object::read::elf::Sym::st_value(self, LittleEndian)
+        object::read::elf::Sym::st_value(self, LittleEndian).into()
     }
 
     fn size(&self) -> u64 {
-        object::read::elf::Sym::st_size(self, LittleEndian)
+        object::read::elf::Sym::st_size(self, LittleEndian).into()
     }
 
     fn has_name(&self) -> bool {
@@ -3660,7 +3834,7 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn with_hidden(mut self, hidden: bool) -> Self {
-        self.st_other = self.st_other.with_visibility(if hidden {
+        self.set_visibility(if hidden {
             object::elf::STV_HIDDEN
         } else {
             object::elf::STV_DEFAULT
@@ -3677,10 +3851,10 @@ pub(crate) fn convert_elf_visibility(st_visibility: object::elf::SymbolVisibilit
     }
 }
 
-fn dynamic_tags<'data>(
-    sections: &object::read::elf::SectionTable<'data, object::elf::FileHeader64<LittleEndian>>,
+fn dynamic_tags<'data, C: ElfClass>(
+    sections: &SectionTable<'data, C>,
     data: &'data [u8],
-) -> Result<&'data [object::elf::Dyn64<LittleEndian>]> {
+) -> Result<&'data [DynamicEntry<C>]> {
     let e = LittleEndian;
     if let Some(dynamic) = sections.dynamic(e, data).transpose() {
         return dynamic
@@ -3690,12 +3864,12 @@ fn dynamic_tags<'data>(
     Ok(&[])
 }
 
-fn decompress_into(
-    compression: &object::elf::CompressionHeader64<LittleEndian>,
+fn decompress_into<C: CompressionHeader<Endian = LittleEndian>>(
+    compression: &C,
     input: &[u8],
     out: &mut [u8],
 ) -> Result {
-    match compression.ch_type.get(LittleEndian) {
+    match compression.ch_type(LittleEndian) {
         object::elf::ELFCOMPRESS_ZLIB => {
             flate2::Decompress::new(true).decompress(
                 input,
@@ -3743,8 +3917,6 @@ pub(crate) struct EhFrameHdr {
 pub(crate) const FRAME_POINTER_FIELD_OFFSET: usize = offset_of!(EhFrameHdr, frame_pointer);
 
 /// The offset of the offset within the structure passed to __tls_get_addr.
-pub(crate) const TLS_OFFSET_OFFSET: u64 = 8;
-
 #[derive(FromBytes, IntoBytes, KnownLayout, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct EhFrameHdrEntry {
@@ -3766,42 +3938,19 @@ pub(crate) fn is_eh_frame_terminator(data: &[u8]) -> bool {
 /// The offset of the pc_begin field in an FDE.
 pub(crate) const FDE_PC_BEGIN_OFFSET: usize = 8;
 
-/// Offset in the file where we store the program headers. We always store these straight after the
-/// file header.
-pub(crate) const PHEADER_OFFSET: u64 = FILE_HEADER_SIZE as u64;
-
-/// These sizes are from the spec (for 64 bit ELF).
-pub(crate) const FILE_HEADER_SIZE: u16 = 0x40;
-pub(crate) const PROGRAM_HEADER_SIZE: u16 = 0x38;
-pub(crate) const SECTION_HEADER_SIZE: u16 = 0x40;
-pub(crate) const COMPRESSION_HEADER_SIZE: usize =
-    size_of::<object::elf::CompressionHeader64<LittleEndian>>();
-
-pub(crate) const GOT_ENTRY_SIZE: u64 = 0x8;
 // TODO: Right now, both x86_64 and AArch64 have 16 byte long entries, but
 // the size should be generic over A: Arch.
 pub(crate) const PLT_ENTRY_SIZE: u64 = 0x10;
-pub(crate) const RELA_ENTRY_SIZE: u64 = size_of::<Rela>() as u64;
-pub(crate) const RELR_ENTRY_SIZE: u64 = size_of::<Relr>() as u64;
 
-pub(crate) const SYMTAB_ENTRY_SIZE: u64 = size_of::<SymtabEntry>() as u64;
 pub(crate) const SYMTAB_SHNDX_ENTRY_SIZE: u64 = size_of::<SymtabShndxEntry>() as u64;
 pub(crate) const GNU_VERSION_ENTRY_SIZE: u64 = size_of::<Versym>() as u64;
 
-const _ASSERTS: () = {
-    assert!(FILE_HEADER_SIZE as usize == size_of::<FileHeader>());
-    assert!(PROGRAM_HEADER_SIZE as usize == size_of::<ProgramHeader>());
-    assert!(SECTION_HEADER_SIZE as usize == size_of::<SectionHeader>());
-};
-
 pub(crate) const GNU_NOTE_NAME: &[u8] = b"GNU\0";
-pub(crate) const GNU_NOTE_PROPERTY_ENTRY_SIZE: usize = 16;
-
 /// For additional information on Elf_Prop, see
 /// Linux Extensions to gABI at https://gitlab.com/x86-psABIs/Linux-ABI.
 ///
-/// Right now, all properties that pr_datasz equal to 4 and so the pr_padding is always
-/// 4 bytes!
+/// Right now, all properties have pr_datasz equal to 4. Any padding required for the ELF class is
+/// written separately.
 ///
 /// typedef struct {
 /// Elf_Word pr_type;
@@ -3816,7 +3965,6 @@ pub(crate) struct NoteProperty {
     pub(crate) pr_type: u32,
     pub(crate) pr_datasz: u32,
     pub(crate) pr_data: u32,
-    pub(crate) pr_padding: u32,
 }
 
 pub(crate) struct PageMaskValue {
@@ -3871,18 +4019,18 @@ pub(crate) struct DynamicTagValues<'data> {
 }
 
 impl<'data> DynamicTagValues<'data> {
-    fn read(
-        sections: &object::read::elf::SectionTable<'data, object::elf::FileHeader64<LittleEndian>>,
+    fn read<C: ElfClass>(
+        sections: &SectionTable<'data, C>,
         data: &'data [u8],
-        symbols: &SymbolTable<'data>,
+        symbols: &SymbolTable<'data, C>,
     ) -> Self {
         let mut values = DynamicTagValues::default();
-        let Ok(dynamic_tags) = dynamic_tags(sections, data) else {
+        let Ok(dynamic_tags) = dynamic_tags::<C>(sections, data) else {
             return values;
         };
         let e = LittleEndian;
         for entry in dynamic_tags {
-            let value = entry.d_val(e);
+            let value: u64 = entry.d_val(e).into();
             match entry.d_tag(e) {
                 object::elf::DT_VERDEFNUM => {
                     values.verdefnum = value;
@@ -3903,9 +4051,9 @@ impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues<'data> {
     }
 }
 
-struct SymDebug<'data>(pub(crate) &'data crate::elf::SymtabEntry);
+struct SymDebug<'data, T: ElfSymbol>(pub(crate) &'data T);
 
-impl std::fmt::Display for SymDebug<'_> {
+impl<T: ElfSymbol> std::fmt::Display for SymDebug<'_, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let e = LittleEndian;
         let sym = self.0;
@@ -3921,7 +4069,7 @@ impl std::fmt::Display for SymDebug<'_> {
         let kind = if object::read::elf::Sym::is_undefined(sym, e) {
             "Undefined"
         } else {
-            match sym.st_type() {
+            match object::read::elf::Sym::st_type(sym) {
                 object::elf::STT_FUNC => "Func",
                 object::elf::STT_GNU_IFUNC => "IFunc",
                 object::elf::STT_OBJECT => "Data",
@@ -3997,7 +4145,7 @@ pub(crate) enum RiscVAttribute {
 }
 
 #[derive(Default)]
-pub(crate) struct ObjectLayoutStateExt<'data> {
+pub(crate) struct ObjectLayoutStateExt<'data, C: ElfClass> {
     gnu_property_notes: Vec<GnuProperty>,
     pub(crate) riscv_attributes: Vec<RiscVAttribute>,
 
@@ -4008,7 +4156,7 @@ pub(crate) struct ObjectLayoutStateExt<'data> {
     eh_frame_size: u64,
 
     /// Indexed by `FrameIndex`.
-    exception_frames: ExceptionFrames<'data>,
+    exception_frames: ExceptionFrames<'data, C>,
 
     pub(crate) debug_index_sections: Vec<InputDebugIndexSection<'data>>,
 }
@@ -4022,14 +4170,20 @@ pub(crate) struct LayoutExt {
 }
 
 impl LayoutExt {
-    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, A: Arch<Platform = Elf>>(
-        groups: &'files [layout::GroupState<'data, Elf>],
+    pub(crate) fn new<
+        'files,
+        'states,
+        'data: 'files + 'states,
+        C: ElfClass,
+        A: Arch<Platform = Elf<C>>,
+    >(
+        groups: &'files [layout::GroupState<'data, Elf<C>>],
         args: &ElfArgs,
     ) -> Result<Self> {
         let states = objects_iter(groups).map(|o| &o.format_specific);
-        let gnu_property_notes = merge_gnu_property_notes::<A>(states.clone(), args.z_isa)?;
-        let riscv_attributes = merge_riscv_attributes::<A>(states)?;
-        let eflags = merge_eflags::<A>(objects_iter(groups).map(|o| o.object))?;
+        let gnu_property_notes = merge_gnu_property_notes::<C, A>(states.clone(), args.z_isa)?;
+        let riscv_attributes = merge_riscv_attributes::<C, A>(states)?;
+        let eflags = merge_eflags::<C, A>(objects_iter(groups).map(|o| o.object))?;
         let has_eh_frame_input = objects_iter(groups).any(|o| o.format_specific.has_eh_frame_input);
 
         Ok(Self {
@@ -4041,8 +4195,8 @@ impl LayoutExt {
     }
 }
 
-fn merge_gnu_property_notes<'states, 'data: 'states, A: Arch>(
-    states: impl Iterator<Item = &'states ObjectLayoutStateExt<'data>>,
+fn merge_gnu_property_notes<'states, 'data: 'states, C: ElfClass, A: Arch>(
+    states: impl Iterator<Item = &'states ObjectLayoutStateExt<'data, C>>,
     isa_needed: Option<NonZeroU32>,
 ) -> Result<Vec<GnuProperty>> {
     timing_phase!("Merge GNU property notes");
@@ -4118,16 +4272,16 @@ fn merge_gnu_property_notes<'states, 'data: 'states, A: Arch>(
     Ok(output_properties)
 }
 
-fn merge_eflags<'files, 'data: 'files, A: Arch<Platform = Elf>>(
-    objects: impl Iterator<Item = &'files File<'data>>,
+fn merge_eflags<'files, 'data: 'files, C: ElfClass, A: Arch<Platform = Elf<C>>>(
+    objects: impl Iterator<Item = &'files File<'data, C>>,
 ) -> Result<object::elf::FileFlags> {
     timing_phase!("Merge e_flags");
 
     A::merge_eflags(objects.map(|object| object.eflags))
 }
 
-fn merge_riscv_attributes<'groups, 'data: 'groups, A: Arch>(
-    states: impl Iterator<Item = &'groups ObjectLayoutStateExt<'data>>,
+fn merge_riscv_attributes<'groups, 'data: 'groups, C: ElfClass, A: Arch>(
+    states: impl Iterator<Item = &'groups ObjectLayoutStateExt<'data, C>>,
 ) -> Result<RiscVAttributes> {
     timing_phase!("Merge .riscv.attributes sections");
 
@@ -4272,13 +4426,15 @@ fn verify_riscv_ext_conflicts(arch_components: &IndexMap<String, (u64, u64)>) ->
     }
 }
 
-pub(crate) fn gnu_property_notes_section_size(gnu_property_notes: &[GnuProperty]) -> u64 {
+pub(crate) fn gnu_property_notes_section_size<C: ElfClass>(
+    gnu_property_notes: &[GnuProperty],
+) -> u64 {
     if gnu_property_notes.is_empty() {
         0
     } else {
-        (size_of::<NoteHeader>()
-            + GNU_NOTE_NAME.len()
-            + gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u64
+        C::NOTE_HEADER_SIZE
+            + GNU_NOTE_NAME.len() as u64
+            + gnu_property_notes.len() as u64 * C::GNU_PROPERTY_ENTRY_SIZE
     }
 }
 
@@ -4315,7 +4471,7 @@ fn riscv_attributes_section_size(riscv_attributes: &[RiscVAttribute]) -> u64 {
 }
 
 pub(crate) fn process_riscv_attributes(
-    object: &File,
+    object: &File64,
     riscv_attributes_section_index: object::SectionIndex,
 ) -> Result<Vec<RiscVAttribute>> {
     let section = object.section(riscv_attributes_section_index)?;
@@ -4413,10 +4569,11 @@ pub(crate) fn process_riscv_attributes(
 /// Attributes that we'll take from an input section and apply to the output section into which it's
 /// placed.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct SectionAttributes {
+pub(crate) struct SectionAttributes<C: ElfClass> {
     pub(crate) flags: SectionFlags,
     pub(crate) ty: SectionType,
     pub(crate) entsize: u64,
+    class: PhantomData<C>,
 }
 
 /// Section flags that should not be propagated from input sections to the output section in which
@@ -4424,8 +4581,8 @@ pub(crate) struct SectionAttributes {
 /// here.
 const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = object::elf::SHF_GROUP;
 
-impl platform::SectionAttributes for SectionAttributes {
-    type Platform = Elf;
+impl<C: ElfClass> platform::SectionAttributes for SectionAttributes<C> {
+    type Platform = Elf<C>;
 
     fn merge(&mut self, rhs: Self) {
         self.flags |= rhs.flags;
@@ -4441,7 +4598,7 @@ impl platform::SectionAttributes for SectionAttributes {
         }
     }
 
-    fn apply(&self, output_sections: &mut OutputSections<Elf>, section_id: OutputSectionId) {
+    fn apply(&self, output_sections: &mut OutputSections<Elf<C>>, section_id: OutputSectionId) {
         let info = output_sections.section_infos.get_mut(section_id);
 
         info.section_attributes.flags |= self.flags.without(SECTION_FLAGS_PROPAGATION_MASK);
@@ -4568,7 +4725,7 @@ pub(crate) struct VerneedTable<'data> {
 }
 
 impl<'data> VerneedTable<'data> {
-    fn new(file: &File<'data>) -> Result<Self> {
+    fn new<C: ElfClass>(file: &File<'data, C>) -> Result<Self> {
         Ok(Self {
             versym: file.versym,
             version_names_by_index: verneed_names_by_index(file)?,
@@ -4586,7 +4743,9 @@ impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
     }
 }
 
-fn verneed_names_by_index<'data>(file: &File<'data>) -> Result<Vec<Option<&'data [u8]>>> {
+fn verneed_names_by_index<'data, C: ElfClass>(
+    file: &File<'data, C>,
+) -> Result<Vec<Option<&'data [u8]>>> {
     let mut version_names = Vec::new();
     let endian = LittleEndian;
 
@@ -4614,8 +4773,8 @@ fn verneed_names_by_index<'data>(file: &File<'data>) -> Result<Vec<Option<&'data
 }
 
 #[derive(Debug)]
-pub(crate) struct VerneedInfo<'data> {
-    pub(crate) defs: VerdefIterator<'data>,
+pub(crate) struct VerneedInfo<'data, C: ElfClass> {
+    pub(crate) defs: VerdefIterator<'data, C>,
     pub(crate) string_table_index: object::SectionIndex,
 
     /// Number of symbol versions that we're going to emit. This is the number of entries in
@@ -4624,12 +4783,12 @@ pub(crate) struct VerneedInfo<'data> {
 }
 
 #[derive(Default)]
-pub(crate) struct DynamicLayoutStateExt<'data> {
+pub(crate) struct DynamicLayoutStateExt<'data, C: ElfClass> {
     /// Which symbol versions are needed. A symbol version is needed if a symbol with that version
     /// has been loaded. The first version has index 1, so we store it at offset 0.
     symbol_versions_needed: Vec<bool>,
 
-    verneed_info: Option<VerneedInfo<'data>>,
+    verneed_info: Option<VerneedInfo<'data, C>>,
 
     non_addressable_indexes: NonAddressableIndexes,
 
@@ -4638,11 +4797,11 @@ pub(crate) struct DynamicLayoutStateExt<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) struct DynamicLayoutExt<'data> {
+pub(crate) struct DynamicLayoutExt<'data, C: ElfClass> {
     /// Mapping from input versions to output versions. Input version 1 is at index 0.
     pub(crate) version_mapping: Vec<object::elf::VersionIndex>,
 
-    pub(crate) verneed_info: Option<VerneedInfo<'data>>,
+    pub(crate) verneed_info: Option<VerneedInfo<'data, C>>,
 
     /// Whether this is the last DynamicLayout that puts content into .gnu.version_r.
     pub(crate) is_last_verneed: bool,
@@ -4703,10 +4862,10 @@ pub(crate) struct GnuHashLayout {
     pub(crate) symbol_base: u32,
 }
 
-fn create_gnu_hash_layout(
+fn create_gnu_hash_layout<C: ElfClass>(
     args: &ElfArgs,
     output_kind: OutputKind,
-    dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_, Elf>],
+    dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_, Elf<C>>],
 ) -> Option<GnuHashLayout> {
     if !args.hash_style.includes_gnu() || !output_kind.needs_dynamic() {
         return None;
@@ -4741,12 +4900,11 @@ fn create_gnu_hash_layout(
 impl GnuHashLayout {
     /// Allocates space required for .gnu.hash. Also sorts dynamic symbol definitions by their hash
     /// bucket as required by .gnu.hash.
-    fn allocate(&self, mem_sizes: &mut OutputSectionPartMap<u64>) {
-        let num_blume = 1;
+    fn allocate<C: ElfClass>(&self, mem_sizes: &mut OutputSectionPartMap<u64>) {
         mem_sizes.increment(
             part_id::GNU_HASH,
             (size_of::<GnuHashHeader>()
-                + size_of::<u64>() * num_blume
+                + C::GNU_HASH_BLOOM_SIZE as usize * self.bloom_count as usize
                 + size_of::<u32>() * self.bucket_count as usize
                 + size_of::<u32>() * self.num_defs as usize) as u64,
         );
@@ -4780,12 +4938,12 @@ impl SysvHashLayout {
     }
 }
 
-fn finalise_gnu_version_size<'data>(
+fn finalise_gnu_version_size<'data, C: ElfClass>(
     mem_sizes: &mut OutputSectionPartMap<u64>,
-    symbol_db: &SymbolDb<'data, crate::elf::Elf>,
+    symbol_db: &SymbolDb<'data, crate::elf::Elf<C>>,
 ) {
     if symbol_db.output_kind.should_output_symbol_versions() {
-        let num_dynamic_symbols = mem_sizes.get(part_id::DYNSYM) / crate::elf::SYMTAB_ENTRY_SIZE;
+        let num_dynamic_symbols = mem_sizes.get(part_id::DYNSYM) / C::SYMTAB_ENTRY_SIZE;
         // Note, sets the GNU_VERSION allocation rather than incrementing it. Assuming there are
         // multiple files in our group, we'll update this same value multiple times, each time
         // with a possibly revised dynamic symbol count. The important thing is that when we're
@@ -4811,12 +4969,12 @@ struct CieAtOffset<'data> {
     cie: Cie<'data>,
 }
 
-enum ExceptionFrames<'data> {
-    Rela(Vec<ExceptionFrame<'data, Rela>>),
-    Crel(Vec<ExceptionFrame<'data, Crel>>),
+enum ExceptionFrames<'data, C: ElfClass> {
+    Rela(Vec<ExceptionFrame<'data, ElfRela<C>>>),
+    Crel(Vec<ExceptionFrame<'data, ElfCrel<C>>>),
 }
 
-impl<'data> ExceptionFrames<'data> {
+impl<'data, C: ElfClass> ExceptionFrames<'data, C> {
     fn extend(&mut self, other: Self) {
         match (self, other) {
             (ExceptionFrames::Rela(a), ExceptionFrames::Rela(b)) => a.extend(b),
@@ -4834,7 +4992,7 @@ impl<'data> ExceptionFrames<'data> {
     }
 }
 
-impl<'data> Default for ExceptionFrames<'data> {
+impl<'data, C: ElfClass> Default for ExceptionFrames<'data, C> {
     fn default() -> Self {
         ExceptionFrames::Rela(Vec::new())
     }
@@ -4858,7 +5016,7 @@ struct EhFrameSizes {
     eh_frame_size: u64,
 }
 
-impl<'data> ExceptionFrames<'data> {
+impl<'data, C: ElfClass> ExceptionFrames<'data, C> {
     fn len(&self) -> usize {
         match self {
             ExceptionFrames::Rela(f) => f.len(),
@@ -4880,9 +5038,9 @@ pub(crate) struct CommonGroupStateExt {
 
 /// Return whether all DT_NEEDED entries for this shared object correspond to input files that
 /// we have loaded.
-fn has_complete_deps<'data>(
-    file: &File<'data>,
-    resources: &layout::GraphResources<'data, '_, Elf>,
+fn has_complete_deps<'data, C: ElfClass>(
+    file: &File<'data, C>,
+    resources: &layout::GraphResources<'data, '_, Elf<C>>,
 ) -> bool {
     let Ok(dynamic_tags) = file.dynamic_tags() else {
         return true;
@@ -4890,10 +5048,13 @@ fn has_complete_deps<'data>(
 
     let e = LittleEndian;
     for entry in dynamic_tags {
-        let value = entry.d_val(e);
+        let value: u64 = entry.d_val(e).into();
         match entry.d_tag(e) {
             object::elf::DT_NEEDED => {
-                let Ok(name) = file.symbols.strings().get(value as u32) else {
+                let Ok(value) = value.try_into() else {
+                    return false;
+                };
+                let Ok(name) = file.symbols.strings().get(value) else {
                     return false;
                 };
                 if !resources.layout_resources_ext.sonames.contains(name) {
@@ -4921,7 +5082,7 @@ impl<'data> Sonames<'data> {
     /// --as-needed shared objects that we're not actually linking against. This means that we can
     /// report --no-shlib-undefined errors for shared libraries that have all of their dependencies
     /// as inputs, even if we weren't going to add them as direct dependencies of our output file.
-    fn new(groups: &[Group<'data, Elf>]) -> Self {
+    fn new<C: ElfClass>(groups: &[Group<'data, Elf<C>>]) -> Self {
         timing_phase!("Build SONAME index");
 
         Sonames(
@@ -4952,8 +5113,8 @@ impl<'data> Sonames<'data> {
 impl platform::SegmentType for SegmentType {}
 
 impl EpilogueLayoutExt {
-    fn gnu_build_id_note_section_size(&self) -> Option<u64> {
-        Some((size_of::<NoteHeader>() + GNU_NOTE_NAME.len() + self.build_id_size?) as u64)
+    fn gnu_build_id_note_section_size<C: ElfClass>(&self) -> Option<u64> {
+        Some(C::NOTE_HEADER_SIZE + GNU_NOTE_NAME.len() as u64 + self.build_id_size? as u64)
     }
 }
 
@@ -5089,8 +5250,8 @@ impl std::fmt::Display for ProgramSegmentDef {
 }
 
 #[derive(Debug)]
-pub(crate) struct BuiltInSectionDetails {
-    pub(crate) kind: SectionKind<'static, Elf>,
+pub(crate) struct BuiltInSectionDetails<C: ElfClass> {
+    pub(crate) kind: SectionKind<'static, Elf<C>>,
     pub(crate) section_flags: SectionFlags,
     /// Sections to try to link to. The first section that we're outputting is the one used.
     pub(crate) link: &'static [OutputSectionId],
@@ -5101,418 +5262,368 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) target_segment_type: Option<SegmentType>,
 }
 
-const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
-    kind: SectionKind::Primary(SectionIdentity::new(SectionName(&[]), ())),
-    section_flags: SectionFlags(0),
-    link: &[],
-    min_alignment: alignment::MIN,
-    element_size: 0,
-    ty: sht::NULL,
-    is_relro: false,
-    target_segment_type: None,
-};
-
-const NUM_BUILT_IN_SECTIONS: usize = crate::output_section_id::num_built_in_sections::<Elf>();
-
-const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
-    let mut defs = [DEFAULT_DEFS; NUM_BUILT_IN_SECTIONS];
-
-    // A section into which we write headers.
-    defs[crate::output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b""), ())),
-        section_flags: shf::ALLOC,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::PROGRAM_HEADERS.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(PROGRAM_HEADERS_SECTION_NAME),
-            (),
-        )),
-        section_flags: shf::ALLOC,
-        min_alignment: alignment::PROGRAM_HEADER_ENTRY,
-        target_segment_type: Some(pt::PHDR),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::SECTION_HEADERS.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(SECTION_HEADERS_SECTION_NAME),
-            (),
-        )),
-        section_flags: shf::ALLOC,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::SHSTRTAB.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(SHSTRTAB_SECTION_NAME), ())),
-        ty: sht::STRTAB,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(STRTAB_SECTION_NAME), ())),
-        ty: sht::STRTAB,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::GOT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(GOT_SECTION_NAME), ())),
-        ty: sht::PROGBITS,
-        section_flags: shf::WRITE.with(shf::ALLOC),
-        element_size: crate::elf::GOT_ENTRY_SIZE,
-        min_alignment: alignment::GOT_ENTRY,
-        is_relro: true,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::GOT_RELR.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Secondary(output_section_id::GOT),
-        element_size: crate::elf::GOT_ENTRY_SIZE,
-        min_alignment: alignment::GOT_ENTRY,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::PLT_GOT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(PLT_GOT_SECTION_NAME), ())),
-        ty: sht::PROGBITS,
-        section_flags: shf::ALLOC.with(shf::EXECINSTR),
-        element_size: crate::elf::PLT_ENTRY_SIZE,
-        min_alignment: alignment::PLT,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::RELA_PLT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(RELA_PLT_SECTION_NAME), ())),
-        ty: sht::RELA,
-        section_flags: shf::ALLOC.with(shf::INFO_LINK),
-        element_size: RELA_ENTRY_SIZE,
-        link: &[output_section_id::DYNSYM, output_section_id::SYMTAB_LOCAL],
-        min_alignment: alignment::RELA_ENTRY,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::EH_FRAME.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(EH_FRAME_SECTION_NAME), ())),
-        ty: sht::PROGBITS,
-        section_flags: shf::ALLOC,
-        min_alignment: alignment::USIZE,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::EH_FRAME_HDR.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(EH_FRAME_HDR_SECTION_NAME),
-            (),
-        )),
-        ty: sht::PROGBITS,
-        section_flags: shf::ALLOC,
-        min_alignment: alignment::EH_FRAME_HDR,
-        target_segment_type: Some(pt::GNU_EH_FRAME),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::SFRAME.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(SFRAME_SECTION_NAME), ())),
-        ty: sht::GNU_SFRAME,
-        section_flags: shf::ALLOC,
-        min_alignment: alignment::USIZE,
-        target_segment_type: Some(pt::GNU_SFRAME),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::DYNAMIC.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(DYNAMIC_SECTION_NAME), ())),
-        ty: sht::DYNAMIC,
-        section_flags: shf::ALLOC.with(shf::WRITE),
-        element_size: size_of::<DynamicEntry>() as u64,
-        link: &[output_section_id::DYNSTR],
-        min_alignment: alignment::USIZE,
-        is_relro: true,
-        target_segment_type: Some(pt::DYNAMIC),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::HASH.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(HASH_SECTION_NAME), ())),
-        ty: sht::HASH,
-        section_flags: shf::ALLOC,
-        link: &[output_section_id::DYNSYM],
-        min_alignment: alignment::SYSV_HASH,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::GNU_HASH.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(GNU_HASH_SECTION_NAME), ())),
-        ty: sht::GNU_HASH,
-        section_flags: shf::ALLOC,
-        link: &[output_section_id::DYNSYM],
-        min_alignment: alignment::GNU_HASH,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::DYNSYM.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(DYNSYM_SECTION_NAME), ())),
-        ty: sht::DYNSYM,
-        section_flags: shf::ALLOC,
-        element_size: size_of::<elf::SymtabEntry>() as u64,
-        link: &[output_section_id::DYNSTR],
-        min_alignment: alignment::SYMTAB_ENTRY,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::DYNSTR.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(DYNSTR_SECTION_NAME), ())),
-        ty: sht::STRTAB,
-        section_flags: shf::ALLOC,
+impl<C: ElfClass> Elf<C> {
+    const DEFAULT_DEFS: BuiltInSectionDetails<C> = BuiltInSectionDetails {
+        kind: Self::primary_section(&[]),
+        section_flags: SectionFlags(0),
+        link: &[],
         min_alignment: alignment::MIN,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::INTERP.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(INTERP_SECTION_NAME), ())),
-        ty: sht::PROGBITS,
-        section_flags: shf::ALLOC,
-        target_segment_type: Some(pt::INTERP),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::GNU_VERSION.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(GNU_VERSION_SECTION_NAME),
-            (),
-        )),
-        ty: sht::GNU_VERSYM,
-        section_flags: shf::ALLOC,
-        element_size: size_of::<Versym>() as u64,
-        min_alignment: alignment::VERSYM,
-        link: &[output_section_id::DYNSYM],
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::GNU_VERSION_D.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(GNU_VERSION_D_SECTION_NAME),
-            (),
-        )),
-        ty: sht::GNU_VERDEF,
-        section_flags: shf::ALLOC,
-        min_alignment: alignment::VERSION_D,
-        link: &[output_section_id::DYNSTR],
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::GNU_VERSION_R.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(GNU_VERSION_R_SECTION_NAME),
-            (),
-        )),
-        ty: sht::GNU_VERNEED,
-        section_flags: shf::ALLOC,
-        min_alignment: alignment::VERSION_R,
-        link: &[output_section_id::DYNSTR],
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::NOTE_GNU_PROPERTY.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(NOTE_GNU_PROPERTY_SECTION_NAME),
-            (),
-        )),
-        ty: sht::NOTE,
-        section_flags: shf::ALLOC,
-        min_alignment: alignment::NOTE_GNU_PROPERTY,
-        target_segment_type: Some(pt::GNU_PROPERTY),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::NOTE_GNU_BUILD_ID.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(NOTE_GNU_BUILD_ID_SECTION_NAME),
-            (),
-        )),
-        ty: sht::NOTE,
-        section_flags: shf::ALLOC,
-        min_alignment: alignment::NOTE_GNU_BUILD_ID,
-        ..DEFAULT_DEFS
-    };
-    // Multi-part generated sections
-    defs[output_section_id::SYMTAB_LOCAL.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(SYMTAB_SECTION_NAME), ())),
-        ty: sht::SYMTAB,
-        element_size: size_of::<SymtabEntry>() as u64,
-        min_alignment: alignment::SYMTAB_ENTRY,
-        link: &[output_section_id::STRTAB],
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Secondary(output_section_id::SYMTAB_LOCAL),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::RELA_DYN_RELATIVE.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(RELA_DYN_SECTION_NAME), ())),
-        ty: sht::RELA,
-        section_flags: shf::ALLOC,
-        element_size: RELA_ENTRY_SIZE,
-        min_alignment: alignment::RELA_ENTRY,
-        link: &[output_section_id::DYNSYM],
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::RELA_DYN_GENERAL.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Secondary(output_section_id::RELA_DYN_RELATIVE),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::RELR_DYN.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(RELR_DYN_SECTION_NAME), ())),
-        ty: sht::RELR,
-        section_flags: shf::ALLOC,
-        element_size: RELR_ENTRY_SIZE,
-        min_alignment: alignment::RELR_ENTRY,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::RISCV_ATTRIBUTES.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(RISCV_ATTRIBUTES_SECTION_NAME),
-            (),
-        )),
-        ty: sht::RISCV_ATTRIBUTES,
-        target_segment_type: Some(pt::RISCV_ATTRIBUTES),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::RELRO_PADDING.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(RELRO_PADDING_SECTION_NAME),
-            (),
-        )),
-        ty: sht::NOBITS,
-        section_flags: shf::ALLOC.with(shf::WRITE),
-        is_relro: true,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::SYMTAB_SHNDX_LOCAL.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(SYMTAB_SHNDX_SECTION_NAME),
-            (),
-        )),
-        ty: sht::SYMTAB_SHNDX,
-        element_size: SYMTAB_SHNDX_ENTRY_SIZE,
-        min_alignment: alignment::SYMTAB_SHNDX_ENTRY,
-        link: &[output_section_id::SYMTAB_LOCAL],
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::SYMTAB_SHNDX_GLOBAL.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Secondary(output_section_id::SYMTAB_SHNDX_LOCAL),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::GDB_INDEX.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(GDB_INDEX_SECTION_NAME),
-            (),
-        )),
-        ty: sht::PROGBITS,
-        ..DEFAULT_DEFS
-    };
-    // Start of regular sections
-    defs[output_section_id::RODATA.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(RODATA_SECTION_NAME), ())),
-        ty: sht::PROGBITS,
-        section_flags: shf::ALLOC,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::INIT_ARRAY.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(INIT_ARRAY_SECTION_NAME),
-            (),
-        )),
-        ty: sht::INIT_ARRAY,
-        section_flags: shf::ALLOC.with(shf::WRITE),
-        element_size: size_of::<u64>() as u64,
-        min_alignment: alignment::USIZE,
-        is_relro: true,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::FINI_ARRAY.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(FINI_ARRAY_SECTION_NAME),
-            (),
-        )),
-        ty: sht::FINI_ARRAY,
-        section_flags: shf::ALLOC.with(shf::WRITE),
-        element_size: size_of::<u64>() as u64,
-        min_alignment: alignment::USIZE,
-        is_relro: true,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::PREINIT_ARRAY.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(PREINIT_ARRAY_SECTION_NAME),
-            (),
-        )),
-        ty: sht::PREINIT_ARRAY,
-        section_flags: shf::ALLOC.with(shf::WRITE),
-        is_relro: true,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(TEXT_SECTION_NAME), ())),
-        ty: sht::PROGBITS,
-        section_flags: shf::ALLOC.with(shf::EXECINSTR),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::INIT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(INIT_SECTION_NAME), ())),
-        ty: sht::PROGBITS,
-        section_flags: shf::ALLOC.with(shf::EXECINSTR),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::FINI.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(FINI_SECTION_NAME), ())),
-        ty: sht::PROGBITS,
-        section_flags: shf::ALLOC.with(shf::EXECINSTR),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(DATA_SECTION_NAME), ())),
-        ty: sht::PROGBITS,
-        section_flags: shf::ALLOC.with(shf::WRITE),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::TDATA.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(TDATA_SECTION_NAME), ())),
-        ty: sht::PROGBITS,
-        section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::TBSS.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(TBSS_SECTION_NAME), ())),
-        ty: sht::NOBITS,
-        section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::BSS.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(BSS_SECTION_NAME), ())),
-        ty: sht::NOBITS,
-        section_flags: shf::ALLOC.with(shf::WRITE),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::COMMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(COMMENT_SECTION_NAME), ())),
-        ty: sht::PROGBITS,
-        section_flags: shf::STRINGS.with(shf::MERGE),
-        element_size: 1,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::GCC_EXCEPT_TABLE.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(GCC_EXCEPT_TABLE_SECTION_NAME),
-            (),
-        )),
-        ty: sht::PROGBITS,
-        section_flags: shf::ALLOC,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::NOTE_ABI_TAG.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(NOTE_ABI_TAG_SECTION_NAME),
-            (),
-        )),
-        ty: sht::NOTE,
-        section_flags: shf::ALLOC,
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::DATA_REL_RO.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(
-            SectionName(DATA_REL_RO_SECTION_NAME),
-            (),
-        )),
-        ty: sht::PROGBITS,
-        section_flags: shf::ALLOC.with(shf::WRITE),
-        is_relro: true,
-        ..DEFAULT_DEFS
+        element_size: 0,
+        ty: sht::NULL,
+        is_relro: false,
+        target_segment_type: None,
     };
 
-    defs
-};
+    const fn primary_section(name: &'static [u8]) -> SectionKind<'static, Elf<C>> {
+        SectionKind::Primary(SectionIdentity::new(SectionName(name), ()))
+    }
 
-impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
+    const SECTION_DEFINITIONS: [BuiltInSectionDetails<C>; ELF_NUM_BUILT_IN_SECTIONS] = {
+        let mut defs = [Self::DEFAULT_DEFS; ELF_NUM_BUILT_IN_SECTIONS];
+
+        // A section into which we write headers.
+        defs[crate::output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(b""),
+            section_flags: shf::ALLOC,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::PROGRAM_HEADERS.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(PROGRAM_HEADERS_SECTION_NAME),
+            section_flags: shf::ALLOC,
+            min_alignment: C::PROGRAM_HEADER_ALIGNMENT,
+            target_segment_type: Some(pt::PHDR),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::SECTION_HEADERS.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(SECTION_HEADERS_SECTION_NAME),
+            section_flags: shf::ALLOC,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::SHSTRTAB.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(SHSTRTAB_SECTION_NAME),
+            ty: sht::STRTAB,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(STRTAB_SECTION_NAME),
+            ty: sht::STRTAB,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::GOT.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(GOT_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::WRITE.with(shf::ALLOC),
+            element_size: C::GOT_ENTRY_SIZE,
+            min_alignment: C::GOT_ENTRY_ALIGNMENT,
+            is_relro: true,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::GOT_RELR.as_usize()] = BuiltInSectionDetails {
+            kind: SectionKind::Secondary(output_section_id::GOT),
+            element_size: C::GOT_ENTRY_SIZE,
+            min_alignment: C::GOT_ENTRY_ALIGNMENT,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::PLT_GOT.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(PLT_GOT_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC.with(shf::EXECINSTR),
+            element_size: crate::elf::PLT_ENTRY_SIZE,
+            min_alignment: alignment::PLT,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::RELA_PLT.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(RELA_PLT_SECTION_NAME),
+            ty: sht::RELA,
+            section_flags: shf::ALLOC.with(shf::INFO_LINK),
+            element_size: C::RELA_ENTRY_SIZE,
+            link: &[output_section_id::DYNSYM, output_section_id::SYMTAB_LOCAL],
+            min_alignment: C::RELA_ENTRY_ALIGNMENT,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::EH_FRAME.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(EH_FRAME_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC,
+            min_alignment: C::ADDRESS_ALIGNMENT,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::EH_FRAME_HDR.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(EH_FRAME_HDR_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC,
+            min_alignment: alignment::EH_FRAME_HDR,
+            target_segment_type: Some(pt::GNU_EH_FRAME),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::SFRAME.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(SFRAME_SECTION_NAME),
+            ty: sht::GNU_SFRAME,
+            section_flags: shf::ALLOC,
+            min_alignment: C::ADDRESS_ALIGNMENT,
+            target_segment_type: Some(pt::GNU_SFRAME),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::DYNAMIC.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(DYNAMIC_SECTION_NAME),
+            ty: sht::DYNAMIC,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            element_size: C::DYNAMIC_ENTRY_SIZE,
+            link: &[output_section_id::DYNSTR],
+            min_alignment: C::ADDRESS_ALIGNMENT,
+            is_relro: true,
+            target_segment_type: Some(pt::DYNAMIC),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::HASH.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(HASH_SECTION_NAME),
+            ty: sht::HASH,
+            section_flags: shf::ALLOC,
+            link: &[output_section_id::DYNSYM],
+            min_alignment: alignment::SYSV_HASH,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::GNU_HASH.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(GNU_HASH_SECTION_NAME),
+            ty: sht::GNU_HASH,
+            section_flags: shf::ALLOC,
+            link: &[output_section_id::DYNSYM],
+            min_alignment: C::GNU_HASH_ALIGNMENT,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::DYNSYM.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(DYNSYM_SECTION_NAME),
+            ty: sht::DYNSYM,
+            section_flags: shf::ALLOC,
+            element_size: C::SYMTAB_ENTRY_SIZE,
+            link: &[output_section_id::DYNSTR],
+            min_alignment: C::SYMTAB_ENTRY_ALIGNMENT,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::DYNSTR.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(DYNSTR_SECTION_NAME),
+            ty: sht::STRTAB,
+            section_flags: shf::ALLOC,
+            min_alignment: alignment::MIN,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::INTERP.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(INTERP_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC,
+            target_segment_type: Some(pt::INTERP),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::GNU_VERSION.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(GNU_VERSION_SECTION_NAME),
+            ty: sht::GNU_VERSYM,
+            section_flags: shf::ALLOC,
+            element_size: size_of::<Versym>() as u64,
+            min_alignment: alignment::VERSYM,
+            link: &[output_section_id::DYNSYM],
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::GNU_VERSION_D.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(GNU_VERSION_D_SECTION_NAME),
+            ty: sht::GNU_VERDEF,
+            section_flags: shf::ALLOC,
+            min_alignment: C::VERSION_D_ALIGNMENT,
+            link: &[output_section_id::DYNSTR],
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::GNU_VERSION_R.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(GNU_VERSION_R_SECTION_NAME),
+            ty: sht::GNU_VERNEED,
+            section_flags: shf::ALLOC,
+            min_alignment: C::VERSION_R_ALIGNMENT,
+            link: &[output_section_id::DYNSTR],
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::NOTE_GNU_PROPERTY.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(NOTE_GNU_PROPERTY_SECTION_NAME),
+            ty: sht::NOTE,
+            section_flags: shf::ALLOC,
+            min_alignment: C::GNU_PROPERTY_ALIGNMENT,
+            target_segment_type: Some(pt::GNU_PROPERTY),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::NOTE_GNU_BUILD_ID.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(NOTE_GNU_BUILD_ID_SECTION_NAME),
+            ty: sht::NOTE,
+            section_flags: shf::ALLOC,
+            min_alignment: alignment::NOTE_GNU_BUILD_ID,
+            ..Self::DEFAULT_DEFS
+        };
+        // Multi-part generated sections
+        defs[output_section_id::SYMTAB_LOCAL.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(SYMTAB_SECTION_NAME),
+            ty: sht::SYMTAB,
+            element_size: C::SYMTAB_ENTRY_SIZE,
+            min_alignment: C::SYMTAB_ENTRY_ALIGNMENT,
+            link: &[output_section_id::STRTAB],
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {
+            kind: SectionKind::Secondary(output_section_id::SYMTAB_LOCAL),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::RELA_DYN_RELATIVE.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(RELA_DYN_SECTION_NAME),
+            ty: sht::RELA,
+            section_flags: shf::ALLOC,
+            element_size: C::RELA_ENTRY_SIZE,
+            min_alignment: C::RELA_ENTRY_ALIGNMENT,
+            link: &[output_section_id::DYNSYM],
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::RELA_DYN_GENERAL.as_usize()] = BuiltInSectionDetails {
+            kind: SectionKind::Secondary(output_section_id::RELA_DYN_RELATIVE),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::RELR_DYN.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(RELR_DYN_SECTION_NAME),
+            ty: sht::RELR,
+            section_flags: shf::ALLOC,
+            element_size: C::RELR_ENTRY_SIZE,
+            min_alignment: C::RELR_ENTRY_ALIGNMENT,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::RISCV_ATTRIBUTES.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(RISCV_ATTRIBUTES_SECTION_NAME),
+            ty: sht::RISCV_ATTRIBUTES,
+            target_segment_type: Some(pt::RISCV_ATTRIBUTES),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::RELRO_PADDING.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(RELRO_PADDING_SECTION_NAME),
+            ty: sht::NOBITS,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            is_relro: true,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::SYMTAB_SHNDX_LOCAL.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(SYMTAB_SHNDX_SECTION_NAME),
+            ty: sht::SYMTAB_SHNDX,
+            element_size: SYMTAB_SHNDX_ENTRY_SIZE,
+            min_alignment: alignment::SYMTAB_SHNDX_ENTRY,
+            link: &[output_section_id::SYMTAB_LOCAL],
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::SYMTAB_SHNDX_GLOBAL.as_usize()] = BuiltInSectionDetails {
+            kind: SectionKind::Secondary(output_section_id::SYMTAB_SHNDX_LOCAL),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::GDB_INDEX.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(GDB_INDEX_SECTION_NAME),
+            ty: sht::PROGBITS,
+            ..Self::DEFAULT_DEFS
+        };
+        // Start of regular sections
+        defs[output_section_id::RODATA.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(RODATA_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::INIT_ARRAY.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(INIT_ARRAY_SECTION_NAME),
+            ty: sht::INIT_ARRAY,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            element_size: C::ADDRESS_SIZE,
+            min_alignment: C::ADDRESS_ALIGNMENT,
+            is_relro: true,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::FINI_ARRAY.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(FINI_ARRAY_SECTION_NAME),
+            ty: sht::FINI_ARRAY,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            element_size: C::ADDRESS_SIZE,
+            min_alignment: C::ADDRESS_ALIGNMENT,
+            is_relro: true,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::PREINIT_ARRAY.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(PREINIT_ARRAY_SECTION_NAME),
+            ty: sht::PREINIT_ARRAY,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            is_relro: true,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(TEXT_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC.with(shf::EXECINSTR),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::INIT.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(INIT_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC.with(shf::EXECINSTR),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::FINI.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(FINI_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC.with(shf::EXECINSTR),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(DATA_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::TDATA.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(TDATA_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::TBSS.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(TBSS_SECTION_NAME),
+            ty: sht::NOBITS,
+            section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::BSS.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(BSS_SECTION_NAME),
+            ty: sht::NOBITS,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::COMMENT.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(COMMENT_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::STRINGS.with(shf::MERGE),
+            element_size: 1,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::GCC_EXCEPT_TABLE.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(GCC_EXCEPT_TABLE_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::NOTE_ABI_TAG.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(NOTE_ABI_TAG_SECTION_NAME),
+            ty: sht::NOTE,
+            section_flags: shf::ALLOC,
+            ..Self::DEFAULT_DEFS
+        };
+        defs[output_section_id::DATA_REL_RO.as_usize()] = BuiltInSectionDetails {
+            kind: Self::primary_section(DATA_REL_RO_SECTION_NAME),
+            ty: sht::PROGBITS,
+            section_flags: shf::ALLOC.with(shf::WRITE),
+            is_relro: true,
+            ..Self::DEFAULT_DEFS
+        };
+
+        defs
+    };
+}
+
+impl<C: ElfClass> platform::BuiltInSectionDetails for BuiltInSectionDetails<C> {}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DynamicSymbolDefinitionExt {
@@ -5523,13 +5634,14 @@ pub(crate) struct DynamicSymbolDefinitionExt {
 fn load_section_relocations<
     'scope,
     'data,
-    A: Arch<Platform = Elf>,
-    R: Relocation<Platform = Elf>,
+    C: ElfClass,
+    A: Arch<Platform = Elf<C>>,
+    R: Relocation<Platform = Elf<C>>,
 >(
-    state: &layout::ObjectLayoutState<'data, Elf>,
-    common: &mut CommonGroupState<'data, Elf>,
+    state: &layout::ObjectLayoutState<'data, Elf<C>>,
+    common: &mut CommonGroupState<'data, Elf<C>>,
     queue: &mut layout::LocalWorkQueue,
-    resources: &'scope layout::GraphResources<'data, '_, Elf>,
+    resources: &'scope layout::GraphResources<'data, '_, Elf<C>>,
     section_index: object::SectionIndex,
     relocations: impl Iterator<Item = R>,
     scope: &Scope<'scope>,
@@ -5544,7 +5656,7 @@ fn load_section_relocations<
         let section_header = state.object.section(section_index)?;
         let section_part_id =
             state.section_part_id(section_index, &resources.symbol_db.section_part_ids);
-        modifier = process_relocation::<A, R>(
+        modifier = process_relocation::<C, A, R>(
             state,
             common,
             &rel,
@@ -5559,7 +5671,7 @@ fn load_section_relocations<
         .with_context(|| {
             format!(
                 "Failed to copy section {} from file {state}",
-                layout::section_debug::<Elf>(state.object, section_index)
+                layout::section_debug::<Elf<C>>(state.object, section_index)
             )
         })?;
     }
@@ -5567,30 +5679,34 @@ fn load_section_relocations<
     Ok(())
 }
 
-const RELR_TYPE_BYTE_SIZE: u64 = 8;
-pub(crate) const RELR_BITMAP_SLOTS: u64 = 8 * RELR_TYPE_BYTE_SIZE - 1;
-const RELR_ADDRESS_RANGE: u64 = RELR_BITMAP_SLOTS * RELR_TYPE_BYTE_SIZE;
-
-struct RelrBitmap {
-    range: Range<u64>,
-    encoded: u64,
+pub(crate) const fn relr_bitmap_slots<C: ElfClass>() -> u64 {
+    C::RELR_ENTRY_SIZE * 8 - 1
 }
 
-impl RelrBitmap {
+struct RelrBitmap<C: ElfClass> {
+    range: Range<u64>,
+    encoded: u64,
+    class: PhantomData<C>,
+}
+
+impl<C: ElfClass> RelrBitmap<C> {
     // Return bitmap starting after the current address.
     fn after(address: u64) -> Self {
-        let start = address + RELR_TYPE_BYTE_SIZE;
+        let start = address + C::RELR_ENTRY_SIZE;
         Self {
-            range: start..start + RELR_ADDRESS_RANGE,
+            range: start..start + relr_bitmap_slots::<C>() * C::RELR_ENTRY_SIZE,
             encoded: 1,
+            class: PhantomData,
         }
     }
 
     // Return bitmap that will follow after the current bitmap range.
     fn next(&self) -> Self {
+        let address_range = relr_bitmap_slots::<C>() * C::RELR_ENTRY_SIZE;
         Self {
-            range: self.range.start + RELR_ADDRESS_RANGE..self.range.end + RELR_ADDRESS_RANGE,
+            range: self.range.start + address_range..self.range.end + address_range,
             encoded: 1,
+            class: PhantomData,
         }
     }
 
@@ -5598,10 +5714,10 @@ impl RelrBitmap {
     // returned.
     fn insert(&mut self, address: u64) -> bool {
         let offset = address.wrapping_sub(self.range.start);
-        if !self.range.contains(&address) || !offset.is_multiple_of(RELR_TYPE_BYTE_SIZE) {
+        if !self.range.contains(&address) || !offset.is_multiple_of(C::RELR_ENTRY_SIZE) {
             false
         } else {
-            self.encoded |= 1 << (offset / RELR_TYPE_BYTE_SIZE + 1);
+            self.encoded |= 1 << (offset / C::RELR_ENTRY_SIZE + 1);
             true
         }
     }
@@ -5610,14 +5726,14 @@ impl RelrBitmap {
 /// Tracks RELR bitmap packing within one input section. Runs deliberately don't
 /// cross section boundaries because layout of separate sections is parallel.
 #[derive(Default)]
-enum RelrState {
+enum RelrState<C: ElfClass> {
     #[default]
     NoRun,
     AddressOnly {
-        next_bitmap: RelrBitmap,
+        next_bitmap: RelrBitmap<C>,
     },
     WithBitmap {
-        bitmap: RelrBitmap,
+        bitmap: RelrBitmap<C>,
     },
 }
 
@@ -5628,13 +5744,13 @@ pub(crate) enum RelrEntryEncoding {
 }
 
 #[derive(Default)]
-pub(crate) struct RelrEncoder {
-    state: RelrState,
+pub(crate) struct RelrEncoder<C: ElfClass> {
+    state: RelrState<C>,
 }
 
 // RELR bitmap packing state used for both allocation and the actual writing of relocations
 // to the output stream.
-impl RelrEncoder {
+impl<C: ElfClass> RelrEncoder<C> {
     pub(crate) fn encode(
         &mut self,
         address: u64,
@@ -5689,26 +5805,32 @@ impl RelrEncoder {
 }
 
 #[inline(always)]
-fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation<Platform = Elf>>(
-    object: &ObjectLayoutState<'data, Elf>,
-    common: &mut CommonGroupState<'data, Elf>,
+fn process_relocation<
+    'data,
+    'scope,
+    C: ElfClass,
+    A: Arch<Platform = Elf<C>>,
+    R: Relocation<Platform = Elf<C>>,
+>(
+    object: &ObjectLayoutState<'data, Elf<C>>,
+    common: &mut CommonGroupState<'data, Elf<C>>,
     rel: &R,
     section: &<A::Platform as Platform>::SectionHeader,
     section_part_id: PartId,
-    resources: &'scope layout::GraphResources<'data, '_, Elf>,
+    resources: &'scope layout::GraphResources<'data, '_, Elf<C>>,
     queue: &mut layout::LocalWorkQueue,
     is_debug_section: bool,
     scope: &Scope<'scope>,
-    relr_writer: &mut RelrEncoder,
+    relr_writer: &mut RelrEncoder<C>,
 ) -> Result<RelocationModifier> {
     let Some(local_sym_index) = rel.symbol() else {
         return Ok(RelocationModifier::Normal);
     };
 
     let mut classified =
-        classify_symbol_relocation::<A, R>(object, rel, section, local_sym_index, resources)?;
+        classify_symbol_relocation::<C, A, R>(object, rel, section, local_sym_index, resources)?;
 
-    materialize_relocation_requirements::<A, R>(
+    materialize_relocation_requirements::<C, A, R>(
         common,
         rel,
         section,
@@ -5719,7 +5841,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation<Plat
     )?;
 
     let previous_flags =
-        note_relocation_symbol_reference::<A>(&classified, resources, queue, scope);
+        note_relocation_symbol_reference::<C, A>(&classified, resources, queue, scope);
 
     if !is_debug_section {
         crate::thunks::handle_thunk_extensions_for_relocation::<A>(
@@ -5764,12 +5886,17 @@ struct ClassifiedSymbolRelocation {
 
 /// Resolve the relocated symbol and determine the effective relocation kind / initial flags.
 #[inline(always)]
-fn classify_symbol_relocation<'data, A: Arch<Platform = Elf>, R: Relocation<Platform = Elf>>(
-    object: &ObjectLayoutState<'data, Elf>,
+fn classify_symbol_relocation<
+    'data,
+    C: ElfClass,
+    A: Arch<Platform = Elf<C>>,
+    R: Relocation<Platform = Elf<C>>,
+>(
+    object: &ObjectLayoutState<'data, Elf<C>>,
     rel: &R,
     section: &<A::Platform as Platform>::SectionHeader,
     local_sym_index: object::SymbolIndex,
-    resources: &layout::GraphResources<'data, '_, Elf>,
+    resources: &layout::GraphResources<'data, '_, Elf<C>>,
 ) -> Result<ClassifiedSymbolRelocation> {
     let args = resources.symbol_db.args;
     let symbol_db = resources.symbol_db;
@@ -5817,15 +5944,16 @@ fn classify_symbol_relocation<'data, A: Arch<Platform = Elf>, R: Relocation<Plat
 #[inline(always)]
 fn materialize_relocation_requirements<
     'data,
-    A: Arch<Platform = Elf>,
-    R: Relocation<Platform = Elf>,
+    C: ElfClass,
+    A: Arch<Platform = Elf<C>>,
+    R: Relocation<Platform = Elf<C>>,
 >(
-    common: &mut CommonGroupState<'data, Elf>,
+    common: &mut CommonGroupState<'data, Elf<C>>,
     rel: &R,
     section: &<A::Platform as Platform>::SectionHeader,
-    resources: &layout::GraphResources<'data, '_, Elf>,
+    resources: &layout::GraphResources<'data, '_, Elf<C>>,
     is_debug_section: bool,
-    relr_writer: &mut RelrEncoder,
+    relr_writer: &mut RelrEncoder<C>,
     classified: &mut ClassifiedSymbolRelocation,
 ) -> Result {
     let args = resources.symbol_db.args;
@@ -5869,7 +5997,7 @@ fn materialize_relocation_requirements<
             );
         }
         if section_is_writable {
-            common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+            common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
         } else if flags.is_function() {
             // Create a PLT entry for the function and refer to that instead.
             flags_to_add.remove(ValueFlags::DIRECT);
@@ -5896,7 +6024,7 @@ fn materialize_relocation_requirements<
         && section_is_writable
         && symbol_db.output_kind.is_relocatable()
     {
-        common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+        common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
     } else if symbol_db.output_kind.is_relocatable()
         && rel_kind == RelocationKind::Absolute
         && flags.is_address()
@@ -5907,12 +6035,12 @@ fn materialize_relocation_requirements<
             if resources.symbol_db.args.is_relr_enabled() && rel.offset().is_multiple_of(2) {
                 relr_writer.encode(rel.offset(), |_, encoding| {
                     if matches!(encoding, RelrEntryEncoding::New) {
-                        common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                        common.allocate(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
                     }
                     Ok(())
                 })?;
             } else {
-                common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                common.allocate(part_id::RELA_DYN_RELATIVE, C::RELA_ENTRY_SIZE);
             }
         } else if !is_debug_section {
             bail!(
@@ -5943,9 +6071,9 @@ fn materialize_relocation_requirements<
 
 /// Record that a live section references `classified.symbol_id` and enqueue graph work if needed.
 #[inline(always)]
-fn note_relocation_symbol_reference<'data, 'scope, A: Arch<Platform = Elf>>(
+fn note_relocation_symbol_reference<'data, 'scope, C: ElfClass, A: Arch<Platform = Elf<C>>>(
     classified: &ClassifiedSymbolRelocation,
-    resources: &'scope layout::GraphResources<'data, '_, Elf>,
+    resources: &'scope layout::GraphResources<'data, '_, Elf<C>>,
     queue: &mut layout::LocalWorkQueue,
     scope: &Scope<'scope>,
 ) -> ValueFlags {
@@ -6017,23 +6145,26 @@ pub(crate) fn is_got_relr_eligible(
         && output_kind.is_relocatable()
 }
 
-fn got_relr_bitmap_relr_count(n: u64) -> u64 {
+fn got_relr_bitmap_relr_count<C: ElfClass>(n: u64) -> u64 {
     if n == 0 {
         0
     } else {
-        1 + n.saturating_sub(1).div_ceil(RELR_BITMAP_SLOTS)
+        1 + n.saturating_sub(1).div_ceil(relr_bitmap_slots::<C>())
     }
 }
 
-fn allocate_got(num_entries: u64, memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
+fn allocate_got<C: ElfClass>(
+    num_entries: u64,
+    memory_offsets: &mut OutputSectionPartMap<u64>,
+) -> NonZeroU64 {
     let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT)).unwrap();
-    memory_offsets.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * num_entries);
+    memory_offsets.increment(part_id::GOT, C::GOT_ENTRY_SIZE * num_entries);
     got_address
 }
 
-fn allocate_got_relr(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
+fn allocate_got_relr<C: ElfClass>(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
     let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT_RELR)).unwrap();
-    memory_offsets.increment(part_id::GOT_RELR, elf::GOT_ENTRY_SIZE);
+    memory_offsets.increment(part_id::GOT_RELR, C::GOT_ENTRY_SIZE);
     got_address
 }
 
@@ -6043,7 +6174,7 @@ fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
     plt_address
 }
 
-impl Resolution<Elf> {
+impl<C: ElfClass> Resolution<Elf<C>> {
     pub(crate) fn got_address(&self) -> Result<u64> {
         Ok(self
             .format_specific
@@ -6055,7 +6186,7 @@ impl Resolution<Elf> {
     pub(crate) fn got_address_for_relocation(&self) -> Result<u64> {
         let mut got_address = self.got_address()?;
         if self.flags.needs_ifunc_got_for_address() {
-            got_address += elf::GOT_ENTRY_SIZE;
+            got_address += C::GOT_ENTRY_SIZE;
         }
         Ok(got_address)
     }
@@ -6068,7 +6199,7 @@ impl Resolution<Elf> {
         // If we've got both a GOT_TLS_OFFSET and a GOT_TLS_MODULE, then the latter comes second.
         let mut got_address = self.got_address()?;
         if self.flags.needs_got_tls_offset() {
-            got_address += elf::GOT_ENTRY_SIZE;
+            got_address += C::GOT_ENTRY_SIZE;
         }
         Ok(got_address)
     }
@@ -6082,10 +6213,10 @@ impl Resolution<Elf> {
         // for a single symbol. Then the TLS descriptor comes as the last one.
         let mut got_address = self.got_address()?;
         if self.flags.needs_got_tls_offset() {
-            got_address += elf::GOT_ENTRY_SIZE;
+            got_address += C::GOT_ENTRY_SIZE;
         }
         if self.flags.needs_got_tls_module() {
-            got_address += 2 * elf::GOT_ENTRY_SIZE;
+            got_address += 2 * C::GOT_ENTRY_SIZE;
         }
 
         Ok(got_address)
@@ -6104,7 +6235,7 @@ impl Resolution<Elf> {
         &self,
         addend: i64,
         symbol_index: object::SymbolIndex,
-        object_layout: &ObjectLayout<'data, Elf>,
+        object_layout: &ObjectLayout<'data, Elf<C>>,
         section_part_ids: &[PartId],
         merged_strings: &OutputSectionMap<MergedStringsSection>,
         merged_string_start_addresses: &MergedStringStartAddresses,
@@ -6117,7 +6248,7 @@ impl Resolution<Elf> {
         // section to see if it's a string-merge section. For string-merge symbols with names,
         // `raw_value` will have already been computed, so we can avoid computing it again.
         if self.raw_value == 0
-            && let Some(r) = crate::string_merging::get_merged_string_output_address::<Elf>(
+            && let Some(r) = crate::string_merging::get_merged_string_output_address::<Elf<C>>(
                 symbol_index,
                 addend,
                 object_layout.object,
@@ -6255,21 +6386,21 @@ fn parse_priority_suffix(suffix: &[u8]) -> Option<u16> {
     Some(u16::try_from(value).unwrap_or(u16::MAX))
 }
 
-pub(crate) fn program_headers_size(header_info: &layout::HeaderInfo) -> u64 {
-    u64::from(elf::PROGRAM_HEADER_SIZE) * header_info.active_segment_ids.len() as u64
+pub(crate) fn program_headers_size<C: ElfClass>(header_info: &layout::HeaderInfo) -> u64 {
+    u64::from(C::PROGRAM_HEADER_SIZE) * header_info.active_segment_ids.len() as u64
 }
 
-fn section_headers_size(header_info: &layout::HeaderInfo) -> u64 {
-    u64::from(elf::SECTION_HEADER_SIZE) * u64::from(header_info.num_output_sections_with_content)
+fn section_headers_size<C: ElfClass>(header_info: &layout::HeaderInfo) -> u64 {
+    u64::from(C::SECTION_HEADER_SIZE) * u64::from(header_info.num_output_sections_with_content)
 }
 
 /// Where we've decided that we need copy relocations, look for symbols with the same address as the
 /// symbols with copy relocations. If the other symbol is non-weak, then we do the copy relocation
 /// for that symbol instead. We also request dynamic symbol definitions for each copy relocation.
 /// For that reason, this needs to be done before we merge dynamic symbol definitions.
-fn finalise_copy_relocations<'data>(
-    group_states: &mut [layout::GroupState<'data, Elf>],
-    symbol_db: &SymbolDb<'data, Elf>,
+fn finalise_copy_relocations<'data, C: ElfClass>(
+    group_states: &mut [layout::GroupState<'data, Elf<C>>],
+    symbol_db: &SymbolDb<'data, Elf<C>>,
     symbol_flags: &AtomicPerSymbolFlags,
 ) -> Result {
     timing_phase!("Finalise copy relocations");
@@ -6299,11 +6430,11 @@ fn finalise_copy_relocations<'data>(
 /// Looks for any non-weak symbols at the same addresses as any of our copy relocations. If
 /// found, we'll generate the copy relocation for the strong symbol instead of weak symbol at
 /// the same address.
-fn select_copy_relocation_alternatives<'data>(
-    state: &mut layout::DynamicLayoutState<'data, Elf>,
+fn select_copy_relocation_alternatives<'data, C: ElfClass>(
+    state: &mut layout::DynamicLayoutState<'data, Elf<C>>,
     per_symbol_flags: &AtomicPerSymbolFlags,
-    common: &mut CommonGroupState<'data, Elf>,
-    symbol_db: &SymbolDb<'data, Elf>,
+    common: &mut CommonGroupState<'data, Elf<C>>,
+    symbol_db: &SymbolDb<'data, Elf<C>>,
 ) -> Result {
     for (i, symbol) in state.object.enumerate_symbols() {
         let address = symbol.value();
@@ -6334,9 +6465,9 @@ fn select_copy_relocation_alternatives<'data>(
     Ok(())
 }
 
-fn allocate_for_copy_relocations<'data>(
-    state: &layout::DynamicLayoutState<'data, Elf>,
-    common: &mut CommonGroupState<'data, Elf>,
+fn allocate_for_copy_relocations<'data, C: ElfClass>(
+    state: &layout::DynamicLayoutState<'data, Elf<C>>,
+    common: &mut CommonGroupState<'data, Elf<C>>,
 ) -> Result {
     for value in state.format_specific.copy_relocations.values() {
         let symbol_id = value.symbol_id;
@@ -6355,19 +6486,19 @@ fn allocate_for_copy_relocations<'data>(
         // Allocate space in BSS for the copy of the symbol.
         let size = symbol.size();
         common.allocate(
-            output_section_id::BSS.part_id_with_alignment::<Elf>(alignment),
+            output_section_id::BSS.part_id_with_alignment::<Elf<C>>(alignment),
             alignment.align_up(size),
         );
 
         // Allocate space required for the copy relocation itself.
-        common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
+        common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
     }
 
     Ok(())
 }
 
-fn assign_copy_relocation_addresses<'data>(
-    state: &layout::DynamicLayoutState<'data, Elf>,
+fn assign_copy_relocation_addresses<'data, C: ElfClass>(
+    state: &layout::DynamicLayoutState<'data, Elf<C>>,
     copy_relocation_symbols: &[SymbolId],
     memory_offsets: &mut OutputSectionPartMap<u64>,
 ) -> Result<HashMap<u64, u64>> {
@@ -6387,7 +6518,7 @@ fn assign_copy_relocation_addresses<'data>(
 
             let input_address = symbol.value();
             let output_address =
-                assign_copy_relocation_address(alignment, symbol.size(), memory_offsets);
+                assign_copy_relocation_address::<C>(alignment, symbol.size(), memory_offsets);
 
             Ok((input_address, output_address))
         })
@@ -6395,13 +6526,13 @@ fn assign_copy_relocation_addresses<'data>(
 }
 
 /// Assigns the address in BSS for the copy relocation of a symbol.
-fn assign_copy_relocation_address(
+fn assign_copy_relocation_address<C: ElfClass>(
     alignment: Alignment,
     size: u64,
     memory_offsets: &mut OutputSectionPartMap<u64>,
 ) -> u64 {
     let bss =
-        memory_offsets.get_mut(output_section_id::BSS.part_id_with_alignment::<Elf>(alignment));
+        memory_offsets.get_mut(output_section_id::BSS.part_id_with_alignment::<Elf<C>>(alignment));
     let a = *bss;
     *bss += alignment.align_up(size);
     a
@@ -6433,7 +6564,7 @@ impl CopyRelocationInfo {
 
 /// Returns the thunk config for the architecture of the given object. This is only needed in
 /// contexts that aren't currently generic over Arch.
-fn thunk_config_for_object(file: &File) -> Option<ThunkConfig> {
+fn thunk_config_for_object<C: ElfClass>(file: &File<'_, C>) -> Option<ThunkConfig> {
     match file.arch {
         crate::arch::Architecture::AArch64 => crate::elf_aarch64::ElfAArch64::thunk_config(),
         _ => None,
@@ -6452,6 +6583,6 @@ impl SinglePartSectionId {
 
 impl RegularSectionId {
     const fn output_section_id(self) -> OutputSectionId {
-        crate::output_section_id::regular_section_base::<Elf>().offset(self as usize)
+        OutputSectionId::from_u32(ELF_NUM_SINGLE_PART_SECTIONS).offset(self as usize)
     }
 }

@@ -415,10 +415,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         args.rpath = Some(std::mem::take(&mut args.rpath_set).into_iter().join(":"));
     }
 
-    if !args.common.unrecognized_options.is_empty() {
-        let options_list = args.common.unrecognized_options.join(", ");
-        bail!("unrecognized option(s): {}", options_list);
-    }
+    args.common.report_unrecognized()?;
 
     if !args.auxiliary.is_empty() && args.should_output_executable {
         bail!("-f may not be used without -shared");

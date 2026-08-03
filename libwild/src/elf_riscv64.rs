@@ -1,4 +1,6 @@
 use crate::elf::Elf64;
+use crate::elf::ElfCrel;
+use crate::elf::ElfRela;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::RelocationList64;
 use crate::ensure;
@@ -9,7 +11,6 @@ use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::Relocation;
-use crate::platform::RelocationSequence as _;
 use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
@@ -300,14 +301,14 @@ impl crate::platform::Arch for ElfRiscV64 {
             RelocationList64::Rela(rela_list) => collect_relaxation_deltas(
                 section_output_address,
                 section_bytes,
-                rela_list.rel_iter(),
+                rela_list.iter().copied().map(ElfRela::new),
                 existing_deltas,
                 &mut resolve_symbol,
             ),
             RelocationList64::Crel(crel_iter) => collect_relaxation_deltas(
                 section_output_address,
                 section_bytes,
-                crel_iter.flatten(),
+                crel_iter.flatten().map(ElfCrel::new),
                 existing_deltas,
                 &mut resolve_symbol,
             ),
@@ -320,7 +321,7 @@ impl crate::platform::Arch for ElfRiscV64 {
         section: &<Self::Platform as Platform>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<crate::platform::SourceInfo> {
-        crate::dwarf_address_info::get_source_info::<Self>(
+        crate::dwarf_address_info::get_source_info::<crate::elf::Class64, Self>(
             object,
             relocations,
             section,

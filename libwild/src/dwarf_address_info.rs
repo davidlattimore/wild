@@ -1,22 +1,25 @@
 //! Uses DWARF debug info, if available, to find file and line number information for a particular
 //! offset in an input section.
 
-use crate::elf::Elf64;
-use crate::elf::File64;
-use crate::elf::Rela;
+use crate::elf::Elf;
+use crate::elf::ElfClass;
+use crate::elf::ElfCrel;
+use crate::elf::ElfRela;
+use crate::elf::File;
+use crate::elf::SectionHeader;
 use crate::error::Result;
 use crate::fs::path_from_bytes;
 use crate::platform::Arch;
 use crate::platform::ObjectFile as _;
 use crate::platform::Relocation;
-use crate::platform::RelocationSequence as _;
 use crate::platform::SourceInfo;
 use crate::platform::SourceInfoDetails;
 use anyhow::Context;
 use linker_utils::elf::RelocationKind;
 use object::LittleEndian;
-use object::read::elf::Crel;
 use object::read::elf::RelocationSections;
+use object::read::elf::SectionHeader as _;
+use object::read::elf::Sym as _;
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::path::PathBuf;
@@ -24,18 +27,18 @@ use std::path::PathBuf;
 /// The address at which we'll pretend that we loaded the section we're interested in. This value is
 /// arbitrary, but should be larger than the largest input section we expect to encounter and small
 /// enough to fit comfortably in a u32.
-const SECTION_LOAD_ADDRESS: u64 = 0x1_000_000_000;
+const SECTION_LOAD_ADDRESS: u64 = 0x8000_0000;
 
 /// Attempts to locate source info for `offset_in_section` within `section`.
-pub(crate) fn get_source_info<A: Arch<Platform = Elf64>>(
-    object: &File64,
+pub(crate) fn get_source_info<C: ElfClass, A: Arch<Platform = Elf<C>>>(
+    object: &File<C>,
     relocations: &RelocationSections,
-    section: &object::elf::SectionHeader64<LittleEndian>,
+    section: &SectionHeader<C>,
     offset_in_section: u64,
 ) -> Result<SourceInfo> {
     let dwarf_sections =
         gimli::DwarfSections::load(&|id: gimli::SectionId| -> Result<Cow<[u8]>> {
-            section_data_with_relocations::<A>(object, relocations, id, section)
+            section_data_with_relocations::<C, A>(object, relocations, id, section)
         })?;
 
     let borrow_section: &dyn for<'a> Fn(
@@ -93,11 +96,11 @@ pub(crate) fn get_source_info<A: Arch<Platform = Elf64>>(
 }
 
 /// Gets the data for section `id` from `object` and applies relocations to it.
-fn section_data_with_relocations<A: Arch<Platform = Elf64>>(
-    object: &File64,
+fn section_data_with_relocations<C: ElfClass, A: Arch<Platform = Elf<C>>>(
+    object: &File<C>,
     relocations: &RelocationSections,
     id: gimli::SectionId,
-    section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
+    section_of_interest: &SectionHeader<C>,
 ) -> Result<Cow<'static, [u8]>> {
     let data = match object.section_by_name(id.name()) {
         Some((index, section)) => {
@@ -106,19 +109,19 @@ fn section_data_with_relocations<A: Arch<Platform = Elf64>>(
             // Apply relocations.
             match object.relocations(index, relocations)? {
                 crate::elf::RelocationList::Rela(relocations) => {
-                    apply_section_relocations::<A, Rela>(
+                    apply_section_relocations::<C, A, ElfRela<C>>(
                         object,
                         section_of_interest,
                         &mut section_data,
-                        relocations.rel_iter(),
+                        relocations.iter().copied().map(ElfRela::new),
                     )?;
                 }
                 crate::elf::RelocationList::Crel(relocations) => {
-                    apply_section_relocations::<A, Crel>(
+                    apply_section_relocations::<C, A, ElfCrel<C>>(
                         object,
                         section_of_interest,
                         &mut section_data,
-                        relocations.filter_map(|r| r.ok()),
+                        relocations.filter_map(|r| r.ok().map(ElfCrel::new)),
                     )?;
                 }
             }
@@ -131,9 +134,13 @@ fn section_data_with_relocations<A: Arch<Platform = Elf64>>(
     Ok(data)
 }
 
-fn apply_section_relocations<A: Arch<Platform = Elf64>, R: Relocation<Platform = Elf64>>(
-    object: &File64,
-    section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
+fn apply_section_relocations<
+    C: ElfClass,
+    A: Arch<Platform = Elf<C>>,
+    R: Relocation<Platform = Elf<C>>,
+>(
+    object: &File<C>,
+    section_of_interest: &SectionHeader<C>,
     section_data: &mut [u8],
     relocations: impl Iterator<Item = R>,
 ) -> Result {
@@ -142,8 +149,8 @@ fn apply_section_relocations<A: Arch<Platform = Elf64>, R: Relocation<Platform =
         let symbol = object.symbol(sym_index)?;
 
         let mut value = symbol
-            .st_value
-            .get(LittleEndian)
+            .st_value(LittleEndian)
+            .into()
             .wrapping_add(rel.addend() as u64);
 
         let Some(section_index) = object.symbol_section(symbol, sym_index)? else {
@@ -166,8 +173,8 @@ fn apply_section_relocations<A: Arch<Platform = Elf64>, R: Relocation<Platform =
 
         match r_type.kind {
             RelocationKind::Absolute => {
-                let in_section_of_interest = symbol_section.sh_offset.get(LittleEndian)
-                    == section_of_interest.sh_offset.get(LittleEndian);
+                let in_section_of_interest = symbol_section.sh_offset(LittleEndian).into()
+                    == section_of_interest.sh_offset(LittleEndian).into();
 
                 if in_section_of_interest {
                     value += SECTION_LOAD_ADDRESS;

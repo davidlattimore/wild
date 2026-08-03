@@ -1,4 +1,6 @@
 use crate::wasm::Wasm;
+use crate::wasm::relocation_type_to_string;
+use wasmparser::RelocationType;
 
 pub(crate) struct WasmWasm32;
 
@@ -34,7 +36,9 @@ impl crate::platform::Arch for WasmWasm32 {
 
     fn arch_identifier() -> <Self::Platform as crate::platform::Platform>::ArchIdentifier {}
 
-    fn get_dynamic_relocation_type(_relocation: linker_utils::elf::DynamicRelocationKind) -> u32 {
+    fn get_dynamic_relocation_type(
+        _relocation: linker_utils::elf::DynamicRelocationKind,
+    ) -> RelocationType {
         todo!()
     }
 
@@ -54,8 +58,8 @@ impl crate::platform::Arch for WasmWasm32 {
         todo!()
     }
 
-    fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Owned(format!("R_WASM_{r_type}"))
+    fn rel_type_to_string(r_type: RelocationType) -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(relocation_type_to_string(r_type))
     }
 
     fn tp_offset_start(_layout: &crate::layout::Layout<Self::Platform>) -> u64 {
@@ -73,7 +77,7 @@ impl crate::platform::Arch for WasmWasm32 {
         Ok(0)
     }
 
-    fn high_part_relocations() -> &'static [u32] {
+    fn high_part_relocations() -> &'static [RelocationType] {
         &[]
     }
 
@@ -87,7 +91,7 @@ impl crate::platform::Arch for WasmWasm32 {
     }
 
     fn new_relaxation(
-        _relocation_kind: u32,
+        _relocation_kind: RelocationType,
         _section_bytes: &[u8],
         _offset_in_section: u64,
         _flags: crate::value_flags::ValueFlags,
