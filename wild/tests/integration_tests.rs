@@ -6819,6 +6819,7 @@ fn verify_linker_plugin_requirements(
                 verifier_path.display()
             );
 
+            let tmp_dir = tempfile::tempdir()?;
             // Check that rustc can use linker-plugin-lto with the installed clang. This eliminates
             // platforms where the LLVM version used by clang doesn't match the version used by
             // rustc.
@@ -6830,7 +6831,7 @@ fn verify_linker_plugin_requirements(
                 "-Clinker-plugin-lto",
                 "-Clink-arg=-flto",
                 "-o",
-                &format!("/tmp/rust-{}.out", config.arch),
+                &format!("{}/rust.out", tmp_dir.path().display()),
             ]);
             verify_command_success(&mut command).context(
                 "Can't use rust+clang with linker plugin. LLVM version mismatch? \
