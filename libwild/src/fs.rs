@@ -123,7 +123,10 @@ pub trait OutputFileData: Send {
 ///
 ///     fn finish(mut self) -> libwild::error::Result {
 ///         let data = mem::take(&mut self.bytes);
-///         self.files.lock().unwrap().insert(self.path.clone(), data);
+///         self.files
+///             .lock()
+///             .unwrap()
+///             .insert(self.path.clone(), data);
 ///         Ok(())
 ///     }
 /// }
@@ -147,43 +150,51 @@ pub trait OutputFileData: Send {
 ///         Ok((Input(bytes), None))
 ///     }
 ///
-///     fn file_type(&self, path: &Path) -> std::io::Result<FileType> {
-///         if self.files.lock().unwrap().contains_key(&path.to_path_buf()) {
+///     fn file_type(&self, path: &Path) -> libwild::error::Result<FileType> {
+///         if self
+///             .files
+///             .lock()
+///             .unwrap()
+///             .contains_key(&path.to_path_buf())
+///         {
 ///             Ok(FileType::File)
 ///         } else {
 ///             Err(std::io::Error::new(
 ///                 std::io::ErrorKind::NotFound,
 ///                 "no such in-memory file",
-///             ))
+///             )
+///             .into())
 ///         }
 ///     }
 ///
-///     fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
+///     fn canonicalize(&self, path: &Path) -> libwild::error::Result<PathBuf> {
 ///         Ok(path.to_path_buf())
 ///     }
 ///
-///     fn rename_file(&self, path: &Path, new_path: &Path) -> std::io::Result<()> {
+///     fn rename_file(&self, path: &Path, new_path: &Path) -> libwild::error::Result<()> {
 ///         let mut guard = self.files.lock().unwrap();
 ///         let Some(data) = guard.remove(&path.to_path_buf()) else {
 ///             return Err(std::io::Error::new(
 ///                 std::io::ErrorKind::NotFound,
 ///                 "no such in-memory file",
-///             ));
+///             )
+///             .into());
 ///         };
 ///         guard.insert(new_path.to_path_buf(), data);
 ///
 ///         Ok(())
 ///     }
 ///
-///     fn remove_file(&self, path: &Path) -> std::io::Result<()> {
-///         self.files
+///     fn remove_file(&self, path: &Path) -> libwild::error::Result<()> {
+///         Ok(self
+///             .files
 ///             .lock()
 ///             .unwrap()
 ///             .remove(&path.to_path_buf())
 ///             .map(|_| ())
 ///             .ok_or_else(|| {
 ///                 std::io::Error::new(std::io::ErrorKind::NotFound, "no such in-memory file")
-///             })
+///             })?)
 ///     }
 ///
 ///     fn create_output(
@@ -273,16 +284,16 @@ pub trait FileSystem: Send + Sync + 'static {
     ) -> Result<(Self::Input, Option<Arc<File>>)>;
 
     /// Returns the type of the file at `path`.
-    fn file_type(&self, path: &Path) -> std::io::Result<FileType>;
+    fn file_type(&self, path: &Path) -> Result<FileType>;
 
     /// Resolves symbolic links and returns the canonical absolute path.
-    fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf>;
+    fn canonicalize(&self, path: &Path) -> Result<PathBuf>;
 
     /// Removes a file.
-    fn remove_file(&self, path: &Path) -> std::io::Result<()>;
+    fn remove_file(&self, path: &Path) -> Result<()>;
 
     /// Rename an existing file to a new path.
-    fn rename_file(&self, path: &Path, new_path: &Path) -> std::io::Result<()>;
+    fn rename_file(&self, path: &Path, new_path: &Path) -> Result<()>;
 
     /// Creates the sized random-access output.
     fn create_output(&self, path: Arc<Path>, options: OutputOptions) -> Result<Self::Output>;
@@ -465,7 +476,7 @@ impl FileSystem for OsFileSystem {
         ))
     }
 
-    fn file_type(&self, path: &Path) -> std::io::Result<FileType> {
+    fn file_type(&self, path: &Path) -> Result<FileType> {
         let ty = std::fs::metadata(path)?.file_type();
         Ok(if ty.is_file() {
             FileType::File
@@ -476,16 +487,16 @@ impl FileSystem for OsFileSystem {
         })
     }
 
-    fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
-        std::fs::canonicalize(path)
+    fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
+        Ok(std::fs::canonicalize(path)?)
     }
 
-    fn remove_file(&self, path: &Path) -> std::io::Result<()> {
-        std::fs::remove_file(path)
+    fn remove_file(&self, path: &Path) -> Result<()> {
+        Ok(std::fs::remove_file(path)?)
     }
 
-    fn rename_file(&self, path: &Path, new_path: &Path) -> std::io::Result<()> {
-        std::fs::rename(path, new_path)
+    fn rename_file(&self, path: &Path, new_path: &Path) -> Result<()> {
+        Ok(std::fs::rename(path, new_path)?)
     }
 
     fn create_output(&self, path: Arc<Path>, options: OutputOptions) -> Result<Self::Output> {
