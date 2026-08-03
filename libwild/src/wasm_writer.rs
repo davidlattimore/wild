@@ -235,9 +235,7 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
 fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()> {
     verbose_timing_phase!("Encode Wasm data section");
     let object_data_layouts = &wasm_layout.object_data_layouts;
-    let has_segments = object_data_layouts
-        .iter()
-        .any(|object| !object.segments.is_empty());
+    let has_segments = object_data_layouts.iter().any(|object| !object.is_empty());
     if !has_segments {
         ensure!(
             out.is_empty(),
@@ -326,7 +324,7 @@ pub(crate) fn build_data_section(wasm_layout: &WasmLayout<'_>) -> Result<DataSec
     for (obj_idx, object_layout) in wasm_layout.object_data_layouts.iter().enumerate() {
         let index_map = &wasm_layout.object_index_maps[obj_idx];
         let symbols = &wasm_layout.per_object_symbols[obj_idx];
-        for segment in &object_layout.segments {
+        for segment in object_layout {
             let mut payload = segment.data.to_vec();
             for reloc in &segment.relocations {
                 apply_resolved_reloc(

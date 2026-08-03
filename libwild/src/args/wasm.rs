@@ -1,22 +1,13 @@
-#![allow(unused)]
-
 use crate::alignment::Alignment;
 use crate::args::ArgumentParser;
 use crate::args::CommonArgs;
-use crate::args::FILES_PER_GROUP_ENV;
 use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
-use crate::args::REFERENCE_LINKER_ENV;
-use crate::args::RelocationModel;
 use crate::args::parse_number;
-use crate::bail;
-use crate::ensure;
 use crate::error::Result;
 use crate::platform;
 use crate::platform::Args as _;
-use crate::save_dir::SaveDir;
-use jobserver::Client;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -116,7 +107,7 @@ impl platform::Args for WasmArgs {
         todo!()
     }
 
-    fn should_export_dynamic(&self, lib_name: &[u8]) -> bool {
+    fn should_export_dynamic(&self, _lib_name: &[u8]) -> bool {
         todo!()
     }
 
@@ -308,11 +299,11 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::Args as _;
+    use crate::platform::Args;
 
     fn parse_args<'a>(args: impl IntoIterator<Item = &'a str>) -> WasmArgs {
         let mut wasm_args = WasmArgs::new().unwrap();
-        wasm_args.parse(args.into_iter()).unwrap();
+        Args::parse(&mut wasm_args, args.into_iter()).unwrap();
         wasm_args
     }
 
@@ -320,7 +311,7 @@ mod tests {
     fn parse_export_space_and_equals() {
         let args = parse_args(["--export", "foo", "--export=bar", "-o", "out.wasm"]);
         assert_eq!(args.export_symbols, ["foo", "bar"]);
-        assert_eq!(args.force_export_symbol_names(), ["foo", "bar"]);
+        assert_eq!(Args::force_export_symbol_names(&args), ["foo", "bar"]);
     }
 
     #[test]

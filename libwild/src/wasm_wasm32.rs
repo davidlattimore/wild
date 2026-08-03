@@ -1,6 +1,3 @@
-// TODO
-#![allow(unused_variables)]
-
 use crate::wasm::Wasm;
 use crate::wasm::relocation_type_to_string;
 use wasmparser::RelocationType;
@@ -40,22 +37,22 @@ impl crate::platform::Arch for WasmWasm32 {
     fn arch_identifier() -> <Self::Platform as crate::platform::Platform>::ArchIdentifier {}
 
     fn get_dynamic_relocation_type(
-        relocation: linker_utils::elf::DynamicRelocationKind,
+        _relocation: linker_utils::elf::DynamicRelocationKind,
     ) -> RelocationType {
         todo!()
     }
 
     fn write_plt_entry(
-        plt_entry: &mut [u8],
-        got_address: u64,
-        plt_address: u64,
+        _plt_entry: &mut [u8],
+        _got_address: u64,
+        _plt_address: u64,
     ) -> crate::error::Result {
         // Wasm has no PLT.
         unreachable!("wasm has no PLT")
     }
 
     fn relocation_from_raw(
-        r_type: <Self::Platform as crate::platform::Platform>::RelocationInfo,
+        _r_type: <Self::Platform as crate::platform::Platform>::RelocationInfo,
     ) -> crate::error::Result<linker_utils::elf::RelocationKindInfo> {
         // TODO: map Wasm reloc type codes (R_WASM_*) to RelocationKindInfo.
         todo!()
@@ -65,17 +62,17 @@ impl crate::platform::Arch for WasmWasm32 {
         std::borrow::Cow::Borrowed(relocation_type_to_string(r_type))
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout<Self::Platform>) -> u64 {
+    fn tp_offset_start(_layout: &crate::layout::Layout<Self::Platform>) -> u64 {
         // Wasm has no TLS yet.
         0
     }
 
-    fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass> {
+    fn get_property_class(_property_type: u32) -> Option<crate::elf::PropertyClass> {
         // Wasm has no GNU property notes.
         None
     }
 
-    fn merge_eflags(eflags: impl Iterator<Item = u32>) -> crate::error::Result<u32> {
+    fn merge_eflags(_eflags: impl Iterator<Item = u32>) -> crate::error::Result<u32> {
         // Wasm has no e_flags equivalent.
         Ok(0)
     }
@@ -85,23 +82,23 @@ impl crate::platform::Arch for WasmWasm32 {
     }
 
     fn get_source_info<'data>(
-        object: &<Self::Platform as crate::platform::Platform>::File<'data>,
-        relocations: &<Self::Platform as crate::platform::Platform>::RelocationSections,
-        section: &<Self::Platform as crate::platform::Platform>::SectionHeader,
-        offset_in_section: u64,
+        _object: &<Self::Platform as crate::platform::Platform>::File<'data>,
+        _relocations: &<Self::Platform as crate::platform::Platform>::RelocationSections,
+        _section: &<Self::Platform as crate::platform::Platform>::SectionHeader,
+        _offset_in_section: u64,
     ) -> crate::error::Result<crate::platform::SourceInfo> {
         todo!()
     }
 
     fn new_relaxation(
-        relocation_kind: RelocationType,
-        section_bytes: &[u8],
-        offset_in_section: u64,
-        flags: crate::value_flags::ValueFlags,
-        output_kind: crate::output_kind::OutputKind,
-        section_flags: <Self::Platform as crate::platform::Platform>::SectionFlags,
-        non_zero_address: bool,
-        relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
+        _relocation_kind: RelocationType,
+        _section_bytes: &[u8],
+        _offset_in_section: u64,
+        _flags: crate::value_flags::ValueFlags,
+        _output_kind: crate::output_kind::OutputKind,
+        _section_flags: <Self::Platform as crate::platform::Platform>::SectionFlags,
+        _non_zero_address: bool,
+        _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
     ) -> Option<Self::Relaxation> {
         // Wasm doesn't currently support any relaxations.
         None
