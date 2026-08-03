@@ -2232,7 +2232,9 @@ fn process_directive(
             config.enabled_linkers.insert(arg.to_owned());
         }
         "Cross" => config.cross_enabled = arg.parse()?,
-        "SkipOverlapSegmentsCheck" => config.assertions.skip_overlap_segments_check = arg.parse()?,
+        "SkipOverlapSegmentsCheck" => {
+            config.assertions.skip_overlap_segments_check = arg.parse()?
+        }
         "ExpectError" => {
             config.expect_stderr.push(ErrorMatcher::new(arg)?);
             config.should_error = true;
