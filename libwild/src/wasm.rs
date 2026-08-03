@@ -468,6 +468,12 @@ pub(crate) fn write_uleb128(buf: &mut [u8], value: u64) -> usize {
     leb128::write::unsigned(&mut writable, value).unwrap()
 }
 
+/// Write `value` as a signed LEB128 into `buf`, returning the number of bytes written.
+pub(crate) fn write_sleb128(buf: &mut [u8], value: i64) -> usize {
+    let mut writable = &mut *buf;
+    leb128::write::signed(&mut writable, value).unwrap()
+}
+
 /// Write `value` as a 5-byte fixed-width unsigned LEB128. Used for wasm reloc slots that reserve
 /// exactly 5 bytes regardless of the encoded value.
 pub(crate) fn write_uleb128_5(buf: &mut [u8; 5], value: u32) {
