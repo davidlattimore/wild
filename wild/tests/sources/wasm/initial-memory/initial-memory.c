@@ -16,6 +16,14 @@
 //#CompArgs: -DEXPECTED_HEAP_END=0
 //#ExpectError: initial memory must be aligned
 
+//#Config:max
+//#LinkArgs: --initial-memory=4294967296
+//#CompArgs: -DEXPECTED_HEAP_END=0
+// wasm-ld allows --initial-memory=2^32 but it makes `__heap_end` wrap around to 0, so Wild rejects
+// it
+//#ReferenceLinkers:
+//#ExpectError: initial memory too large
+
 extern char __heap_end;
 
 void _start(void) {

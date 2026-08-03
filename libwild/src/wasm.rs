@@ -4166,12 +4166,12 @@ fn emit_reserved_linker_definitions(
     }
 }
 
-fn wasm_page_size() -> u64 {
+const fn wasm_page_size() -> u64 {
     crate::args::wasm::WASM_PAGE_SIZE
 }
 
 /// Maximum linear-memory size in bytes for wasm32.
-const WASM32_MAX_MEMORY_BYTES: u64 = 1u64 << 32;
+const WASM32_MAX_MEMORY_BYTES: u64 = (1u64 << 32) - wasm_page_size();
 
 fn ensure_memory_covers(
     layout: &mut WasmLayout<'_>,
