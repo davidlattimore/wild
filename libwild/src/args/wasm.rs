@@ -5,6 +5,7 @@ use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::args::parse_number;
+use crate::bail;
 use crate::error::Result;
 use crate::platform;
 use crate::platform::Args as _;
@@ -236,6 +237,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .execute(|args, _modifier_stack, value| {
             args.entry = Some(value.to_owned());
             Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .prefix("m")
+        .help("Set target architecture")
+        .sub_option("wasm32", "Wasm32 target", |_args, _| Ok(()))
+        .execute(|_args, _modifier_stack, value| {
+            bail!("-m {value} is not supported for Wasm");
         });
 
     parser
