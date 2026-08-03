@@ -36,6 +36,9 @@ pub struct WasmArgs {
     pub(crate) stack_first: bool,
     // Entry symbol name. Defaults to `DEFAULT_ENTRY`.
     pub(crate) entry: Option<String>,
+    // When set, the output `memory.initial` is raised to at least this many bytes (must be
+    // page-aligned). `None` means size is derived from data / stack layout only.
+    pub(crate) initial_memory: Option<u64>,
 }
 
 impl WasmArgs {
@@ -56,6 +59,7 @@ impl Default for WasmArgs {
             z_stack_size: DEFAULT_STACK_SIZE,
             stack_first: true,
             entry: Some(DEFAULT_ENTRY.to_owned()),
+            initial_memory: None,
         }
     }
 }
@@ -282,6 +286,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Place stack at the end of linear memory after data")
         .execute(|args, _modifier_stack| {
             args.stack_first = false;
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("initial-memory")
+        .help("Initial size of the linear memory in bytes")
+        .execute(|args, _modifier_stack, value| {
+            args.initial_memory = Some(parse_number(value)?);
             Ok(())
         });
 
