@@ -35,6 +35,7 @@ use crate::layout::objects_iter;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
 use crate::layout_rules::SectionRuleOutcome;
+use crate::linker_script;
 use crate::output_kind::OutputKind;
 use crate::output_section_id::CustomSectionIds;
 use crate::output_section_id::OrderEvent;
@@ -844,6 +845,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             flags: header.sh_flags(LittleEndian),
             ty: header.sh_type(LittleEndian),
             entsize: header.sh_entsize(LittleEndian).into(),
+            overrides: Default::default(),
             class: PhantomData,
         }
     }
@@ -1417,6 +1419,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     flags: d.section_flags,
                     ty: d.ty,
                     entsize: d.element_size,
+                    overrides: Default::default(),
                     class: PhantomData,
                 },
                 kind: d.kind,
@@ -2905,6 +2908,28 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         name: SectionName<'data>,
     ) -> Option<SectionIdentity<'data, Self>> {
         Some(SectionIdentity::new(name, ()))
+    }
+
+    fn set_section_attributes(
+        linker_script_attributes: &linker_script::SectionAttributes,
+        mut output_attributes: Self::SectionAttributes,
+    ) -> Self::SectionAttributes {
+        match linker_script_attributes {
+            linker_script::SectionAttributes::Noload => {
+                output_attributes.ty = sht::NOBITS;
+                output_attributes.overrides.has_fixed_type = true;
+            }
+            linker_script::SectionAttributes::Readonly => {
+                output_attributes.overrides.avoid_progpogation = shf::WRITE | shf::EXECINSTR;
+            }
+            linker_script::SectionAttributes::Dsect
+            | linker_script::SectionAttributes::Copy
+            | linker_script::SectionAttributes::Info
+            | linker_script::SectionAttributes::Overlay => {
+                output_attributes.overrides.avoid_progpogation = shf::ALLOC;
+            }
+        }
+        output_attributes
     }
 }
 
@@ -4645,7 +4670,14 @@ pub(crate) struct SectionAttributes<C: ElfClass> {
     pub(crate) flags: SectionFlags,
     pub(crate) ty: SectionType,
     pub(crate) entsize: u64,
+    pub(crate) overrides: LinkerScriptOverrides,
     class: PhantomData<C>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct LinkerScriptOverrides {
+    pub(crate) avoid_progpogation: SectionFlags,
+    pub(crate) has_fixed_type: bool,
 }
 
 /// Section flags that should not be propagated from input sections to the output section in which
@@ -4673,11 +4705,15 @@ impl<C: ElfClass> platform::SectionAttributes for SectionAttributes<C> {
     fn apply(&self, output_sections: &mut OutputSections<Elf<C>>, section_id: OutputSectionId) {
         let info = output_sections.section_infos.get_mut(section_id);
 
-        info.section_attributes.flags |= self.flags.without(SECTION_FLAGS_PROPAGATION_MASK);
+        info.section_attributes.flags |= self.flags.without(
+            SECTION_FLAGS_PROPAGATION_MASK | info.section_attributes.overrides.avoid_progpogation,
+        );
 
         info.section_attributes.entsize = self.entsize;
 
-        info.section_attributes.ty = info.section_attributes.ty.max(self.ty);
+        if !info.section_attributes.overrides.has_fixed_type {
+            info.section_attributes.ty = info.section_attributes.ty.max(self.ty);
+        }
 
         if let SectionKind::Secondary(primary_id) = info.kind
             && info.location_info.is_some()

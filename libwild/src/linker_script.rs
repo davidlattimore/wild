@@ -103,6 +103,16 @@ pub(crate) struct Fill<'a> {
     pub(crate) value: Expression<'a>,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) enum SectionAttributes {
+    Noload,
+    Readonly,
+    Dsect,
+    Copy,
+    Info,
+    Overlay,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Section<'a> {
     pub(crate) output_section_name: &'a [u8],
@@ -113,6 +123,7 @@ pub(crate) struct Section<'a> {
     pub(crate) at_address: Option<Expression<'a>>,
     pub(crate) region: Option<&'a [u8]>,
     pub(crate) fill: Option<Fill<'a>>,
+    pub(crate) attributes: Option<SectionAttributes>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -1150,13 +1161,16 @@ fn parse_section_command<'input>(
         }));
     }
 
-    let start_address_expression = if input.starts_with(b":") {
-        None
-    } else {
-        Some(parse_expression.parse_next(input)?)
-    };
-
-    skip_comments_and_whitespace(input)?;
+    let mut start_address_expression = None;
+    let mut section_type = None;
+    while !input.starts_with(b":") {
+        if let Some(stype) = opt(parse_section_attribute).parse_next(input)? {
+            section_type = Some(stype);
+        } else {
+            start_address_expression = Some(parse_expression.parse_next(input)?);
+        }
+        skip_comments_and_whitespace(input)?;
+    }
 
     ':'.parse_next(input)?;
 
@@ -1206,7 +1220,30 @@ fn parse_section_command<'input>(
         at_address,
         region,
         fill,
+        attributes: section_type,
     }))
+}
+
+fn parse_section_attribute(input: &mut &BStr) -> winnow::Result<SectionAttributes> {
+    '('.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let section_type = parse_token.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    let section_type = match section_type {
+        b"NOLOAD" => SectionAttributes::Noload,
+        b"READONLY" => SectionAttributes::Readonly,
+        b"DSECT" => SectionAttributes::Dsect,
+        b"COPY" => SectionAttributes::Copy,
+        b"INFO" => SectionAttributes::Info,
+        b"OVERLAY" => SectionAttributes::Overlay,
+        _ => {
+            return Err(ContextError::default());
+        }
+    };
+    ')'.parse_next(input)?;
+
+    Ok(section_type)
 }
 
 fn parse_fill<'input>(input: &mut &'input BStr) -> winnow::Result<Fill<'input>> {
@@ -1600,6 +1637,7 @@ mod tests {
                 at_address: None,
                 region: None,
                 fill: None,
+                attributes: None,
             }),
         );
     }
@@ -1624,6 +1662,7 @@ mod tests {
                 at_address: None,
                 region: None,
                 fill: None,
+                attributes: None,
             }),
         );
     }
@@ -1692,6 +1731,7 @@ mod tests {
                                 at_address: None,
                                 region: None,
                                 fill: None,
+                                attributes: None,
                             }),
                         ],
                     }),
@@ -1844,6 +1884,7 @@ mod tests {
                 at_address: None,
                 region: None,
                 fill: None,
+                attributes: None,
             }),
         );
     }
@@ -1868,6 +1909,7 @@ mod tests {
                 at_address: None,
                 region: None,
                 fill: None,
+                attributes: None,
             }),
         );
     }
@@ -1892,6 +1934,7 @@ mod tests {
                 at_address: None,
                 region: None,
                 fill: None,
+                attributes: None,
             }),
         );
     }
@@ -1924,6 +1967,7 @@ mod tests {
                             at_address: None,
                             region: None,
                             fill: None,
+                            attributes: None,
                         })],
                     }),
                     Command::Assert(AssertCommand {
@@ -1967,6 +2011,7 @@ mod tests {
                             at_address: None,
                             region: None,
                             fill: None,
+                            attributes: None,
                         }),
                         SectionCommand::Assert(AssertCommand {
                             expression: Expression::LessThan(
