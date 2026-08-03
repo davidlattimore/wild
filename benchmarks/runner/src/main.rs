@@ -321,12 +321,15 @@ impl LinkerIdentifier {
         let mut hash = None;
         let mut variant = None;
 
-        if let Some(mut rest) = version_line.strip_prefix("Wild version ") {
+        if let Some(mut rest) = version_line.strip_prefix("Wild ") {
+            if let Some(r) = rest.strip_prefix("version ") {
+                rest = r;
+            }
             version = take_word(&mut rest)?.to_owned();
             if !bin_path.to_string_lossy().contains(&version) {
                 // For wild, we only consider the version to be true if the path to the linker
                 // contains the version number, otherwise we use the git hash.
-                hash = Some(take_word(&mut rest)?.replace(['(', ')'], ""));
+                hash = take_word(&mut rest).map(|w| w.replace(['(', ')'], ""));
             }
 
             kind = LinkerKind::Wild;

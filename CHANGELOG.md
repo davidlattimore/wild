@@ -1,3 +1,211 @@
+## 0.10.0
+
+This release comes with a lot of bug fixes. Most of the new features are linker-script related. You
+can see the current status of linker script support in
+[LINKER_SCRIPT_SUPPORT.md](LINKER_SCRIPT_SUPPORT.md). Another significant feature worth calling out
+is support for `--gdb-index`.
+
+Not much changed in terms of performance. The most notable change was that we now avoid using mmap
+on the output file if it's on a btrfs or vfat filesystem, which gives a bit of a speed-up, although
+you're still much better off avoiding these filesystems for your builds if at all possible.
+
+Much porting work has been done. The Wasm port can now link a range of programs. Mach-O still has a
+way to go, but can link some very simple programs. We've also started work on adding 32 bit support,
+which will make it easier for projects doing embedded work to be able to use Wild.
+
+Wild is starting to get used by some other projects as a library (libwild). This release makes it
+possible to use libwild with input and output files in memory.
+
+### 🚀 Features
+
+- Support evaluating SEGMENT_START with evaluate_expression (#1959)
+- Add support for the DISCARD section in linker scripts (#1978)
+- Add `--discard-sframe` flag (#1982)
+- Support top-level symbol definitions within the sections command (#2002)
+- Support using an expression when setting the location counter (#2005)
+- Support defining custom phdrs in linker scripts (#2013)
+- Support `--rosegment` and `--no-rosegment` (#2022)
+- Always emit .riscv.attribute when using linker scripts (#2021)
+- Add support for the SIZEOF_HEADERS builtin function (#2030)
+- Add support for the AT keyword in output sections (#2043)
+- Use the LMA when calling LOADADDR in linker scripts (#2048)
+- Support GDB index (#1990)
+- Support setting an output section's region (#2078)
+- Add `--compress-debug-section=zlib-gabi` as an alias for `--compress-debug-section=zlib` (#2097)
+- Calculate section layouts and part layouts at the same time (#2103)
+- Add built-in symbol `__bss_start` (#2124)
+- Use location counters within output sections in linker scripts (#2136)
+- Implement SORT() directive for linker scripts (#1994)
+- Implement ternary operations in linker scripts (#2166)
+- Parse and ignore `CONSTRUCTORS` in linker scripts (#2180)
+- Define multiple location counters that are relative to each other (#2151)
+- Support the DEFINED command in linker scripts (#2181)
+- GOT-based RELR bitmap packing (#2196)
+- Print version and emulation info when the -V flag is used (#2201)
+- Support specifying an output section's fill pattern in a linker script (#2226)
+- Implement --sort-section flag (#2230)
+- Parse an optional comma after output sections in linker scripts (#2246)
+- Define multiple program headers per output section in linker scripts (#2256)
+- Introduce FileSystem abstraction (#2267)
+- Evaluate the modulo operator in linker scripts (#2292)
+- Implement `OUTPUT_FORMAT` and `OUTPUT_ARCH` in linker scripts (#2295)
+- Implement `SORT_BY_NAME` and `SORT_BY_ALIGNMENT` (#2296)
+
+### ⚡ Performance
+
+- Default to --no-mmap-output-file when writing to btrfs/vfat (#2051)
+- Make gdb-index building do less heap allocation (#2057)
+- Avoid b-tree and parallelise symbol sort in gdb-index (#2073)
+- Parallelise merging of gdb index scans (#2079)
+- Write GDB index concurrently with rest of file (#2084)
+- Don't sort GDB index symbols (#2087)
+- Don't flatten symbol buckets when writing GDB index (#2088)
+- Remove unnecessary Vecs for cv_offsets and name_offsets (#2094)
+- Write gdb index constant pool in parallel (#2095)
+
+### 💻 CLI
+
+- Drop unused flag --debug-address (#2219)
+- Unify more arguments among platforms (#2036)
+
+### 🪲 Bug Fixes
+
+- Keep `--defsym`/linker-script redirect targets alive through LTO (#1979)
+- Properly handle PLT references via thunks (#1989)
+- *(LoongArch64/RV64)* Allow empty sequence for merge_eflags (#1996)
+- Don't bail when a linker plugin doesn't claim an IR archive member (#2027)
+- Support R_X86_64_PC32 relocations to absolute addresses (#2050)
+- Don't output -ggnu-pubnames sections when --gdb-index is active (#2054)
+- Use 0x10000 as default load address for RISC-V (#2055)
+- Support `--wrap` combined with linker plugin LTO (#2081)
+- *(loongarch64)* Treat R_LARCH_CALL36 as PLT-generating (#2093)
+- Error on sub-pointer-size absolute relocations in shared objects (#2083)
+- Don't panic on linker script section names shorter than 4 bytes (#2104)
+- Accept full byte range for R_X86_64_8 and R_X86_64_16 relocations (#2105)
+- Add RWX LOAD segment for sections with writable+executable flags (#2111)
+- Don't compress `SHF_ALLOC` debug sections (#2119)
+- Apply linker-managed section rules when using linker scripts (#2123)
+- --compress-debug-sections drops merged-string offset map (#2118)
+- Error on R_X86_64_32/32S against DSO symbols in PIE output (#2125)
+- Error on R_X86_64_PC32 to DSO symbols in non-executable sections in PIE (#2132)
+- Reject R_X86_64_8/16/PC8/PC16 against preemptible symbols in shared objects (#2146)
+- Reject absolute R_X86_64_8/16 against non-preemptible symbols in shared objects (#2150)
+- Create canonical PLT entry for R_X86_64_PC32 to STT_FUNC DSO symbols in PIE (#2152)
+- Relax -z noplt form of TLS GD to Local Exec on x86_64 (#2160)
+- Relax -z noplt form of TLS GD to Initial Exec on x86_64 (#2165)
+- Emit one zlib stream per compressed debug section (#2162)
+- Implement RELR bitmap packing for consecutive relocations (#2179)
+- Don't count .tbss size towards TLS segment file size (#2190)
+- Do not allocate space for uninitialized tls variables (#1788)
+- Use nop padding bytes in executable sections on x86 (#2200)
+- Properly handle eh_frame terminators (#2208)
+- Don't double count section sizes in scripts (#2214)
+- Do not retain a linker script output section if a symbol is defined after it (#2243)
+- Avoid segment overlap due to large .tbss (#2252)
+- Properly handle large alignments in .tbss (#2253)
+- Error on R_AARCH64_ABS32/ABS16 against symbols in shared objects (#2250)
+- Error on non-PIC AArch64 relocations against preemptible symbols in shared objects (#2273)
+- Avoid applying ELF-specific entry behaviour to other platforms (#2275)
+- Error on R_AARCH64_PREL16/32/64 against preemptible symbols in shared objects (#2274)
+- Avoid range error for aarch64 TPOFF rel against undefined weak tls (#2284)
+- Skip mapping symbols in unloaded sections during relocatable link (#2305)
+- Do not store the section name of a section symbol in .strtab (#2310)
+- OR GNU property notes within file before ANDing across files (#2309)
+
+### 📚 Documentation
+
+- *(README.md)* Structure "using Wild" part (#2023)
+- Update LINKER_SCRIPT_SUPPORT.md (#2034)
+- Fix cross-arch setup instructions for loongarch64 and add ppc64le (#2197)
+
+### 🕹️ Porting (Wasm)
+
+- Add section emitters for type / import / function / global / export (#1987)
+- Build initial output module layout (#2037)
+- Build and emit metadata section (#2042)
+- Build and emit code and memory sections (#2047)
+- Apply code section index relocations (#2058)
+- Resolve cross-object imports (#2092)
+- Add per-object data segment layout and emission (#2117)
+- Apply data relocations (#2135)
+- Link clang objects with memory, stack, and data addresses (#2145)
+- Allow linking against archives containing Wasm objects (#2154)
+- Absorb indirect function tables and apply table relocations (#2163)
+- Keep standard sections off the generic allocation path (#2170)
+- Add linker-defined memory base, `MEMORY_ADDR_REL_SLEB` relocation, and `call_ctors` stubs (#2176)
+- Deduplicate the output type section (#2187)
+- Resolve `__data_end` and `__heap_base` as linker data addresses (#2188)
+- Synthesize `__wasm_call_ctors` from InitFuncs and wrap the command entry (#2192)
+- Link static WASI libraries and preserve host imports (#2202)
+- Align data segments and stack like wasm-ld (#2206)
+- Support `--export` in Wasm (#2211)
+- Support `-z stack-size` for Wasm (#2224)
+- Synthesize `__wasm_first_page_end` and `__heap_end` for WASI heap (#2227)
+- Emit the custom `name` section for function and global names (#2233)
+- Speed up Wasm data segment layout by fixing reloc classification (#2235)
+- Speed up data symbol address lookup with O(1) segment indexing (#2239)
+- Define Wasm linker symbols through SymbolDb (#2238)
+- Accept constructors with non-void return types (#2244)
+- Support `R_WASM_TABLE_INDEX_REL_SLEB` (#2245)
+- Define linker-synthesized `__table_base` (#2251)
+- Defer reloc entry decoding to layout (#2262)
+- Support `--stack-first` for Wasm (#2254)
+- Support `--entry` / `--no-entry` (#2272)
+- Change default to --stack-first (#2278)
+- Synthesize GOT.mem globals for `R_WASM_GLOBAL_INDEX` (#2271)
+- Avoid cloning symbol tables during module layout (#2293)
+- Resolve undefined weak functions to unreachable stubs (#2307)
+- Emit `target_features` custom section from linked objects (#2308)
+- Coalesce identical host imports across objects (#2313)
+- Use `RelocationType` from `wasmparse` crate (#2317)
+- Report unrecognized options (#2318)
+- Parallelize code and data section emission (#2322)
+- Add symlinks and support -m wasm32 (#2329)
+- Support `--initial-memory` (#2325)
+
+### 🕹️ Porting (Mach-O)
+
+- Improve error message about FAT objects (#1972)
+- Parse more options and identify stub libs (#1973)
+- Support for linking against stub libraries (#2031)
+- Simplify LOAD_COMMANDS and support more LC_LOAD_DYLIB (#2062)
+- Switch from arm64-macos to arm64e-macos (#2086)
+- Allow linking against archives containing MachO objects (#2110)
+- Refactor how imported_symbols and imported_libraries work (#2109)
+- Add BuildVersion cmd (#2121)
+- Add support for fat objects (#2122)
+- Use sequential imported library ordinals (#2128)
+- Add support for fat-64 objects (#2127)
+- Error on undefined symbol (#2129)
+- Don't strip unused dylibs by default (#2142)
+- Support direct linking against dylibs (#2158)
+- Support fat dylibs (#2159)
+- Align __LINKEDIT sections (#2186)
+- Fix chained fixups __DATA_CONST segment index (#2195)
+- Write LC_UUID hash (#2223)
+- Add `__const` section to output order (#2249)
+- Introduce `SectionIdentity` (#2312)
+- Plug stub symbols into symbol DB (#1984)
+
+### 🕹️ Porting (other)
+
+- *(ppc64)* Recognise ppc64 (PowerPC64, ELFv2) ELF objects (#1976)
+- *(ppc64)* Decode the static relocation subset (#1977)
+- *(ppc64)* REL24 local entry plus REL32/ADDR32/REL64 (#1999)
+- *(zkvm)* Workaround weird behavior of `env::var` (#2213)
+
+### 🏛️ libwild
+
+- Do not override the global Rayon thread pool (#2209)
+- Make zstd support optional at build time (#2210)
+
+### 🛠️ Dev tooling
+
+- Change save-dir so that arguments go at the end, not the start (#2232)
+- Only move arguments after -- to the end in save-dir (#2270)
+- Allow experimental platforms via env var (#2321)
+- Use ANSI colors for the tracing output (#2010)
+
 ## 0.9.0
 
 The Wild repository moved to a GitHub org, so is now at https://github.com/wild-linker/wild. The old

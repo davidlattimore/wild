@@ -98,3 +98,14 @@ skip = true
 
 [bench.chrome-android-old3]
 skip = true
+
+[bench.libmonochrome-arm64]
+skip = true
+
+[bench.mold-gdb-index]
+
+[bench.ripgrep-wasm]
+skip = true
+
+[bench.ytsaurus-debug]
+skip = true
