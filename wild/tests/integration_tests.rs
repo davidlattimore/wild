@@ -347,6 +347,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::env;
+use std::ffi::OsString;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fmt::Write as _;
@@ -408,7 +409,7 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
             continue;
         }
 
-        let linkers = platform.available_linkers()?;
+        let linker_catalog = platform.linker_catalog()?;
 
         let platform_name = platform.to_str();
 
@@ -439,7 +440,7 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
                         arch,
                         path.clone(),
                         &test_config,
-                        &linkers,
+                        &linker_catalog,
                     ),
                 )?;
 
@@ -838,6 +839,18 @@ enum Linker {
     ThirdParty(ThirdPartyLinker),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinkerCatalog {
+    available: Vec<Linker>,
+    unavailable: Vec<UnavailableLinker>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnavailableLinker {
+    gcc_name: &'static str,
+    reason: String,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum IntermediateKind {
     Shared,
@@ -850,6 +863,7 @@ struct ThirdPartyLinker {
     gcc_name: &'static str,
     path: PathBuf,
     cross_paths: HashMap<Architecture, PathBuf>,
+    direct_args: Vec<OsString>,
     enabled_by_default: bool,
 }
 
@@ -1250,6 +1264,7 @@ struct Config {
     tracked_files: Vec<PathBuf>,
     so_single_linker: Option<Linker>,
     available_linkers: Vec<Linker>,
+    unavailable_linkers: Vec<UnavailableLinker>,
     driver_mode: Option<DriverMode>,
 }
 
@@ -1893,7 +1908,7 @@ impl Config {
         arch: Architecture,
         test_src_dir: PathBuf,
         test_config: &TestConfig,
-        available_linkers: &[Linker],
+        linker_catalog: &LinkerCatalog,
     ) -> Self {
         Self {
             test_src_dir,
@@ -1944,7 +1959,8 @@ impl Config {
             test_update_in_place: false,
             test_config: test_config.clone(),
             tracked_files: Default::default(),
-            available_linkers: available_linkers.to_owned(),
+            available_linkers: linker_catalog.available.clone(),
+            unavailable_linkers: linker_catalog.unavailable.clone(),
             so_single_linker: None,
             driver_mode: None,
         }
@@ -2290,10 +2306,21 @@ fn process_directive(
                 .map(|n| n.to_owned())
                 .collect();
 
-            let available = config.platform.available_linkers()?;
-
             for r in &refs {
-                if !available.iter().any(|l| l.gcc_name() == r) {
+                if config
+                    .available_linkers
+                    .iter()
+                    .any(|linker| linker.gcc_name() == r)
+                {
+                    continue;
+                }
+                if let Some(linker) = config
+                    .unavailable_linkers
+                    .iter()
+                    .find(|linker| linker.gcc_name == r)
+                {
+                    bail!("Reference linker `{r}` is unavailable: {}", linker.reason);
+                } else {
                     bail!("Unknown linker `{r}`");
                 }
             }
@@ -3933,6 +3960,10 @@ impl LinkCommand {
                 }
                 LinkerDriver::Direct(direct_config) => {
                     command = Command::new(linker_path);
+
+                    if let Linker::ThirdParty(third_party_linker) = linker {
+                        command.args(&third_party_linker.direct_args);
+                    }
 
                     // Only some linkers support -flavor
                     if linker.is_wild() || linker.is_lld() {
@@ -6279,6 +6310,40 @@ fn find_bin(names: &[&str]) -> Result<PathBuf> {
         })
 }
 
+fn xcrun_path(args: &[&str]) -> core::result::Result<PathBuf, String> {
+    let command = format!("xcrun {}", args.join(" "));
+    let output = Command::new("xcrun")
+        .args(args)
+        .output()
+        .map_err(|error| format!("failed to run `{command}`: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`{command}` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| format!("`{command}` returned invalid UTF-8: {error}"))?;
+    PathBuf::from(stdout.trim())
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve `{}`: {error}", stdout.trim()))
+}
+
+fn macos_toolchain() -> core::result::Result<&'static (PathBuf, PathBuf), &'static str> {
+    static TOOLCHAIN: OnceLock<core::result::Result<(PathBuf, PathBuf), String>> = OnceLock::new();
+
+    TOOLCHAIN
+        .get_or_init(|| {
+            Ok((
+                xcrun_path(&["--sdk", "macosx", "--find", "ld"])?,
+                xcrun_path(&["--sdk", "macosx", "--show-sdk-path"])?,
+            ))
+        })
+        .as_ref()
+        .map_err(String::as_str)
+}
+
 fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
     [
         Architecture::AArch64,
@@ -6365,6 +6430,7 @@ fn available_linkers_for_linux() -> Result<Vec<Linker>> {
         gcc_name: "bfd",
         path: find_bin(&["ld.bfd", "ld"])?,
         cross_paths: find_cross_paths("ld"),
+        direct_args: Vec::new(),
         enabled_by_default: true,
     })];
 
@@ -6374,6 +6440,7 @@ fn available_linkers_for_linux() -> Result<Vec<Linker>> {
             gcc_name: "lld",
             path,
             cross_paths: find_cross_paths("ld.lld"),
+            direct_args: Vec::new(),
             enabled_by_default: false,
         }));
     }
@@ -6386,6 +6453,7 @@ fn available_linkers_for_linux() -> Result<Vec<Linker>> {
             gcc_name: "gold",
             path,
             cross_paths: find_cross_paths("gold"),
+            direct_args: Vec::new(),
             enabled_by_default: false,
         }));
     }
@@ -6395,6 +6463,7 @@ fn available_linkers_for_linux() -> Result<Vec<Linker>> {
             gcc_name: "mold",
             path,
             cross_paths: find_cross_paths("mold"),
+            direct_args: Vec::new(),
             enabled_by_default: false,
         }));
     }
@@ -6404,8 +6473,32 @@ fn available_linkers_for_linux() -> Result<Vec<Linker>> {
     Ok(linkers)
 }
 
-fn available_linkers_for_mac() -> Result<Vec<Linker>> {
+fn available_linkers_for_mac() -> Result<LinkerCatalog> {
     let mut linkers = Vec::new();
+    let mut unavailable = Vec::new();
+
+    match macos_toolchain() {
+        Ok((path, sdk_path)) => {
+            linkers.push(Linker::ThirdParty(ThirdPartyLinker {
+                name: "ld",
+                gcc_name: "ld",
+                path: path.clone(),
+                cross_paths: HashMap::new(),
+                direct_args: vec![
+                    OsString::from("-syslibroot"),
+                    sdk_path.as_os_str().to_owned(),
+                    OsString::from("-lSystem"),
+                ],
+                enabled_by_default: true,
+            }));
+        }
+        Err(reason) => {
+            unavailable.push(UnavailableLinker {
+                gcc_name: "ld",
+                reason: reason.to_owned(),
+            });
+        }
+    }
 
     if let Ok(path) = find_bin(&["ld64.lld"]) {
         linkers.push(Linker::ThirdParty(ThirdPartyLinker {
@@ -6413,13 +6506,17 @@ fn available_linkers_for_mac() -> Result<Vec<Linker>> {
             gcc_name: "lld",
             path,
             cross_paths: find_cross_paths("ld64.lld"),
+            direct_args: Vec::new(),
             enabled_by_default: true,
         }));
     }
 
     linkers.push(Linker::Wild);
 
-    Ok(linkers)
+    Ok(LinkerCatalog {
+        available: linkers,
+        unavailable,
+    })
 }
 
 fn available_linkers_for_wasm() -> Result<Vec<Linker>> {
@@ -6431,6 +6528,7 @@ fn available_linkers_for_wasm() -> Result<Vec<Linker>> {
             gcc_name: "wasm-ld",
             path,
             cross_paths: HashMap::new(),
+            direct_args: Vec::new(),
             enabled_by_default: true,
         }));
     }
@@ -6777,8 +6875,7 @@ fn verify_platform_requirements(
 
     if !config.requires_linker_flags.is_empty() {
         let linker = config
-            .platform
-            .available_linkers()?
+            .available_linkers
             .iter()
             .find_map(|linker| match linker {
                 Linker::ThirdParty(third_party_linker) if third_party_linker.enabled_by_default => {
@@ -6992,11 +7089,17 @@ impl PlatformKind {
         [PlatformKind::Elf, PlatformKind::MachO].contains(&self)
     }
 
-    fn available_linkers(self) -> Result<Vec<Linker>> {
+    fn linker_catalog(self) -> Result<LinkerCatalog> {
         match self {
-            PlatformKind::Elf => available_linkers_for_linux(),
+            PlatformKind::Elf => Ok(LinkerCatalog {
+                available: available_linkers_for_linux()?,
+                unavailable: Vec::new(),
+            }),
             PlatformKind::MachO => available_linkers_for_mac(),
-            PlatformKind::Wasm => available_linkers_for_wasm(),
+            PlatformKind::Wasm => Ok(LinkerCatalog {
+                available: available_linkers_for_wasm()?,
+                unavailable: Vec::new(),
+            }),
         }
     }
 
