@@ -123,7 +123,10 @@ pub trait OutputFileData: Send {
 ///
 ///     fn finish(mut self) -> libwild::error::Result {
 ///         let data = mem::take(&mut self.bytes);
-///         self.files.lock().unwrap().insert(self.path.clone(), data);
+///         self.files
+///             .lock()
+///             .expect("cannot lock in-memory FS")
+///             .insert(self.path.clone(), data);
 ///         Ok(())
 ///     }
 /// }
@@ -140,50 +143,58 @@ pub trait OutputFileData: Send {
 ///         let bytes = self
 ///             .files
 ///             .lock()
-///             .unwrap()
+///             .expect("cannot lock in-memory FS")
 ///             .get(&path.to_path_buf())
 ///             .cloned()
 ///             .ok_or_else(|| libwild::error!("No such in-memory file: {}", path.display()))?;
 ///         Ok((Input(bytes), None))
 ///     }
 ///
-///     fn file_type(&self, path: &Path) -> std::io::Result<FileType> {
-///         if self.files.lock().unwrap().contains_key(&path.to_path_buf()) {
+///     fn file_type(&self, path: &Path) -> libwild::error::Result<FileType> {
+///         if self
+///             .files
+///             .lock()
+///             .expect("cannot lock in-memory FS")
+///             .contains_key(&path.to_path_buf())
+///         {
 ///             Ok(FileType::File)
 ///         } else {
 ///             Err(std::io::Error::new(
 ///                 std::io::ErrorKind::NotFound,
 ///                 "no such in-memory file",
-///             ))
+///             )
+///             .into())
 ///         }
 ///     }
 ///
-///     fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
+///     fn canonicalize(&self, path: &Path) -> libwild::error::Result<PathBuf> {
 ///         Ok(path.to_path_buf())
 ///     }
 ///
-///     fn rename_file(&self, path: &Path, new_path: &Path) -> std::io::Result<()> {
-///         let mut guard = self.files.lock().unwrap();
+///     fn rename_file(&self, path: &Path, new_path: &Path) -> libwild::error::Result<()> {
+///         let mut guard = self.files.lock().expect("cannot lock in-memory FS");
 ///         let Some(data) = guard.remove(&path.to_path_buf()) else {
 ///             return Err(std::io::Error::new(
 ///                 std::io::ErrorKind::NotFound,
 ///                 "no such in-memory file",
-///             ));
+///             )
+///             .into());
 ///         };
 ///         guard.insert(new_path.to_path_buf(), data);
 ///
 ///         Ok(())
 ///     }
 ///
-///     fn remove_file(&self, path: &Path) -> std::io::Result<()> {
-///         self.files
+///     fn remove_file(&self, path: &Path) -> libwild::error::Result<()> {
+///         Ok(self
+///             .files
 ///             .lock()
-///             .unwrap()
+///             .expect("cannot lock in-memory FS")
 ///             .remove(&path.to_path_buf())
 ///             .map(|_| ())
 ///             .ok_or_else(|| {
 ///                 std::io::Error::new(std::io::ErrorKind::NotFound, "no such in-memory file")
-///             })
+///             })?)
 ///     }
 ///
 ///     fn create_output(
@@ -203,7 +214,7 @@ pub trait OutputFileData: Send {
 ///     fn write_auxiliary(&self, path: &Path, bytes: &[u8]) -> libwild::error::Result {
 ///         self.files
 ///             .lock()
-///             .unwrap()
+///             .expect("cannot lock in-memory FS")
 ///             .insert(path.to_path_buf(), bytes.to_vec());
 ///         Ok(())
 ///     }
@@ -231,7 +242,7 @@ pub trait OutputFileData: Send {
 ///
 ///     fs.files
 ///         .lock()
-///         .unwrap()
+///         .expect("cannot lock in-memory FS")
 ///         .insert(PathBuf::from("main.o"), create_main_object()?);
 ///
 ///     let arguments = [
@@ -253,7 +264,7 @@ pub trait OutputFileData: Send {
 ///     let output = fs
 ///         .files
 ///         .lock()
-///         .unwrap()
+///         .expect("cannot lock in-memory FS")
 ///         .get(Path::new("libx.so"))
 ///         .cloned()
 ///         .ok_or_else(|| libwild::error!("linker did not create libx.so"))?;
@@ -477,15 +488,15 @@ impl FileSystem for OsFileSystem {
     }
 
     fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
-        std::fs::canonicalize(path)
+        Ok(std::fs::canonicalize(path)?)
     }
 
     fn remove_file(&self, path: &Path) -> Result<()> {
-        std::fs::remove_file(path)
+        Ok(std::fs::remove_file(path)?)
     }
 
     fn rename_file(&self, path: &Path, new_path: &Path) -> Result<()> {
-        std::fs::rename(path, new_path)
+        Ok(std::fs::rename(path, new_path)?)
     }
 
     fn create_output(&self, path: Arc<Path>, options: OutputOptions) -> Result<Self::Output> {
