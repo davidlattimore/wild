@@ -1978,7 +1978,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         let has_dynamic_symbol =
             flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
 
-        if flags.needs_got() && !flags.is_tls() {
+        if flags.needs_got() && !flags.needs_tls_got() {
             let is_got_relr = is_got_relr_eligible(flags, has_dynamic_symbol, args, output_kind);
             if is_got_relr {
                 mem_sizes.increment(part_id::GOT_RELR, C::GOT_ENTRY_SIZE);
@@ -1992,7 +1992,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 mem_sizes.increment(part_id::RELA_PLT, C::RELA_ENTRY_SIZE);
             } else if has_dynamic_symbol {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
-            } else if flags.is_address() && output_kind.is_relocatable() {
+            } else if flags.has_link_time_address() && output_kind.is_relocatable() {
                 if args.is_relr_enabled() && !is_got_relr {
                     // Flat RELR for section boundary symbols (not bitmap-packed)
                     mem_sizes.increment(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
@@ -2204,7 +2204,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             } else {
                 Some(allocate_got::<C>(num_got_entries, memory_offsets))
             };
-        } else if flags.is_tls() {
+        } else if flags.needs_tls_got() {
             // Handle the TLS GOT addresses where we can combine up to 3 different access methods.
             let mut num_got_slots = 0;
             if flags.needs_got_tls_offset() {
@@ -6180,7 +6180,7 @@ fn materialize_relocation_requirements<
         common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
     } else if symbol_db.output_kind.is_relocatable()
         && rel_kind == RelocationKind::Absolute
-        && flags.is_address()
+        && flags.has_link_time_address()
     {
         if section_is_writable {
             // Odd offsets can't be encoded as RELR address entries (LSB used as
@@ -6293,7 +6293,7 @@ pub(crate) fn is_got_relr_eligible(
     args.is_relr_enabled()
         && !flags.is_ifunc()
         && !has_dynamic_symbol
-        && flags.is_address()
+        && flags.has_link_time_address()
         && !flags.is_downgraded_to_local()
         && output_kind.is_relocatable()
 }

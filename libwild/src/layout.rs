@@ -1615,7 +1615,7 @@ impl<'data, P: Platform> Layout<'data, P> {
             )
         })?;
 
-        if !resolution.flags().is_address() && !resolution.flags().is_absolute() {
+        if !resolution.flags().has_link_time_address() && !resolution.flags().is_absolute() {
             bail!(
                 "Entry point must be an address or absolute value. {}",
                 self.symbol_debug(symbol_id)
@@ -4921,7 +4921,7 @@ impl<P: Platform> Resolution<P> {
     }
 
     pub(crate) fn address(&self) -> Result<u64> {
-        if !self.flags.is_address() {
+        if !self.flags.has_link_time_address() {
             bail!("Expected address, found {}", self.flags);
         }
         Ok(self.raw_value)

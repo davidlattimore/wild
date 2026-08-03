@@ -9,7 +9,7 @@ Missing dynamic relocation for TlsGd
 wild ??
 wild TRACE: relocation applied flags=NON_INTERPOSABLE | DIRECT | GOT_TLS_MODULE,
 wild TRACE: rel_kind=TlsGd,
-wild TRACE: relocation applied flags=DYNAMIC | FUNCTION | GOT | PLT | HAS_NON_IR_REF,
+wild TRACE: relocation applied flags=DYNAMIC | DYNAMIC_FUNCTION | GOT | PLT | HAS_NON_IR_REF,
 wild TRACE: rel_kind=PltRelGotBase,
 R_X86_64_TPOFF32 TlsGdToLocalExecLarge
 ld   foo

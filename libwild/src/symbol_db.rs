@@ -1901,7 +1901,7 @@ impl<'data, P: Platform> SymbolLoader<'data, P> for DynamicObjectSymbolLoader<'_
     fn compute_value_flags(&self, symbol: &P::SymtabEntry) -> ValueFlags {
         let mut flags = ValueFlags::DYNAMIC;
         if symbol.is_func() || symbol.is_ifunc() {
-            flags |= ValueFlags::FUNCTION;
+            flags |= ValueFlags::DYNAMIC_FUNCTION;
         }
         if symbol.is_undefined() {
             flags |= ValueFlags::ABSOLUTE;
