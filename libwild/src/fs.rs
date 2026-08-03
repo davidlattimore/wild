@@ -125,7 +125,7 @@ pub trait OutputFileData: Send {
 ///         let data = mem::take(&mut self.bytes);
 ///         self.files
 ///             .lock()
-///             .expect("cannot lock in-memory FS")
+///             .unwrap()
 ///             .insert(self.path.clone(), data);
 ///         Ok(())
 ///     }
@@ -143,7 +143,7 @@ pub trait OutputFileData: Send {
 ///         let bytes = self
 ///             .files
 ///             .lock()
-///             .expect("cannot lock in-memory FS")
+///             .unwrap()
 ///             .get(&path.to_path_buf())
 ///             .cloned()
 ///             .ok_or_else(|| libwild::error!("No such in-memory file: {}", path.display()))?;
@@ -154,7 +154,7 @@ pub trait OutputFileData: Send {
 ///         if self
 ///             .files
 ///             .lock()
-///             .expect("cannot lock in-memory FS")
+///             .unwrap()
 ///             .contains_key(&path.to_path_buf())
 ///         {
 ///             Ok(FileType::File)
@@ -172,7 +172,7 @@ pub trait OutputFileData: Send {
 ///     }
 ///
 ///     fn rename_file(&self, path: &Path, new_path: &Path) -> libwild::error::Result<()> {
-///         let mut guard = self.files.lock().expect("cannot lock in-memory FS");
+///         let mut guard = self.files.lock().unwrap();
 ///         let Some(data) = guard.remove(&path.to_path_buf()) else {
 ///             return Err(std::io::Error::new(
 ///                 std::io::ErrorKind::NotFound,
@@ -189,7 +189,7 @@ pub trait OutputFileData: Send {
 ///         Ok(self
 ///             .files
 ///             .lock()
-///             .expect("cannot lock in-memory FS")
+///             .unwrap()
 ///             .remove(&path.to_path_buf())
 ///             .map(|_| ())
 ///             .ok_or_else(|| {
@@ -214,7 +214,7 @@ pub trait OutputFileData: Send {
 ///     fn write_auxiliary(&self, path: &Path, bytes: &[u8]) -> libwild::error::Result {
 ///         self.files
 ///             .lock()
-///             .expect("cannot lock in-memory FS")
+///             .unwrap()
 ///             .insert(path.to_path_buf(), bytes.to_vec());
 ///         Ok(())
 ///     }
@@ -242,7 +242,7 @@ pub trait OutputFileData: Send {
 ///
 ///     fs.files
 ///         .lock()
-///         .expect("cannot lock in-memory FS")
+///         .unwrap()
 ///         .insert(PathBuf::from("main.o"), create_main_object()?);
 ///
 ///     let arguments = [
@@ -264,7 +264,7 @@ pub trait OutputFileData: Send {
 ///     let output = fs
 ///         .files
 ///         .lock()
-///         .expect("cannot lock in-memory FS")
+///         .unwrap()
 ///         .get(Path::new("libx.so"))
 ///         .cloned()
 ///         .ok_or_else(|| libwild::error!("linker did not create libx.so"))?;
