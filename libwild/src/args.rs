@@ -50,6 +50,7 @@ pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
 pub const WILD_UNSUPPORTED_ENV: &str = "WILD_UNSUPPORTED";
 pub const WRITE_LAYOUT_ENV: &str = "WILD_WRITE_LAYOUT";
 pub const WRITE_TRACE_ENV: &str = "WILD_WRITE_TRACE";
+pub const EXPERIMENTAL_PLATFORMS: &str = "WILD_EXPERIMENTAL_PLATFORMS";
 
 /// Set this environment variable if you get a failure during writing due to too much or too little
 /// space being allocated to some section. When set, each time we allocate during layout, we'll
@@ -84,6 +85,7 @@ pub struct CommonArgs {
     pub(crate) verify_allocation_consistency: bool,
     pub(crate) write_layout: bool,
     pub(crate) write_trace: bool,
+    pub(crate) experimental_platforms: bool,
     pub(crate) print_allocations: Option<FileId>,
     pub(crate) sym_info: Option<String>,
     pub(crate) numeric_experiments: Vec<Option<u64>>,
@@ -320,6 +322,7 @@ impl Default for CommonArgs {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .map(FileId::from_encoded),
+            experimental_platforms: env::var(EXPERIMENTAL_PLATFORMS).is_ok_and(|v| v == "1"),
             numeric_experiments: Vec::new(),
             sym_info: None,
             time_phase_options: None,
