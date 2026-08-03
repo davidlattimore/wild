@@ -1318,7 +1318,9 @@ fn macho_section_index(layout: &MachOLayout<'_>, section_id: OutputSectionId) ->
             OrderEvent::SegmentEnd(_) => {
                 in_section_segment = false;
             }
-            OrderEvent::Section(current) if in_section_segment => {
+            OrderEvent::Section(current)
+                if in_section_segment && layout.output_sections.will_emit_section(current) =>
+            {
                 if current == section_id {
                     return Ok(section_idx);
                 }
