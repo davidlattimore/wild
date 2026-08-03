@@ -273,16 +273,16 @@ pub trait FileSystem: Send + Sync + 'static {
     ) -> Result<(Self::Input, Option<Arc<File>>)>;
 
     /// Returns the type of the file at `path`.
-    fn file_type(&self, path: &Path) -> std::io::Result<FileType>;
+    fn file_type(&self, path: &Path) -> Result<FileType>;
 
     /// Resolves symbolic links and returns the canonical absolute path.
-    fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf>;
+    fn canonicalize(&self, path: &Path) -> Result<PathBuf>;
 
     /// Removes a file.
-    fn remove_file(&self, path: &Path) -> std::io::Result<()>;
+    fn remove_file(&self, path: &Path) -> Result<()>;
 
     /// Rename an existing file to a new path.
-    fn rename_file(&self, path: &Path, new_path: &Path) -> std::io::Result<()>;
+    fn rename_file(&self, path: &Path, new_path: &Path) -> Result<()>;
 
     /// Creates the sized random-access output.
     fn create_output(&self, path: Arc<Path>, options: OutputOptions) -> Result<Self::Output>;
@@ -465,7 +465,7 @@ impl FileSystem for OsFileSystem {
         ))
     }
 
-    fn file_type(&self, path: &Path) -> std::io::Result<FileType> {
+    fn file_type(&self, path: &Path) -> Result<FileType> {
         let ty = std::fs::metadata(path)?.file_type();
         Ok(if ty.is_file() {
             FileType::File
@@ -476,15 +476,15 @@ impl FileSystem for OsFileSystem {
         })
     }
 
-    fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
+    fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
         std::fs::canonicalize(path)
     }
 
-    fn remove_file(&self, path: &Path) -> std::io::Result<()> {
+    fn remove_file(&self, path: &Path) -> Result<()> {
         std::fs::remove_file(path)
     }
 
-    fn rename_file(&self, path: &Path, new_path: &Path) -> std::io::Result<()> {
+    fn rename_file(&self, path: &Path, new_path: &Path) -> Result<()> {
         std::fs::rename(path, new_path)
     }
 
