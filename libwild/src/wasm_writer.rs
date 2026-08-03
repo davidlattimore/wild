@@ -12,6 +12,8 @@ use crate::verbose_timing_phase;
 use crate::wasm::WASM_MAGIC;
 use crate::wasm::WASM_VERSION;
 use crate::wasm::Wasm;
+use crate::wasm::WasmDataSegmentLayout;
+use crate::wasm::WasmFunctionBody;
 use crate::wasm::WasmLayout;
 use crate::wasm::WasmObjectIndexMap;
 use crate::wasm::WasmRelocation;
@@ -20,11 +22,12 @@ use crate::wasm::apply_relocation;
 use crate::wasm::finalize_reloc_value;
 use crate::wasm::output_section_id;
 use crate::wasm::section_id;
+use crate::wasm::write_sleb128;
 use crate::wasm::write_uleb128;
 use leb128::write::unsigned_len as uleb128_size;
+use rayon::prelude::*;
 use std::borrow::Cow;
 use wasm_encoder::ConstExpr;
-use wasm_encoder::DataSection;
 use wasm_encoder::ElementSection;
 use wasm_encoder::Elements;
 use wasm_encoder::ExportSection;
@@ -32,7 +35,6 @@ use wasm_encoder::FunctionSection;
 use wasm_encoder::GlobalSection;
 use wasm_encoder::ImportSection;
 use wasm_encoder::MemorySection;
-use wasm_encoder::Section;
 use wasm_encoder::TableSection;
 use wasm_encoder::TypeSection;
 
@@ -161,13 +163,12 @@ fn copy_encoded_section(encoded: Option<&Vec<u8>>, out: &mut [u8]) -> Result<()>
 }
 
 // Each `WasmFunctionBody.bytes` is the raw body content (locals + operators) without a size prefix.
-// This function writes the LEB128 size prefix for each body, then resolves and applies relocations.
 fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()> {
-    verbose_timing_phase!("Apply Wasm code relocations");
     let bodies = &wasm_layout.function_bodies;
     let object_index_maps = &wasm_layout.object_index_maps;
     let per_object_symbols = &wasm_layout.per_object_symbols;
     let function_table_slots = &wasm_layout.function_table_slots;
+    let memory_base = wasm_layout.memory_base;
 
     if bodies.is_empty() {
         ensure!(
@@ -185,7 +186,6 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     pos += 1;
 
     let count = bodies.len() as u64;
-    // Compute payload size: count LEB + sum(body_size_leb + body_bytes) for each body.
     let count_leb_size = uleb128_size(count);
     let bodies_with_prefix_total: usize = bodies
         .iter()
@@ -197,46 +197,70 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     let payload_size = (count_leb_size + bodies_with_prefix_total) as u64;
 
     pos += write_uleb128(&mut out[pos..], payload_size);
-
-    // Body count as LEB128.
     pos += write_uleb128(&mut out[pos..], count);
+    let bodies_region_start = pos;
 
-    for body in bodies {
-        let body_len = body.bytes.len() as u64;
-        pos += write_uleb128(&mut out[pos..], body_len);
-        let body_start = pos;
-        let len = body.bytes.len();
-        out[pos..pos + len].copy_from_slice(&body.bytes);
-        let index_map = &object_index_maps[body.object_index];
-        let symbols = &per_object_symbols[body.object_index];
-        for reloc in &body.relocations {
-            apply_resolved_reloc(
-                index_map,
-                reloc,
-                symbols,
-                function_table_slots,
-                wasm_layout.memory_base,
-                &mut out[body_start..body_start + len],
-            )?;
+    // Split the body region into non-overlapping slots, then emit in parallel.
+    let mut body_slots: Vec<(&mut [u8], &WasmFunctionBody<'_>)> = Vec::with_capacity(bodies.len());
+    {
+        verbose_timing_phase!("Split Wasm code body slots");
+        let mut rest = &mut out[bodies_region_start..];
+        for body in bodies {
+            let body_len = body.bytes.len() as u64;
+            let slot_len = uleb128_size(body_len) + body.bytes.len();
+            ensure!(
+                rest.len() >= slot_len,
+                "Wasm code section body slot overflow (need {slot_len}, have {})",
+                rest.len()
+            );
+            let (slot, next) = rest.split_at_mut(slot_len);
+            body_slots.push((slot, body));
+            rest = next;
         }
-        pos += len;
+        ensure!(
+            rest.is_empty(),
+            "Wasm code section has {} trailing unused bytes after body slots",
+            rest.len()
+        );
     }
 
-    ensure!(
-        pos == out.len(),
-        "Wasm code section wrote {} bytes but buffer is {} bytes",
-        pos,
-        out.len()
-    );
+    {
+        verbose_timing_phase!("Emit Wasm code bodies");
+        body_slots
+            .into_par_iter()
+            .try_for_each(|(slot, body)| -> Result<()> {
+                verbose_timing_phase!("Emit Wasm code body");
+                let body_len = body.bytes.len() as u64;
+                let pos = write_uleb128(slot, body_len);
+                let len = body.bytes.len();
+                slot[pos..pos + len].copy_from_slice(&body.bytes);
+                let body_bytes = &mut slot[pos..pos + len];
+                let index_map = &object_index_maps[body.object_index];
+                let symbols = &per_object_symbols[body.object_index];
+                for reloc in &body.relocations {
+                    apply_resolved_reloc(
+                        index_map,
+                        reloc,
+                        symbols,
+                        function_table_slots,
+                        memory_base,
+                        body_bytes,
+                    )?;
+                }
+                Ok(())
+            })?;
+    }
 
     Ok(())
 }
 
 fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()> {
-    verbose_timing_phase!("Encode Wasm data section");
     let object_data_layouts = &wasm_layout.object_data_layouts;
-    let has_segments = object_data_layouts.iter().any(|object| !object.is_empty());
-    if !has_segments {
+    let segment_count: u32 = object_data_layouts
+        .iter()
+        .map(|obj| u32::try_from(obj.len()).unwrap_or(u32::MAX))
+        .sum();
+    if segment_count == 0 {
         ensure!(
             out.is_empty(),
             "Wasm data section buffer is {} bytes but no segments to write",
@@ -245,16 +269,138 @@ fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
         return Ok(());
     }
 
-    let section = build_data_section(wasm_layout)?;
-    let mut encoded = Vec::new();
-    section.append_to(&mut encoded);
+    // Flatten (object_index, segment) for parallel emit. Header is serial.
+    let flat: Vec<(usize, &WasmDataSegmentLayout<'_>)> = object_data_layouts
+        .iter()
+        .enumerate()
+        .flat_map(|(obj_idx, segs)| segs.iter().map(move |seg| (obj_idx, seg)))
+        .collect();
     ensure!(
-        out.len() == encoded.len(),
-        "Wasm data section wrote {} bytes but buffer is {} bytes",
-        encoded.len(),
+        flat.len() == segment_count as usize,
+        "Wasm data segment count mismatch"
+    );
+
+    let mut pos = 0;
+    out[pos] = section_id::DATA;
+    pos += 1;
+
+    let segments_total: u64 = flat
+        .iter()
+        .map(|(_, seg)| u64::from(seg.encoded_output_size))
+        .sum();
+    let count_leb_size = uleb128_size(u64::from(segment_count));
+    let payload_size = count_leb_size as u64 + segments_total;
+    pos += write_uleb128(&mut out[pos..], payload_size);
+    pos += write_uleb128(&mut out[pos..], u64::from(segment_count));
+    let segments_region_start = pos;
+
+    let object_index_maps = &wasm_layout.object_index_maps;
+    let per_object_symbols = &wasm_layout.per_object_symbols;
+    let function_table_slots = &wasm_layout.function_table_slots;
+    let memory_base = wasm_layout.memory_base;
+
+    let mut segment_slots: Vec<(&mut [u8], usize, &WasmDataSegmentLayout<'_>)> =
+        Vec::with_capacity(flat.len());
+    {
+        verbose_timing_phase!("Split Wasm data segment slots");
+        let mut rest = &mut out[segments_region_start..];
+        for (obj_idx, segment) in flat {
+            let slot_len = segment.encoded_output_size as usize;
+            ensure!(
+                rest.len() >= slot_len,
+                "Wasm data section segment slot overflow (need {slot_len}, have {})",
+                rest.len()
+            );
+            let (slot, next) = rest.split_at_mut(slot_len);
+            segment_slots.push((slot, obj_idx, segment));
+            rest = next;
+        }
+        ensure!(
+            rest.is_empty(),
+            "Wasm data section has {} trailing unused bytes after segment slots",
+            rest.len()
+        );
+    }
+
+    {
+        verbose_timing_phase!("Emit Wasm data segments");
+        segment_slots
+            .into_par_iter()
+            .try_for_each(|(slot, obj_idx, segment)| -> Result<()> {
+                verbose_timing_phase!("Emit Wasm data segment");
+                write_active_data_segment(
+                    slot,
+                    segment,
+                    &object_index_maps[obj_idx],
+                    per_object_symbols[obj_idx],
+                    function_table_slots,
+                    memory_base,
+                )
+            })?;
+    }
+
+    Ok(())
+}
+
+fn write_active_data_segment(
+    out: &mut [u8],
+    segment: &WasmDataSegmentLayout<'_>,
+    index_map: &WasmObjectIndexMap,
+    symbols: &[WasmSymbol],
+    function_table_slots: &[u32],
+    memory_base: u32,
+) -> Result<()> {
+    ensure!(
+        out.len() == segment.encoded_output_size as usize,
+        "Wasm data segment buffer size {} != encoded_output_size {}",
+        out.len(),
+        segment.encoded_output_size
+    );
+
+    let mut pos = 0;
+    if segment.output_memory_index == 0 {
+        out[pos] = 0x00;
+        pos += 1;
+    } else {
+        out[pos] = 0x02;
+        pos += 1;
+        pos += write_uleb128(&mut out[pos..], u64::from(segment.output_memory_index));
+    }
+
+    // Offset expr: `i32.const <offset> end`
+    out[pos] = 0x41;
+    pos += 1;
+    let offset_i32 = i32::try_from(segment.output_memory_offset).with_context(|| {
+        format!(
+            "Wasm data segment memory offset {}",
+            segment.output_memory_offset
+        )
+    })?;
+    pos += write_sleb128(&mut out[pos..], i64::from(offset_i32));
+    out[pos] = 0x0b;
+    pos += 1;
+
+    let data_len = segment.data.len() as u64;
+    pos += write_uleb128(&mut out[pos..], data_len);
+    let payload = &mut out[pos..pos + segment.data.len()];
+    payload.copy_from_slice(segment.data);
+    for reloc in &segment.relocations {
+        apply_resolved_reloc(
+            index_map,
+            reloc,
+            symbols,
+            function_table_slots,
+            memory_base,
+            payload,
+        )?;
+    }
+    pos += segment.data.len();
+
+    ensure!(
+        pos == out.len(),
+        "Wasm data segment wrote {pos} bytes but buffer is {} bytes",
         out.len()
     );
-    out.copy_from_slice(&encoded);
     Ok(())
 }
 
@@ -315,41 +461,6 @@ pub(crate) fn build_global_section(globals: &[OutputGlobal<'_>]) -> Result<Globa
     for global in globals {
         let init_expr = wasm_encoder::ConstExpr::raw(global.init_expr_body.iter().copied());
         section.global(convert_global_type(global.ty)?, &init_expr);
-    }
-    Ok(section)
-}
-
-pub(crate) fn build_data_section(wasm_layout: &WasmLayout<'_>) -> Result<DataSection> {
-    let mut section = DataSection::new();
-    for (obj_idx, object_layout) in wasm_layout.object_data_layouts.iter().enumerate() {
-        let index_map = &wasm_layout.object_index_maps[obj_idx];
-        let symbols = &wasm_layout.per_object_symbols[obj_idx];
-        for segment in object_layout {
-            let mut payload = segment.data.to_vec();
-            for reloc in &segment.relocations {
-                apply_resolved_reloc(
-                    index_map,
-                    reloc,
-                    symbols,
-                    &wasm_layout.function_table_slots,
-                    wasm_layout.memory_base,
-                    &mut payload,
-                )?;
-            }
-            let offset = ConstExpr::i32_const(
-                i32::try_from(segment.output_memory_offset).with_context(|| {
-                    format!(
-                        "Wasm data segment memory offset {}",
-                        segment.output_memory_offset
-                    )
-                })?,
-            );
-            section.active(
-                segment.output_memory_index,
-                &offset,
-                payload.iter().copied(),
-            );
-        }
     }
     Ok(section)
 }
