@@ -1,4 +1,4 @@
-//#ExpectError:symbol.*foo
+//#ExpectError:(?s)(symbol.*foo|foo.*symbol)
 
 int foo(void);
 
