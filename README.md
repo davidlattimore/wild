@@ -86,7 +86,14 @@ Or:
 rustflags = ["-Clink-arg=-fuse-ld=wild"]
 ```
 
-### C/C++ (autotools, CMake, meson, etc.)
+### CMake
+
+CMake 4.4 or later supports Wild directly when used with Clang or GCC 16 or later. You can select
+Wild as the linker by adding `-DCMAKE_LINKER_TYPE=WILD` to the cmake command-line.
+
+For older versions of cmake, see the generic instructions below.
+
+### C/C++ (autotools, meson, old CMake etc.)
 
 Usually setting `LDFLAGS` is enough, but there are projects that implement their own solutions:
 
