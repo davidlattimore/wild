@@ -49,7 +49,7 @@ end lists the features required to link the Linux kernel.
 | Per-section `ALIGN(n)` specifier | ✅ | |
 | `ASSERT(expr, "msg")` inside `SECTIONS` | ✅ | |
 | `OVERLAY { ... }` | ❌ | |
-| Output section type specifiers (`(NOLOAD)`, `(COPY)`, etc.) | 📅 | |
+| Output section type specifiers (`(NOLOAD)`, `(COPY)`, etc.) | 🧪 | Setting the section type using the `TYPE` attribute is not yet supported |
 | `FILL(value)` | 📅 | |
 | `=fillexp` | ✅ | |
 | `AT(addr)` load-address specifier on output sections | ✅ | |
@@ -117,7 +117,7 @@ see at a glance what remains before Wild can link the kernel.
 | Feature | Status | Notes |
 |---------|--------|-------|
 | `OVERLAY { ... }` sections | ❌ | |
-| Output section type specifiers (`(NOLOAD)`, `(COPY)`) | 📅 | |
+| Output section type specifiers (`(NOLOAD)`, `(COPY)`) | ✅ | The `TYPE` attribute is not used in the kernel |
 | `FILL(value)` | 📅 | |
 | `=fillexp` | ✅ | |
 | `AT(addr)` load-address specifier on output sections | ✅ | |
