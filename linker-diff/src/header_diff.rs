@@ -24,6 +24,7 @@ use object::Section;
 use object::elf::*;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
+use object::macho::SECTION_ATTRIBUTES;
 use object::read::elf::Dyn;
 use object::read::macho::LoadCommandVariant;
 use object::read::macho::MachHeader;
@@ -273,6 +274,18 @@ pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Binary]) {
                         values.insert(
                             "entsize",
                             section_header.sh_entsize.get(e),
+                            Converter::None,
+                            object,
+                        );
+                    }
+                    object::File::MachO64(macho_file) => {
+                        let section = macho_file.section_by_index(section.index())?;
+                        let flags = section.macho_section().flags.get(e);
+
+                        values.insert("type", flags.typ().0, Converter::None, object);
+                        values.insert(
+                            "attributes",
+                            flags.0 & SECTION_ATTRIBUTES,
                             Converter::None,
                             object,
                         );
