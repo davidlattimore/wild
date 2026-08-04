@@ -46,6 +46,7 @@
 //#ExpectProgramHeader:LOAD sections=[],offset=0x0,mem-size=0x200
 //#ExpectProgramHeader:LOAD flags=RX,sections=[.text,*],offset=0x0
 //#ExpectProgramHeader:LOAD flags=RW,sections=[.bss,*],offset=0x0
+//#ExpectProgramHeader:TLS flags=R,sections=[],offset=0x0,mem-size=0x200
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-with-pt-phdr.ld
 
 //#Config:hdr-only-load:default

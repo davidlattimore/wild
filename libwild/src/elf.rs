@@ -2355,7 +2355,7 @@ impl platform::Platform for Elf {
                     .as_ref()
                     .map(|f| expression_eval::evaluate_const(f).map(|c| c as u32))
                     .transpose()?
-                    .unwrap_or_else(|| {
+                    .unwrap_or({
                         if phdr.has_filehdr || phdr.has_phdrs {
                             pf::READABLE.0
                         } else {
@@ -2518,7 +2518,7 @@ impl platform::Platform for Elf {
                     builder.push_event(OrderEvent::SegmentEnd(seg_id));
                 }
                 builder.push_event(OrderEvent::Section(output_section_id::SECTION_HEADERS));
-                while let Some((_, seg_id)) = it.next() {
+                for (_, seg_id) in it {
                     builder.push_event(OrderEvent::SegmentStart(seg_id));
                 }
             } else {
