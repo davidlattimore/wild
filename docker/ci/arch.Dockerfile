@@ -18,7 +18,7 @@ RUN pacman --noconfirm -Syu \
 RUN pacman --noconfirm -Scc
 RUN wget https://sh.rustup.rs -O rustup-installer && \
     chmod +x rustup-installer && \
-    ./rustup-installer -y --default-toolchain 1.94.0
+    ./rustup-installer -y --default-toolchain 1.97.1
 RUN rustup toolchain install nightly \
         --allow-downgrade \
         --target x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,riscv64gc-unknown-linux-gnu,riscv64gc-unknown-linux-musl \
