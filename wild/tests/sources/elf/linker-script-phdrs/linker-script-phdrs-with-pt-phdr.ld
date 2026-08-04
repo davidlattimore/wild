@@ -6,6 +6,7 @@ PHDRS {
     dynamic PT_DYNAMIC;
     data PT_LOAD FLAGS(6) FILEHDR PHDRS;   /* R + W */
     rodata PT_LOAD FLAGS(4); /* R */
+    hdr_tls PT_TLS FILEHDR PHDRS;
 }
 
 SECTIONS {
