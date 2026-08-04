@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "libwild"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "ar",
@@ -891,7 +891,7 @@ dependencies = [
 
 [[package]]
 name = "linker-diff"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anstyle",
  "anyhow",
@@ -917,7 +917,7 @@ dependencies = [
 
 [[package]]
 name = "linker-layout"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "postcard",
@@ -926,7 +926,7 @@ dependencies = [
 
 [[package]]
 name = "linker-trace"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "postcard",
@@ -935,7 +935,7 @@ dependencies = [
 
 [[package]]
 name = "linker-utils"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "leb128",
@@ -2154,7 +2154,7 @@ dependencies = [
 
 [[package]]
 name = "wild-linker"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "ar",
  "bitflags",

@@ -202,3 +202,10 @@ above repeated, but this time measuring the peak memory consumption of the linke
 
 ### c-hello-world - memory
 ![Memory consumption while linking c-hello-world](images/ryzen-9955hx/c-hello-world-memory.svg)
+## UNGROUPED
+### mold-gdb-index - time
+![Time to link mold-gdb-index](images/ryzen-9955hx/mold-gdb-index-time.svg)
+
+### mold-gdb-index - memory
+![Memory consumption while linking mold-gdb-index](images/ryzen-9955hx/mold-gdb-index-memory.svg)
+
