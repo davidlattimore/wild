@@ -117,6 +117,7 @@ possible to use libwild with input and output files in memory.
 - *(README.md)* Structure "using Wild" part (#2023)
 - Update LINKER_SCRIPT_SUPPORT.md (#2034)
 - Fix cross-arch setup instructions for loongarch64 and add ppc64le (#2197)
+- Document usage with CMake 4.4+ (#2331)
 
 ### 🕹️ Porting (Wasm)
 
