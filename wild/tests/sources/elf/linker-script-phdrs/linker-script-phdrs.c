@@ -37,6 +37,31 @@
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-no-load.ld
 //#ExpectErrorWild:Missing LOAD PHDR in linker script
 
+//#Config:with-pt-phdr:default
+//#SkipArch:riscv64
+// If the linker script intentionally emits overlapping segments, we need to skip the overlap check.
+//#SkipOverlapSegmentsCheck:true
+//#ExpectProgramHeader:PHDR sections=[],offset=0x0,mem-size=0x40
+//#ExpectProgramHeader:PHDR sections=[],offset=0x40,mem-size=0x1c0
+//#ExpectProgramHeader:LOAD sections=[],offset=0x0,mem-size=0x200
+//#ExpectProgramHeader:LOAD flags=RX,sections=[.text,*],offset=0x0
+//#ExpectProgramHeader:LOAD flags=RW,sections=[.bss,*],offset=0x0
+//#ExpectProgramHeader:TLS flags=R,sections=[],offset=0x0,mem-size=0x200
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs-with-pt-phdr.ld
+
+//#Config:hdr-only-load:default
+//#SkipArch:riscv64
+//#ExpectProgramHeader:LOAD flags=R,sections=[],offset=0x0,mem-size=0x190
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs-hdr-only-load.ld
+
+//#Config:discontinuous-hdr:default
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs-discontinuous-hdr.ld
+//#ExpectError:PHDRS and FILEHDR are not supported when prior PT_LOAD headers lack them
+
+//#Config:non-load-with-headers:default
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs-non-load-hdr.ld
+//#ExpectError:(?i-u)non-load segment [0-9]+ includes file header and/or program header
+
 const char message[] = "Hello PHDRS";
 char message2[10];
 

@@ -1,14 +1,17 @@
 PHDRS {
+    phdr PT_PHDR PHDRS;
+    hdr PT_PHDR FILEHDR;
     text PT_LOAD FILEHDR PHDRS;
+    hdr_load PT_LOAD FILEHDR PHDRS;
     dynamic PT_DYNAMIC;
-    empty PT_LOAD;
-    data PT_LOAD FLAGS(6);   /* R + W */
+    data PT_LOAD FLAGS(6) FILEHDR PHDRS;   /* R + W */
     rodata PT_LOAD FLAGS(4); /* R */
+    hdr_tls PT_TLS FILEHDR PHDRS;
 }
 
 SECTIONS {
     . = SIZEOF_HEADERS;
-    start_of_sections = .;
+
     .text : {
         *(.text*)
     } :text
@@ -21,18 +24,11 @@ SECTIONS {
         *(.bss*)
     }
 
-    .custom : {
-        *(.custom)
-    } :NONE
-
     .dynamic : {
         *(.dynamic)
     } :rodata :dynamic
 
     .rodata : {
         *(.rodata*)
-    } :rodata :NONE
+    } :rodata
 }
-
-ASSERT(start_of_sections == 0x40 + ((5 + is_riscv) * 0x38), "Wrong start of sections");
-ASSERT(SIZEOF_HEADERS == 0x40 + ((5 + is_riscv) * 0x38), "Wrong size of headers");

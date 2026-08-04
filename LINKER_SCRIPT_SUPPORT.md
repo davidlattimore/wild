@@ -31,6 +31,7 @@ end lists the features required to link the Linux kernel.
 | `INSERT [AFTER\|BEFORE] section` | ❌ | |
 | Top-level symbol assignment (`sym = expr`) | ✅ | |
 | Compound assignment operators (`+=`, `-=`, etc.) | ❌ | |
+| `PHDRS` command for explicit program header definition | 🧪 | The `AT` attribute is not yet supported |
 
 ## SECTIONS Block
 
@@ -125,7 +126,7 @@ see at a glance what remains before Wild can link the kernel.
 | `SORT_BY_ALIGNMENT(...)` | ✅ | Parsed and ignored, as sections are sorted by alignment by default |
 | `EXCLUDE_FILE(...)` inside input section matchers | 📅 | |
 | `CONSTRUCTORS` command | ✅ | Parsed and ignored, it is a nop for ELF.  |
-| `PHDRS` command for explicit program header definition | 🧪 | The FILEHDR and PHDRS keywords aren't yet supported. |
+| `PHDRS` command for explicit program header definition | ✅ | |
 | Ternary operator (`condition ? a : b`) | ✅ | |
 | `DEFINED(sym)` function | ✅ | |
 | `SIZEOF_HEADERS` built-in symbol | ✅ | |
