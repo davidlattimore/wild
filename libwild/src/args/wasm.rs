@@ -4,6 +4,7 @@ use crate::args::CommonArgs;
 use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
+use crate::args::VersionMode;
 use crate::args::parse_number;
 use crate::bail;
 use crate::error::Result;
@@ -311,6 +312,37 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Disable symbol demangling")
         .execute(|args, _modifier_stack| {
             args.common_mut().demangle = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("help")
+        .help("Show this help message")
+        .execute(|_args, _modifier_stack| {
+            use std::io::Write as _;
+            let parser = setup_argument_parser();
+            let mut stdout = std::io::stdout().lock();
+            writeln!(stdout, "{}", parser.generate_help())?;
+            std::process::exit(0);
+        });
+
+    parser
+        .declare()
+        .long("version")
+        .help("Show version information and exit")
+        .execute(|args, _modifier_stack| {
+            args.common.version_mode = VersionMode::ExitAfterPrint;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .short("v")
+        .short("V")
+        .help("Print version and continue linking if object files are specified")
+        .execute(|args, _modifier_stack| {
+            args.common.version_mode = VersionMode::Verbose;
             Ok(())
         });
 
