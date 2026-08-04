@@ -3286,13 +3286,20 @@ impl GotMem {
     }
 }
 
+/// Where a GOT.func slot's table index comes from.
+#[derive(Debug, Clone, Copy)]
+enum GotFuncTarget {
+    Object {
+        object_index: usize,
+        symbol_offset: usize,
+    },
+    LinkerDefined(WasmLinkerSymbol),
+}
+
 #[derive(Debug, Clone, Copy)]
 struct GotFuncEntry {
     def_symbol_id: SymbolId,
-    /// Layout-input object that holds the definition (or the undefined weak import).
-    object_index: usize,
-    /// Offset of that function symbol within the object's linking symbol table.
-    symbol_offset: usize,
+    target: GotFuncTarget,
 }
 
 #[derive(Debug, Default)]
@@ -3308,6 +3315,24 @@ impl GotFunc {
 
     fn len(&self) -> u32 {
         self.entries.len() as u32
+    }
+
+    fn needs_call_ctors(&self) -> bool {
+        self.entries.iter().any(|e| {
+            matches!(
+                e.target,
+                GotFuncTarget::LinkerDefined(WasmLinkerSymbol::CallCtors)
+            )
+        })
+    }
+
+    fn needs_call_dtors(&self) -> bool {
+        self.entries.iter().any(|e| {
+            matches!(
+                e.target,
+                GotFuncTarget::LinkerDefined(WasmLinkerSymbol::CallDtors)
+            )
+        })
     }
 }
 
@@ -3361,12 +3386,13 @@ fn setup_got_mem_and_indices<'data>(
         shared_imports.global_count(),
         weak_undef_stubs,
         LinkerDefinedIndexRequest {
-            has_init_funcs,
+            has_init_funcs: has_init_funcs || scan.got_func.needs_call_ctors(),
             wrap_entry,
             got_mem_count: scan.got_mem.len(),
             got_func_count: scan.got_func.len(),
             needs_memory_base: scan.needs_memory_base,
             needs_table_base: scan.needs_table_base,
+            needs_call_dtors: scan.got_func.needs_call_dtors(),
         },
     )?;
 
@@ -3634,19 +3660,17 @@ fn scan_layout_relocations(
                             let slot = if let Some(&slot) = func_def_to_slot.get(&def_id) {
                                 slot
                             } else {
-                                let (object_index, symbol_offset) =
-                                    resolve_got_func_symbol_location(
-                                        def_id,
-                                        layout_inputs,
-                                        symbol_db,
-                                        file_id_to_index,
-                                    )?;
+                                let target = resolve_got_func_target(
+                                    def_id,
+                                    layout_inputs,
+                                    symbol_db,
+                                    file_id_to_index,
+                                )?;
                                 let slot = func_entries.len();
                                 func_def_to_slot.insert(def_id, slot);
                                 func_entries.push(GotFuncEntry {
                                     def_symbol_id: def_id,
-                                    object_index,
-                                    symbol_offset,
+                                    target,
                                 });
                                 slot
                             };
@@ -3759,45 +3783,69 @@ fn got_func_debug_name(
     entry: &GotFuncEntry,
     index: usize,
 ) -> String {
-    let sym_name = layout_inputs.get(entry.object_index).and_then(|input| {
-        input
-            .symbols
-            .get(entry.symbol_offset)
-            .and_then(|sym| wasm_symbol_name_str(input.data, sym))
-    });
-    match sym_name {
+    let name = match entry.target {
+        GotFuncTarget::Object {
+            object_index,
+            symbol_offset,
+        } => layout_inputs.get(object_index).and_then(|input| {
+            input
+                .symbols
+                .get(symbol_offset)
+                .and_then(|sym| wasm_symbol_name_str(input.data, sym))
+                .map(|s| s.to_owned())
+        }),
+        GotFuncTarget::LinkerDefined(known) => {
+            Some(String::from_utf8_lossy(known.name()).into_owned())
+        }
+    };
+    match name {
         Some(name) => format!("GOT.func.internal.{name}"),
         None => format!("GOT.func.internal.{index}"),
     }
 }
 
-fn resolve_got_func_symbol_location(
+fn resolve_got_func_target(
     def_id: SymbolId,
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
-) -> Result<(usize, usize)> {
+) -> Result<GotFuncTarget> {
     let def_file_id = symbol_db.file_id_for_symbol(def_id);
-    let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) else {
-        bail!(
-            "GOT.func for `{}` requires a function symbol in the link",
+    if let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) {
+        let def_input = &layout_inputs[def_obj_idx];
+        let def_off = def_id.to_offset(def_input.symbol_id_range);
+        let def_sym = def_input.symbols.get(def_off).ok_or_else(|| {
+            crate::error!(
+                "GOT.func for `{}` has out-of-range symbol offset",
+                symbol_db.symbol_name_for_display(def_id)
+            )
+        })?;
+        ensure!(
+            def_sym.kind == WasmSymbolKind::Func,
+            "GOT.func for `{}` requires a function symbol",
             symbol_db.symbol_name_for_display(def_id)
         );
-    };
-    let def_input = &layout_inputs[def_obj_idx];
-    let def_off = def_id.to_offset(def_input.symbol_id_range);
-    let def_sym = def_input.symbols.get(def_off).ok_or_else(|| {
-        crate::error!(
-            "GOT.func for `{}` has out-of-range symbol offset",
-            symbol_db.symbol_name_for_display(def_id)
+        return Ok(GotFuncTarget::Object {
+            object_index: def_obj_idx,
+            symbol_offset: def_off,
+        });
+    }
+
+    // Linker-defined functions live on the prelude file, not in `layout_inputs`.
+    if let Some(def_info) = symbol_db.prelude_symbol_def(def_id)
+        && let crate::parsing::SymbolPlacement::PlatformSpecific(known) = def_info.placement
+        && matches!(
+            known,
+            WasmLinkerSymbol::CallCtors | WasmLinkerSymbol::CallDtors
         )
-    })?;
-    ensure!(
-        def_sym.kind == WasmSymbolKind::Func,
-        "GOT.func for `{}` requires a function symbol",
+    {
+        return Ok(GotFuncTarget::LinkerDefined(known));
+    }
+
+    bail!(
+        "GOT.func for `{}` requires a function symbol in the link",
         symbol_db.symbol_name_for_display(def_id)
-    );
-    Ok((def_obj_idx, def_off))
+    )
 }
 
 fn absorb_got_mem_imports(
@@ -3983,24 +4031,36 @@ fn fill_got_func_inits(
     let defined_slot = (got_base - indices.global_import_count) as usize;
 
     for (i, entry) in got_func.entries.iter().enumerate() {
-        let input = layout_inputs.get(entry.object_index).ok_or_else(|| {
-            crate::error!("GOT.func object index {} out of range", entry.object_index)
-        })?;
-        let sym = input.symbols.get(entry.symbol_offset).ok_or_else(|| {
-            crate::error!(
-                "GOT.func symbol offset {} out of range",
-                entry.symbol_offset
-            )
-        })?;
-        ensure!(
-            sym.kind == WasmSymbolKind::Func,
-            "GOT.func definition is not a function symbol"
-        );
-        let func_out = remap_wasm_index(
-            &layout.object_index_maps[entry.object_index].function_indices,
-            sym.index,
-            "function",
-        )?;
+        let func_out = match entry.target {
+            GotFuncTarget::Object {
+                object_index,
+                symbol_offset,
+            } => {
+                let input = layout_inputs.get(object_index).ok_or_else(|| {
+                    crate::error!("GOT.func object index {object_index} out of range")
+                })?;
+                let sym = input.symbols.get(symbol_offset).ok_or_else(|| {
+                    crate::error!("GOT.func symbol offset {symbol_offset} out of range")
+                })?;
+                ensure!(
+                    sym.kind == WasmSymbolKind::Func,
+                    "GOT.func definition is not a function symbol"
+                );
+                remap_wasm_index(
+                    &layout.object_index_maps[object_index].function_indices,
+                    sym.index,
+                    "function",
+                )?
+            }
+            GotFuncTarget::LinkerDefined(known) => {
+                indices.function_index(known).ok_or_else(|| {
+                    crate::error!(
+                        "GOT.func linker-defined function `{}` was not reserved",
+                        std::str::from_utf8(known.name()).unwrap_or("?")
+                    )
+                })?
+            }
+        };
         let slot = layout
             .function_table_slots
             .get(func_out as usize)
@@ -4068,6 +4128,7 @@ struct LinkerDefinedIndexRequest {
     got_func_count: u32,
     needs_memory_base: bool,
     needs_table_base: bool,
+    needs_call_dtors: bool,
 }
 
 impl LinkerDefinedIndices {
@@ -4083,7 +4144,7 @@ impl LinkerDefinedIndices {
         let mut needs_stack_pointer = false;
         let mut needs_tls_base = false;
         let mut needs_ctors = request.has_init_funcs;
-        let mut needs_dtors = false;
+        let mut needs_dtors = request.needs_call_dtors;
 
         for resolutions in import_resolutions {
             let absorption = LinkerImportAbsorption::from_resolutions(resolutions);
@@ -5011,6 +5072,8 @@ where
             &reloc_scan.table_index_symbol_indices,
             reloc_scan.needs_table,
             &weak_undef_funcs,
+            got_func,
+            &indices,
         )?;
         // GOT.func inits need table slots assigned above.
         fill_got_func_inits(&mut layout, &indices, got_func, &layout_inputs)?;
@@ -5026,6 +5089,8 @@ fn finalize_indirect_function_table(
     table_index_symbol_indices: &[Vec<usize>],
     needs_table: bool,
     weak_undef_funcs: &HashSet<u32>,
+    got_func: &GotFunc,
+    indices: &LinkerDefinedIndices,
 ) -> Result {
     if !needs_table {
         return Ok(());
@@ -5059,13 +5124,30 @@ fn finalize_indirect_function_table(
         }
     }
 
+    for entry in &got_func.entries {
+        if let GotFuncTarget::LinkerDefined(known) = entry.target
+            && let Some(func_out) = indices.function_index(known)
+            && !weak_undef_funcs.contains(&func_out)
+            && seen.insert(func_out)
+        {
+            needed.push(func_out);
+        }
+    }
+
     // Slot 0 is unused and first function at slot 1. This matches common clang/wasm-ld layout.
-    let max_func = layout
+    let mut max_func = layout
         .object_index_maps
         .iter()
         .flat_map(|m| m.function_indices.iter().copied())
         .max()
         .unwrap_or(0);
+    for entry in &got_func.entries {
+        if let GotFuncTarget::LinkerDefined(known) = entry.target
+            && let Some(func_out) = indices.function_index(known)
+        {
+            max_func = max_func.max(func_out);
+        }
+    }
     let mut slots_by_func = vec![u32::MAX; max_func as usize + 1];
 
     for &func_out in weak_undef_funcs {
