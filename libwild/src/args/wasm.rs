@@ -246,7 +246,7 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
 
     parser
         .declare_with_param()
-        .short("mllvm")
+        .long("mllvm")
         .help("Pass an LLVM option")
         .execute(|args, _modifier_stack, value| args.warn_unsupported(&format!("-mllvm {value}")));
 
