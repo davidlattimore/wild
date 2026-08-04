@@ -1417,6 +1417,7 @@ mod tests {
     use super::*;
     use crate::args::InputSpec;
     use itertools::assert_equal;
+    use std::assert_matches;
 
     fn parse_script(text: &str) -> Result<LinkerScript<'_>> {
         LinkerScript::parse(text.as_bytes(), Path::new("test-linker-script.txt"))
@@ -2028,10 +2029,10 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 // Verify it parsed as LessThan with MIN function
-                assert!(matches!(assert_cmd.expression, Expression::LessThan(_, _)));
+                assert_matches!(assert_cmd.expression, Expression::LessThan(_, _));
                 if let Expression::LessThan(left, _) = &assert_cmd.expression {
                     // The left side should be a MIN expression with two SIZEOF calls
-                    assert!(matches!(**left, Expression::Min(_, _)));
+                    assert_matches!(**left, Expression::Min(_, _));
                 }
                 assert_eq!(assert_cmd.message, b"Section too large");
             }
@@ -2065,13 +2066,13 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 // The == binds loosest, so the top level is Equal
-                assert!(matches!(assert_cmd.expression, Expression::Equal(_, _)));
+                assert_matches!(assert_cmd.expression, Expression::Equal(_, _));
                 if let Expression::Equal(left, _) = &assert_cmd.expression {
                     // Left side should be BitwiseOr(1, BitwiseXor(2, 3))
-                    assert!(matches!(**left, Expression::BitwiseOr(_, _)));
+                    assert_matches!(**left, Expression::BitwiseOr(_, _));
                     if let Expression::BitwiseOr(or_left, or_right) = &**left {
                         assert_eq!(**or_left, Expression::Number(1));
-                        assert!(matches!(**or_right, Expression::BitwiseXor(_, _)));
+                        assert_matches!(**or_right, Expression::BitwiseXor(_, _));
                     }
                 }
             }

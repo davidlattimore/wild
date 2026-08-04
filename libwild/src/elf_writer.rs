@@ -4795,14 +4795,11 @@ fn get_defsym_attributes<C: ElfClass>(
                 layout.output_sections.output_index_of_section(os)
             }
             SymbolLoc::FirstSection => Some(1),
-            SymbolLoc::LocationCounter(_, os) => {
-                if let Some(os) = os {
-                    let os = layout.output_sections.primary_output_section(os);
-                    layout.output_sections.output_index_of_section(os)
-                } else {
-                    Some(1)
-                }
+            SymbolLoc::LocationCounter(_, Some(os)) => {
+                let os = layout.output_sections.primary_output_section(os);
+                layout.output_sections.output_index_of_section(os)
             }
+            SymbolLoc::LocationCounter(_, None) => Some(1),
             SymbolLoc::None => return Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE)),
         };
         Ok((

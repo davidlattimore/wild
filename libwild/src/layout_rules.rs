@@ -533,13 +533,12 @@ impl<'data> SectionRule<'data> {
         let section_matches = match &self.name_matcher {
             SectionNameMatcher::Exact(name) => section_name == name.as_ref(),
             SectionNameMatcher::Prefix(prefix) => section_name.starts_with(prefix),
-            SectionNameMatcher::Glob(_, pattern) => {
-                if let Ok(name_str) = std::str::from_utf8(section_name) {
-                    pattern.matches(name_str)
-                } else {
-                    false
-                }
+            SectionNameMatcher::Glob(_, pattern)
+                if let Ok(name_str) = std::str::from_utf8(section_name) =>
+            {
+                pattern.matches(name_str)
             }
+            SectionNameMatcher::Glob(_, _) => false,
         };
 
         if !section_matches {

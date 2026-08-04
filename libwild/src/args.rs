@@ -1471,30 +1471,31 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[test]
     fn test_flavor() {
         let args = Args::new(|| ["ld.wild"].into_iter()).unwrap();
-        assert!(matches!(args, Args::Elf(_)));
+        assert_matches!(args, Args::Elf(_));
 
         let args = Args::new(|| ["ld64.wild"].into_iter()).unwrap();
-        assert!(matches!(args, Args::MachO(_)));
+        assert_matches!(args, Args::MachO(_));
 
         let mut args = Args::new(|| ["wild", "-flavor", "gnu"].into_iter()).unwrap();
-        assert!(matches!(args, Args::Elf(_)));
+        assert_matches!(args, Args::Elf(_));
         args.parse(|| ["wild", "-flavor", "gnu"].into_iter())
             .unwrap();
         assert!(args.common().inputs.is_empty());
 
         let args = Args::new(|| ["wild", "-flavor", "darwin"].into_iter()).unwrap();
-        assert!(matches!(args, Args::MachO(_)));
+        assert_matches!(args, Args::MachO(_));
 
         // -flavor has priority
         let args = Args::new(|| ["ld.wild", "-flavor", "darwin"].into_iter()).unwrap();
-        assert!(matches!(args, Args::MachO(_)));
+        assert_matches!(args, Args::MachO(_));
 
         let args = Args::new(|| ["ld64.wild", "-flavor", "gnu"].into_iter()).unwrap();
-        assert!(matches!(args, Args::Elf(_)));
+        assert_matches!(args, Args::Elf(_));
 
         assert!(Args::new(|| ["ld.wild", "-flavor", "invalid"].into_iter()).is_err());
         assert!(Args::new(|| ["ld.wild", "-flavor"].into_iter()).is_err());

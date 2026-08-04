@@ -559,25 +559,25 @@ impl FileSystem for OsFileSystem {
 }
 
 fn default_file_write_mode_for_file(file: &std::fs::File) -> FileWriteMode {
-    #[cfg(any(target_os = "android", target_os = "linux"))]
-    {
-        match nix::sys::statfs::fstatfs(file)
-            .map(|stat| stat.filesystem_type())
-            .ok()
-        {
-            // Multi-threaded write performance with BTRFS is terrible. It's substantially faster to
-            // just buffer it all in memory then write it afterwards.
-            Some(nix::sys::statfs::BTRFS_SUPER_MAGIC) => FileWriteMode::BufferThenWrite,
-            // vfat isn't quite as bad as BTRFS in this regard, but it's still at least 4-10% faster
-            // if we avoid mmap.
-            Some(nix::sys::statfs::MSDOS_SUPER_MAGIC) => FileWriteMode::BufferThenWrite,
-            _ => FileWriteMode::Mmap,
+    cfg_select! {
+        any(target_os = "android", target_os = "linux") => {
+            match nix::sys::statfs::fstatfs(file)
+                .map(|stat| stat.filesystem_type())
+                .ok()
+            {
+                // Multi-threaded write performance with BTRFS is terrible. It's substantially
+                // faster to just buffer it all in memory then write it afterwards.
+                Some(nix::sys::statfs::BTRFS_SUPER_MAGIC) => FileWriteMode::BufferThenWrite,
+                // vfat isn't quite as bad as BTRFS in this regard, but it's still at least 4-10%
+                // faster if we avoid mmap.
+                Some(nix::sys::statfs::MSDOS_SUPER_MAGIC) => FileWriteMode::BufferThenWrite,
+                _ => FileWriteMode::Mmap,
+            }
         }
-    }
-    #[cfg(not(any(target_os = "android", target_os = "linux")))]
-    {
-        let _ = file;
-        FileWriteMode::Mmap
+        _ => {
+            let _ = file;
+            FileWriteMode::Mmap
+        }
     }
 }
 
@@ -598,23 +598,20 @@ pub fn make_executable(_file: &File) -> Result {
 }
 
 pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
-    #[cfg(unix)]
-    {
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt as _;
-        std::path::Path::new(OsStr::from_bytes(bytes)).to_path_buf()
-    }
-
-    #[cfg(target_os = "wasi")]
-    {
-        use std::ffi::OsStr;
-        use std::os::wasi::ffi::OsStrExt as _;
-        std::path::Path::new(OsStr::from_bytes(bytes)).to_path_buf()
-    }
-
-    #[cfg(not(any(unix, target_os = "wasi")))]
-    {
-        let path = std::str::from_utf8(bytes).expect("Invalid UTF-8 in archive path name");
-        PathBuf::from(path)
+    cfg_select! {
+        unix => {
+            use std::ffi::OsStr;
+            use std::os::unix::ffi::OsStrExt as _;
+            std::path::Path::new(OsStr::from_bytes(bytes)).to_path_buf()
+        }
+        target_os = "wasi" => {
+            use std::ffi::OsStr;
+            use std::os::wasi::ffi::OsStrExt as _;
+            std::path::Path::new(OsStr::from_bytes(bytes)).to_path_buf()
+        }
+        _ => {
+            let path = std::str::from_utf8(bytes).expect("Invalid UTF-8 in archive path name");
+            PathBuf::from(path)
+        }
     }
 }
