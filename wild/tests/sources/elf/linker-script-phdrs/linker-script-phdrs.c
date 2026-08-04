@@ -42,10 +42,16 @@
 // If the linker script intentionally emits overlapping segments, we need to skip the overlap check.
 //#SkipOverlapSegmentsCheck:true
 //#ExpectProgramHeader:PHDR sections=[],offset=0x0,mem-size=0x40
-//#ExpectProgramHeader:PHDR sections=[],offset=0x40,mem-size=0x150
+//#ExpectProgramHeader:PHDR sections=[],offset=0x40,mem-size=0x188
+//#ExpectProgramHeader:LOAD sections=[],offset=0x0,mem-size=0x1c8
 //#ExpectProgramHeader:LOAD flags=RX,sections=[.text,*],offset=0x0
 //#ExpectProgramHeader:LOAD flags=RW,sections=[.bss,*],offset=0x0
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-with-pt-phdr.ld
+
+//#Config:hdr-only-load:default
+//#SkipArch:riscv64
+//#ExpectProgramHeader:LOAD flags=R,sections=[],offset=0x0,mem-size=0x190
+//#LinkArgs:-shared -z now -T ./linker-script-phdrs-hdr-only-load.ld
 
 //#Config:discontinuous:default
 //#LinkArgs:-shared -z now -T ./linker-script-phdrs-discontinuous.ld

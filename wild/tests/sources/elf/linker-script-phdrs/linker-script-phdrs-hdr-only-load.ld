@@ -1,10 +1,9 @@
 PHDRS {
     phdr PT_PHDR PHDRS;
-    hdr PT_PHDR FILEHDR;
-    text PT_LOAD FILEHDR PHDRS;
-    hdr_load PT_LOAD FILEHDR PHDRS;
+    hdr PT_LOAD FILEHDR PHDRS;
+    text PT_LOAD;
     dynamic PT_DYNAMIC;
-    data PT_LOAD FLAGS(6) FILEHDR PHDRS;   /* R + W */
+    data PT_LOAD FLAGS(6);   /* R + W */
     rodata PT_LOAD FLAGS(4); /* R */
 }
 
