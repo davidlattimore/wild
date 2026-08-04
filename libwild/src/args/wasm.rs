@@ -246,6 +246,12 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
 
     parser
         .declare_with_param()
+        .short("mllvm")
+        .help("Pass an LLVM option")
+        .execute(|args, _modifier_stack, value| args.warn_unsupported(&format!("-mllvm {value}")));
+
+    parser
+        .declare_with_param()
         .prefix("m")
         .help("Set target architecture")
         .sub_option("wasm32", "Wasm32 target", |_args, _| Ok(()))
