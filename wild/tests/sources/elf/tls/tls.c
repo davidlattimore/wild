@@ -12,7 +12,7 @@
 //#Variant: 1
 
 //#Config:local-dynamic-0:default
-//#CompArgs:-ftls-model=local-dynamic
+//#CompArgs:-ftls-model=local-dynamic -mtls-dialect=gnu
 //#Variant: 0
 
 //#Config:local-dynamic-1:local-dynamic-0
@@ -25,7 +25,7 @@
 //#CompArgs:-ftls-model=local-exec
 
 //#Config:local-dynamic-no-plt:default
-//#CompArgs:-ftls-model=local-dynamic -Wa,-mrelax-relocations=yes -fPIC -fno-plt
+//#CompArgs:-ftls-model=local-dynamic -mtls-dialect=gnu -Wa,-mrelax-relocations=yes -fPIC -fno-plt
 //#Variant: 1
 
 #include <stddef.h>
