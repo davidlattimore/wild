@@ -451,46 +451,44 @@ impl SaveDirState {
 }
 
 fn create_symlink(target: &Path, dest_path: &Path) -> Result {
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(target, dest_path).with_context(|| {
-            format!(
-                "Failed to symlink {} to {}",
-                dest_path.display(),
-                target.display()
-            )
-        })?;
-        Ok(())
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::FileTypeExt as _;
-        let is_dir = std::fs::metadata(target).is_ok_and(|meta| meta.is_dir());
-        let is_symlink_dir =
-            std::fs::symlink_metadata(target).is_ok_and(|meta| meta.file_type().is_symlink_dir());
-        let result = if is_dir || is_symlink_dir {
-            std::os::windows::fs::symlink_dir(target, dest_path)
-        } else {
-            std::os::windows::fs::symlink_file(target, dest_path)
-        };
-        result.with_context(|| {
-            format!(
-                "Failed to symlink {} to {}",
-                dest_path.display(),
-                target.display()
-            )
-        })?;
-        Ok(())
-    }
-    #[cfg(target_os = "wasi")]
-    {
-        let _ = (target, dest_path);
-        bail!("creating symlinks on wasi not supported on stable rust");
-    }
-    #[cfg(not(any(unix, windows, target_os = "wasi")))]
-    {
-        let _ = (target, dest_path);
-        bail!("creating symlinks is not supported on this platform");
+    cfg_select! {
+        unix => {
+            std::os::unix::fs::symlink(target, dest_path).with_context(|| {
+                format!(
+                    "Failed to symlink {} to {}",
+                    dest_path.display(),
+                    target.display()
+                )
+            })?;
+            Ok(())
+        }
+        windows => {
+            use std::os::windows::fs::FileTypeExt as _;
+            let is_dir = std::fs::metadata(target).is_ok_and(|meta| meta.is_dir());
+            let is_symlink_dir = std::fs::symlink_metadata(target)
+                .is_ok_and(|meta| meta.file_type().is_symlink_dir());
+            let result = if is_dir || is_symlink_dir {
+                std::os::windows::fs::symlink_dir(target, dest_path)
+            } else {
+                std::os::windows::fs::symlink_file(target, dest_path)
+            };
+            result.with_context(|| {
+                format!(
+                    "Failed to symlink {} to {}",
+                    dest_path.display(),
+                    target.display()
+                )
+            })?;
+            Ok(())
+        }
+        target_os = "wasi" => {
+            let _ = (target, dest_path);
+            bail!("creating symlinks on wasi not supported on stable rust");
+        }
+        _ => {
+            let _ = (target, dest_path);
+            bail!("creating symlinks is not supported on this platform");
+        }
     }
 }
 

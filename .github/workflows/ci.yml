@@ -42,7 +42,7 @@ jobs:
     timeout-minutes: 10
 
     container:
-      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-1ecf7940be4518c515a505f295e2b1ac15a35e79
+      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
 
     steps:
       # https://github.com/actions/runner/issues/3210
@@ -66,7 +66,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-1ecf7940be4518c515a505f295e2b1ac15a35e79
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
     steps:
       - uses: actions/checkout@v7
         with:
@@ -84,7 +84,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-1ecf7940be4518c515a505f295e2b1ac15a35e79
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
     steps:
       - uses: actions/checkout@v7
         with:
@@ -102,7 +102,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-1ecf7940be4518c515a505f295e2b1ac15a35e79
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
     steps:
       - uses: actions/checkout@v7
         with:
@@ -205,7 +205,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:sha-1ecf7940be4518c515a505f295e2b1ac15a35e79
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
     steps:
       - uses: actions/checkout@v7
         with:
@@ -228,7 +228,7 @@ jobs:
           persist-credentials: false
       # This is where we check that we're not using features from a more recent rust version. When
       # updating this, please also update workspace.package.rust-version in `Cargo.toml`.
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@1.97.1
         id: rust-toolchain
         with:
           components: clippy

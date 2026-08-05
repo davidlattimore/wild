@@ -1703,15 +1703,15 @@ fn build_name_section<'data>(
                 continue;
             };
             match sym.kind {
-                WasmSymbolKind::Func => {
-                    if let Some(&out_idx) = index_map.function_indices.get(sym.index as usize) {
-                        function_names.push((out_idx, name));
-                    }
+                WasmSymbolKind::Func
+                    if let Some(&out_idx) = index_map.function_indices.get(sym.index as usize) =>
+                {
+                    function_names.push((out_idx, name));
                 }
-                WasmSymbolKind::Global => {
-                    if let Some(&out_idx) = index_map.global_indices.get(sym.index as usize) {
-                        global_names.push((out_idx, name));
-                    }
+                WasmSymbolKind::Global
+                    if let Some(&out_idx) = index_map.global_indices.get(sym.index as usize) =>
+                {
+                    global_names.push((out_idx, name));
                 }
                 _ => {}
             }
