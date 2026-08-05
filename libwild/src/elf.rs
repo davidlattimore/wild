@@ -2910,7 +2910,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         Some(SectionIdentity::new(name, ()))
     }
 
-    fn set_section_attributes(
+    fn apply_linker_script_attributes(
         linker_script_attributes: &linker_script::SectionAttributes,
         mut output_attributes: Self::SectionAttributes,
     ) -> Self::SectionAttributes {
@@ -2920,7 +2920,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 output_attributes.overrides.has_fixed_type = true;
             }
             linker_script::SectionAttributes::Readonly => {
-                output_attributes.overrides.avoid_progpogation = shf::WRITE | shf::EXECINSTR;
+                output_attributes.overrides.avoid_progpogation = shf::WRITE;
             }
             linker_script::SectionAttributes::Dsect
             | linker_script::SectionAttributes::Copy

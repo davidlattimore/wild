@@ -792,7 +792,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                     let new_id = self.section_infos.add_new(SectionOutputInfo {
                         kind: SectionKind::Primary(identity),
                         section_attributes: attributes
-                            .map(|attr| P::set_section_attributes(attr, Default::default()))
+                            .map(|attr| P::apply_linker_script_attributes(attr, Default::default()))
                             .unwrap_or_default(),
                         min_alignment,
                         location_info: location_info.cloned(),
@@ -817,7 +817,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             info.phdrs = phdrs;
         }
         info.section_attributes = attributes.map_or(info.section_attributes, |attr| {
-            P::set_section_attributes(attr, info.section_attributes)
+            P::apply_linker_script_attributes(attr, info.section_attributes)
         });
 
         output_id

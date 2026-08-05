@@ -979,7 +979,7 @@ pub(crate) trait Platform:
         std::fmt::Display::fmt(&name, f)
     }
 
-    fn set_section_attributes(
+    fn apply_linker_script_attributes(
         _linker_script_attributes: &linker_script::SectionAttributes,
         output_attributes: Self::SectionAttributes,
     ) -> Self::SectionAttributes {
