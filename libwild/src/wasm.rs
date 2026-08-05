@@ -3483,6 +3483,10 @@ fn report_disallowed_unresolved_imports<'data>(
     resolutions: &[ObjectImportResolutions],
     symbol_db: &SymbolDb<'data, Wasm>,
 ) -> Result {
+    if symbol_db.args.allow_undefined {
+        return Ok(());
+    }
+
     let mut errors: Vec<String> = Vec::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
 

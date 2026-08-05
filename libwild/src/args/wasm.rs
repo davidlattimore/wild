@@ -46,6 +46,7 @@ pub struct WasmArgs {
     pub(crate) initial_memory: Option<u64>,
     pub(crate) max_memory: Option<u64>,
     pub(crate) gc_sections: bool,
+    pub(crate) allow_undefined: bool,
 }
 
 impl WasmArgs {
@@ -76,6 +77,7 @@ impl Default for WasmArgs {
             max_memory: None,
             export_memory: None,
             gc_sections: true,
+            allow_undefined: false,
         }
     }
 }
@@ -330,6 +332,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Initial size of the linear memory in bytes")
         .execute(|args, _modifier_stack, value| {
             args.initial_memory = Some(parse_number(value)?);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("allow-undefined")
+        .help("Allow undefined symbols in the output")
+        .execute(|args, _modifier_stack| {
+            args.allow_undefined = true;
             Ok(())
         });
 
