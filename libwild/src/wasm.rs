@@ -352,6 +352,10 @@ impl WasmSymbol {
         self.raw_flags().contains(SymbolFlags::VISIBILITY_HIDDEN)
     }
 
+    pub(crate) fn is_explicit_name(&self) -> bool {
+        self.raw_flags().contains(SymbolFlags::EXPLICIT_NAME)
+    }
+
     fn has_name(&self) -> bool {
         self.name_len != 0
     }
@@ -3474,6 +3478,57 @@ impl<'data> SharedUnresolvedImports<'data> {
     }
 }
 
+fn report_disallowed_unresolved_imports<'data>(
+    inputs: &[WasmObjectLayoutInput<'data>],
+    resolutions: &[ObjectImportResolutions],
+    symbol_db: &SymbolDb<'data, Wasm>,
+) -> Result {
+    let mut errors: Vec<String> = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+
+    for (input, res) in inputs.iter().zip(resolutions.iter()) {
+        let file_display = symbol_db.file(input.file_id).to_string();
+        for (sym_offset, sym) in input.symbols.iter().enumerate() {
+            if !sym.is_undefined() || sym.is_weak() || sym.is_explicit_name() {
+                continue;
+            }
+
+            let is_unresolved = match sym.kind {
+                WasmSymbolKind::Func => res
+                    .function_resolutions
+                    .get(sym.index as usize)
+                    .is_some_and(|r| matches!(r, ImportResolution::Unresolved)),
+                WasmSymbolKind::Global => res
+                    .global_resolutions
+                    .get(sym.index as usize)
+                    .is_some_and(|r| matches!(r, ImportResolution::Unresolved)),
+                WasmSymbolKind::Data => {
+                    let symbol_id = input.symbol_id_range.offset_to_id(sym_offset);
+                    symbol_db.definition(symbol_id) == symbol_id
+                }
+                _ => false,
+            };
+            if !is_unresolved {
+                continue;
+            }
+            let Some(name) = wasm_symbol_name_str(input.data, sym) else {
+                bail!(
+                    "{file_display}: undefined symbol with no name (linking symbol index {sym_offset})"
+                );
+            };
+            if !seen.insert((file_display.clone(), name.to_owned())) {
+                continue;
+            }
+            errors.push(format!("{file_display}: undefined symbol: {name}"));
+        }
+    }
+
+    if errors.is_empty() {
+        return Ok(());
+    }
+    bail!("{}", errors.join("\n"));
+}
+
 fn collect_shared_unresolved_imports<'data>(
     inputs: &[WasmObjectLayoutInput<'data>],
     resolutions: &[ObjectImportResolutions],
@@ -3983,7 +4038,7 @@ fn setup_got_mem_and_indices<'data>(
         absorb_got_func_imports(&scan.got_func, layout_inputs, resolutions, symbol_db)?;
         weak_undef_stubs
     };
-
+    report_disallowed_unresolved_imports(layout_inputs, resolutions, symbol_db)?;
     let shared_imports = collect_shared_unresolved_imports(layout_inputs, resolutions)?;
 
     let indices = {
