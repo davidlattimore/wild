@@ -338,6 +338,7 @@ pub(crate) trait Platform:
     type SymtabShndxEntry: std::fmt::Debug + Default + Send + Sync + 'static;
     type ResolvedObjectExt<'data>: Default + std::fmt::Debug + Send + Sync;
     type FinaliseSizesExt<'data>: Send + Sync;
+    type GcUnit: std::fmt::Debug + Copy + Send + Sync + 'static;
 
     /// Format-specific fields that form part of a section's identity.
     type SectionIdentityExt: std::fmt::Debug + Copy + Eq + Send + Sync + std::hash::Hash;
@@ -455,7 +456,7 @@ pub(crate) trait Platform:
     );
 
     /// Called after GC phase has completed.
-    fn finalise_find_required_sections<'data>(
+    fn post_gc<'data>(
         _groups: &mut [layout::GroupState<Self>],
         _symbol_db: &SymbolDb<'data, Self>,
     ) -> Result {
@@ -528,11 +529,36 @@ pub(crate) trait Platform:
         groups: &[Group<'data, Self>],
     ) -> Self::LayoutResourcesExt<'data>;
 
+    fn gc_unit_for_symbol<'data>(
+        object: &Self::File<'data>,
+        symbol: &Self::SymtabEntry,
+        symbol_index: object::SymbolIndex,
+    ) -> Result<Option<Self::GcUnit>>;
+
+    /// Loads GC roots for an object. May also perform platform-specific allocation.
+    fn activate_object_gc<'data, 'scope, A: Arch<Platform = Self>>(
+        object: &mut layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        resources: &'scope layout::GraphResources<'data, 'scope, Self>,
+        queue: &mut layout::LocalWorkQueue<Self>,
+        scope: &Scope<'scope>,
+    ) -> Result;
+
+    /// Loads the specified GC unit and queue loading of whatever it references.
+    fn load_gc_unit<'data, 'scope, A: Arch<Platform = Self>>(
+        object: &mut layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        resources: &'scope layout::GraphResources<'data, 'scope, Self>,
+        queue: &mut layout::LocalWorkQueue<Self>,
+        unit: Self::GcUnit,
+        scope: &Scope<'scope>,
+    ) -> Result;
+
     /// Calls `load_section_relocations` on `state` for the relocations in `section`.
     fn load_object_section_relocations<'data, 'scope, A: Arch<Platform = Self>>(
         state: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
-        queue: &mut layout::LocalWorkQueue,
+        queue: &mut layout::LocalWorkQueue<Self>,
         resources: &'scope layout::GraphResources<'data, '_, Self>,
         section: layout::Section,
         section_index: object::SectionIndex,
@@ -616,7 +642,7 @@ pub(crate) trait Platform:
         common: &mut layout::CommonGroupState<'data, Self>,
         eh_frame_section_index: object::SectionIndex,
         resources: &'scope layout::GraphResources<'data, '_, Self>,
-        queue: &mut layout::LocalWorkQueue,
+        queue: &mut layout::LocalWorkQueue<Self>,
         scope: &Scope<'scope>,
     ) -> Result;
 
@@ -625,7 +651,7 @@ pub(crate) trait Platform:
     fn non_empty_section_loaded<'data, 'scope, A: Arch<Platform = Self>>(
         object: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
-        queue: &mut layout::LocalWorkQueue,
+        queue: &mut layout::LocalWorkQueue<Self>,
         unloaded: UnloadedSection,
         resources: &'scope layout::GraphResources<'data, 'scope, Self>,
         scope: &Scope<'scope>,

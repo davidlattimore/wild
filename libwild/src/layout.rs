@@ -138,7 +138,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
             )
         },
         || {
-            find_required_sections::<A>(
+            traverse_reference_graph::<A>(
                 groups,
                 &symbol_db,
                 &atomic_per_symbol_flags,
@@ -1010,8 +1010,8 @@ trait SymbolRequestHandler<'data, P: Platform>: std::fmt::Display + HandlerData 
         common: &mut CommonGroupState<'data, P>,
         symbol_id: SymbolId,
         resources: &'scope GraphResources<'data, 'scope, P>,
-        queue: &mut LocalWorkQueue,
-        scope: &Scope<'scope>,
+        queue: &mut LocalWorkQueue<P>,
+        _scope: &Scope<'scope>,
     ) -> Result;
 }
 
@@ -1056,7 +1056,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for ObjectLayoutState<'d
         common: &mut CommonGroupState<'data, P>,
         symbol_id: SymbolId,
         resources: &GraphResources<'data, 'scope, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         _scope: &Scope<'scope>,
     ) -> Result {
         debug_assert_bail!(
@@ -1068,15 +1068,14 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for ObjectLayoutState<'d
         let object_symbol_index = self.symbol_id_range.id_to_input(symbol_id);
         let local_symbol = self.object.symbol(object_symbol_index)?;
 
-        if let Some(section_id) = self
-            .object
-            .symbol_section(local_symbol, object_symbol_index)?
+        if let Some(gc_unit) =
+            P::gc_unit_for_symbol(self.object, local_symbol, object_symbol_index)?
         {
             queue
                 .local_work
-                .push(WorkItem::LoadSection(SectionLoadRequest::new(
+                .push(WorkItem::LoadGcUnit(GcLoadRequest::new(
                     self.file_id,
-                    section_id,
+                    gc_unit,
                 )));
         } else if let Some(common_symbol) = local_symbol.as_common() {
             common.allocate(common_symbol.part_id, common_symbol.size);
@@ -1102,7 +1101,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for DynamicLayoutState<'
         _common: &mut CommonGroupState<'data, P>,
         symbol_id: SymbolId,
         resources: &GraphResources<'data, 'scope, P>,
-        _queue: &mut LocalWorkQueue,
+        _queue: &mut LocalWorkQueue<P>,
         _scope: &Scope<'scope>,
     ) -> Result {
         let local_index = object::SymbolIndex(symbol_id.to_offset(self.symbol_id_range()));
@@ -1135,7 +1134,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for PreludeLayoutState<'
         _common: &mut CommonGroupState<'data, P>,
         _symbol_id: SymbolId,
         _resources: &GraphResources<'data, 'scope, P>,
-        _queue: &mut LocalWorkQueue,
+        _queue: &mut LocalWorkQueue<P>,
         _scope: &Scope<'scope>,
     ) -> Result {
         Ok(())
@@ -1158,7 +1157,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for LinkerScriptLayoutSt
         _common: &mut CommonGroupState<'data, P>,
         _symbol_id: SymbolId,
         _resources: &GraphResources<'data, 'scope, P>,
-        _queue: &mut LocalWorkQueue,
+        _queue: &mut LocalWorkQueue<P>,
         _scope: &Scope<'scope>,
     ) -> Result {
         Ok(())
@@ -1181,7 +1180,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for StubLibraryLayoutSta
         _common: &mut CommonGroupState<'data, P>,
         _symbol_id: SymbolId,
         _resources: &GraphResources<'data, 'scope, P>,
-        _queue: &mut LocalWorkQueue,
+        _queue: &mut LocalWorkQueue<P>,
         _scope: &Scope<'scope>,
     ) -> Result {
         Ok(())
@@ -1204,7 +1203,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for SyntheticSymbolsLayo
         _common: &mut CommonGroupState<'data, P>,
         symbol_id: SymbolId,
         resources: &'scope GraphResources<'data, 'scope, P>,
-        _queue: &mut LocalWorkQueue,
+        _queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) -> Result {
         let def_info =
@@ -1217,7 +1216,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for SyntheticSymbolsLayo
             while let Some(request) = sections.pop() {
                 resources.send_work::<A>(
                     request.file_id,
-                    WorkItem::LoadSection(request),
+                    WorkItem::LoadGcUnit(request),
                     resources,
                     scope,
                 );
@@ -1345,12 +1344,12 @@ pub(crate) struct ObjectLayoutState<'data, P: Platform> {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct LocalWorkQueue {
+pub(crate) struct LocalWorkQueue<P: Platform> {
     /// The index of the worker that owns this queue.
     index: usize,
 
     /// Work that needs to be processed by the worker that owns this queue.
-    local_work: Vec<WorkItem>,
+    local_work: Vec<WorkItem<P>>,
 }
 
 pub(crate) struct DynamicLayoutState<'data, P: Platform> {
@@ -1405,7 +1404,7 @@ pub(crate) struct GroupLayout<'data, P: Platform> {
 
 #[derive(Debug)]
 pub(crate) struct GroupState<'data, P: Platform> {
-    queue: LocalWorkQueue,
+    queue: LocalWorkQueue<P>,
     pub(crate) files: Vec<FileLayoutState<'data, P>>,
     pub(crate) common: CommonGroupState<'data, P>,
     num_symbols: usize,
@@ -1449,7 +1448,7 @@ pub(crate) struct GraphResources<'data, 'scope, P: Platform> {
     /// For each OutputSectionId, this tracks a list of sections that should be loaded if that
     /// section gets referenced. The sections here will only be those that are eligible for having
     /// __start_ / __stop_ symbols. i.e. sections that don't start their names with a ".".
-    start_stop_sections: OutputSectionMap<SegQueue<SectionLoadRequest>>,
+    start_stop_sections: OutputSectionMap<SegQueue<GcLoadRequest<P>>>,
 
     /// The number of groups that haven't yet completed activation.
     activations_remaining: AtomicUsize,
@@ -1484,7 +1483,7 @@ pub(crate) struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
 }
 
 #[derive(Copy, Clone, Debug)]
-enum WorkItem {
+enum WorkItem<P: Platform> {
     /// The symbol's resolution flags have been made non-empty. The object that owns the symbol
     /// should perform any additional actions required, e.g. load the section that contains the
     /// symbol and process any relocations for that section.
@@ -1494,8 +1493,8 @@ enum WorkItem {
     /// BSS with a copy relocation.
     CopyRelocateSymbol(SymbolId),
 
-    /// A request to load a particular section.
-    LoadSection(SectionLoadRequest),
+    /// A request to load a particular GC unit.
+    LoadGcUnit(GcLoadRequest<P>),
 
     /// Requests that the specified symbol be exported as a dynamic symbol. Will be ignored if the
     /// object that defines the symbol is not loaded or is itself a shared object.
@@ -1503,21 +1502,19 @@ enum WorkItem {
 }
 
 #[derive(Copy, Clone, Debug)]
-struct SectionLoadRequest {
+struct GcLoadRequest<P: Platform> {
     file_id: FileId,
 
-    /// The offset of the section within the file's sections. i.e. the same as
-    /// object::SectionIndex, but stored as a u32 for compactness.
-    section_index: u32,
+    gc_unit: P::GcUnit,
 }
 
-impl WorkItem {
-    fn file_id<P: Platform>(self, symbol_db: &SymbolDb<P>) -> FileId {
+impl<P: Platform> WorkItem<P> {
+    fn file_id(self, symbol_db: &SymbolDb<P>) -> FileId {
         match self {
             WorkItem::LoadGlobalSymbol(s) | WorkItem::CopyRelocateSymbol(s) => {
                 symbol_db.file_id_for_symbol(s)
             }
-            WorkItem::LoadSection(s) => s.file_id,
+            WorkItem::LoadGcUnit(s) => s.file_id,
             WorkItem::ExportDynamic(symbol_id) => symbol_db.file_id_for_symbol(symbol_id),
         }
     }
@@ -2221,7 +2218,7 @@ fn starting_memory_offsets(
 
 #[derive(Default)]
 struct WorkerSlot<'data, P: Platform> {
-    work: Vec<WorkItem>,
+    work: Vec<WorkItem<P>>,
     worker: Option<GroupState<'data, P>>,
 }
 
@@ -2300,14 +2297,16 @@ impl<'data, P: Platform> GroupActivationInputs<'data, P> {
     }
 }
 
-fn find_required_sections<'data, A: Arch>(
+/// Traverse the graph of references. This is where we garbage-collect unused stuff if enabled. Even
+/// when GC isn't enabled, we still run this, since we perform size calculations during this phase.
+fn traverse_reference_graph<'data, A: Arch>(
     groups_in: Vec<resolution::ResolvedGroup<'data, A::Platform>>,
     symbol_db: &SymbolDb<'data, A::Platform>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     output_sections: &OutputSections<'data, A::Platform>,
     layout_resources_ext: <A::Platform as Platform>::LayoutResourcesExt<'data>,
 ) -> Result<GcOutputs<'data, A::Platform>> {
-    timing_phase!("Find required sections");
+    timing_phase!("Traverse reference graph");
 
     let num_groups = groups_in.len();
 
@@ -2350,7 +2349,7 @@ fn find_required_sections<'data, A: Arch>(
 
     let mut group_states = unwrap_worker_states(&resources.worker_slots);
 
-    <A::Platform as Platform>::finalise_find_required_sections(&mut group_states, symbol_db)?;
+    <A::Platform as Platform>::post_gc(&mut group_states, symbol_db)?;
 
     // Give our prelude a chance to tie up a few last sizes while we still have access to
     // `resources`.
@@ -2529,7 +2528,7 @@ impl<'data, P: Platform> GroupState<'data, P> {
 fn activate<'data, 'scope, A: Arch>(
     common: &mut CommonGroupState<'data, A::Platform>,
     file: &mut FileLayoutState<'data, A::Platform>,
-    queue: &mut LocalWorkQueue,
+    queue: &mut LocalWorkQueue<A::Platform>,
     resources: &'scope GraphResources<'data, '_, A::Platform>,
     scope: &Scope<'scope>,
 ) -> Result {
@@ -2546,13 +2545,13 @@ fn activate<'data, 'scope, A: Arch>(
     Ok(())
 }
 
-impl LocalWorkQueue {
+impl<P: Platform> LocalWorkQueue<P> {
     #[inline(always)]
-    fn send_work<'data, 'scope, A: Arch>(
+    fn send_work<'data, 'scope, A: Arch<Platform = P>>(
         &mut self,
         resources: &'scope GraphResources<'data, '_, A::Platform>,
         file_id: FileId,
-        work: WorkItem,
+        work: WorkItem<P>,
         scope: &Scope<'scope>,
     ) {
         if file_id.group() == self.index {
@@ -2562,7 +2561,7 @@ impl LocalWorkQueue {
         }
     }
 
-    fn new(index: usize) -> LocalWorkQueue {
+    fn new(index: usize) -> LocalWorkQueue<P> {
         Self {
             index,
             local_work: Default::default(),
@@ -2570,7 +2569,7 @@ impl LocalWorkQueue {
     }
 
     #[inline(always)]
-    pub(crate) fn send_symbol_request<'data, 'scope, A: Arch>(
+    pub(crate) fn send_symbol_request<'data, 'scope, A: Arch<Platform = P>>(
         &mut self,
         symbol_id: SymbolId,
         resources: &'scope GraphResources<'data, '_, A::Platform>,
@@ -2586,7 +2585,22 @@ impl LocalWorkQueue {
         );
     }
 
-    pub(crate) fn send_copy_relocation_request<'data, 'scope, A: Arch>(
+    pub(crate) fn send_gc_unit_request<'data, 'scope, A: Arch<Platform = P>>(
+        &mut self,
+        file_id: FileId,
+        gc_unit: P::GcUnit,
+        resources: &'scope GraphResources<'data, '_, A::Platform>,
+        scope: &Scope<'scope>,
+    ) {
+        self.send_work::<A>(
+            resources,
+            file_id,
+            WorkItem::LoadGcUnit(GcLoadRequest::new(file_id, gc_unit)),
+            scope,
+        );
+    }
+
+    pub(crate) fn send_copy_relocation_request<'data, 'scope, A: Arch<Platform = P>>(
         &mut self,
         symbol_id: SymbolId,
         resources: &'scope GraphResources<'data, '_, A::Platform>,
@@ -2614,7 +2628,7 @@ impl<'data, P: Platform> GraphResources<'data, '_, P> {
     fn send_work<'scope, A: Arch<Platform = P>>(
         &self,
         file_id: FileId,
-        work: WorkItem,
+        work: WorkItem<P>,
         resources: &'scope GraphResources<'data, '_, P>,
         scope: &Scope<'scope>,
     ) {
@@ -2700,9 +2714,9 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
     fn do_work<'scope, A: Arch<Platform = P>>(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        work_item: WorkItem,
+        work_item: WorkItem<P>,
         resources: &'scope GraphResources<'data, 'scope, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) -> Result {
         match work_item {
@@ -2726,16 +2740,16 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                     )
                 }
             },
-            WorkItem::LoadSection(request) => match self {
-                FileLayoutState::Object(object_layout_state) => object_layout_state
-                    .handle_section_load_request::<A>(
-                        common,
-                        resources,
-                        queue,
-                        request.section_index(),
-                        scope,
-                    ),
-                _ => bail!("Request to load section from non-object: {self}"),
+            WorkItem::LoadGcUnit(request) => match self {
+                FileLayoutState::Object(object_layout_state) => P::load_gc_unit::<A>(
+                    object_layout_state,
+                    common,
+                    resources,
+                    queue,
+                    request.gc_unit,
+                    scope,
+                ),
+                _ => bail!("Request to load GC unit from non-object: {self}"),
             },
             WorkItem::ExportDynamic(symbol_id) => match self {
                 FileLayoutState::Object(object) => {
@@ -2755,7 +2769,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
         common: &mut CommonGroupState<'data, P>,
         symbol_id: SymbolId,
         resources: &'scope GraphResources<'data, 'scope, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) -> Result {
         match self {
@@ -3075,7 +3089,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         resources: &'scope GraphResources<'data, '_, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) -> Result {
         if resources.symbol_db.args.should_write_linker_identity()
@@ -3116,10 +3130,10 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
     /// Mark defsyms from the command-line as being directly referenced so that we emit the symbols
     /// even if nothing in the code references them.
-    fn mark_defsyms_as_used<'scope, A: Arch>(
+    fn mark_defsyms_as_used<'scope, A: Arch<Platform = P>>(
         &self,
         resources: &'scope GraphResources<'data, '_, A::Platform>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) {
         for (index, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
@@ -3142,7 +3156,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
     fn load_entry_point<'scope, A: Arch<Platform = P>>(
         &mut self,
         resources: &'scope GraphResources<'data, '_, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) {
         let Some(entry_name) = resources.symbol_db.entry_symbol_name() else {
@@ -3531,7 +3545,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
 fn load_redirect_referenced_symbols<'data, 'scope, A: Arch>(
     resources: &'scope GraphResources<'data, '_, <A as Arch>::Platform>,
-    queue: &mut LocalWorkQueue,
+    queue: &mut LocalWorkQueue<A::Platform>,
     scope: &Scope<'scope>,
     symbol_id: SymbolId,
     redirect: &crate::parsing::Redirect<'_>,
@@ -3574,7 +3588,7 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
         &self,
         common: &mut CommonGroupState<'data, P>,
         resources: &'scope GraphResources<'data, '_, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) -> Result {
         for (offset, def_info) in self.symbol_definitions.iter().enumerate() {
@@ -4023,9 +4037,42 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         resources: &'scope GraphResources<'data, 'scope, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) -> Result {
+        P::activate_object_gc::<A>(self, common, resources, queue, scope)?;
+
+        let export_all_dynamic = resources.symbol_db.output_kind == OutputKind::SharedObject
+            && (!self.input.has_archive_semantics()
+                || resources
+                    .symbol_db
+                    .args
+                    .should_export_dynamic(self.input.lib_name()))
+            || resources.symbol_db.output_kind.needs_dynsym()
+                && resources.symbol_db.args.should_export_all_dynamic_symbols();
+
+        if export_all_dynamic
+            || resources.symbol_db.output_kind.needs_dynsym()
+                && resources.symbol_db.export_list.is_some()
+        {
+            self.load_non_hidden_symbols::<A>(common, resources, queue, export_all_dynamic, scope)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
+    pub(crate) fn activate_section_gc<'scope, A>(
+        &mut self,
+        common: &mut CommonGroupState<'data, P>,
+        resources: &'scope GraphResources<'data, 'scope, P>,
+        queue: &mut LocalWorkQueue<P>,
+        scope: &Scope<'scope>,
+    ) -> Result
+    where
+        A: Arch<Platform = P>,
+    {
         let mut frame_section_indices = SmallVec::<[SectionIndex; 2]>::new();
         let mut note_gnu_property_section = None;
         let mut riscv_attributes_section = None;
@@ -4037,21 +4084,21 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                 SectionSlot::MustLoad(..)
                 | SectionSlot::UnloadedDebugInfo
                 | SectionSlot::MergeStrings(_) => {
-                    queue
-                        .local_work
-                        .push(WorkItem::LoadSection(SectionLoadRequest::new(
-                            self.file_id,
-                            object::SectionIndex(i),
-                        )));
+                    queue.send_gc_unit_request::<A>(
+                        self.file_id,
+                        SectionGcUnit::new(object::SectionIndex(i)),
+                        resources,
+                        scope,
+                    );
                 }
                 SectionSlot::Unloaded(sec) => {
                     if no_gc {
-                        queue
-                            .local_work
-                            .push(WorkItem::LoadSection(SectionLoadRequest::new(
-                                self.file_id,
-                                object::SectionIndex(i),
-                            )));
+                        queue.send_gc_unit_request::<A>(
+                            self.file_id,
+                            SectionGcUnit::new(object::SectionIndex(i)),
+                            resources,
+                            scope,
+                        );
                     } else if sec.start_stop_eligible {
                         let part_id = self.section_part_id(
                             object::SectionIndex(i),
@@ -4060,10 +4107,10 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                         resources
                             .start_stop_sections
                             .get(part_id.output_section_id::<P>())
-                            .push(SectionLoadRequest {
-                                file_id: self.file_id,
-                                section_index: i as u32,
-                            });
+                            .push(GcLoadRequest::new(
+                                self.file_id,
+                                SectionGcUnit::new(object::SectionIndex(i)),
+                            ));
                     }
                 }
                 SectionSlot::FrameData(index) => {
@@ -4104,29 +4151,16 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             .context("Cannot parse .riscv.attributes section")?;
         }
 
-        let export_all_dynamic = resources.symbol_db.output_kind == OutputKind::SharedObject
-            && (!self.input.has_archive_semantics()
-                || resources
-                    .symbol_db
-                    .args
-                    .should_export_dynamic(self.input.lib_name()))
-            || resources.symbol_db.output_kind.needs_dynsym()
-                && resources.symbol_db.args.should_export_all_dynamic_symbols();
-        if export_all_dynamic
-            || resources.symbol_db.output_kind.needs_dynsym()
-                && resources.symbol_db.export_list.is_some()
-        {
-            self.load_non_hidden_symbols::<A>(common, resources, queue, export_all_dynamic, scope)?;
-        }
-
         Ok(())
     }
+}
 
-    fn handle_section_load_request<'scope, A: Arch<Platform = P>>(
+impl<'data, P: Platform> ObjectLayoutState<'data, P> {
+    pub(crate) fn handle_section_load_request<'scope, A: Arch<Platform = P>>(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         resources: &'scope GraphResources<'data, 'scope, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         section_index: SectionIndex,
         scope: &Scope<'scope>,
     ) -> Result<(), Error> {
@@ -4168,7 +4202,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
     fn load_section<'scope, A: Arch<Platform = P>>(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         unloaded: UnloadedSection,
         section_index: SectionIndex,
         resources: &'scope GraphResources<'data, 'scope, P>,
@@ -4527,7 +4561,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         resources: &'scope GraphResources<'data, 'scope, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         export_all_dynamic: bool,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -4565,7 +4599,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         common: &mut CommonGroupState<'data, P>,
         symbol_id: SymbolId,
         resources: &'scope GraphResources<'data, 'scope, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) -> Result {
         let sym_index = self.symbol_id_range.id_to_input(symbol_id);
@@ -5636,7 +5670,7 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         resources: &'scope GraphResources<'data, '_, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) -> Result {
         P::activate_dynamic(self, common);
@@ -5647,7 +5681,7 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
     fn request_all_undefined_symbols<'scope, A: Arch<Platform = P>>(
         &self,
         resources: &'scope GraphResources<'data, '_, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) -> Result {
         let mut check_undefined_cache = None;
@@ -5769,7 +5803,7 @@ impl<'data, P: Platform> LinkerScriptLayoutState<'data, P> {
         &self,
         common: &mut CommonGroupState<'data, P>,
         resources: &'scope GraphResources<'data, '_, P>,
-        queue: &mut LocalWorkQueue,
+        queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) -> Result {
         self.internal_symbols
@@ -5832,16 +5866,9 @@ pub(crate) fn section_debug<P: Platform>(
     std::fmt::from_fn(move |f| write!(f, "`{name}`"))
 }
 
-impl SectionLoadRequest {
-    fn new(file_id: FileId, section_index: SectionIndex) -> Self {
-        Self {
-            file_id,
-            section_index: section_index.0 as u32,
-        }
-    }
-
-    fn section_index(self) -> SectionIndex {
-        SectionIndex(self.section_index as usize)
+impl<P: Platform> GcLoadRequest<P> {
+    fn new(file_id: FileId, gc_unit: P::GcUnit) -> Self {
+        Self { file_id, gc_unit }
     }
 }
 
@@ -6102,6 +6129,21 @@ impl OutputRecordLayout {
 // the type parameter P, allowing deferred dropping to occur.
 impl<'data, P: Platform> Drop for Layout<'data, P> {
     fn drop(&mut self) {}
+}
+
+/// A GC unit for use on platform where GC is done by section. Effectively an object::SectionIndex,
+/// but stored as a u32 for compactness.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SectionGcUnit(u32);
+
+impl SectionGcUnit {
+    pub(crate) fn new(section_index: object::SectionIndex) -> Self {
+        Self(section_index.0 as u32)
+    }
+
+    pub(crate) fn section_index(self) -> object::SectionIndex {
+        object::SectionIndex(self.0 as usize)
+    }
 }
 
 /// An input section that needs to be sorted due to a SORT_BY_NAME directive or equivalent.

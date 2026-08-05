@@ -16,6 +16,7 @@ use crate::layout::HandlerData as _;
 use crate::layout::Layout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::Resolution;
+use crate::layout::SectionGcUnit;
 use crate::layout::StubLibraryLayoutState;
 use crate::layout::SymbolCopyInfo;
 use crate::layout::SymbolResolutions;
@@ -1028,6 +1029,7 @@ impl platform::Platform for MachO {
     type VerneedTable<'data> = VerneedTable<'data>;
     type ResolvedObjectExt<'data> = ();
     type SectionIdentityExt = ();
+    type GcUnit = crate::layout::SectionGcUnit;
 
     const HAS_NULL_SYMBOL_ENTRY: bool = true;
 
@@ -1154,10 +1156,47 @@ impl platform::Platform for MachO {
     ) -> Self::LayoutResourcesExt<'data> {
     }
 
+    fn gc_unit_for_symbol<'data>(
+        object: &Self::File<'data>,
+        symbol: &Self::SymtabEntry,
+        symbol_index: object::SymbolIndex,
+    ) -> crate::error::Result<Option<Self::GcUnit>> {
+        Ok(object
+            .symbol_section(symbol, symbol_index)?
+            .map(SectionGcUnit::new))
+    }
+
+    fn activate_object_gc<'data, 'scope, A: platform::Arch<Platform = Self>>(
+        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
+        queue: &mut crate::layout::LocalWorkQueue<Self>,
+        scope: &rayon::Scope<'scope>,
+    ) -> crate::error::Result {
+        object.activate_section_gc::<A>(common, resources, queue, scope)
+    }
+
+    fn load_gc_unit<'data, 'scope, A: platform::Arch<Platform = Self>>(
+        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
+        queue: &mut crate::layout::LocalWorkQueue<Self>,
+        unit: Self::GcUnit,
+        scope: &rayon::Scope<'scope>,
+    ) -> crate::error::Result {
+        object.handle_section_load_request::<A>(
+            common,
+            resources,
+            queue,
+            unit.section_index(),
+            scope,
+        )
+    }
+
     fn load_object_section_relocations<'data, 'scope, A: platform::Arch<Platform = Self>>(
         state: &mut crate::layout::ObjectLayoutState<'data, Self>,
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        queue: &mut crate::layout::LocalWorkQueue,
+        queue: &mut crate::layout::LocalWorkQueue<Self>,
         resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
         _section: crate::layout::Section,
         section_index: object::SectionIndex,
@@ -1326,7 +1365,7 @@ impl platform::Platform for MachO {
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
         _eh_frame_section_index: object::SectionIndex,
         _resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
-        _queue: &mut crate::layout::LocalWorkQueue,
+        _queue: &mut crate::layout::LocalWorkQueue<Self>,
         _scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
         todo!()
@@ -1335,7 +1374,7 @@ impl platform::Platform for MachO {
     fn non_empty_section_loaded<'data, 'scope, A: platform::Arch<Platform = Self>>(
         _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        _queue: &mut crate::layout::LocalWorkQueue,
+        _queue: &mut crate::layout::LocalWorkQueue<Self>,
         _unloaded: crate::resolution::UnloadedSection,
         _resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
         _scope: &rayon::Scope<'scope>,
@@ -2043,7 +2082,7 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
     rel: &Relocation,
     section_index: object::SectionIndex,
     resources: &'scope layout::GraphResources<'data, '_, MachO>,
-    queue: &mut layout::LocalWorkQueue,
+    queue: &mut layout::LocalWorkQueue<MachO>,
     scope: &rayon::Scope<'scope>,
 ) -> Result {
     let rel_info = rel.info(LE);
