@@ -1692,9 +1692,6 @@ fn build_name_section<'data>(
     if let Some(idx) = indices.call_ctors_func {
         function_names.push((idx, "__wasm_call_ctors"));
     }
-    if let Some(idx) = indices.call_dtors_func {
-        function_names.push((idx, "__wasm_call_dtors"));
-    }
 
     // Names from linking-section symbols on each input object.
     for (obj_idx, input) in layout_inputs.iter().enumerate() {
@@ -3189,19 +3186,14 @@ struct LinkerImportAbsorption {
     needs_stack_pointer: bool,
     needs_tls_base: bool,
     needs_ctors: bool,
-    needs_dtors: bool,
 }
 
 impl LinkerImportAbsorption {
     fn from_resolutions(resolutions: &ObjectImportResolutions) -> Self {
         let mut absorption = Self::default();
         for resolution in &resolutions.function_resolutions {
-            if let ImportResolution::LinkerDefined(known) = *resolution {
-                match known {
-                    WasmLinkerSymbol::CallCtors => absorption.needs_ctors = true,
-                    WasmLinkerSymbol::CallDtors => absorption.needs_dtors = true,
-                    _ => {}
-                }
+            if let ImportResolution::LinkerDefined(WasmLinkerSymbol::CallCtors) = *resolution {
+                absorption.needs_ctors = true;
             }
         }
         for resolution in &resolutions.global_resolutions {
@@ -3238,7 +3230,6 @@ struct LinkerDefinedIndices {
     /// `emit_reserved_linker_definitions` (not the Wasm module global index).
     stack_pointer_defined_slot: Option<u32>,
     call_ctors_func: Option<u32>,
-    call_dtors_func: Option<u32>,
     entry_wrapper_func: Option<u32>,
     weak_undef_stubs: Vec<WeakUndefFunctionStub>,
     /// Linker-defined globals including GOT.mem.
@@ -4045,12 +4036,10 @@ impl LinkerDefinedIndices {
         let mut needs_stack_pointer = false;
         let mut needs_tls_base = false;
         let mut needs_ctors = request.has_init_funcs;
-        let mut needs_dtors = false;
 
         for resolutions in import_resolutions {
             let absorption = LinkerImportAbsorption::from_resolutions(resolutions);
             needs_ctors |= absorption.needs_ctors;
-            needs_dtors |= absorption.needs_dtors;
             needs_memory_base |= absorption.needs_memory_base;
             needs_table_base |= absorption.needs_table_base;
             needs_stack_pointer |= absorption.needs_stack_pointer;
@@ -4107,11 +4096,6 @@ impl LinkerDefinedIndices {
             next_func += 1;
             idx
         });
-        let call_dtors_func = needs_dtors.then(|| {
-            let idx = next_func;
-            next_func += 1;
-            idx
-        });
         let entry_wrapper_func = request.wrap_entry.then(|| {
             let idx = next_func;
             next_func += 1;
@@ -4132,7 +4116,6 @@ impl LinkerDefinedIndices {
             tls_base_global,
             stack_pointer_defined_slot,
             call_ctors_func,
-            call_dtors_func,
             entry_wrapper_func,
             weak_undef_stubs,
             num_defined_globals,
@@ -4158,7 +4141,6 @@ impl LinkerDefinedIndices {
     fn function_index(&self, known: WasmLinkerSymbol) -> Option<u32> {
         match known {
             WasmLinkerSymbol::CallCtors => self.call_ctors_func,
-            WasmLinkerSymbol::CallDtors => self.call_dtors_func,
             _ => None,
         }
     }
@@ -4425,10 +4407,6 @@ fn emit_reserved_linker_definitions(
                 Some(bytes) => owned_linker_function_body(bytes),
                 None => empty_linker_function_body(),
             });
-        }
-        if indices.call_dtors_func.is_some() {
-            type_indices.push(void_ty);
-            bodies.push(empty_linker_function_body());
         }
         if indices.entry_wrapper_func.is_some() {
             type_indices.push(void_ty);
@@ -5166,8 +5144,6 @@ pub(crate) enum WasmLinkerSymbol {
     // Functions
     #[strum(serialize = "__wasm_call_ctors")]
     CallCtors,
-    #[strum(serialize = "__wasm_call_dtors")]
-    CallDtors,
 }
 
 impl WasmLinkerSymbol {
@@ -5181,7 +5157,7 @@ impl WasmLinkerSymbol {
 
     fn matches_import_kind(self, kind: WasmSymbolKind) -> bool {
         match self {
-            Self::CallCtors | Self::CallDtors => kind == WasmSymbolKind::Func,
+            Self::CallCtors => kind == WasmSymbolKind::Func,
             Self::MemoryBase | Self::TableBase | Self::StackPointer | Self::TlsBase => {
                 kind == WasmSymbolKind::Global
             }
@@ -5206,8 +5182,7 @@ impl WasmLinkerSymbol {
             | Self::TableBase
             | Self::StackPointer
             | Self::TlsBase
-            | Self::CallCtors
-            | Self::CallDtors => None,
+            | Self::CallCtors => None,
         })
     }
 }
