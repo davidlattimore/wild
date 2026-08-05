@@ -1978,7 +1978,8 @@ fn count_sections_for_segment_type(
     output_sections
         .ids_with_info()
         .filter(|(section_id, _)| {
-            output_sections.should_include_in_segment(*section_id, segment_def)
+            output_sections.will_emit_section(*section_id)
+                && output_sections.should_include_in_segment(*section_id, segment_def)
         })
         .count()
 }
@@ -2011,7 +2012,9 @@ pub(crate) fn get_segment_sections<'data>(
             {
                 break;
             }
-            OrderEvent::Section(section_id) if in_matching_segment => {
+            OrderEvent::Section(section_id)
+                if in_matching_segment && layout.output_sections.will_emit_section(section_id) =>
+            {
                 let sizes = *layout.section_layouts.get(section_id);
                 sections.push((
                     sizes,
@@ -2023,7 +2026,7 @@ pub(crate) fn get_segment_sections<'data>(
         }
     }
 
-    let segment_id = segment_id.expect("must be visited in the output order");
+    let segment_id = segment_id?;
     let segment_size = layout
         .segment_layouts
         .segments
