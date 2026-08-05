@@ -62,7 +62,7 @@ int init_tls(uint64_t base_address) {
   int num_headers = __ehdr_start.program_header_num;
   struct ProgramHeader* headers =
       (struct ProgramHeader*)((void*)(&__ehdr_start) + __ehdr_start.program_header_offset);
-  for (int i; i < num_headers; i++) {
+  for (int i = 0; i < num_headers; i++) {
     struct ProgramHeader* h = &headers[i];
     if (h->segment_type == SHT_TLS) {
       u8* t_in = (u8*)h->virtual_addr + base_address;
