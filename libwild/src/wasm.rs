@@ -4171,6 +4171,7 @@ fn resolve_got_mem_def(
         && matches!(
             known,
             WasmLinkerSymbol::DataEnd
+                | WasmLinkerSymbol::GlobalBase
                 | WasmLinkerSymbol::HeapBase
                 | WasmLinkerSymbol::HeapEnd
                 | WasmLinkerSymbol::WasmFirstPageEnd
@@ -4578,6 +4579,7 @@ fn fill_got_mem_inits(
     layout: &mut WasmLayout<'_>,
     indices: &LinkerDefinedIndices,
     got_mem: &GotMem,
+    data_start: u32,
     data_end: u32,
     stack_size: u32,
     heap_end: Option<u32>,
@@ -4599,7 +4601,7 @@ fn fill_got_mem_inits(
                 .copied()
                 .ok_or_else(|| crate::error!("GOT.mem missing data address for definition"))?,
             GotMemDef::LinkerDefined(known) => known
-                .data_address(data_end, stack_size, heap_end, stack_first)?
+                .data_address(data_start, data_end, stack_size, heap_end, stack_first)?
                 .ok_or_else(|| {
                     crate::error!(
                         "GOT.mem linker-defined symbol `{}` has no data address",
@@ -5538,11 +5540,12 @@ where
         },
         ..WasmLayout::default()
     };
-    let mut memory_cursor = if stack_first {
+    let data_start = if stack_first {
         stack_size
     } else {
         layout.memory_base
     };
+    let mut memory_cursor = data_start;
     {
         timing_phase!("Merge Wasm object layouts");
         let n_objects = object_layouts.len();
@@ -5672,6 +5675,7 @@ where
             &layout_inputs,
             symbol_db,
             &file_id_to_index,
+            data_start,
             data_end,
             stack_size,
             heap_end,
@@ -5681,6 +5685,7 @@ where
             &mut layout,
             &indices,
             got_mem,
+            data_start,
             data_end,
             stack_size,
             heap_end,
@@ -5905,6 +5910,8 @@ pub(crate) enum WasmLinkerSymbol {
     // Data
     #[strum(serialize = "__data_end")]
     DataEnd,
+    #[strum(serialize = "__global_base")]
+    GlobalBase,
     #[strum(serialize = "__heap_base")]
     HeapBase,
     #[strum(serialize = "__heap_end")]
@@ -5940,13 +5947,18 @@ impl WasmLinkerSymbol {
             Self::MemoryBase | Self::TableBase | Self::StackPointer | Self::TlsBase => {
                 kind == WasmSymbolKind::Global
             }
-            Self::DataEnd | Self::HeapBase | Self::HeapEnd | Self::WasmFirstPageEnd => false,
+            Self::DataEnd
+            | Self::GlobalBase
+            | Self::HeapBase
+            | Self::HeapEnd
+            | Self::WasmFirstPageEnd => false,
         }
     }
 
     /// Data-symbol address after memory layout. `None` for non-data variants or absent memory.
     fn data_address(
         self,
+        data_start: u32,
         data_end: u32,
         stack_size: u32,
         heap_end: Option<u32>,
@@ -5954,6 +5966,7 @@ impl WasmLinkerSymbol {
     ) -> Result<Option<u32>> {
         Ok(match self {
             Self::DataEnd => Some(data_end),
+            Self::GlobalBase => Some(data_start),
             Self::HeapBase => Some(heap_base_address(data_end, stack_size, stack_first)?),
             Self::WasmFirstPageEnd => Some(u32::try_from(wasm_page_size())?),
             Self::HeapEnd => heap_end,
@@ -5973,6 +5986,7 @@ fn compute_data_addresses(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
+    data_start: u32,
     data_end: u32,
     stack_size: u32,
     heap_end: Option<u32>,
@@ -6026,7 +6040,7 @@ fn compute_data_addresses(
                 && let crate::parsing::SymbolPlacement::PlatformSpecific(known) =
                     &def_info.placement
                 && let Some(address) =
-                    known.data_address(data_end, stack_size, heap_end, stack_first)?
+                    known.data_address(data_start, data_end, stack_size, heap_end, stack_first)?
             {
                 data_addresses[sym_idx] = address;
             }
@@ -7480,17 +7494,42 @@ mod tests {
 
     #[test]
     fn linker_defined_data_symbol_addresses() {
+        let data_start = 1024u32;
         let data_end = 1024u32;
         let page = wasm_page_size();
         let heap_end = heap_end_from_initial_pages(2).unwrap();
         let de = WasmLinkerSymbol::DataEnd
-            .data_address(data_end, DEFAULT_STACK_SIZE, Some(heap_end), false)
+            .data_address(
+                data_start,
+                data_end,
+                DEFAULT_STACK_SIZE,
+                Some(heap_end),
+                false,
+            )
             .unwrap()
             .expect("__data_end");
         assert_eq!(de, data_end);
 
+        let gb = WasmLinkerSymbol::GlobalBase
+            .data_address(
+                data_start,
+                data_end,
+                DEFAULT_STACK_SIZE,
+                Some(heap_end),
+                false,
+            )
+            .unwrap()
+            .expect("__global_base");
+        assert_eq!(gb, data_start);
+
         let hb = WasmLinkerSymbol::HeapBase
-            .data_address(data_end, DEFAULT_STACK_SIZE, Some(heap_end), false)
+            .data_address(
+                data_start,
+                data_end,
+                DEFAULT_STACK_SIZE,
+                Some(heap_end),
+                false,
+            )
             .unwrap()
             .expect("__heap_base");
         assert_eq!(
@@ -7499,13 +7538,25 @@ mod tests {
         );
 
         let page_end = WasmLinkerSymbol::WasmFirstPageEnd
-            .data_address(data_end, DEFAULT_STACK_SIZE, Some(heap_end), false)
+            .data_address(
+                data_start,
+                data_end,
+                DEFAULT_STACK_SIZE,
+                Some(heap_end),
+                false,
+            )
             .unwrap()
             .expect("__wasm_first_page_end");
         assert_eq!(u64::from(page_end), page);
 
         let he = WasmLinkerSymbol::HeapEnd
-            .data_address(data_end, DEFAULT_STACK_SIZE, Some(heap_end), false)
+            .data_address(
+                data_start,
+                data_end,
+                DEFAULT_STACK_SIZE,
+                Some(heap_end),
+                false,
+            )
             .unwrap()
             .expect("__heap_end");
         assert_eq!(he, heap_end);
@@ -7515,13 +7566,13 @@ mod tests {
         // If there is no output memory, `__heap_end` is not synthesised.
         assert!(
             WasmLinkerSymbol::HeapEnd
-                .data_address(data_end, DEFAULT_STACK_SIZE, None, false)
+                .data_address(data_start, data_end, DEFAULT_STACK_SIZE, None, false)
                 .unwrap()
                 .is_none()
         );
         assert!(
             WasmLinkerSymbol::WasmFirstPageEnd
-                .data_address(data_end, DEFAULT_STACK_SIZE, None, false)
+                .data_address(data_start, data_end, DEFAULT_STACK_SIZE, None, false)
                 .unwrap()
                 .is_some()
         );
@@ -7529,14 +7580,20 @@ mod tests {
 
     #[test]
     fn stack_first_heap_base_follows_data_not_stack() {
+        let data_start = 1_048_576u32;
         let data_end = 1_048_576 + 100;
         let stack_size = 1_048_576u32;
         let hb = WasmLinkerSymbol::HeapBase
-            .data_address(data_end, stack_size, Some(2 * 65_536), true)
+            .data_address(data_start, data_end, stack_size, Some(2 * 65_536), true)
             .unwrap()
             .expect("__heap_base");
         assert_eq!(hb, heap_base_after_data(data_end).unwrap());
         assert!(hb - data_end < 16);
+        let gb = WasmLinkerSymbol::GlobalBase
+            .data_address(data_start, data_end, stack_size, Some(2 * 65_536), true)
+            .unwrap()
+            .expect("__global_base");
+        assert_eq!(gb, data_start);
         // Without stack-first, heap would be roughly data_end + stack_size.
         let post_data = stack_high_after_data(data_end, stack_size).unwrap();
         assert!(post_data > hb + stack_size / 2);
