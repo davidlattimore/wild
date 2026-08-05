@@ -1648,11 +1648,21 @@ impl<'data, P: Platform> Layout<'data, P> {
                         sections: obj
                             .section_resolutions
                             .iter()
+                            .enumerate()
                             .zip(obj.object.section_iter())
                             .zip(&obj.sections)
-                            .map(|((res, section), section_slot)| {
+                            .map(|(((idx, res), section), section_slot)| {
+                                let part_id = obj.section_part_id(
+                                    object::SectionIndex(idx),
+                                    &self.symbol_db.section_part_ids,
+                                );
+                                let primary_id = self
+                                    .output_sections
+                                    .primary_output_section(part_id.output_section_id::<P>());
+                                let output_flags = self.output_sections.section_flags(primary_id);
+
                                 (matches!(section_slot, SectionSlot::Loaded(..))
-                                    && section.is_alloc()
+                                    && output_flags.is_alloc()
                                     && obj.object.section_size(section).is_ok_and(|s| s > 0))
                                 .then(|| {
                                     let address = res.address;

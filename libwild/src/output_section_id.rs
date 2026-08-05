@@ -723,6 +723,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 location_info.as_ref(),
                 None,
                 Vec::new(),
+                None,
             );
 
             let part_id = if section_id.is_regular::<P>() {
@@ -771,6 +772,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         location_info: Option<&SectionLocationInfo<'data>>,
         fill: Option<[u8; 4]>,
         phdrs: Vec<&'data [u8]>,
+        attributes: Option<&linker_script::SectionAttributes>,
     ) -> OutputSectionId {
         let mut resolved_id = None;
         if !self.output_kind.is_partial_object()
@@ -781,47 +783,44 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             resolved_id = Some(builtin_id);
         }
 
-        *self
-            .custom_by_identity
-            .entry(identity)
-            .and_modify(|s| {
-                let info = self.section_infos.get_mut(*s);
-                info.min_alignment = info.min_alignment.max(min_alignment);
-                info.region_name = region_name.or(info.region_name);
-                if location_info.is_some() {
-                    info.location_info = location_info.cloned();
-                }
-                info.fill = fill.or(info.fill);
-                if !phdrs.is_empty() {
-                    info.phdrs = phdrs.clone();
-                }
-            })
-            .or_insert_with(|| {
+        let output_id = match self.custom_by_identity.entry(identity) {
+            hashbrown::hash_map::Entry::Occupied(e) => *e.get(),
+            hashbrown::hash_map::Entry::Vacant(e) => {
                 if let Some(builtin_id) = resolved_id {
-                    let info = self.section_infos.get_mut(builtin_id);
-                    info.min_alignment = info.min_alignment.max(min_alignment);
-                    info.region_name = region_name.or(info.region_name);
-                    if location_info.is_some() {
-                        info.location_info = location_info.cloned();
-                    }
-                    info.fill = fill.or(info.fill);
-                    if !phdrs.is_empty() {
-                        info.phdrs = phdrs.clone();
-                    }
-                    builtin_id
+                    *e.insert(builtin_id)
                 } else {
-                    self.section_infos.add_new(SectionOutputInfo {
+                    let new_id = self.section_infos.add_new(SectionOutputInfo {
                         kind: SectionKind::Primary(identity),
-                        section_attributes: Default::default(),
+                        section_attributes: attributes
+                            .map(|attr| P::apply_linker_script_attributes(attr, Default::default()))
+                            .unwrap_or_default(),
                         min_alignment,
                         location_info: location_info.cloned(),
                         secondary_order: None,
                         region_name,
                         fill,
                         phdrs,
-                    })
+                    });
+                    return *e.insert(new_id);
                 }
-            })
+            }
+        };
+
+        let info = self.section_infos.get_mut(output_id);
+        info.min_alignment = info.min_alignment.max(min_alignment);
+        info.region_name = region_name.or(info.region_name);
+        if location_info.is_some() {
+            info.location_info = location_info.cloned();
+        }
+        info.fill = fill.or(info.fill);
+        if !phdrs.is_empty() {
+            info.phdrs = phdrs;
+        }
+        info.section_attributes = attributes.map_or(info.section_attributes, |attr| {
+            P::apply_linker_script_attributes(attr, info.section_attributes)
+        });
+
+        output_id
     }
 
     pub(crate) fn add_secondary_section(
@@ -1118,6 +1117,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 None,
                 None,
                 Vec::new(),
+                None,
             )
         };
         add_name("ro");

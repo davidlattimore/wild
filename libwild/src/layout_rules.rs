@@ -282,6 +282,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 Some(&location_info),
                                 fill_value,
                                 prev_phdrs.clone(),
+                                sec.attributes.as_ref(),
                             );
                             ordered_sections.push(primary_section_id);
                             current_section_id = Some(primary_section_id);

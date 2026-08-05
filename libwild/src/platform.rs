@@ -24,6 +24,7 @@ use crate::layout_rules::LayoutRulesBuilder;
 use crate::layout_rules::SectionRule;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::linker_plugins::LinkerPlugin;
+use crate::linker_script;
 use crate::output_section_id::CustomSectionIds;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
@@ -976,6 +977,13 @@ pub(crate) trait Platform:
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
         std::fmt::Display::fmt(&name, f)
+    }
+
+    fn apply_linker_script_attributes(
+        _linker_script_attributes: &linker_script::SectionAttributes,
+        output_attributes: Self::SectionAttributes,
+    ) -> Self::SectionAttributes {
+        output_attributes
     }
 }
 

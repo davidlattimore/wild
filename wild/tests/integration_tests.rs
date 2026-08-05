@@ -86,6 +86,8 @@
 //! output binary. Optional properties:
 //!   max_entries=N: Asserts the section has at most N entries (uses the section's sh_entsize,
 //!   or 1 if sh_entsize is 0).
+//!   flags=WAX: Asserts the section has the specified section flags.
+//!   type=int: Asserts the section has the specified section type.
 //!
 //! RelrCount:N Checks that .relr.dyn encodes at least N total relocations (counting both address
 //! entries and bitmap-encoded relocations).
@@ -1393,6 +1395,57 @@ impl ProgramHeaderFlags {
     }
 }
 
+bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+    struct SectionFlags: u64 {
+        const W = object::elf::SHF_WRITE.0;
+        const A = object::elf::SHF_ALLOC.0;
+        const X = object::elf::SHF_EXECINSTR.0;
+        const M = object::elf::SHF_MERGE.0;
+        const S = object::elf::SHF_STRINGS.0;
+        const I = object::elf::SHF_INFO_LINK.0;
+        const L = object::elf::SHF_LINK_ORDER.0;
+        const O = object::elf::SHF_OS_NONCONFORMING.0;
+        const G = object::elf::SHF_GROUP.0;
+        const T = object::elf::SHF_TLS.0;
+        const C = object::elf::SHF_COMPRESSED.0;
+    }
+}
+
+impl SectionFlags {
+    fn deserialize<'de, D>(d: D) -> Result<Option<Self>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(d)?;
+
+        let mut flags = Self::empty();
+
+        for c in s.chars() {
+            match c {
+                'W' => flags |= Self::W,
+                'A' => flags |= Self::A,
+                'X' => flags |= Self::X,
+                'M' => flags |= Self::M,
+                'S' => flags |= Self::S,
+                'I' => flags |= Self::I,
+                'L' => flags |= Self::L,
+                'O' => flags |= Self::O,
+                'G' => flags |= Self::G,
+                'T' => flags |= Self::T,
+                'C' => flags |= Self::C,
+                _ => {
+                    return Err(serde::de::Error::custom(
+                        "Invalid character in SectionFlags",
+                    ));
+                }
+            }
+        }
+
+        Ok(Some(flags))
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ErrorMatcher {
     regex: regex::Regex,
@@ -1764,6 +1817,12 @@ struct ExpectedSection {
 #[serde(deny_unknown_fields)]
 struct SectionAssertions {
     max_entries: Option<u64>,
+
+    #[serde(deserialize_with = "SectionFlags::deserialize", default)]
+    flags: Option<SectionFlags>,
+
+    #[serde(rename = "type")]
+    stype: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -4767,11 +4826,41 @@ impl Assertions {
 
     fn verify_expected_sections(&self, obj: &object::File) -> Result {
         for expected in &self.expected_sections {
-            ensure!(
-                obj.section_by_name(&expected.section_name).is_some(),
-                "Expected section `{}` not found",
-                expected.section_name
-            );
+            let section = obj
+                .section_by_name(&expected.section_name)
+                .with_context(|| {
+                    format!("Expected section `{}` not found", expected.section_name)
+                })?;
+
+            if let Some(expected_flags) = expected.assertions.flags {
+                let flags = match section.flags() {
+                    object::SectionFlags::Elf { sh_flags, .. } => {
+                        SectionFlags::from_bits_retain(sh_flags.0)
+                    }
+                    _ => SectionFlags::empty(),
+                };
+                ensure!(
+                    flags == expected_flags,
+                    "Section `{}` flags mismatch: expected {:?}, got {:?}",
+                    expected.section_name,
+                    expected_flags,
+                    flags
+                );
+            }
+
+            if let Some(expected_type) = expected.assertions.stype {
+                let ptype = match section.flags() {
+                    object::SectionFlags::Elf { sh_type, .. } => sh_type.0,
+                    _ => 0,
+                };
+                ensure!(
+                    ptype == expected_type,
+                    "Section `{}` type mismatch: expected {:#x}, got {:#x}",
+                    expected.section_name,
+                    expected_type,
+                    ptype
+                );
+            }
         }
         Ok(())
     }
