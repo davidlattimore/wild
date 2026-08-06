@@ -211,6 +211,9 @@ const ZERO_I32_INIT_EXPR: &[u8] = &[0x41, 0x00];
 /// `i32.const 1` for `DEFAULT_TABLE_BASE`.
 const DEFAULT_TABLE_BASE_INIT_EXPR: &[u8] = &[0x41, 0x01];
 
+/// Sentinel for a GC'd Wasm index slot.
+const WASM_DEAD_INDEX: u32 = u32::MAX;
+
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
     #[debug(skip)]
@@ -1711,12 +1714,14 @@ fn build_name_section<'data>(
             };
             match sym.kind {
                 WasmSymbolKind::Func
-                    if let Some(&out_idx) = index_map.function_indices.get(sym.index as usize) =>
+                    if let Some(&out_idx) = index_map.function_indices.get(sym.index as usize)
+                        && out_idx != WASM_DEAD_INDEX =>
                 {
                     function_names.push((out_idx, name));
                 }
                 WasmSymbolKind::Global
-                    if let Some(&out_idx) = index_map.global_indices.get(sym.index as usize) =>
+                    if let Some(&out_idx) = index_map.global_indices.get(sym.index as usize)
+                        && out_idx != WASM_DEAD_INDEX =>
                 {
                     global_names.push((out_idx, name));
                 }
@@ -2142,16 +2147,21 @@ fn layout_object_data<'data>(
     let mut segment_relocations =
         classify_data_relocations(&input.data_segments, &input.data_relocations);
     let mut segments = Vec::with_capacity(input.data_segments.len());
-    for (segment_index, segment) in input.data_segments.iter().enumerate() {
+    for (filtered_idx, segment) in input.data_segments.iter().enumerate() {
         let DataKind::Active { memory_index, .. } = segment.kind else {
             bail!("passive data segments are not emitted");
         };
         let output_memory_index =
             remap_wasm_index(&index_map.memory_indices, memory_index, "memory")?;
+        let original_index = input
+            .data_segment_original_indices
+            .get(filtered_idx)
+            .copied()
+            .unwrap_or(filtered_idx as u32);
         // Linking `SegmentInfo.alignment` is a power-of-two exponent.
         let align = input
             .segment_alignments
-            .get(segment_index)
+            .get(original_index as usize)
             .copied()
             .unwrap_or(crate::alignment::MIN);
         *memory_cursor = u32::try_from(align.align_up(u64::from(*memory_cursor)))
@@ -2167,9 +2177,9 @@ fn layout_object_data<'data>(
             .checked_add(u32::try_from(segment.data.len()).context("Wasm data segment too large")?)
             .ok_or_else(|| crate::error!("Wasm output memory offset overflow"))?;
         segments.push(WasmDataSegmentLayout {
-            segment_index: u32::try_from(segment_index).context("too many Wasm data segments")?,
+            segment_index: original_index,
             data: segment.data,
-            relocations: std::mem::take(&mut segment_relocations[segment_index]),
+            relocations: std::mem::take(&mut segment_relocations[filtered_idx]),
             output_memory_index,
             output_memory_offset,
             encoded_output_size,
@@ -2390,6 +2400,8 @@ pub(crate) struct WasmObjectLayout<'data> {
     data_relocations: Vec<WasmRelocation>,
     function_body_spans: Vec<(u32, u32)>,
     data_segment_spans: Vec<(u32, u32)>,
+    defined_function_live_ordinal: Vec<u32>,
+    defined_global_live_ordinal: Vec<u32>,
     _phantom: std::marker::PhantomData<&'data ()>,
 }
 
@@ -2461,6 +2473,45 @@ impl<'data> WasmObjectLayout<'data> {
         self.relocs_ready = true;
         Ok(())
     }
+
+    /// Pack live defined function/global ordinals into dense 0..n maps after the GC walk.
+    fn compute_live_ordinals(&mut self) {
+        self.defined_function_live_ordinal = pack_live_ordinals(&self.live_defined_functions);
+        self.defined_global_live_ordinal = pack_live_ordinals(&self.live_defined_globals);
+    }
+
+    fn is_data_segment_live(&self, index: usize) -> bool {
+        self.live_data_segments.get(index).copied().unwrap_or(false)
+    }
+
+    fn is_defined_function_live(&self, index: usize) -> bool {
+        self.live_defined_functions
+            .get(index)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    fn is_defined_global_live(&self, index: usize) -> bool {
+        self.live_defined_globals
+            .get(index)
+            .copied()
+            .unwrap_or(false)
+    }
+}
+
+fn pack_live_ordinals(live: &[bool]) -> Vec<u32> {
+    let mut next = 0u32;
+    live.iter()
+        .map(|&is_live| {
+            if is_live {
+                let ordinal = next;
+                next += 1;
+                ordinal
+            } else {
+                WASM_DEAD_INDEX
+            }
+        })
+        .collect()
 }
 
 fn sort_relocations_by_offset(relocs: &mut [WasmRelocation]) {
@@ -2539,6 +2590,8 @@ struct WasmObjectLayoutInput<'data> {
     types: Vec<wasmparser::FuncType>,
     function_imports: Vec<WasmFunctionImport<'data>>,
     global_imports: Vec<WasmGlobalImport<'data>>,
+    live_function_imports: Vec<bool>,
+    live_global_imports: Vec<bool>,
     memory_imports: Vec<MemoryType>,
     table_imports: Vec<wasmparser::TableType>,
     module_functions: Vec<u32>,
@@ -2549,6 +2602,7 @@ struct WasmObjectLayoutInput<'data> {
     unsupported_output: Vec<&'static str>,
     code_relocations: Vec<WasmRelocation>,
     data_segments: Vec<WasmDataSegment<'data>>,
+    data_segment_original_indices: Vec<u32>,
     segment_alignments: &'data [Alignment],
     data_relocations: Vec<WasmRelocation>,
     symbols: &'data [WasmSymbol],
@@ -2556,6 +2610,8 @@ struct WasmObjectLayoutInput<'data> {
     target_features: &'data [WasmTargetFeature<'data>],
     symbol_id_range: crate::symbol_db::SymbolIdRange,
     file_id: crate::input_data::FileId,
+    defined_function_live_ordinal: Vec<u32>,
+    defined_global_live_ordinal: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2578,11 +2634,14 @@ struct WasmObjectOutputLayout<'data> {
 }
 
 impl<'data> WasmObjectLayoutInput<'data> {
-    fn from_file(
-        file: &'data File<'data>,
-        symbol_id_range: crate::symbol_db::SymbolIdRange,
-        file_id: crate::input_data::FileId,
-    ) -> Result<Self> {
+    fn from_file(file: &'data File<'data>, layout: &WasmObjectLayout<'data>) -> Result<Self> {
+        let symbol_id_range = layout.symbol_id_range;
+        let file_id = layout.file_id;
+
+        // If the object was never activated (should not happen for objects we collect), treat
+        // everything as live so layout can still proceed.
+        let all_live = !layout.live_bits_ready;
+
         let mut types = Vec::new();
         if let Some(type_section) = file.type_section_reader()? {
             for group in type_section {
@@ -2628,27 +2687,43 @@ impl<'data> WasmObjectLayoutInput<'data> {
             }
         }
 
-        let code_section_index = file.standard_section_index[section_id::CODE as usize];
-        let code_relocations: Vec<WasmRelocation> = code_section_index
-            .and_then(|code_idx| {
-                file.reloc_sections
-                    .iter()
-                    .find(|s| s.target_section_index == code_idx)
-            })
-            .map(|s| s.decode_entries(file.data))
-            .transpose()?
-            .unwrap_or_default();
+        let live_function_imports = if all_live {
+            vec![true; function_imports.len()]
+        } else {
+            layout.live_function_imports.clone()
+        };
+        let live_global_imports = if all_live {
+            vec![true; global_imports.len()]
+        } else {
+            layout.live_global_imports.clone()
+        };
 
+        let code_section_index = file.standard_section_index[section_id::CODE as usize];
         let data_section_index = file.standard_section_index[section_id::DATA as usize];
-        let data_relocations: Vec<WasmRelocation> = data_section_index
-            .and_then(|data_idx| {
-                file.reloc_sections
-                    .iter()
-                    .find(|s| s.target_section_index == data_idx)
-            })
-            .map(|s| s.decode_entries(file.data))
-            .transpose()?
-            .unwrap_or_default();
+
+        let (code_relocations_all, data_relocations_all) = if layout.relocs_ready {
+            (layout.code_relocations.clone(), layout.data_relocations.clone())
+        } else {
+            let code_relocations: Vec<WasmRelocation> = code_section_index
+                .and_then(|code_idx| {
+                    file.reloc_sections
+                        .iter()
+                        .find(|s| s.target_section_index == code_idx)
+                })
+                .map(|s| s.decode_entries(file.data))
+                .transpose()?
+                .unwrap_or_default();
+            let data_relocations: Vec<WasmRelocation> = data_section_index
+                .and_then(|data_idx| {
+                    file.reloc_sections
+                        .iter()
+                        .find(|s| s.target_section_index == data_idx)
+                })
+                .map(|s| s.decode_entries(file.data))
+                .transpose()?
+                .unwrap_or_default();
+            (code_relocations, data_relocations)
+        };
 
         // TODO(wasm): Currently relocs targeting `.debug*` are ignored (not applied, not emitted).
         let has_unsupported_non_code_relocs = file.reloc_sections.iter().any(|s| {
@@ -2663,7 +2738,9 @@ impl<'data> WasmObjectLayoutInput<'data> {
         if has_unsupported_non_code_relocs {
             unsupported_output.push("non-code relocation");
         }
-        if !data_relocations.is_empty() && !data_relocations_are_supported(&data_relocations) {
+        if !data_relocations_all.is_empty()
+            && !data_relocations_are_supported(&data_relocations_all)
+        {
             unsupported_output.push("data relocation");
         }
         if file.standard_section_index[section_id::TABLE as usize].is_some() {
@@ -2672,23 +2749,23 @@ impl<'data> WasmObjectLayoutInput<'data> {
         if file.standard_section_index[section_id::START as usize].is_some() {
             unsupported_output.push("start");
         }
-        let data_segments = file.data_segments()?;
-        for segment in &data_segments {
+        let all_data_segments = file.data_segments()?;
+        for segment in &all_data_segments {
             if let DataKind::Passive = segment.kind {
                 unsupported_output.push("passive data segment");
                 break;
             }
         }
 
-        let module_functions = file.module_functions()?;
-        let function_bodies = file.function_bodies()?;
+        let all_module_functions = file.module_functions()?;
+        let all_function_bodies = file.function_bodies()?;
         ensure!(
-            module_functions.len() == function_bodies.len(),
+            all_module_functions.len() == all_function_bodies.len(),
             "Wasm function and code section counts differ"
         );
         let memories = file.memories()?;
 
-        let globals = file
+        let all_globals = file
             .module_globals()?
             .into_iter()
             .map(|global| {
@@ -2702,6 +2779,69 @@ impl<'data> WasmObjectLayoutInput<'data> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+
+        let defined_function_live_ordinal = if all_live {
+            pack_live_ordinals(&vec![true; all_module_functions.len()])
+        } else {
+            layout.defined_function_live_ordinal.clone()
+        };
+        let defined_global_live_ordinal = if all_live {
+            pack_live_ordinals(&vec![true; all_globals.len()])
+        } else {
+            layout.defined_global_live_ordinal.clone()
+        };
+
+        let mut module_functions = Vec::new();
+        let mut function_bodies = Vec::new();
+        let mut code_relocations = Vec::new();
+        for (i, (ty, body)) in all_module_functions
+            .into_iter()
+            .zip(all_function_bodies.into_iter())
+            .enumerate()
+        {
+            if !(all_live || layout.is_defined_function_live(i)) {
+                continue;
+            }
+            let body_start = body.code_offset;
+            let body_end = body_start + body.bytes.len() as u32;
+            code_relocations.extend_from_slice(relocs_in_offset_range(
+                &code_relocations_all,
+                body_start,
+                body_end,
+            ));
+            module_functions.push(ty);
+            function_bodies.push(body);
+        }
+        sort_relocations_by_offset(&mut code_relocations);
+
+        let mut globals = Vec::new();
+        for (i, global) in all_globals.into_iter().enumerate() {
+            if all_live || layout.is_defined_global_live(i) {
+                globals.push(global);
+            }
+        }
+
+        let mut data_segments = Vec::new();
+        let mut data_segment_original_indices = Vec::new();
+        let mut data_relocations = Vec::new();
+        for (i, segment) in all_data_segments.into_iter().enumerate() {
+            if !(all_live || layout.is_data_segment_live(i)) {
+                continue;
+            }
+            let encoded = wasm_data_segment_encoded_size(&segment.kind, segment.data.len())?;
+            let start = segment.section_offset;
+            let end = start
+                .checked_add(encoded)
+                .ok_or_else(|| crate::error!("Wasm data segment span overflow"))?;
+            data_relocations.extend_from_slice(relocs_in_offset_range(
+                &data_relocations_all,
+                start,
+                end,
+            ));
+            data_segment_original_indices.push(u32::try_from(i).context("too many data segments")?);
+            data_segments.push(segment);
+        }
+        sort_relocations_by_offset(&mut data_relocations);
 
         let mut exports = Vec::new();
         if let Some(export_section) = file.export_section_reader()? {
@@ -2720,6 +2860,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
             types,
             function_imports,
             global_imports,
+            live_function_imports,
+            live_global_imports,
             memory_imports,
             table_imports,
             module_functions,
@@ -2730,6 +2872,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             unsupported_output,
             code_relocations,
             data_segments,
+            data_segment_original_indices,
             segment_alignments: file.segment_alignments.as_slice(),
             data_relocations,
             symbols: file.symbols.as_slice(),
@@ -2737,6 +2880,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
             target_features: file.target_features.as_slice(),
             symbol_id_range,
             file_id,
+            defined_function_live_ordinal,
+            defined_global_live_ordinal,
         })
     }
 
@@ -2770,9 +2915,11 @@ impl<'data> WasmObjectLayoutInput<'data> {
         let mut index_map = WasmObjectIndexMap {
             type_indices,
             function_indices: Vec::with_capacity(
-                self.function_imports.len() + self.module_functions.len(),
+                self.function_imports.len() + self.defined_function_live_ordinal.len(),
             ),
-            global_indices: Vec::with_capacity(self.global_imports.len() + self.globals.len()),
+            global_indices: Vec::with_capacity(
+                self.global_imports.len() + self.defined_global_live_ordinal.len(),
+            ),
             memory_indices: Vec::with_capacity(self.memory_imports.len() + self.memories.len()),
             table_indices: vec![0; self.table_imports.len()],
             data_addresses: Vec::new(),
@@ -2781,6 +2928,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
         };
 
         for (i, resolution) in resolutions.function_resolutions.iter().enumerate() {
+            if !self.live_function_imports.get(i).copied().unwrap_or(false) {
+                index_map.function_indices.push(WASM_DEAD_INDEX);
+                continue;
+            }
             match *resolution {
                 ImportResolution::Unresolved => {
                     let output_function_index = shared_imports
@@ -2818,6 +2969,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
                         "Wasm function import resolution references object index \
                          {def_object_index} out of range"
                     );
+                    ensure!(
+                        local_defined_index != WASM_DEAD_INDEX,
+                        "Wasm function import resolved to a GC'd definition"
+                    );
                     let target_bases = &all_index_bases[def_object_index];
                     let output_function_index = target_bases
                         .defined_function_base
@@ -2835,6 +2990,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
         }
 
         for (i, resolution) in resolutions.global_resolutions.iter().enumerate() {
+            if !self.live_global_imports.get(i).copied().unwrap_or(false) {
+                index_map.global_indices.push(WASM_DEAD_INDEX);
+                continue;
+            }
             match *resolution {
                 ImportResolution::Unresolved => {
                     let output_global_index = shared_imports
@@ -2871,6 +3030,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
                         "Wasm global import resolution references object index {object_index} out \
                          of range"
                     );
+                    ensure!(
+                        local_defined_index != WASM_DEAD_INDEX,
+                        "Wasm global import resolved to a GC'd definition"
+                    );
                     let target_bases = &all_index_bases[object_index];
                     let output_global_index = target_bases
                         .defined_global_base
@@ -2886,25 +3049,36 @@ impl<'data> WasmObjectLayoutInput<'data> {
         }
 
         let mut function_type_indices = Vec::with_capacity(self.module_functions.len());
-        for (i, &local_type_index) in self.module_functions.iter().enumerate() {
+        for &local_type_index in &self.module_functions {
             let output_type_index = index_bases
                 .type_index_base
                 .checked_add(local_type_index)
                 .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
-            let output_function_index = index_bases
-                .defined_function_base
-                .checked_add(u32::try_from(i).context("too many Wasm functions")?)
-                .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
             function_type_indices.push(output_type_index);
-            index_map.function_indices.push(output_function_index);
+        }
+        // Full function index space: imports (above) + original defined ordinals.
+        for &dense_or_dead in &self.defined_function_live_ordinal {
+            if dense_or_dead == WASM_DEAD_INDEX {
+                index_map.function_indices.push(WASM_DEAD_INDEX);
+            } else {
+                let output_function_index = index_bases
+                    .defined_function_base
+                    .checked_add(dense_or_dead)
+                    .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+                index_map.function_indices.push(output_function_index);
+            }
         }
 
-        for i in 0..self.globals.len() {
-            let output_global_index = index_bases
-                .defined_global_base
-                .checked_add(u32::try_from(i).context("too many Wasm globals")?)
-                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-            index_map.global_indices.push(output_global_index);
+        for &dense_or_dead in &self.defined_global_live_ordinal {
+            if dense_or_dead == WASM_DEAD_INDEX {
+                index_map.global_indices.push(WASM_DEAD_INDEX);
+            } else {
+                let output_global_index = index_bases
+                    .defined_global_base
+                    .checked_add(dense_or_dead)
+                    .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+                index_map.global_indices.push(output_global_index);
+            }
         }
 
         // Imported and defined memories are merged into a single output memory.
@@ -3075,6 +3249,9 @@ fn collect_shared_unresolved_imports<'data>(
     for (obj_idx, (input, res)) in inputs.iter().zip(resolutions.iter()).enumerate() {
         let mut func_map = vec![None; input.function_imports.len()];
         for (i, import) in input.function_imports.iter().enumerate() {
+            if !input.live_function_imports.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if !matches!(
                 res.function_resolutions.get(i),
                 Some(ImportResolution::Unresolved)
@@ -3119,6 +3296,9 @@ fn collect_shared_unresolved_imports<'data>(
 
         let mut global_map = vec![None; input.global_imports.len()];
         for (i, import) in input.global_imports.iter().enumerate() {
+            if !input.live_global_imports.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if !matches!(
                 res.global_resolutions.get(i),
                 Some(ImportResolution::Unresolved)
@@ -3158,12 +3338,32 @@ fn collect_shared_unresolved_imports<'data>(
     })
 }
 
-fn local_defined_function_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> u32 {
-    sym.index - input.function_imports.len() as u32
+fn local_defined_function_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> Result<u32> {
+    let original = sym.index - input.function_imports.len() as u32;
+    let dense = input
+        .defined_function_live_ordinal
+        .get(original as usize)
+        .copied()
+        .unwrap_or(WASM_DEAD_INDEX);
+    ensure!(
+        dense != WASM_DEAD_INDEX,
+        "reference to GC'd Wasm defined function {original}"
+    );
+    Ok(dense)
 }
 
-fn local_defined_global_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> u32 {
-    sym.index - input.global_imports.len() as u32
+fn local_defined_global_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> Result<u32> {
+    let original = sym.index - input.global_imports.len() as u32;
+    let dense = input
+        .defined_global_live_ordinal
+        .get(original as usize)
+        .copied()
+        .unwrap_or(WASM_DEAD_INDEX);
+    ensure!(
+        dense != WASM_DEAD_INDEX,
+        "reference to GC'd Wasm defined global {original}"
+    );
+    Ok(dense)
 }
 
 /// Resolve cross-object imports. For each object's undefined function/global symbol, checks whether
@@ -3215,12 +3415,22 @@ fn resolve_import_symbols<'data>(
     ensure!(u32::try_from(import_count).is_ok(), "too many Wasm imports");
     let mut resolutions = vec![ImportResolution::Unresolved; import_count];
 
+    let live_imports = match kind {
+        WasmSymbolKind::Func => input.live_function_imports.as_slice(),
+        WasmSymbolKind::Global => input.live_global_imports.as_slice(),
+        _ => &[],
+    };
+
     for (sym_offset, sym) in input.symbols.iter().enumerate() {
         if !sym.is_undefined() || sym.kind != kind {
             continue;
         }
         let import_idx = sym.index as usize;
         if import_idx >= import_count {
+            continue;
+        }
+        // Dead import slots are not emitted.
+        if !live_imports.get(import_idx).copied().unwrap_or(false) {
             continue;
         }
         let resolution = resolve_one_import(
@@ -3244,6 +3454,9 @@ fn resolve_import_symbols<'data>(
         _ => Vec::new(),
     };
     for (import_idx, name) in import_names.iter().enumerate() {
+        if !live_imports.get(import_idx).copied().unwrap_or(false) {
+            continue;
+        }
         if !matches!(resolutions[import_idx], ImportResolution::Unresolved) {
             continue;
         }
@@ -3295,7 +3508,7 @@ fn resolve_one_import<'data>(
             );
             Ok(ImportResolution::ResolvedFunction {
                 object_index: def_obj_idx,
-                local_defined_index: local_defined_function_index(def_input, def_sym),
+                local_defined_index: local_defined_function_index(def_input, def_sym)?,
             })
         }
         WasmSymbolKind::Global => {
@@ -3306,7 +3519,7 @@ fn resolve_one_import<'data>(
             );
             Ok(ImportResolution::ResolvedGlobal {
                 object_index: def_obj_idx,
-                local_defined_index: local_defined_global_index(def_input, def_sym),
+                local_defined_index: local_defined_global_index(def_input, def_sym)?,
             })
         }
         _ => Ok(ImportResolution::Unresolved),
@@ -3357,14 +3570,24 @@ struct LinkerImportAbsorption {
 }
 
 impl LinkerImportAbsorption {
-    fn from_resolutions(resolutions: &ObjectImportResolutions) -> Self {
+    fn from_resolutions(
+        resolutions: &ObjectImportResolutions,
+        live_function_imports: &[bool],
+        live_global_imports: &[bool],
+    ) -> Self {
         let mut absorption = Self::default();
-        for resolution in &resolutions.function_resolutions {
+        for (i, resolution) in resolutions.function_resolutions.iter().enumerate() {
+            if !live_function_imports.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if let ImportResolution::LinkerDefined(WasmLinkerSymbol::CallCtors) = *resolution {
                 absorption.needs_ctors = true;
             }
         }
-        for resolution in &resolutions.global_resolutions {
+        for (i, resolution) in resolutions.global_resolutions.iter().enumerate() {
+            if !live_global_imports.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if let ImportResolution::LinkerDefined(known) = *resolution {
                 match known {
                     WasmLinkerSymbol::MemoryBase => absorption.needs_memory_base = true,
@@ -3513,6 +3736,7 @@ fn setup_got_mem_and_indices<'data>(
     let shared_imports = collect_shared_unresolved_imports(layout_inputs, resolutions)?;
 
     let indices = LinkerDefinedIndices::compute(
+        layout_inputs,
         resolutions,
         shared_imports.function_count(),
         shared_imports.global_count(),
@@ -3588,6 +3812,9 @@ fn absorb_weak_undef_function_imports<'data>(
         .zip(resolutions.iter().zip(pure_weak_flags.iter()))
     {
         for (i, import) in input.function_imports.iter().enumerate() {
+            if !input.live_function_imports.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if !matches!(
                 res.function_resolutions.get(i),
                 Some(ImportResolution::Unresolved)
@@ -3608,6 +3835,9 @@ fn absorb_weak_undef_function_imports<'data>(
         .zip(resolutions.iter_mut().zip(pure_weak_flags.iter()))
     {
         for (i, import) in input.function_imports.iter().enumerate() {
+            if !input.live_function_imports.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if !matches!(
                 res.function_resolutions.get(i),
                 Some(ImportResolution::Unresolved)
@@ -4193,6 +4423,7 @@ struct LinkerDefinedIndexRequest {
 
 impl LinkerDefinedIndices {
     fn compute(
+        layout_inputs: &[WasmObjectLayoutInput<'_>],
         import_resolutions: &[ObjectImportResolutions],
         function_import_count: u32,
         global_import_count: u32,
@@ -4205,8 +4436,12 @@ impl LinkerDefinedIndices {
         let mut needs_tls_base = false;
         let mut needs_ctors = request.has_init_funcs;
 
-        for resolutions in import_resolutions {
-            let absorption = LinkerImportAbsorption::from_resolutions(resolutions);
+        for (input, resolutions) in layout_inputs.iter().zip(import_resolutions.iter()) {
+            let absorption = LinkerImportAbsorption::from_resolutions(
+                resolutions,
+                &input.live_function_imports,
+                &input.live_global_imports,
+            );
             needs_ctors |= absorption.needs_ctors;
             needs_memory_base |= absorption.needs_memory_base;
             needs_table_base |= absorption.needs_table_base;
@@ -4893,7 +5128,7 @@ where
             .par_iter()
             .map(|(object, state)| {
                 verbose_timing_phase!("Collect Wasm object layout input");
-                WasmObjectLayoutInput::from_file(object, state.symbol_id_range, state.file_id)
+                WasmObjectLayoutInput::from_file(object, state)
             })
             .collect::<Result<Vec<_>>>()?
     };
@@ -5268,22 +5503,27 @@ pub(crate) fn finalize_reloc_value(reloc: &WasmRelocation, base: u32) -> Result<
     }
 }
 
-fn data_symbol_memory_address(
+/// Address of a defined data symbol, or `None` when its segment was GC'd.
+fn try_data_symbol_memory_address(
     object_data_layout: &[WasmDataSegmentLayout<'_>],
     sym: &WasmSymbol,
-) -> Result<u32> {
+) -> Result<Option<u32>> {
     ensure!(
         sym.kind == WasmSymbolKind::Data,
         "memory address relocation references non-data symbol"
     );
-    let segment = object_data_layout
-        .get(sym.index as usize)
-        .filter(|segment| segment.segment_index == sym.index)
-        .ok_or_else(|| crate::error!("Wasm data symbol segment {} not found", sym.index))?;
-    segment
-        .output_memory_offset
-        .checked_add(sym.offset)
-        .ok_or_else(|| crate::error!("Wasm data symbol address overflow"))
+    let Some(segment) = object_data_layout
+        .iter()
+        .find(|segment| segment.segment_index == sym.index)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(
+        segment
+            .output_memory_offset
+            .checked_add(sym.offset)
+            .ok_or_else(|| crate::error!("Wasm data symbol address overflow"))?,
+    ))
 }
 
 /// Wasm symbols synthesized by the linker.
@@ -5380,8 +5620,11 @@ fn compute_data_addresses(
             let symbol_id = layout_inputs[obj_idx].symbol_id_range.offset_to_id(sym_idx);
 
             if !sym.is_undefined() {
-                data_addresses[sym_idx] =
-                    data_symbol_memory_address(&object_data_layouts[obj_idx], sym)?;
+                if let Some(addr) =
+                    try_data_symbol_memory_address(&object_data_layouts[obj_idx], sym)?
+                {
+                    data_addresses[sym_idx] = addr;
+                }
                 continue;
             }
 
@@ -5393,8 +5636,11 @@ fn compute_data_addresses(
                 let def_sym =
                     per_object_symbols[def_obj_idx][def_id.to_offset(def_input.symbol_id_range)];
                 if !def_sym.is_undefined() {
-                    data_addresses[sym_idx] =
-                        data_symbol_memory_address(&object_data_layouts[def_obj_idx], &def_sym)?;
+                    if let Some(addr) =
+                        try_data_symbol_memory_address(&object_data_layouts[def_obj_idx], &def_sym)?
+                    {
+                        data_addresses[sym_idx] = addr;
+                    }
                     continue;
                 }
             }
@@ -5487,10 +5733,15 @@ fn classify_code_relocations<'data>(
 }
 
 fn remap_wasm_index(indices: &[u32], index: u32, kind: &str) -> Result<u32> {
-    indices
+    let mapped = indices
         .get(index as usize)
         .copied()
-        .ok_or_else(|| crate::error!("Wasm {kind} index {index} out of range"))
+        .ok_or_else(|| crate::error!("Wasm {kind} index {index} out of range"))?;
+    ensure!(
+        mapped != WASM_DEAD_INDEX,
+        "Wasm {kind} index {index} was removed by GC"
+    );
+    Ok(mapped)
 }
 
 impl platform::Platform for Wasm {
@@ -5586,9 +5837,16 @@ impl platform::Platform for Wasm {
     }
 
     fn post_gc<'data>(
-        _groups: &mut [crate::layout::GroupState<Self>],
+        groups: &mut [crate::layout::GroupState<Self>],
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> crate::error::Result {
+        for group in groups {
+            for file in &mut group.files {
+                if let crate::layout::FileLayoutState::Object(object) = file {
+                    object.format_specific.compute_live_ordinals();
+                }
+            }
+        }
         Ok(())
     }
 
@@ -5819,6 +6077,8 @@ impl platform::Platform for Wasm {
             data_relocations: Vec::new(),
             function_body_spans: Vec::new(),
             data_segment_spans: Vec::new(),
+            defined_function_live_ordinal: Vec::new(),
+            defined_global_live_ordinal: Vec::new(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -6296,8 +6556,8 @@ fn enqueue_wasm_gc_unit<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
     queue.send_gc_unit_request::<A>(object.file_id, unit, resources, scope);
 }
 
-/// Roots: export section, EXPORTED / NO_STRIP linking flags, InitFuncs.
-/// Entry / `--export` arrive via `LoadGlobalSymbol` from the prelude path.
+/// Roots: export section, EXPORTED / NO_STRIP linking flags, InitFuncs, `--export`.
+/// Entry arrives via `LoadGlobalSymbol` from the prelude path.
 fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
     object: &crate::layout::ObjectLayoutState<'data, Wasm>,
     resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
@@ -6355,6 +6615,26 @@ fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
         };
         if let Some(unit) = wasm_gc_unit_for_symbol(file, sym) {
             enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
+        }
+    }
+
+    for name in resources.symbol_db.args.force_export_symbol_names() {
+        let Some(symbol_id) = resources
+            .symbol_db
+            .get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()))
+        else {
+            continue;
+        };
+        let def_id = resources.symbol_db.definition(symbol_id);
+        if resources.symbol_db.file_id_for_symbol(def_id) != object.file_id {
+            continue;
+        }
+        let old_flags = resources
+            .per_symbol_flags
+            .get_atomic(def_id)
+            .fetch_or(ValueFlags::DIRECT);
+        if !old_flags.has_resolution() {
+            queue.send_symbol_request::<A>(def_id, resources, scope);
         }
     }
 
@@ -6633,6 +6913,8 @@ mod tests {
             types: Vec::new(),
             function_imports: Vec::new(),
             global_imports: Vec::new(),
+            live_function_imports: Vec::new(),
+            live_global_imports: Vec::new(),
             memory_imports: Vec::new(),
             table_imports: Vec::new(),
             module_functions: Vec::new(),
@@ -6643,6 +6925,7 @@ mod tests {
             unsupported_output: Vec::new(),
             code_relocations: Vec::new(),
             data_segments: Vec::new(),
+            data_segment_original_indices: Vec::new(),
             segment_alignments: &[],
             data_relocations: Vec::new(),
             symbols: &[],
@@ -6650,6 +6933,8 @@ mod tests {
             target_features: features,
             symbol_id_range: crate::symbol_db::SymbolIdRange::empty(),
             file_id: crate::input_data::FileId::new(0, file),
+            defined_function_live_ordinal: Vec::new(),
+            defined_global_live_ordinal: Vec::new(),
         }
     }
 
