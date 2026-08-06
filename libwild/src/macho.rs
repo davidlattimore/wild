@@ -53,6 +53,14 @@ use object::macho::N_EXT;
 use object::macho::N_PEXT;
 use object::macho::N_SECT;
 use object::macho::N_WEAK_DEF;
+use object::macho::S_ATTR_EXT_RELOC;
+use object::macho::S_ATTR_LOC_RELOC;
+use object::macho::S_ATTR_PURE_INSTRUCTIONS;
+use object::macho::S_ATTR_SOME_INSTRUCTIONS;
+use object::macho::S_GB_ZEROFILL;
+use object::macho::S_THREAD_LOCAL_ZEROFILL;
+use object::macho::S_ZEROFILL;
+use object::macho::SECTION_ATTRIBUTES;
 use object::macho::SEG_LINKEDIT;
 use object::macho::Section64;
 pub use object::macho::SectionFlags;
@@ -596,7 +604,9 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_executable(&self) -> bool {
-        self.sectname.starts_with(b"__text")
+        self.flags
+            .get(LE)
+            .intersects(S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS)
     }
 
     fn is_tls(&self) -> bool {
@@ -635,14 +645,14 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_no_bits(&self) -> bool {
-        todo!()
+        matches!(
+            self.flags.get(LE).typ(),
+            S_ZEROFILL | S_GB_ZEROFILL | S_THREAD_LOCAL_ZEROFILL
+        )
     }
 }
 
-#[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct SectionType {}
-
-impl platform::SectionType for SectionType {
+impl platform::SectionType for macho::SectionType {
     fn is_rela(&self) -> bool {
         todo!()
     }
@@ -757,21 +767,39 @@ impl platform::Symbol for SymtabEntry {
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct SectionAttributes {
-    pub(crate) flags: SectionFlags,
+    ty: macho::SectionType,
+    attr: SectionFlags,
+}
+
+const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = S_ATTR_EXT_RELOC.with(S_ATTR_LOC_RELOC);
+
+impl From<SectionFlags> for SectionAttributes {
+    fn from(flags: SectionFlags) -> Self {
+        Self {
+            ty: flags.typ(),
+            attr: SectionFlags(flags.0 & SECTION_ATTRIBUTES),
+        }
+    }
 }
 
 impl platform::SectionAttributes for SectionAttributes {
     type Platform = MachO;
 
     fn merge(&mut self, rhs: Self) {
-        self.flags |= rhs.flags;
+        self.ty = self.ty.max(rhs.ty);
+        self.attr |= rhs.attr;
     }
 
     fn apply(
         &self,
-        _output_sections: &mut crate::output_section_id::OutputSections<Self::Platform>,
-        _section_id: crate::output_section_id::OutputSectionId,
+        output_sections: &mut crate::output_section_id::OutputSections<Self::Platform>,
+        section_id: crate::output_section_id::OutputSectionId,
     ) {
+        let info = output_sections.section_infos.get_mut(section_id);
+        // TODO: For now, we copy what ELF does to break ties in types. This acts as a workaround
+        // since S_REGULAR = 0 and more specialized types should win this tiebreak.
+        info.section_attributes.ty = info.section_attributes.ty.max(self.ty);
+        info.section_attributes.attr |= self.attr.without(SECTION_FLAGS_PROPAGATION_MASK);
     }
 
     fn is_null(&self) -> bool {
@@ -783,7 +811,8 @@ impl platform::SectionAttributes for SectionAttributes {
     }
 
     fn is_executable(&self) -> bool {
-        false
+        self.flags()
+            .intersects(S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS)
     }
 
     fn is_tls(&self) -> bool {
@@ -795,15 +824,18 @@ impl platform::SectionAttributes for SectionAttributes {
     }
 
     fn is_no_bits(&self) -> bool {
-        false
+        matches!(
+            self.ty,
+            S_ZEROFILL | S_GB_ZEROFILL | S_THREAD_LOCAL_ZEROFILL
+        )
     }
 
     fn flags(&self) -> <Self::Platform as platform::Platform>::SectionFlags {
-        self.flags
+        self.attr.with_type(self.ty)
     }
 
     fn ty(&self) -> <Self::Platform as platform::Platform>::SectionType {
-        SectionType {}
+        self.ty
     }
 
     fn set_to_default_type(&mut self) {}
@@ -991,7 +1023,7 @@ impl platform::Platform for MachO {
     type SectionHeader = SectionHeader;
     type SectionFlags = SectionFlags;
     type SectionAttributes = SectionAttributes;
-    type SectionType = SectionType;
+    type SectionType = macho::SectionType;
     type SegmentType = SegmentType;
     type ProgramSegmentDef = ProgramSegmentDef;
     type BuiltInSectionDetails = BuiltInSectionDetails;
@@ -1038,8 +1070,8 @@ impl platform::Platform for MachO {
         output.write(layout, macho_writer::write::<A>)
     }
 
-    fn section_attributes(_header: &Self::SectionHeader) -> Self::SectionAttributes {
-        Default::default()
+    fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
+        header.flags.get(LE).into()
     }
 
     fn apply_force_keep_sections(
@@ -1232,9 +1264,7 @@ impl platform::Platform for MachO {
         SECTION_DEFINITIONS
             .iter()
             .map(|d| SectionOutputInfo {
-                section_attributes: SectionAttributes {
-                    flags: d.section_flags,
-                },
+                section_attributes: d.section_flags.into(),
                 kind: d.kind,
                 min_alignment: d.min_alignment,
                 location_info: None,
@@ -1845,6 +1875,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     };
     defs[output_section_id::GOT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"__got"), ())),
+        section_flags: macho::S_NON_LAZY_SYMBOL_POINTERS.to_flags(),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::PLT_GOT.as_usize()] = BuiltInSectionDetails {
