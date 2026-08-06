@@ -2819,7 +2819,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
         let mut code_relocations = Vec::new();
         for (i, (ty, body)) in all_module_functions
             .into_iter()
-            .zip(all_function_bodies.into_iter())
+            .zip(all_function_bodies)
             .enumerate()
         {
             if !(all_live || layout.is_defined_function_live(i)) {
@@ -5967,10 +5967,10 @@ impl platform::Platform for Wasm {
         scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
         object.format_specific.ensure_live_bits(object.object);
-        if !resources.symbol_db.args.should_gc_sections() {
-            enqueue_all_wasm_gc_units::<A>(object, resources, queue, scope);
-        } else {
+        if resources.symbol_db.args.should_gc_sections() {
             enqueue_wasm_gc_roots::<A>(object, resources, queue, scope)?;
+        } else {
+            enqueue_all_wasm_gc_units::<A>(object, resources, queue, scope);
         }
         Ok(())
     }
