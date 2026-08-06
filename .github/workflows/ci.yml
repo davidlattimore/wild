@@ -15,8 +15,18 @@ env:
   RUSTFLAGS: '-D warnings'
 
 jobs:
+  ci-env:
+    name: CI environment
+    runs-on: ubuntu-24.04
+    outputs:
+      image-tag: ${{ steps.env.outputs.image-tag }}
+    steps:
+      - id: env
+        run: echo "image-tag=sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94" >> "$GITHUB_OUTPUT"
+
   test-nightly:
     name: Test Linux (${{ matrix.container }})
+    needs: ci-env
 
     strategy:
       matrix:
@@ -42,7 +52,7 @@ jobs:
     timeout-minutes: 10
 
     container:
-      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
+      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:${{ needs.ci-env.outputs.image-tag }}
 
     steps:
       # https://github.com/actions/runner/issues/3210
@@ -63,10 +73,11 @@ jobs:
 
   riscv-build:
     name: Build Linux (RISC-V)
+    needs: ci-env
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:${{ needs.ci-env.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -81,10 +92,11 @@ jobs:
 
   loongarch64-build:
     name: Build Linux (LoongArch64)
+    needs: ci-env
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:${{ needs.ci-env.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -99,10 +111,11 @@ jobs:
 
   ppc64le-build:
     name: Build Linux (PPC64LE)
+    needs: ci-env
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:${{ needs.ci-env.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -203,10 +216,11 @@ jobs:
       - run: cargo build --profile ci --workspace --no-default-features
 
   minimal-versions:
+    needs: ci-env
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:${{ needs.ci-env.outputs.image-tag }}
     steps:
       - uses: actions/checkout@v7
         with:
