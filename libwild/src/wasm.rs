@@ -2601,7 +2601,9 @@ fn wasm_gc_unit_for_symbol(file: &File<'_>, symbol: &WasmSymbol) -> Option<WasmG
             .index
             .checked_sub(file.num_global_imports)
             .map(WasmGcUnit::DefinedGlobal),
-        WasmSymbolKind::Data if !symbol.is_undefined() => Some(WasmGcUnit::DataSegment(symbol.index)),
+        WasmSymbolKind::Data if !symbol.is_undefined() => {
+            Some(WasmGcUnit::DataSegment(symbol.index))
+        }
         _ => None,
     }
 }
@@ -2725,7 +2727,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
         let data_section_index = file.standard_section_index[section_id::DATA as usize];
 
         let (code_relocations_all, data_relocations_all) = if layout.relocs_ready {
-            (layout.code_relocations.clone(), layout.data_relocations.clone())
+            (
+                layout.code_relocations.clone(),
+                layout.data_relocations.clone(),
+            )
         } else {
             let code_relocations: Vec<WasmRelocation> = code_section_index
                 .and_then(|code_idx| {
@@ -3361,7 +3366,10 @@ fn collect_shared_unresolved_imports<'data>(
     })
 }
 
-fn local_defined_function_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> Result<u32> {
+fn local_defined_function_index(
+    input: &WasmObjectLayoutInput<'_>,
+    sym: &WasmSymbol,
+) -> Result<u32> {
     let original = sym.index - input.function_imports.len() as u32;
     let dense = input
         .defined_function_live_ordinal
@@ -5990,7 +5998,9 @@ impl platform::Platform for Wasm {
                 if !object.format_specific.claim_edge_walk(unit) {
                     return Ok(());
                 }
-                object.format_specific.ensure_relocs_decoded(object.object)?;
+                object
+                    .format_specific
+                    .ensure_relocs_decoded(object.object)?;
                 walk_wasm_gc_unit_edges::<A>(object, unit, resources, queue, scope)?;
             }
             WasmGcUnit::DefinedGlobal(_)
@@ -6474,9 +6484,18 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
 
     let (num_function_imports, num_global_imports) =
         count_function_and_global_imports(input, &standard_section_index, &sections)?;
-    let num_defined_functions = section_entry_count(input, &standard_section_index, &sections, section_id::FUNCTION)?;
-    let num_defined_globals =
-        section_entry_count(input, &standard_section_index, &sections, section_id::GLOBAL)?;
+    let num_defined_functions = section_entry_count(
+        input,
+        &standard_section_index,
+        &sections,
+        section_id::FUNCTION,
+    )?;
+    let num_defined_globals = section_entry_count(
+        input,
+        &standard_section_index,
+        &sections,
+        section_id::GLOBAL,
+    )?;
     let num_data_segments =
         section_entry_count(input, &standard_section_index, &sections, section_id::DATA)?;
 
@@ -6576,7 +6595,13 @@ fn enqueue_all_wasm_gc_units<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
         );
     }
     for i in 0..num_defined_globals {
-        enqueue_wasm_gc_unit::<A>(object, WasmGcUnit::DefinedGlobal(i), resources, queue, scope);
+        enqueue_wasm_gc_unit::<A>(
+            object,
+            WasmGcUnit::DefinedGlobal(i),
+            resources,
+            queue,
+            scope,
+        );
     }
     for i in 0..num_data_segments {
         enqueue_wasm_gc_unit::<A>(object, WasmGcUnit::DataSegment(i), resources, queue, scope);
@@ -6636,9 +6661,7 @@ fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
                     if export.index < num_global_imports {
                         Some(WasmGcUnit::GlobalImport(export.index))
                     } else {
-                        Some(WasmGcUnit::DefinedGlobal(
-                            export.index - num_global_imports,
-                        ))
+                        Some(WasmGcUnit::DefinedGlobal(export.index - num_global_imports))
                     }
                 }
                 _ => None,
@@ -6663,10 +6686,7 @@ fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
     for init_index in 0..object.object.init_funcs.len() {
         let init = object.object.init_funcs[init_index];
         let Some(sym) = object.object.symbols.get(init.symbol_index as usize) else {
-            bail!(
-                "InitFuncs symbol index {} out of range",
-                init.symbol_index
-            );
+            bail!("InitFuncs symbol index {} out of range", init.symbol_index);
         };
         if let Some(unit) = wasm_gc_unit_for_symbol(object.object, sym) {
             enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
@@ -6742,10 +6762,7 @@ fn note_wasm_reloc_edge<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
 
     let file = object.object;
     let Some(sym) = file.symbols.get(reloc.index as usize).copied() else {
-        bail!(
-            "Wasm relocation symbol index {} out of range",
-            reloc.index
-        );
+        bail!("Wasm relocation symbol index {} out of range", reloc.index);
     };
 
     if !sym.is_undefined() {
@@ -6761,9 +6778,7 @@ fn note_wasm_reloc_edge<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
         enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
     }
 
-    let local_symbol_id = object
-        .symbol_id_range
-        .offset_to_id(reloc.index as usize);
+    let local_symbol_id = object.symbol_id_range.offset_to_id(reloc.index as usize);
     let symbol_id = resources.symbol_db.definition(local_symbol_id);
     let atomic_flags = resources.per_symbol_flags.get_atomic(symbol_id);
     let previous_flags = atomic_flags.fetch_or(ValueFlags::DIRECT);
