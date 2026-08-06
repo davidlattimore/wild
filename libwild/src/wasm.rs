@@ -2551,6 +2551,36 @@ impl<'data> WasmObjectLayout<'data> {
     fn live_global_import_bits(&self) -> Vec<bool> {
         self.gc_global_imports.iter().map(|s| s.is_live()).collect()
     }
+
+    /// True when GC state was never allocated (object not activated) or every unit is live.
+    fn all_units_live(&self) -> bool {
+        !self.gc_states_ready
+            || (self.gc_defined_functions.iter().all(|s| s.is_live())
+                && self.gc_defined_globals.iter().all(|s| s.is_live())
+                && self.gc_data_segments.iter().all(|s| s.is_live())
+                && self.gc_function_imports.iter().all(|s| s.is_live())
+                && self.gc_global_imports.iter().all(|s| s.is_live()))
+    }
+
+    fn all_defined_functions_live(&self) -> bool {
+        !self.gc_states_ready || self.gc_defined_functions.iter().all(|s| s.is_live())
+    }
+
+    fn all_defined_globals_live(&self) -> bool {
+        !self.gc_states_ready || self.gc_defined_globals.iter().all(|s| s.is_live())
+    }
+
+    fn all_data_segments_live(&self) -> bool {
+        !self.gc_states_ready || self.gc_data_segments.iter().all(|s| s.is_live())
+    }
+
+    fn mark_all_units_loaded(&mut self) {
+        self.gc_defined_functions.fill(WasmGcUnitState::Loaded);
+        self.gc_defined_globals.fill(WasmGcUnitState::Loaded);
+        self.gc_data_segments.fill(WasmGcUnitState::Loaded);
+        self.gc_function_imports.fill(WasmGcUnitState::Loaded);
+        self.gc_global_imports.fill(WasmGcUnitState::Loaded);
+    }
 }
 
 fn pack_live_ordinals(states: &[WasmGcUnitState]) -> Vec<u32> {
@@ -2703,9 +2733,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
         let symbol_id_range = layout.symbol_id_range;
         let file_id = layout.file_id;
 
-        // If the object was never activated (should not happen for objects we collect), treat
-        // everything as live so layout can still proceed.
-        let all_live = !layout.gc_states_ready;
+        let all_live = layout.all_units_live();
+        let keep_all_functions = layout.all_defined_functions_live();
+        let keep_all_globals = layout.all_defined_globals_live();
+        let keep_all_data_segments = layout.all_data_segments_live();
 
         let mut types = Vec::new();
         if let Some(type_section) = file.type_section_reader()? {
@@ -2848,68 +2879,95 @@ impl<'data> WasmObjectLayoutInput<'data> {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let defined_function_live_ordinal = if all_live {
+        let defined_function_live_ordinal = if keep_all_functions {
             identity_ordinals(all_module_functions.len())
         } else {
             layout.defined_function_live_ordinal.clone()
         };
-        let defined_global_live_ordinal = if all_live {
+        let defined_global_live_ordinal = if keep_all_globals {
             identity_ordinals(all_globals.len())
         } else {
             layout.defined_global_live_ordinal.clone()
         };
 
-        let mut module_functions = Vec::new();
-        let mut function_bodies = Vec::new();
-        let mut code_relocations = Vec::new();
-        for (i, (ty, body)) in all_module_functions
-            .into_iter()
-            .zip(all_function_bodies)
-            .enumerate()
-        {
-            if !(all_live || layout.is_defined_function_live(i)) {
-                continue;
+        let (module_functions, function_bodies, code_relocations) = if keep_all_functions {
+            // All defined functions live.
+            (
+                all_module_functions,
+                all_function_bodies,
+                code_relocations_all,
+            )
+        } else {
+            let mut module_functions = Vec::new();
+            let mut function_bodies = Vec::new();
+            let mut code_relocations = Vec::new();
+            for (i, (ty, body)) in all_module_functions
+                .into_iter()
+                .zip(all_function_bodies)
+                .enumerate()
+            {
+                if !layout.is_defined_function_live(i) {
+                    continue;
+                }
+                let body_start = body.code_offset;
+                let body_end = body_start + body.bytes.len() as u32;
+                code_relocations.extend_from_slice(relocs_in_offset_range(
+                    &code_relocations_all,
+                    body_start,
+                    body_end,
+                ));
+                module_functions.push(ty);
+                function_bodies.push(body);
             }
-            let body_start = body.code_offset;
-            let body_end = body_start + body.bytes.len() as u32;
-            code_relocations.extend_from_slice(relocs_in_offset_range(
-                &code_relocations_all,
-                body_start,
-                body_end,
-            ));
-            module_functions.push(ty);
-            function_bodies.push(body);
-        }
-        sort_relocations_by_offset(&mut code_relocations);
+            sort_relocations_by_offset(&mut code_relocations);
+            (module_functions, function_bodies, code_relocations)
+        };
 
-        let mut globals = Vec::new();
-        for (i, global) in all_globals.into_iter().enumerate() {
-            if all_live || layout.is_defined_global_live(i) {
-                globals.push(global);
-            }
-        }
+        let globals = if keep_all_globals {
+            all_globals
+        } else {
+            all_globals
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, global)| layout.is_defined_global_live(i).then_some(global))
+                .collect()
+        };
 
-        let mut data_segments = Vec::new();
-        let mut data_segment_original_indices = Vec::new();
-        let mut data_relocations = Vec::new();
-        for (i, segment) in all_data_segments.into_iter().enumerate() {
-            if !(all_live || layout.is_data_segment_live(i)) {
-                continue;
-            }
-            let encoded = wasm_data_segment_encoded_size(&segment.kind, segment.data.len())?;
-            let start = segment.section_offset;
-            let end = start
-                .checked_add(encoded)
-                .ok_or_else(|| crate::error!("Wasm data segment span overflow"))?;
-            data_relocations.extend_from_slice(relocs_in_offset_range(
-                &data_relocations_all,
-                start,
-                end,
-            ));
-            data_segment_original_indices.push(u32::try_from(i).context("too many data segments")?);
-            data_segments.push(segment);
-        }
-        sort_relocations_by_offset(&mut data_relocations);
+        let (data_segments, data_segment_original_indices, data_relocations) =
+            if keep_all_data_segments {
+                let n = all_data_segments.len();
+                let original_indices = (0..n as u32).collect();
+                (all_data_segments, original_indices, data_relocations_all)
+            } else {
+                let mut data_segments = Vec::new();
+                let mut data_segment_original_indices = Vec::new();
+                let mut data_relocations = Vec::new();
+                for (i, segment) in all_data_segments.into_iter().enumerate() {
+                    if !layout.is_data_segment_live(i) {
+                        continue;
+                    }
+                    let encoded =
+                        wasm_data_segment_encoded_size(&segment.kind, segment.data.len())?;
+                    let start = segment.section_offset;
+                    let end = start
+                        .checked_add(encoded)
+                        .ok_or_else(|| crate::error!("Wasm data segment span overflow"))?;
+                    data_relocations.extend_from_slice(relocs_in_offset_range(
+                        &data_relocations_all,
+                        start,
+                        end,
+                    ));
+                    data_segment_original_indices
+                        .push(u32::try_from(i).context("too many data segments")?);
+                    data_segments.push(segment);
+                }
+                sort_relocations_by_offset(&mut data_relocations);
+                (
+                    data_segments,
+                    data_segment_original_indices,
+                    data_relocations,
+                )
+            };
 
         let mut exports = Vec::new();
         if let Some(export_section) = file.export_section_reader()? {
@@ -5611,8 +5669,7 @@ fn data_segment_memory_offsets_by_original_index(
         .iter()
         .map(|s| s.segment_index)
         .max()
-        .map(|i| i as usize)
-        .unwrap_or(0);
+        .map_or(0, |i| i as usize);
     let mut by_original = vec![None; max_index.saturating_add(1)];
     for segment in object_data_layout {
         let idx = segment.segment_index as usize;
@@ -6051,7 +6108,7 @@ impl platform::Platform for Wasm {
         if resources.symbol_db.args.should_gc_sections() {
             enqueue_wasm_gc_roots::<A>(object, resources, queue, scope)?;
         } else {
-            enqueue_all_wasm_gc_units::<A>(object, resources, queue, scope);
+            mark_all_wasm_units_live_and_scan_relocs::<A>(object, resources, queue, scope)?;
         }
         Ok(())
     }
@@ -6636,51 +6693,30 @@ fn section_entry_count(
     Ok(reader.read_var_u32()?)
 }
 
-fn enqueue_all_wasm_gc_units<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
+fn mark_all_wasm_units_live_and_scan_relocs<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
     object: &mut crate::layout::ObjectLayoutState<'data, Wasm>,
     resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
     scope: &rayon::Scope<'scope>,
-) {
-    let file = object.object;
-    let num_defined_functions = file.num_defined_functions;
-    let num_defined_globals = file.num_defined_globals;
-    let num_data_segments = file.num_data_segments;
-    let num_function_imports = file.num_function_imports;
-    let num_global_imports = file.num_global_imports;
-    for i in 0..num_defined_functions {
-        enqueue_wasm_gc_unit::<A>(
-            object,
-            WasmGcUnit::DefinedFunction(i),
-            resources,
-            queue,
-            scope,
-        );
+) -> Result {
+    object.format_specific.mark_all_units_loaded();
+    object
+        .format_specific
+        .ensure_relocs_decoded(object.object)?;
+
+    let code_len = object.format_specific.code_relocations.len();
+    for i in 0..code_len {
+        let reloc = object.format_specific.code_relocations[i];
+        note_wasm_reloc_edge::<A>(object, &reloc, resources, queue, scope)?;
     }
-    for i in 0..num_defined_globals {
-        enqueue_wasm_gc_unit::<A>(
-            object,
-            WasmGcUnit::DefinedGlobal(i),
-            resources,
-            queue,
-            scope,
-        );
+    let data_len = object.format_specific.data_relocations.len();
+    for i in 0..data_len {
+        let reloc = object.format_specific.data_relocations[i];
+        note_wasm_reloc_edge::<A>(object, &reloc, resources, queue, scope)?;
     }
-    for i in 0..num_data_segments {
-        enqueue_wasm_gc_unit::<A>(object, WasmGcUnit::DataSegment(i), resources, queue, scope);
-    }
-    for i in 0..num_function_imports {
-        enqueue_wasm_gc_unit::<A>(
-            object,
-            WasmGcUnit::FunctionImport(i),
-            resources,
-            queue,
-            scope,
-        );
-    }
-    for i in 0..num_global_imports {
-        enqueue_wasm_gc_unit::<A>(object, WasmGcUnit::GlobalImport(i), resources, queue, scope);
-    }
+
+    enqueue_wasm_force_export_roots::<A>(object, resources, queue, scope);
+    Ok(())
 }
 
 fn enqueue_wasm_gc_unit<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
@@ -6756,6 +6792,17 @@ fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
         }
     }
 
+    enqueue_wasm_force_export_roots::<A>(object, resources, queue, scope);
+
+    Ok(())
+}
+
+fn enqueue_wasm_force_export_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
+    queue: &mut crate::layout::LocalWorkQueue<Wasm>,
+    scope: &rayon::Scope<'scope>,
+) {
     for name in resources.symbol_db.args.force_export_symbol_names() {
         let Some(symbol_id) = resources
             .symbol_db
@@ -6775,8 +6822,6 @@ fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
             queue.send_symbol_request::<A>(def_id, resources, scope);
         }
     }
-
-    Ok(())
 }
 
 fn walk_wasm_gc_unit_edges<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
