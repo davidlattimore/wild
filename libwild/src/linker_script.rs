@@ -418,14 +418,16 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
         b"MEMORY" => Command::Memory(parse_memory(input)?),
         b"PHDRS" => Command::Phdrs(parse_phdrs(input)?),
         other => {
-            if input.starts_with(b"=") {
+            if let Some(op) = opt(parse_assignment_op).parse_next(input)? {
                 // Symbol definition
-                '='.parse_next(input)?;
                 skip_comments_and_whitespace(input)?;
                 let value = parse_expression.parse_next(input)?;
                 skip_comments_and_whitespace(input)?;
                 opt(';').parse_next(input)?;
-                Command::SymbolDefinition { name: other, value }
+                Command::SymbolDefinition {
+                    name: other,
+                    value: op.expand(other, value),
+                }
             } else {
                 Command::Arg(other)
             }
@@ -1059,9 +1061,60 @@ enum MulOp {
     Modulo,
 }
 
-fn parse_location<'input>(input: &mut &'input BStr) -> winnow::Result<Location<'input>> {
-    let address = parse_expression.parse_next(input)?;
-    Ok(Location { address })
+#[derive(Debug, Clone, Copy)]
+enum AssignmentOp {
+    Assign,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    LeftShift,
+    RightShift,
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXor,
+}
+
+fn parse_assignment_op(input: &mut &BStr) -> winnow::Result<AssignmentOp> {
+    alt((
+        alt((
+            "+=".value(AssignmentOp::Add),
+            "-=".value(AssignmentOp::Subtract),
+            "*=".value(AssignmentOp::Multiply),
+            "/=".value(AssignmentOp::Divide),
+            "<<=".value(AssignmentOp::LeftShift),
+        )),
+        alt((
+            ">>=".value(AssignmentOp::RightShift),
+            "&=".value(AssignmentOp::BitwiseAnd),
+            "|=".value(AssignmentOp::BitwiseOr),
+            "^=".value(AssignmentOp::BitwiseXor),
+            ("=", winnow::combinator::not('=')).value(AssignmentOp::Assign),
+        )),
+    ))
+    .parse_next(input)
+}
+
+impl AssignmentOp {
+    fn expand<'a>(self, name: &'a [u8], rhs: Expression<'a>) -> Expression<'a> {
+        let lhs = if name == b"." {
+            Expression::LocationCounter
+        } else {
+            Expression::Symbol(name)
+        };
+        match self {
+            AssignmentOp::Assign => rhs,
+            AssignmentOp::Add => Expression::Add(Box::new(lhs), Box::new(rhs)),
+            AssignmentOp::Subtract => Expression::Subtract(Box::new(lhs), Box::new(rhs)),
+            AssignmentOp::Multiply => Expression::Multiply(Box::new(lhs), Box::new(rhs)),
+            AssignmentOp::Divide => Expression::Divide(Box::new(lhs), Box::new(rhs)),
+            AssignmentOp::LeftShift => Expression::LeftShift(Box::new(lhs), Box::new(rhs)),
+            AssignmentOp::RightShift => Expression::RightShift(Box::new(lhs), Box::new(rhs)),
+            AssignmentOp::BitwiseAnd => Expression::BitwiseAnd(Box::new(lhs), Box::new(rhs)),
+            AssignmentOp::BitwiseOr => Expression::BitwiseOr(Box::new(lhs), Box::new(rhs)),
+            AssignmentOp::BitwiseXor => Expression::BitwiseXor(Box::new(lhs), Box::new(rhs)),
+        }
+    }
 }
 
 fn parse_commands<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<Command<'input>>> {
@@ -1140,24 +1193,19 @@ fn parse_section_command<'input>(
         _ => {}
     }
 
-    if opt("=").parse_next(input)?.is_some() {
+    if let Some(op) = opt(parse_assignment_op).parse_next(input)? {
         skip_comments_and_whitespace(input)?;
-        if name == b"." {
-            let location = parse_location.parse_next(input)?;
-
-            skip_comments_and_whitespace(input)?;
-            ';'.parse_next(input)?;
-            skip_comments_and_whitespace(input)?;
-
-            return Ok(SectionCommand::SetLocation(location));
-        }
         let expr = parse_expression.parse_next(input)?;
         skip_comments_and_whitespace(input)?;
         ';'.parse_next(input)?;
         skip_comments_and_whitespace(input)?;
+        let expanded = op.expand(name, expr);
+        if name == b"." {
+            return Ok(SectionCommand::SetLocation(Location { address: expanded }));
+        }
         return Ok(SectionCommand::SymbolAssignment(SymbolAssignment {
             name,
-            expr,
+            expr: op.expand(name, expanded),
         }));
     }
 
@@ -1302,15 +1350,19 @@ fn parse_contents_provide<'input>(
 fn parse_assignment<'input>(input: &mut &'input BStr) -> winnow::Result<ContentsCommand<'input>> {
     let name = parse_token(input)?;
     skip_comments_and_whitespace(input)?;
-    '='.parse_next(input)?;
+    let op = parse_assignment_op.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
 
     let expr = parse_expression.parse_next(input)?;
 
+    let expanded = op.expand(name, expr);
     let cmd = if name == b"." {
-        ContentsCommand::SetLocation(Location { address: (expr) })
+        ContentsCommand::SetLocation(Location { address: expanded })
     } else {
-        ContentsCommand::SymbolAssignment(SymbolAssignment { name, expr })
+        ContentsCommand::SymbolAssignment(SymbolAssignment {
+            name,
+            expr: expanded,
+        })
     };
 
     opt(';').parse_next(input)?;
