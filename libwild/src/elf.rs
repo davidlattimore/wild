@@ -30,6 +30,7 @@ use crate::layout::ObjectLayout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
 use crate::layout::Resolution;
+use crate::layout::SectionGcUnit;
 use crate::layout::SymbolCopyInfo;
 use crate::layout::objects_iter;
 use crate::layout_rules::SectionKind;
@@ -760,6 +761,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     type SymtabShndxEntry = SymtabShndxEntry;
     type ResolvedObjectExt<'data> = ResolvedObjectExt<'data>;
     type SectionIdentityExt = ();
+    type GcUnit = SectionGcUnit;
 
     fn write_output_file<'data, A: Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
@@ -878,7 +880,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         *memory_offsets.get(part_id::EH_FRAME)
     }
 
-    fn finalise_find_required_sections<'data>(
+    fn post_gc<'data>(
         groups: &mut [layout::GroupState<Elf<C>>],
         symbol_db: &SymbolDb<'data, Elf<C>>,
     ) -> Result {
@@ -1078,10 +1080,47 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         }
     }
 
+    fn gc_unit_for_symbol<'data>(
+        object: &Self::File<'data>,
+        symbol: &Self::SymtabEntry,
+        symbol_index: object::SymbolIndex,
+    ) -> Result<Option<Self::GcUnit>> {
+        Ok(object
+            .symbol_section(symbol, symbol_index)?
+            .map(SectionGcUnit::new))
+    }
+
+    fn activate_object_gc<'data, 'scope, A: Arch<Platform = Self>>(
+        object: &mut layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        resources: &'scope layout::GraphResources<'data, 'scope, Self>,
+        queue: &mut layout::LocalWorkQueue<Self>,
+        scope: &Scope<'scope>,
+    ) -> Result {
+        object.activate_section_gc::<A>(common, resources, queue, scope)
+    }
+
+    fn load_gc_unit<'data, 'scope, A: Arch<Platform = Self>>(
+        object: &mut layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        resources: &'scope layout::GraphResources<'data, 'scope, Self>,
+        queue: &mut layout::LocalWorkQueue<Self>,
+        unit: Self::GcUnit,
+        scope: &Scope<'scope>,
+    ) -> Result {
+        object.handle_section_load_request::<A>(
+            common,
+            resources,
+            queue,
+            unit.section_index(),
+            scope,
+        )
+    }
+
     fn load_object_section_relocations<'data, 'scope, A: Arch<Platform = Self>>(
         state: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
-        queue: &mut layout::LocalWorkQueue,
+        queue: &mut layout::LocalWorkQueue<Self>,
         resources: &'scope layout::GraphResources<'data, '_, Self>,
         _section: layout::Section,
         section_index: object::SectionIndex,
@@ -1457,7 +1496,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         common: &mut crate::layout::CommonGroupState<'data, Elf<C>>,
         eh_frame_section_index: object::SectionIndex,
         resources: &'scope crate::layout::GraphResources<'data, '_, Elf<C>>,
-        queue: &mut crate::layout::LocalWorkQueue,
+        queue: &mut crate::layout::LocalWorkQueue<Self>,
         scope: &rayon::Scope<'scope>,
     ) -> Result {
         object.format_specific.has_eh_frame_input = true;
@@ -1512,7 +1551,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     fn non_empty_section_loaded<'data, 'scope, A: Arch<Platform = Self>>(
         object: &mut layout::ObjectLayoutState<'data, Elf<C>>,
         common: &mut layout::CommonGroupState<'data, Elf<C>>,
-        queue: &mut layout::LocalWorkQueue,
+        queue: &mut layout::LocalWorkQueue<Self>,
         unloaded: crate::resolution::UnloadedSection,
         resources: &'scope layout::GraphResources<'data, 'scope, Elf<C>>,
         scope: &Scope<'scope>,
@@ -3535,7 +3574,7 @@ fn process_eh_frame_relocations<
     object: &mut layout::ObjectLayoutState<'data, Elf<C>>,
     common: &mut layout::CommonGroupState<'data, Elf<C>>,
     resources: &'scope layout::GraphResources<'data, '_, Elf<C>>,
-    queue: &mut layout::LocalWorkQueue,
+    queue: &mut layout::LocalWorkQueue<Elf<C>>,
     eh_frame_section: &'data SectionHeader<C>,
     eh_frame_section_index: object::SectionIndex,
     frame_index_offset: usize,
@@ -3678,7 +3717,7 @@ fn process_section_exception_frames<
     frame_index: Option<FrameIndex>,
     common: &mut layout::CommonGroupState<'data, Elf<C>>,
     resources: &'scope layout::GraphResources<'data, '_, Elf<C>>,
-    queue: &mut layout::LocalWorkQueue,
+    queue: &mut layout::LocalWorkQueue<Elf<C>>,
     scope: &Scope<'scope>,
     exception_frames: &[ExceptionFrame<'data, R>],
 ) -> Result<EhFrameSizes> {
@@ -5748,7 +5787,7 @@ fn load_section_relocations<
 >(
     state: &layout::ObjectLayoutState<'data, Elf<C>>,
     common: &mut CommonGroupState<'data, Elf<C>>,
-    queue: &mut layout::LocalWorkQueue,
+    queue: &mut layout::LocalWorkQueue<Elf<C>>,
     resources: &'scope layout::GraphResources<'data, '_, Elf<C>>,
     section_index: object::SectionIndex,
     relocations: impl Iterator<Item = R>,
@@ -5926,7 +5965,7 @@ fn process_relocation<
     section: &<A::Platform as Platform>::SectionHeader,
     section_part_id: PartId,
     resources: &'scope layout::GraphResources<'data, '_, Elf<C>>,
-    queue: &mut layout::LocalWorkQueue,
+    queue: &mut layout::LocalWorkQueue<Elf<C>>,
     is_debug_section: bool,
     scope: &Scope<'scope>,
     relr_writer: &mut RelrEncoder<C>,
@@ -6182,7 +6221,7 @@ fn materialize_relocation_requirements<
 fn note_relocation_symbol_reference<'data, 'scope, C: ElfClass, A: Arch<Platform = Elf<C>>>(
     classified: &ClassifiedSymbolRelocation,
     resources: &'scope layout::GraphResources<'data, '_, Elf<C>>,
-    queue: &mut layout::LocalWorkQueue,
+    queue: &mut layout::LocalWorkQueue<Elf<C>>,
     scope: &Scope<'scope>,
 ) -> ValueFlags {
     let symbol_id = classified.symbol_id;

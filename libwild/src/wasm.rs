@@ -5376,6 +5376,7 @@ impl platform::Platform for Wasm {
     type VerneedTable<'data> = VerneedTable<'data>;
     type ResolvedObjectExt<'data> = WasmObjectLayout<'data>;
     type SectionIdentityExt = ();
+    type GcUnit = NoGcUnit;
 
     fn write_output_file<'data, A: platform::Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
@@ -5416,7 +5417,7 @@ impl platform::Platform for Wasm {
         0
     }
 
-    fn finalise_find_required_sections<'data>(
+    fn post_gc<'data>(
         _groups: &mut [crate::layout::GroupState<Self>],
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> crate::error::Result {
@@ -5485,10 +5486,39 @@ impl platform::Platform for Wasm {
     ) -> Self::LayoutResourcesExt<'data> {
     }
 
+    fn gc_unit_for_symbol<'data>(
+        _object: &Self::File<'data>,
+        _symbol: &Self::SymtabEntry,
+        _symbol_index: object::SymbolIndex,
+    ) -> crate::error::Result<Option<Self::GcUnit>> {
+        Ok(None)
+    }
+
+    fn activate_object_gc<'data, 'scope, A: platform::Arch<Platform = Self>>(
+        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
+        _queue: &mut crate::layout::LocalWorkQueue<Self>,
+        _scope: &rayon::Scope<'scope>,
+    ) -> crate::error::Result {
+        Ok(())
+    }
+
+    fn load_gc_unit<'data, 'scope, A: platform::Arch<Platform = Self>>(
+        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
+        _queue: &mut crate::layout::LocalWorkQueue<Self>,
+        unit: Self::GcUnit,
+        _scope: &rayon::Scope<'scope>,
+    ) -> crate::error::Result {
+        match unit {}
+    }
+
     fn load_object_section_relocations<'data, 'scope, A: platform::Arch<Platform = Self>>(
         _state: &mut crate::layout::ObjectLayoutState<'data, Self>,
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        _queue: &mut crate::layout::LocalWorkQueue,
+        _queue: &mut crate::layout::LocalWorkQueue<Self>,
         _resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
         _section: crate::layout::Section,
         _section_index: object::SectionIndex,
@@ -5626,7 +5656,7 @@ impl platform::Platform for Wasm {
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
         _eh_frame_section_index: object::SectionIndex,
         _resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
-        _queue: &mut crate::layout::LocalWorkQueue,
+        _queue: &mut crate::layout::LocalWorkQueue<Self>,
         _scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
         // Wasm doesn't have ELF-style `.eh_frame`.
@@ -5636,7 +5666,7 @@ impl platform::Platform for Wasm {
     fn non_empty_section_loaded<'data, 'scope, A: platform::Arch<Platform = Self>>(
         _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        _queue: &mut crate::layout::LocalWorkQueue,
+        _queue: &mut crate::layout::LocalWorkQueue<Self>,
         _unloaded: crate::resolution::UnloadedSection,
         _resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
         _scope: &rayon::Scope<'scope>,
@@ -6137,6 +6167,10 @@ impl SinglePartSectionId {
         OutputSectionId::from_u32(self as u32)
     }
 }
+
+// TODO: Implement GC for wasm.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum NoGcUnit {}
 
 #[cfg(test)]
 mod tests {
