@@ -5604,27 +5604,38 @@ pub(crate) fn finalize_reloc_value(reloc: &WasmRelocation, base: u32) -> Result<
     }
 }
 
+fn data_segment_memory_offsets_by_original_index(
+    object_data_layout: &[WasmDataSegmentLayout<'_>],
+) -> Vec<Option<u32>> {
+    let max_index = object_data_layout
+        .iter()
+        .map(|s| s.segment_index)
+        .max()
+        .map(|i| i as usize)
+        .unwrap_or(0);
+    let mut by_original = vec![None; max_index.saturating_add(1)];
+    for segment in object_data_layout {
+        let idx = segment.segment_index as usize;
+        by_original[idx] = Some(segment.output_memory_offset);
+    }
+    by_original
+}
+
 /// Address of a defined data symbol, or `None` when its segment was GC'd.
 fn try_data_symbol_memory_address(
-    object_data_layout: &[WasmDataSegmentLayout<'_>],
+    segment_memory_offsets: &[Option<u32>],
     sym: &WasmSymbol,
 ) -> Result<Option<u32>> {
     ensure!(
         sym.kind == WasmSymbolKind::Data,
         "memory address relocation references non-data symbol"
     );
-    let Some(segment) = object_data_layout
-        .iter()
-        .find(|segment| segment.segment_index == sym.index)
-    else {
+    let Some(Some(segment_base)) = segment_memory_offsets.get(sym.index as usize) else {
         return Ok(None);
     };
-    Ok(Some(
-        segment
-            .output_memory_offset
-            .checked_add(sym.offset)
-            .ok_or_else(|| crate::error!("Wasm data symbol address overflow"))?,
-    ))
+    Ok(Some(segment_base.checked_add(sym.offset).ok_or_else(
+        || crate::error!("Wasm data symbol address overflow"),
+    )?))
 }
 
 /// Wasm symbols synthesized by the linker.
@@ -5708,6 +5719,11 @@ fn compute_data_addresses(
     heap_end: Option<u32>,
     stack_first: bool,
 ) -> Result {
+    let segment_offsets_by_object: Vec<Vec<Option<u32>>> = object_data_layouts
+        .iter()
+        .map(|layout| data_segment_memory_offsets_by_original_index(layout))
+        .collect();
+
     for (obj_idx, (index_map, symbols)) in object_index_maps
         .iter_mut()
         .zip(per_object_symbols.iter())
@@ -5722,7 +5738,7 @@ fn compute_data_addresses(
 
             if !sym.is_undefined() {
                 if let Some(addr) =
-                    try_data_symbol_memory_address(&object_data_layouts[obj_idx], sym)?
+                    try_data_symbol_memory_address(&segment_offsets_by_object[obj_idx], sym)?
                 {
                     data_addresses[sym_idx] = addr;
                 }
@@ -5737,9 +5753,10 @@ fn compute_data_addresses(
                 let def_sym =
                     per_object_symbols[def_obj_idx][def_id.to_offset(def_input.symbol_id_range)];
                 if !def_sym.is_undefined() {
-                    if let Some(addr) =
-                        try_data_symbol_memory_address(&object_data_layouts[def_obj_idx], &def_sym)?
-                    {
+                    if let Some(addr) = try_data_symbol_memory_address(
+                        &segment_offsets_by_object[def_obj_idx],
+                        &def_sym,
+                    )? {
                         data_addresses[sym_idx] = addr;
                     }
                     continue;
