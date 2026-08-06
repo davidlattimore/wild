@@ -115,6 +115,23 @@ jobs:
       - run: cp -f .cargo/config.toml.cross-ppc64le .cargo/config.toml
       - run: cargo build --target powerpc64le-unknown-linux-gnu
 
+  ubuntu-wasm-image:
+    name: Build Ubuntu Wasm image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/ci/ubuntu-wasm.Dockerfile
+          push: false
+          build-args: |
+            BASE_IMAGE=ghcr.io/wild-linker/wild/ci-ubuntu-base-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
+
   wasip1-build:
     name: Build wasip1
     runs-on: ubuntu-24.04
