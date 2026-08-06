@@ -885,7 +885,7 @@ impl<T: platform::Args> ArgumentParser<T> {
 
         // TODO: This is ad-hoc
         help.push_str(&format!(
-            "    {:<31} Read options from a file\n",
+            "    {:<30} Read options from a file\n",
             "@<VALUE>",
         ));
 
@@ -918,11 +918,8 @@ impl<T: platform::Args> ArgumentParser<T> {
 
         for (prefix, handler) in prefix_options {
             if !processed_short_options.contains(prefix) && !handler.help_text.is_empty() {
-                help.push_str(&format!(
-                    "    -{:<30} {}\n",
-                    format!("{prefix} <VALUE>"),
-                    handler.help_text
-                ));
+                let option_name = format!("-{prefix} <VALUE>");
+                help.push_str(&format!("    {option_name:<30} {}\n", handler.help_text));
 
                 // Add sub-options if they exist
                 let mut sub_options = handler.sub_options.iter().collect_vec();
@@ -935,8 +932,9 @@ impl<T: platform::Args> ArgumentParser<T> {
                     } else {
                         sub_name.to_string()
                     };
+                    let option_name = format!("-{prefix} {display_name}");
                     help.push_str(&format!(
-                        "      -{prefix} {display_name:<30} {sub_help}\n",
+                        "     {option_name:<29} {sub_help}\n",
                         sub_help = sub.help
                     ));
                 }
