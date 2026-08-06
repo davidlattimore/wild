@@ -1317,7 +1317,7 @@ impl platform::Platform for MachO {
 
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
         _args: &Self::Args,
-        groups: &'files [layout::GroupState<'data, Self>],
+        groups: &'files mut [layout::GroupState<'data, Self>],
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> crate::error::Result<Self::FinaliseSizesExt<'data>>
     where

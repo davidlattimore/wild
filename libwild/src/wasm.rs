@@ -2513,6 +2513,16 @@ impl<'data> WasmObjectLayout<'data> {
         self.defined_global_live_ordinal = pack_live_ordinals(&self.gc_defined_globals);
     }
 
+    fn take_decoded_relocs(&mut self) -> (bool, Vec<WasmRelocation>, Vec<WasmRelocation>) {
+        let ready = self.relocs_ready;
+        self.relocs_ready = false;
+        (
+            ready,
+            std::mem::take(&mut self.code_relocations),
+            std::mem::take(&mut self.data_relocations),
+        )
+    }
+
     fn is_data_segment_live(&self, index: usize) -> bool {
         self.gc_data_segments
             .get(index)
@@ -2685,7 +2695,11 @@ struct WasmObjectOutputLayout<'data> {
 }
 
 impl<'data> WasmObjectLayoutInput<'data> {
-    fn from_file(file: &'data File<'data>, layout: &WasmObjectLayout<'data>) -> Result<Self> {
+    fn from_file(
+        file: &'data File<'data>,
+        layout: &WasmObjectLayout<'data>,
+        handed_off_relocs: (bool, Vec<WasmRelocation>, Vec<WasmRelocation>),
+    ) -> Result<Self> {
         let symbol_id_range = layout.symbol_id_range;
         let file_id = layout.file_id;
 
@@ -2752,13 +2766,11 @@ impl<'data> WasmObjectLayoutInput<'data> {
         let code_section_index = file.standard_section_index[section_id::CODE as usize];
         let data_section_index = file.standard_section_index[section_id::DATA as usize];
 
-        let (code_relocations_all, data_relocations_all) = if layout.relocs_ready {
-            (
-                layout.code_relocations.clone(),
-                layout.data_relocations.clone(),
-            )
+        let (relocs_were_ready, taken_code, taken_data) = handed_off_relocs;
+        let (code_relocations_all, data_relocations_all) = if relocs_were_ready {
+            (taken_code, taken_data)
         } else {
-            let code_relocations: Vec<WasmRelocation> = code_section_index
+            let mut code_relocations: Vec<WasmRelocation> = code_section_index
                 .and_then(|code_idx| {
                     file.reloc_sections
                         .iter()
@@ -2767,7 +2779,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
                 .map(|s| s.decode_entries(file.data))
                 .transpose()?
                 .unwrap_or_default();
-            let data_relocations: Vec<WasmRelocation> = data_section_index
+            sort_relocations_by_offset(&mut code_relocations);
+            let mut data_relocations: Vec<WasmRelocation> = data_section_index
                 .and_then(|data_idx| {
                     file.reloc_sections
                         .iter()
@@ -2776,6 +2789,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
                 .map(|s| s.decode_entries(file.data))
                 .transpose()?
                 .unwrap_or_default();
+            sort_relocations_by_offset(&mut data_relocations);
             (code_relocations, data_relocations)
         };
 
@@ -5181,7 +5195,7 @@ fn ensure_force_exports<'data>(
 }
 
 fn build_output_module_layout<'data, 'files>(
-    groups: &'files [layout::GroupState<'data, Wasm>],
+    groups: &'files mut [layout::GroupState<'data, Wasm>],
     symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
 ) -> Result<WasmLayout<'data>>
 where
@@ -5191,14 +5205,30 @@ where
 
     let layout_inputs = {
         timing_phase!("Collect Wasm object layout inputs");
+        let handed_off_relocs: Vec<_> = groups
+            .iter_mut()
+            .flat_map(|group| group.files.iter_mut())
+            .filter_map(|file| match file {
+                layout::FileLayoutState::Object(object) => {
+                    Some(object.format_specific.take_decoded_relocs())
+                }
+                _ => None,
+            })
+            .collect();
+
         let objects_and_states: Vec<_> = layout::objects_iter(groups)
             .map(|state| (&state.object, &state.format_specific))
             .collect();
+        ensure!(
+            objects_and_states.len() == handed_off_relocs.len(),
+            "Wasm layout input count does not match taken reloc count"
+        );
         objects_and_states
             .par_iter()
-            .map(|(object, state)| {
+            .zip(handed_off_relocs.into_par_iter())
+            .map(|((object, state), relocs)| {
                 verbose_timing_phase!("Collect Wasm object layout input");
-                WasmObjectLayoutInput::from_file(object, state)
+                WasmObjectLayoutInput::from_file(object, state, relocs)
             })
             .collect::<Result<Vec<_>>>()?
     };
@@ -6160,7 +6190,7 @@ impl platform::Platform for Wasm {
 
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
         _args: &Self::Args,
-        groups: &'files [layout::GroupState<'data, Self>],
+        groups: &'files mut [layout::GroupState<'data, Self>],
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> crate::error::Result<Self::FinaliseSizesExt<'data>>
     where
