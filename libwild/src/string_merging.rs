@@ -759,18 +759,27 @@ impl ReusePool {
     /// Attempt to reserve the specified number of Vecs. Fails if there isn't at least that many
     /// already available.
     fn try_reserve(&self, num_vecs: usize) -> Result<PoolReservation, ()> {
-        self.available
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |available| {
-                if available < num_vecs {
-                    None
-                } else {
-                    Some(available - num_vecs)
-                }
-            })
-            .map(|_| PoolReservation {
-                remaining: num_vecs,
-            })
-            .map_err(|_| ())
+        let available = self.available.load(Ordering::Relaxed);
+        if available < num_vecs {
+            return Err(());
+        }
+
+        if self
+            .available
+            .compare_exchange(
+                available,
+                available - num_vecs,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            return Err(());
+        }
+
+        Ok(PoolReservation {
+            remaining: num_vecs,
+        })
     }
 
     #[allow(clippy::needless_pass_by_value)]
