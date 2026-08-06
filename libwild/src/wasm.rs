@@ -2383,21 +2383,32 @@ pub(crate) enum WasmGcUnit {
     GlobalImport(u32),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+enum WasmGcUnitState {
+    #[default]
+    Dead = 0,
+    Queued = 1,
+    Loaded = 2,
+}
+
+impl WasmGcUnitState {
+    fn is_live(self) -> bool {
+        self != Self::Dead
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct WasmObjectLayout<'data> {
     pub(crate) symbol_id_range: crate::symbol_db::SymbolIdRange,
     pub(crate) file_id: crate::input_data::FileId,
-    // Set once live bitsets have been allocated at object activate.
-    live_bits_ready: bool,
-    // Live bits from the GC walk.
-    live_defined_functions: Vec<bool>,
-    live_defined_globals: Vec<bool>,
-    live_data_segments: Vec<bool>,
-    live_function_imports: Vec<bool>,
-    live_global_imports: Vec<bool>,
-    // Edge walk completed for units that have reloc edges (functions / data segments).
-    edges_walked_functions: Vec<bool>,
-    edges_walked_data_segments: Vec<bool>,
+    // Set once per-unit GC states have been allocated at object activate.
+    gc_states_ready: bool,
+    gc_defined_functions: Vec<WasmGcUnitState>,
+    gc_defined_globals: Vec<WasmGcUnitState>,
+    gc_data_segments: Vec<WasmGcUnitState>,
+    gc_function_imports: Vec<WasmGcUnitState>,
+    gc_global_imports: Vec<WasmGcUnitState>,
     relocs_ready: bool,
     code_relocations: Vec<WasmRelocation>,
     data_relocations: Vec<WasmRelocation>,
@@ -2409,54 +2420,53 @@ pub(crate) struct WasmObjectLayout<'data> {
 }
 
 impl<'data> WasmObjectLayout<'data> {
-    /// Allocate live bitsets from the object's unit counts.
-    fn ensure_live_bits(&mut self, file: &File<'_>) {
-        if self.live_bits_ready {
+    /// Allocate per-unit GC states from the object's unit counts.
+    fn ensure_gc_states(&mut self, file: &File<'_>) {
+        if self.gc_states_ready {
             return;
         }
-        self.live_defined_functions = vec![false; file.num_defined_functions as usize];
-        self.live_defined_globals = vec![false; file.num_defined_globals as usize];
-        self.live_data_segments = vec![false; file.num_data_segments as usize];
-        self.live_function_imports = vec![false; file.num_function_imports as usize];
-        self.live_global_imports = vec![false; file.num_global_imports as usize];
-        self.edges_walked_functions = vec![false; file.num_defined_functions as usize];
-        self.edges_walked_data_segments = vec![false; file.num_data_segments as usize];
-        self.live_bits_ready = true;
+        self.gc_defined_functions =
+            vec![WasmGcUnitState::Dead; file.num_defined_functions as usize];
+        self.gc_defined_globals = vec![WasmGcUnitState::Dead; file.num_defined_globals as usize];
+        self.gc_data_segments = vec![WasmGcUnitState::Dead; file.num_data_segments as usize];
+        self.gc_function_imports = vec![WasmGcUnitState::Dead; file.num_function_imports as usize];
+        self.gc_global_imports = vec![WasmGcUnitState::Dead; file.num_global_imports as usize];
+        self.gc_states_ready = true;
     }
 
-    fn mark_live(&mut self, unit: WasmGcUnit) -> bool {
-        let slot = match unit {
-            WasmGcUnit::DefinedFunction(i) => self.live_defined_functions.get_mut(i as usize),
-            WasmGcUnit::DefinedGlobal(i) => self.live_defined_globals.get_mut(i as usize),
-            WasmGcUnit::DataSegment(i) => self.live_data_segments.get_mut(i as usize),
-            WasmGcUnit::FunctionImport(i) => self.live_function_imports.get_mut(i as usize),
-            WasmGcUnit::GlobalImport(i) => self.live_global_imports.get_mut(i as usize),
-        };
-        match slot {
-            Some(bit) if !*bit => {
-                *bit = true;
+    fn state_mut(&mut self, unit: WasmGcUnit) -> Option<&mut WasmGcUnitState> {
+        match unit {
+            WasmGcUnit::DefinedFunction(i) => self.gc_defined_functions.get_mut(i as usize),
+            WasmGcUnit::DefinedGlobal(i) => self.gc_defined_globals.get_mut(i as usize),
+            WasmGcUnit::DataSegment(i) => self.gc_data_segments.get_mut(i as usize),
+            WasmGcUnit::FunctionImport(i) => self.gc_function_imports.get_mut(i as usize),
+            WasmGcUnit::GlobalImport(i) => self.gc_global_imports.get_mut(i as usize),
+        }
+    }
+
+    /// Mark unit live and claim enqueue responsibility. Returns `true` only on `Dead → Queued`.
+    fn try_queue(&mut self, unit: WasmGcUnit) -> bool {
+        match self.state_mut(unit) {
+            Some(state) if *state == WasmGcUnitState::Dead => {
+                *state = WasmGcUnitState::Queued;
                 true
             }
             _ => false,
         }
     }
 
-    /// Claim edge-walk responsibility for a function/data unit. Returns `true` once.
-    fn claim_edge_walk(&mut self, unit: WasmGcUnit) -> bool {
-        let slot = match unit {
-            WasmGcUnit::DefinedFunction(i) => self.edges_walked_functions.get_mut(i as usize),
-            WasmGcUnit::DataSegment(i) => self.edges_walked_data_segments.get_mut(i as usize),
-            WasmGcUnit::DefinedGlobal(_)
-            | WasmGcUnit::FunctionImport(_)
-            | WasmGcUnit::GlobalImport(_) => return false,
+    fn claim_load(&mut self, unit: WasmGcUnit) -> bool {
+        let Some(state) = self.state_mut(unit) else {
+            return false;
         };
-        match slot {
-            Some(bit) if !*bit => {
-                *bit = true;
-                true
-            }
-            _ => false,
+        if *state == WasmGcUnitState::Loaded {
+            return false;
         }
+        *state = WasmGcUnitState::Loaded;
+        matches!(
+            unit,
+            WasmGcUnit::DefinedFunction(_) | WasmGcUnit::DataSegment(_)
+        )
     }
 
     /// Decode code/data reloc sections and body/segment spans once per object.
@@ -2499,34 +2509,46 @@ impl<'data> WasmObjectLayout<'data> {
 
     /// Pack live defined function/global ordinals into dense 0..n maps after the GC walk.
     fn compute_live_ordinals(&mut self) {
-        self.defined_function_live_ordinal = pack_live_ordinals(&self.live_defined_functions);
-        self.defined_global_live_ordinal = pack_live_ordinals(&self.live_defined_globals);
+        self.defined_function_live_ordinal = pack_live_ordinals(&self.gc_defined_functions);
+        self.defined_global_live_ordinal = pack_live_ordinals(&self.gc_defined_globals);
     }
 
     fn is_data_segment_live(&self, index: usize) -> bool {
-        self.live_data_segments.get(index).copied().unwrap_or(false)
+        self.gc_data_segments
+            .get(index)
+            .is_some_and(|s| s.is_live())
     }
 
     fn is_defined_function_live(&self, index: usize) -> bool {
-        self.live_defined_functions
+        self.gc_defined_functions
             .get(index)
-            .copied()
-            .unwrap_or(false)
+            .is_some_and(|s| s.is_live())
     }
 
     fn is_defined_global_live(&self, index: usize) -> bool {
-        self.live_defined_globals
+        self.gc_defined_globals
             .get(index)
-            .copied()
-            .unwrap_or(false)
+            .is_some_and(|s| s.is_live())
+    }
+
+    fn live_function_import_bits(&self) -> Vec<bool> {
+        self.gc_function_imports
+            .iter()
+            .map(|s| s.is_live())
+            .collect()
+    }
+
+    fn live_global_import_bits(&self) -> Vec<bool> {
+        self.gc_global_imports.iter().map(|s| s.is_live()).collect()
     }
 }
 
-fn pack_live_ordinals(live: &[bool]) -> Vec<u32> {
+fn pack_live_ordinals(states: &[WasmGcUnitState]) -> Vec<u32> {
     let mut next = 0u32;
-    live.iter()
-        .map(|&is_live| {
-            if is_live {
+    states
+        .iter()
+        .map(|state| {
+            if state.is_live() {
                 let ordinal = next;
                 next += 1;
                 ordinal
@@ -2535,6 +2557,10 @@ fn pack_live_ordinals(live: &[bool]) -> Vec<u32> {
             }
         })
         .collect()
+}
+
+fn identity_ordinals(n: usize) -> Vec<u32> {
+    (0..n as u32).collect()
 }
 
 fn sort_relocations_by_offset(relocs: &mut [WasmRelocation]) {
@@ -2665,7 +2691,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
 
         // If the object was never activated (should not happen for objects we collect), treat
         // everything as live so layout can still proceed.
-        let all_live = !layout.live_bits_ready;
+        let all_live = !layout.gc_states_ready;
 
         let mut types = Vec::new();
         if let Some(type_section) = file.type_section_reader()? {
@@ -2715,12 +2741,12 @@ impl<'data> WasmObjectLayoutInput<'data> {
         let live_function_imports = if all_live {
             vec![true; function_imports.len()]
         } else {
-            layout.live_function_imports.clone()
+            layout.live_function_import_bits()
         };
         let live_global_imports = if all_live {
             vec![true; global_imports.len()]
         } else {
-            layout.live_global_imports.clone()
+            layout.live_global_import_bits()
         };
 
         let code_section_index = file.standard_section_index[section_id::CODE as usize];
@@ -2809,12 +2835,12 @@ impl<'data> WasmObjectLayoutInput<'data> {
             .collect::<Result<Vec<_>>>()?;
 
         let defined_function_live_ordinal = if all_live {
-            pack_live_ordinals(&vec![true; all_module_functions.len()])
+            identity_ordinals(all_module_functions.len())
         } else {
             layout.defined_function_live_ordinal.clone()
         };
         let defined_global_live_ordinal = if all_live {
-            pack_live_ordinals(&vec![true; all_globals.len()])
+            identity_ordinals(all_globals.len())
         } else {
             layout.defined_global_live_ordinal.clone()
         };
@@ -5974,7 +6000,7 @@ impl platform::Platform for Wasm {
         queue: &mut crate::layout::LocalWorkQueue<Self>,
         scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
-        object.format_specific.ensure_live_bits(object.object);
+        object.format_specific.ensure_gc_states(object.object);
         if resources.symbol_db.args.should_gc_sections() {
             enqueue_wasm_gc_roots::<A>(object, resources, queue, scope)?;
         } else {
@@ -5991,22 +6017,14 @@ impl platform::Platform for Wasm {
         unit: Self::GcUnit,
         scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
-        object.format_specific.mark_live(unit);
-
-        match unit {
-            WasmGcUnit::DefinedFunction(_) | WasmGcUnit::DataSegment(_) => {
-                if !object.format_specific.claim_edge_walk(unit) {
-                    return Ok(());
-                }
-                object
-                    .format_specific
-                    .ensure_relocs_decoded(object.object)?;
-                walk_wasm_gc_unit_edges::<A>(object, unit, resources, queue, scope)?;
-            }
-            WasmGcUnit::DefinedGlobal(_)
-            | WasmGcUnit::FunctionImport(_)
-            | WasmGcUnit::GlobalImport(_) => {}
+        if !object.format_specific.claim_load(unit) {
+            return Ok(());
         }
+
+        object
+            .format_specific
+            .ensure_relocs_decoded(object.object)?;
+        walk_wasm_gc_unit_edges::<A>(object, unit, resources, queue, scope)?;
         Ok(())
     }
 
@@ -6117,14 +6135,12 @@ impl platform::Platform for Wasm {
         WasmObjectLayout {
             symbol_id_range,
             file_id,
-            live_bits_ready: false,
-            live_defined_functions: Vec::new(),
-            live_defined_globals: Vec::new(),
-            live_data_segments: Vec::new(),
-            live_function_imports: Vec::new(),
-            live_global_imports: Vec::new(),
-            edges_walked_functions: Vec::new(),
-            edges_walked_data_segments: Vec::new(),
+            gc_states_ready: false,
+            gc_defined_functions: Vec::new(),
+            gc_defined_globals: Vec::new(),
+            gc_data_segments: Vec::new(),
+            gc_function_imports: Vec::new(),
+            gc_global_imports: Vec::new(),
             relocs_ready: false,
             code_relocations: Vec::new(),
             data_relocations: Vec::new(),
@@ -6627,7 +6643,7 @@ fn enqueue_wasm_gc_unit<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
     scope: &rayon::Scope<'scope>,
 ) {
-    if object.format_specific.mark_live(unit) {
+    if object.format_specific.try_queue(unit) {
         queue.send_gc_unit_request::<A>(object.file_id, unit, resources, scope);
     }
 }
