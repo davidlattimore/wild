@@ -239,6 +239,12 @@ pub(crate) struct File<'data> {
     /// Entries from the `target_features` custom section, if present.
     #[debug(skip)]
     pub(crate) target_features: Vec<WasmTargetFeature<'data>>,
+
+    pub(crate) num_function_imports: u32,
+    pub(crate) num_global_imports: u32,
+    pub(crate) num_defined_functions: u32,
+    pub(crate) num_defined_globals: u32,
+    pub(crate) num_data_segments: u32,
 }
 
 /// One entry of the Wasm tool-conventions `target_features` custom section.
@@ -2357,11 +2363,60 @@ impl WasmObjectIndexMap {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum WasmGcUnit {
+    DefinedFunction(u32),
+    DefinedGlobal(u32),
+    DataSegment(u32),
+    FunctionImport(u32),
+    GlobalImport(u32),
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct WasmObjectLayout<'data> {
     pub(crate) symbol_id_range: crate::symbol_db::SymbolIdRange,
     pub(crate) file_id: crate::input_data::FileId,
+    // Set once live bitsets have been allocated at object activate.
+    live_bits_ready: bool,
+    // Live bits from the GC walk.
+    live_defined_functions: Vec<bool>,
+    live_defined_globals: Vec<bool>,
+    live_data_segments: Vec<bool>,
+    live_function_imports: Vec<bool>,
+    live_global_imports: Vec<bool>,
     _phantom: std::marker::PhantomData<&'data ()>,
+}
+
+impl<'data> WasmObjectLayout<'data> {
+    /// Allocate live bitsets from the object's unit counts.
+    fn ensure_live_bits(&mut self, file: &File<'_>) {
+        if self.live_bits_ready {
+            return;
+        }
+        self.live_defined_functions = vec![false; file.num_defined_functions as usize];
+        self.live_defined_globals = vec![false; file.num_defined_globals as usize];
+        self.live_data_segments = vec![false; file.num_data_segments as usize];
+        self.live_function_imports = vec![false; file.num_function_imports as usize];
+        self.live_global_imports = vec![false; file.num_global_imports as usize];
+        self.live_bits_ready = true;
+    }
+
+    fn mark_live(&mut self, unit: WasmGcUnit) -> bool {
+        let slot = match unit {
+            WasmGcUnit::DefinedFunction(i) => self.live_defined_functions.get_mut(i as usize),
+            WasmGcUnit::DefinedGlobal(i) => self.live_defined_globals.get_mut(i as usize),
+            WasmGcUnit::DataSegment(i) => self.live_data_segments.get_mut(i as usize),
+            WasmGcUnit::FunctionImport(i) => self.live_function_imports.get_mut(i as usize),
+            WasmGcUnit::GlobalImport(i) => self.live_global_imports.get_mut(i as usize),
+        };
+        match slot {
+            Some(bit) if !*bit => {
+                *bit = true;
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -5376,7 +5431,7 @@ impl platform::Platform for Wasm {
     type VerneedTable<'data> = VerneedTable<'data>;
     type ResolvedObjectExt<'data> = WasmObjectLayout<'data>;
     type SectionIdentityExt = ();
-    type GcUnit = NoGcUnit;
+    type GcUnit = WasmGcUnit;
 
     fn write_output_file<'data, A: platform::Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
@@ -5495,24 +5550,27 @@ impl platform::Platform for Wasm {
     }
 
     fn activate_object_gc<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        _resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
-        _queue: &mut crate::layout::LocalWorkQueue<Self>,
-        _scope: &rayon::Scope<'scope>,
+        resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
+        queue: &mut crate::layout::LocalWorkQueue<Self>,
+        scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
+        object.format_specific.ensure_live_bits(object.object);
+        enqueue_all_wasm_gc_units::<A>(object, resources, queue, scope);
         Ok(())
     }
 
     fn load_gc_unit<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
         _resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
         _queue: &mut crate::layout::LocalWorkQueue<Self>,
         unit: Self::GcUnit,
         _scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
-        match unit {}
+        object.format_specific.mark_live(unit);
+        Ok(())
     }
 
     fn load_object_section_relocations<'data, 'scope, A: platform::Arch<Platform = Self>>(
@@ -5622,6 +5680,12 @@ impl platform::Platform for Wasm {
         WasmObjectLayout {
             symbol_id_range,
             file_id,
+            live_bits_ready: false,
+            live_defined_functions: Vec::new(),
+            live_defined_globals: Vec::new(),
+            live_data_segments: Vec::new(),
+            live_function_imports: Vec::new(),
+            live_global_imports: Vec::new(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -5972,6 +6036,14 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
     // undefined; the canonical name lives in the import entry instead.
     backfill_unnamed_import_symbols(input, &standard_section_index, &sections, &mut symbols)?;
 
+    let (num_function_imports, num_global_imports) =
+        count_function_and_global_imports(input, &standard_section_index, &sections)?;
+    let num_defined_functions = section_entry_count(input, &standard_section_index, &sections, section_id::FUNCTION)?;
+    let num_defined_globals =
+        section_entry_count(input, &standard_section_index, &sections, section_id::GLOBAL)?;
+    let num_data_segments =
+        section_entry_count(input, &standard_section_index, &sections, section_id::DATA)?;
+
     Ok(File {
         data: input,
         sections,
@@ -5981,7 +6053,104 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         init_funcs,
         reloc_sections,
         target_features,
+        num_function_imports,
+        num_global_imports,
+        num_defined_functions,
+        num_defined_globals,
+        num_data_segments,
     })
+}
+
+fn count_function_and_global_imports(
+    data: &[u8],
+    standard_section_index: &[Option<u32>; STANDARD_SECTION_LOOKUP_LEN],
+    sections: &[SectionHeader],
+) -> Result<(u32, u32)> {
+    let Some(section_index) = standard_section_index[section_id::IMPORT as usize] else {
+        return Ok((0, 0));
+    };
+    let header = sections
+        .get(section_index as usize)
+        .ok_or_else(|| crate::error!("Wasm import section index out of range"))?;
+    let payload = data
+        .get(header.payload_range_usize())
+        .ok_or_else(|| crate::error!("Wasm import section payload out of bounds"))?;
+    let reader = ImportSectionReader::new(BinaryReader::new(
+        payload,
+        header.payload_range.start as usize,
+    ))?;
+    let mut num_function_imports = 0u32;
+    let mut num_global_imports = 0u32;
+    for import in reader.into_imports() {
+        match import?.ty {
+            TypeRef::Func(_) | TypeRef::FuncExact(_) => {
+                num_function_imports = num_function_imports
+                    .checked_add(1)
+                    .ok_or_else(|| crate::error!("too many Wasm function imports"))?;
+            }
+            TypeRef::Global(_) => {
+                num_global_imports = num_global_imports
+                    .checked_add(1)
+                    .ok_or_else(|| crate::error!("too many Wasm global imports"))?;
+            }
+            _ => {}
+        }
+    }
+    Ok((num_function_imports, num_global_imports))
+}
+
+fn section_entry_count(
+    data: &[u8],
+    standard_section_index: &[Option<u32>; STANDARD_SECTION_LOOKUP_LEN],
+    sections: &[SectionHeader],
+    section_id: u8,
+) -> Result<u32> {
+    let Some(section_index) = standard_section_index[section_id as usize] else {
+        return Ok(0);
+    };
+    let header = sections
+        .get(section_index as usize)
+        .ok_or_else(|| crate::error!("Wasm section index out of range"))?;
+    let payload = data
+        .get(header.payload_range_usize())
+        .ok_or_else(|| crate::error!("Wasm section payload out of bounds"))?;
+    let mut reader = BinaryReader::new(payload, header.payload_range.start as usize);
+    Ok(reader.read_var_u32()?)
+}
+
+fn enqueue_all_wasm_gc_units<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
+    queue: &mut crate::layout::LocalWorkQueue<Wasm>,
+    scope: &rayon::Scope<'scope>,
+) {
+    let file = object.object;
+    let file_id = object.file_id;
+    for i in 0..file.num_defined_functions {
+        queue.send_gc_unit_request::<A>(
+            file_id,
+            WasmGcUnit::DefinedFunction(i),
+            resources,
+            scope,
+        );
+    }
+    for i in 0..file.num_defined_globals {
+        queue.send_gc_unit_request::<A>(file_id, WasmGcUnit::DefinedGlobal(i), resources, scope);
+    }
+    for i in 0..file.num_data_segments {
+        queue.send_gc_unit_request::<A>(file_id, WasmGcUnit::DataSegment(i), resources, scope);
+    }
+    for i in 0..file.num_function_imports {
+        queue.send_gc_unit_request::<A>(
+            file_id,
+            WasmGcUnit::FunctionImport(i),
+            resources,
+            scope,
+        );
+    }
+    for i in 0..file.num_global_imports {
+        queue.send_gc_unit_request::<A>(file_id, WasmGcUnit::GlobalImport(i), resources, scope);
+    }
 }
 
 /// For unnamed undefined Func/Global symbols, derive the name from the corresponding import
@@ -6167,10 +6336,6 @@ impl SinglePartSectionId {
         OutputSectionId::from_u32(self as u32)
     }
 }
-
-// TODO: Implement GC for wasm.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum NoGcUnit {}
 
 #[cfg(test)]
 mod tests {
