@@ -115,18 +115,13 @@ jobs:
       - run: cp -f .cargo/config.toml.cross-ppc64le .cargo/config.toml
       - run: cargo build --target powerpc64le-unknown-linux-gnu
 
-  # TODO: Switch this to use our own container rather than apt-get installing stuff. The use of
-  # gcc-multilib is the problematic part since it conflicts with packages we install in our cross
-  # container. Ideally, it shouldn't be needed if builds are configured correctly.
   wasip1-build:
     name: Build wasip1
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ubuntu:25.10
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
     steps:
-      - name: Install xz-utils
-        run: apt-get update && apt-get install -y xz-utils
       - name: Setup Wasmtime
         uses: bytecodealliance/actions/wasmtime/setup@v1
         with:
@@ -134,7 +129,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - run: apt-get install --update -y build-essential gcc gcc-multilib clang curl
       - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
         with:
@@ -148,8 +142,10 @@ jobs:
 
   wasm-test:
     name: Test Wasm
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
+    container:
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
     steps:
       - uses: actions/checkout@v7
         with:
@@ -159,7 +155,6 @@ jobs:
         with:
           targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y wabt lld wasi-libc
       - uses: taiki-e/install-action@v2.85.3
         with:
           tool: wasm-tools
