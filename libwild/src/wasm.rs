@@ -6474,6 +6474,7 @@ impl platform::Platform for Wasm {
         _prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _header_info: &crate::layout::HeaderInfo,
+        _program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
         _output_sections: &crate::output_section_id::OutputSections<Self>,
         _resources: &layout::FinaliseSizesResources<'data, '_, Self>,
         _args: &Self::Args,
@@ -6582,6 +6583,7 @@ impl platform::Platform for Wasm {
         use crate::wasm::output_section_id as osid;
 
         let mut builder = crate::output_section_id::OutputOrderBuilder::<Self>::new(
+            Self::program_segment_defs().to_vec(),
             output_kind,
             output_sections,
             secondary,

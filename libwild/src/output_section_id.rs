@@ -133,8 +133,10 @@ pub(crate) struct OutputOrderBuilder<'scope, 'data, P: Platform> {
     events: Vec<OrderEvent<'data>>,
 
     program_segments: ProgramSegments<P::ProgramSegmentDef>,
+    segment_defs: Vec<P::ProgramSegmentDef>,
 
-    /// Indexes correspond to elements of `PROGRAM_SEGMENT_DEFS`.
+    /// Indexes correspond to elements of `segment_defs`, which is typically
+    /// `PROGRAM_SEGMENT_DEFS`.
     active_segment_kinds: Vec<Option<ProgramSegmentId>>,
     active_segment_regions: Vec<Option<&'data [u8]>>,
 
@@ -148,18 +150,21 @@ pub(crate) struct OutputOrderBuilder<'scope, 'data, P: Platform> {
 
 impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
     pub(crate) fn new(
+        segment_defs: Vec<P::ProgramSegmentDef>,
         output_kind: OutputKind,
         output_sections: &'scope OutputSections<'data, P>,
         secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
         has_custom_phdrs: bool,
         location_counters: &'scope [crate::layout_rules::LocationCounter<'data>],
     ) -> Self {
+        let segment_defs_count = segment_defs.len();
         Self {
             events: Vec::new(),
             program_segments: ProgramSegments::empty(has_custom_phdrs),
+            segment_defs,
             output_sections,
-            active_segment_kinds: vec![None; P::program_segment_defs().len()],
-            active_segment_regions: vec![None; P::program_segment_defs().len()],
+            active_segment_kinds: vec![None; segment_defs_count],
+            active_segment_regions: vec![None; segment_defs_count],
             secondary,
             output_kind,
             has_custom_phdrs,
@@ -266,20 +271,21 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
     fn should_end_current_rw_segment(&self, section_id: OutputSectionId) -> bool {
         self.active_segment_kinds
             .iter()
-            .zip(P::program_segment_defs())
+            .zip(self.segment_defs.iter().copied())
             .any(|(id, def)| {
                 id.is_some()
                     && def.should_cut_rw_segment_when_ending()
                     && !self
                         .output_sections
-                        .should_include_in_segment(section_id, *def)
+                        .should_include_in_segment(section_id, def)
             })
     }
 
     /// Ends the currently active RW LOAD segment, if any. This is used when the RELRO segment
     /// ends to force .data and other non-RELRO sections into a new LOAD segment.
     fn end_rw_load_segment(&mut self) {
-        let rw_load_def_index = P::program_segment_defs()
+        let rw_load_def_index = self
+            .segment_defs
             .iter()
             .position(|def| def.is_loadable() && def.is_writable() && !def.is_executable());
 
@@ -339,14 +345,14 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
 
         let section_region = section_info.region_name;
         multizip((
-            P::program_segment_defs(),
+            self.segment_defs.iter().copied(),
             self.active_segment_kinds.iter_mut(),
             self.active_segment_regions.iter_mut(),
         ))
         .for_each(|(segment_def, active_id, active_region)| {
             let should_be_active = self
                 .output_sections
-                .should_include_in_segment(section_id, *segment_def);
+                .should_include_in_segment(section_id, segment_def);
 
             match (active_id.as_ref(), should_be_active) {
                 // Remain inactive
@@ -356,7 +362,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
                 (Some(segment_id), true) => {
                     if *active_region != section_region {
                         stop.push(*segment_id);
-                        let new_segment_id = self.program_segments.add_segment(*segment_def);
+                        let new_segment_id = self.program_segments.add_segment(segment_def);
                         start.push(new_segment_id);
                         *active_id = Some(new_segment_id);
                         *active_region = section_region;
@@ -364,7 +370,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
                 }
                 // Start segment
                 (None, true) => {
-                    let segment_id = self.program_segments.add_segment(*segment_def);
+                    let segment_id = self.program_segments.add_segment(segment_def);
                     start.push(segment_id);
                     *active_id = Some(segment_id);
                     *active_region = section_region;

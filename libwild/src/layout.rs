@@ -3496,6 +3496,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             self,
             extra_sizes,
             &header_info,
+            program_segments,
             output_sections,
             resources,
             resources.symbol_db.args,
