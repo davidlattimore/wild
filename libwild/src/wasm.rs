@@ -4702,11 +4702,24 @@ fn function_type_for_symbol<'a>(
     let type_index = if sym_index < n_imports {
         input.function_imports[sym_index].type_index
     } else {
-        let local = sym_index - n_imports;
-        *input
-            .module_functions
-            .get(local)
-            .ok_or_else(|| crate::error!("Wasm function index {} out of range", sym.index))?
+        let original = sym_index - n_imports;
+        let dense = input
+            .defined_function_live_ordinal
+            .get(original)
+            .copied()
+            .unwrap_or(WASM_DEAD_INDEX);
+        ensure!(
+            dense != WASM_DEAD_INDEX,
+            "Wasm init/reference to GC'd function index {}",
+            sym.index
+        );
+        *input.module_functions.get(dense as usize).ok_or_else(|| {
+            crate::error!(
+                "Wasm function index {} out of range (dense {dense}, live len {})",
+                sym.index,
+                input.module_functions.len()
+            )
+        })?
     };
     input
         .types
@@ -5757,10 +5770,12 @@ fn classify_code_relocations<'data>(
 }
 
 fn remap_wasm_index(indices: &[u32], index: u32, kind: &str) -> Result<u32> {
-    let mapped = indices
-        .get(index as usize)
-        .copied()
-        .ok_or_else(|| crate::error!("Wasm {kind} index {index} out of range"))?;
+    let mapped = indices.get(index as usize).copied().ok_or_else(|| {
+        crate::error!(
+            "Wasm {kind} index {index} out of range (map len {})",
+            indices.len()
+        )
+    })?;
     ensure!(
         mapped != WASM_DEAD_INDEX,
         "Wasm {kind} index {index} was removed by GC"
