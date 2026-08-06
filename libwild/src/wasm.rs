@@ -2395,6 +2395,9 @@ pub(crate) struct WasmObjectLayout<'data> {
     live_data_segments: Vec<bool>,
     live_function_imports: Vec<bool>,
     live_global_imports: Vec<bool>,
+    // Edge walk completed for units that have reloc edges (functions / data segments).
+    edges_walked_functions: Vec<bool>,
+    edges_walked_data_segments: Vec<bool>,
     relocs_ready: bool,
     code_relocations: Vec<WasmRelocation>,
     data_relocations: Vec<WasmRelocation>,
@@ -2416,6 +2419,8 @@ impl<'data> WasmObjectLayout<'data> {
         self.live_data_segments = vec![false; file.num_data_segments as usize];
         self.live_function_imports = vec![false; file.num_function_imports as usize];
         self.live_global_imports = vec![false; file.num_global_imports as usize];
+        self.edges_walked_functions = vec![false; file.num_defined_functions as usize];
+        self.edges_walked_data_segments = vec![false; file.num_data_segments as usize];
         self.live_bits_ready = true;
     }
 
@@ -2426,6 +2431,24 @@ impl<'data> WasmObjectLayout<'data> {
             WasmGcUnit::DataSegment(i) => self.live_data_segments.get_mut(i as usize),
             WasmGcUnit::FunctionImport(i) => self.live_function_imports.get_mut(i as usize),
             WasmGcUnit::GlobalImport(i) => self.live_global_imports.get_mut(i as usize),
+        };
+        match slot {
+            Some(bit) if !*bit => {
+                *bit = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Claim edge-walk responsibility for a function/data unit. Returns `true` once.
+    fn claim_edge_walk(&mut self, unit: WasmGcUnit) -> bool {
+        let slot = match unit {
+            WasmGcUnit::DefinedFunction(i) => self.edges_walked_functions.get_mut(i as usize),
+            WasmGcUnit::DataSegment(i) => self.edges_walked_data_segments.get_mut(i as usize),
+            WasmGcUnit::DefinedGlobal(_)
+            | WasmGcUnit::FunctionImport(_)
+            | WasmGcUnit::GlobalImport(_) => return false,
         };
         match slot {
             Some(bit) if !*bit => {
@@ -5407,6 +5430,7 @@ fn finalize_indirect_function_table(
         .object_index_maps
         .iter()
         .flat_map(|m| m.function_indices.iter().copied())
+        .filter(|&idx| idx != WASM_DEAD_INDEX)
         .max()
         .unwrap_or(0);
     let mut slots_by_func = vec![u32::MAX; max_func as usize + 1];
@@ -5944,11 +5968,13 @@ impl platform::Platform for Wasm {
         unit: Self::GcUnit,
         scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
-        if !object.format_specific.mark_live(unit) {
-            return Ok(());
-        }
+        object.format_specific.mark_live(unit);
+
         match unit {
             WasmGcUnit::DefinedFunction(_) | WasmGcUnit::DataSegment(_) => {
+                if !object.format_specific.claim_edge_walk(unit) {
+                    return Ok(());
+                }
                 object.format_specific.ensure_relocs_decoded(object.object)?;
                 walk_wasm_gc_unit_edges::<A>(object, unit, resources, queue, scope)?;
             }
@@ -6072,6 +6098,8 @@ impl platform::Platform for Wasm {
             live_data_segments: Vec::new(),
             live_function_imports: Vec::new(),
             live_global_imports: Vec::new(),
+            edges_walked_functions: Vec::new(),
+            edges_walked_data_segments: Vec::new(),
             relocs_ready: false,
             code_relocations: Vec::new(),
             data_relocations: Vec::new(),
@@ -6512,79 +6540,89 @@ fn section_entry_count(
 }
 
 fn enqueue_all_wasm_gc_units<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
-    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    object: &mut crate::layout::ObjectLayoutState<'data, Wasm>,
     resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
     scope: &rayon::Scope<'scope>,
 ) {
     let file = object.object;
-    let file_id = object.file_id;
-    for i in 0..file.num_defined_functions {
-        queue.send_gc_unit_request::<A>(
-            file_id,
+    let num_defined_functions = file.num_defined_functions;
+    let num_defined_globals = file.num_defined_globals;
+    let num_data_segments = file.num_data_segments;
+    let num_function_imports = file.num_function_imports;
+    let num_global_imports = file.num_global_imports;
+    for i in 0..num_defined_functions {
+        enqueue_wasm_gc_unit::<A>(
+            object,
             WasmGcUnit::DefinedFunction(i),
             resources,
+            queue,
             scope,
         );
     }
-    for i in 0..file.num_defined_globals {
-        queue.send_gc_unit_request::<A>(file_id, WasmGcUnit::DefinedGlobal(i), resources, scope);
+    for i in 0..num_defined_globals {
+        enqueue_wasm_gc_unit::<A>(object, WasmGcUnit::DefinedGlobal(i), resources, queue, scope);
     }
-    for i in 0..file.num_data_segments {
-        queue.send_gc_unit_request::<A>(file_id, WasmGcUnit::DataSegment(i), resources, scope);
+    for i in 0..num_data_segments {
+        enqueue_wasm_gc_unit::<A>(object, WasmGcUnit::DataSegment(i), resources, queue, scope);
     }
-    for i in 0..file.num_function_imports {
-        queue.send_gc_unit_request::<A>(
-            file_id,
+    for i in 0..num_function_imports {
+        enqueue_wasm_gc_unit::<A>(
+            object,
             WasmGcUnit::FunctionImport(i),
             resources,
+            queue,
             scope,
         );
     }
-    for i in 0..file.num_global_imports {
-        queue.send_gc_unit_request::<A>(file_id, WasmGcUnit::GlobalImport(i), resources, scope);
+    for i in 0..num_global_imports {
+        enqueue_wasm_gc_unit::<A>(object, WasmGcUnit::GlobalImport(i), resources, queue, scope);
     }
 }
 
 fn enqueue_wasm_gc_unit<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
-    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    object: &mut crate::layout::ObjectLayoutState<'data, Wasm>,
     unit: WasmGcUnit,
     resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
     scope: &rayon::Scope<'scope>,
 ) {
-    queue.send_gc_unit_request::<A>(object.file_id, unit, resources, scope);
+    if object.format_specific.mark_live(unit) {
+        queue.send_gc_unit_request::<A>(object.file_id, unit, resources, scope);
+    }
 }
 
 /// Roots: export section, EXPORTED / NO_STRIP linking flags, InitFuncs, `--export`.
 /// Entry arrives via `LoadGlobalSymbol` from the prelude path.
 fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
-    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    object: &mut crate::layout::ObjectLayoutState<'data, Wasm>,
     resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
     scope: &rayon::Scope<'scope>,
 ) -> Result {
     let file = object.object;
+    let num_function_imports = file.num_function_imports;
+    let num_global_imports = file.num_global_imports;
 
     if let Some(export_section) = file.export_section_reader()? {
         for export in export_section {
             let export = export?;
             let unit = match export.kind {
                 wasmparser::ExternalKind::Func | wasmparser::ExternalKind::FuncExact => {
-                    if export.index < file.num_function_imports {
+                    if export.index < num_function_imports {
                         Some(WasmGcUnit::FunctionImport(export.index))
                     } else {
                         Some(WasmGcUnit::DefinedFunction(
-                            export.index - file.num_function_imports,
+                            export.index - num_function_imports,
                         ))
                     }
                 }
                 wasmparser::ExternalKind::Global => {
-                    if export.index < file.num_global_imports {
+                    if export.index < num_global_imports {
                         Some(WasmGcUnit::GlobalImport(export.index))
                     } else {
                         Some(WasmGcUnit::DefinedGlobal(
-                            export.index - file.num_global_imports,
+                            export.index - num_global_imports,
                         ))
                     }
                 }
@@ -6596,24 +6634,26 @@ fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
         }
     }
 
-    for sym in &file.symbols {
+    for sym_index in 0..object.object.symbols.len() {
+        let sym = &object.object.symbols[sym_index];
         let flags = SymbolFlags::from_bits_truncate(sym.flags);
         if !(flags.contains(SymbolFlags::EXPORTED) || flags.contains(SymbolFlags::NO_STRIP)) {
             continue;
         }
-        if let Some(unit) = wasm_gc_unit_for_symbol(file, sym) {
+        if let Some(unit) = wasm_gc_unit_for_symbol(object.object, sym) {
             enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
         }
     }
 
-    for init in &file.init_funcs {
-        let Some(sym) = file.symbols.get(init.symbol_index as usize) else {
+    for init_index in 0..object.object.init_funcs.len() {
+        let init = object.object.init_funcs[init_index];
+        let Some(sym) = object.object.symbols.get(init.symbol_index as usize) else {
             bail!(
                 "InitFuncs symbol index {} out of range",
                 init.symbol_index
             );
         };
-        if let Some(unit) = wasm_gc_unit_for_symbol(file, sym) {
+        if let Some(unit) = wasm_gc_unit_for_symbol(object.object, sym) {
             enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
         }
     }
@@ -6642,37 +6682,40 @@ fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
 }
 
 fn walk_wasm_gc_unit_edges<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
-    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    object: &mut crate::layout::ObjectLayoutState<'data, Wasm>,
     unit: WasmGcUnit,
     resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
     scope: &rayon::Scope<'scope>,
 ) -> Result {
-    let layout = &object.format_specific;
-    let relocs = match unit {
-        WasmGcUnit::DefinedFunction(ordinal) => {
-            let Some(&(start, end)) = layout.function_body_spans.get(ordinal as usize) else {
-                bail!("Wasm GC function ordinal {ordinal} out of range");
-            };
-            relocs_in_offset_range(&layout.code_relocations, start, end)
-        }
-        WasmGcUnit::DataSegment(ordinal) => {
-            let Some(&(start, end)) = layout.data_segment_spans.get(ordinal as usize) else {
-                bail!("Wasm GC data segment ordinal {ordinal} out of range");
-            };
-            relocs_in_offset_range(&layout.data_relocations, start, end)
-        }
-        _ => return Ok(()),
+    let relocs: Vec<WasmRelocation> = {
+        let layout = &object.format_specific;
+        let slice = match unit {
+            WasmGcUnit::DefinedFunction(ordinal) => {
+                let Some(&(start, end)) = layout.function_body_spans.get(ordinal as usize) else {
+                    bail!("Wasm GC function ordinal {ordinal} out of range");
+                };
+                relocs_in_offset_range(&layout.code_relocations, start, end)
+            }
+            WasmGcUnit::DataSegment(ordinal) => {
+                let Some(&(start, end)) = layout.data_segment_spans.get(ordinal as usize) else {
+                    bail!("Wasm GC data segment ordinal {ordinal} out of range");
+                };
+                relocs_in_offset_range(&layout.data_relocations, start, end)
+            }
+            _ => return Ok(()),
+        };
+        slice.to_vec()
     };
 
-    for reloc in relocs {
+    for reloc in &relocs {
         note_wasm_reloc_edge::<A>(object, reloc, resources, queue, scope)?;
     }
     Ok(())
 }
 
 fn note_wasm_reloc_edge<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
-    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    object: &mut crate::layout::ObjectLayoutState<'data, Wasm>,
     reloc: &WasmRelocation,
     resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
@@ -6683,7 +6726,7 @@ fn note_wasm_reloc_edge<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
     }
 
     let file = object.object;
-    let Some(sym) = file.symbols.get(reloc.index as usize) else {
+    let Some(sym) = file.symbols.get(reloc.index as usize).copied() else {
         bail!(
             "Wasm relocation symbol index {} out of range",
             reloc.index
@@ -6692,14 +6735,14 @@ fn note_wasm_reloc_edge<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
 
     if !sym.is_undefined() {
         // Prefer the local definition unit so weak/COMDAT losers still keep their local slot.
-        if let Some(unit) = wasm_gc_unit_for_symbol(file, sym) {
+        if let Some(unit) = wasm_gc_unit_for_symbol(file, &sym) {
             enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
         }
         return Ok(());
     }
 
     // Undefined: keep the local import slot live (host / linker-defined / cross-object).
-    if let Some(unit) = wasm_gc_unit_for_symbol(file, sym) {
+    if let Some(unit) = wasm_gc_unit_for_symbol(file, &sym) {
         enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
     }
 
