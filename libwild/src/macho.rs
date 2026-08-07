@@ -105,18 +105,6 @@ enum SinglePartSectionId {
     Count,
 }
 
-#[repr(u32)]
-#[derive(Clone, Copy)]
-enum RegularSectionId {
-    Text,
-    Cstring,
-    Const,
-    Data,
-
-    // Must be last.
-    Count,
-}
-
 pub(crate) mod part_id {
     use super::SinglePartSectionId;
     use crate::part_id::PartId;
@@ -131,7 +119,6 @@ pub(crate) mod part_id {
 }
 
 pub(crate) mod output_section_id {
-    use super::RegularSectionId;
     use super::SinglePartSectionId;
     use crate::output_section_id::OutputSectionId;
 
@@ -148,11 +135,6 @@ pub(crate) mod output_section_id {
         SinglePartSectionId::CodeSignature.output_section_id();
     pub(crate) const CHAINED_FIXUP_TABLE: OutputSectionId =
         SinglePartSectionId::ChainedFixupTable.output_section_id();
-
-    pub(crate) const TEXT: OutputSectionId = RegularSectionId::Text.output_section_id();
-    pub(crate) const CSTRING: OutputSectionId = RegularSectionId::Cstring.output_section_id();
-    pub(crate) const CONST: OutputSectionId = RegularSectionId::Const.output_section_id();
-    pub(crate) const DATA: OutputSectionId = RegularSectionId::Data.output_section_id();
 }
 
 const LE: Endianness = Endianness::Little;
@@ -228,6 +210,26 @@ pub(crate) fn code_signature_padded_identifier_size(args: &MachOArgs) -> u64 {
 
 pub(crate) fn load_dylib_command_size(path: &[u8]) -> usize {
     (size_of::<DylibCommand>() + path.len() + 1).next_multiple_of(MACHO_COMMAND_ALIGNMENT)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(crate) struct SegmentName([u8; 16]);
+
+impl SegmentName {
+    const TEXT: Self = Self::from_bytes(b"__TEXT");
+    const DATA: Self = Self::from_bytes(b"__DATA");
+    const DATA_CONST: Self = Self::from_bytes(b"__DATA_CONST");
+
+    const fn from_bytes(name: &[u8]) -> Self {
+        assert!(name.len() <= 16);
+        let mut bytes = [0; 16];
+        bytes.split_at_mut(name.len()).0.copy_from_slice(name);
+        Self(bytes)
+    }
+
+    fn is_writable(self) -> bool {
+        matches!(self, Self::DATA | Self::DATA_CONST)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -601,7 +603,7 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_writable(&self) -> bool {
-        false
+        SegmentName::from_bytes(self.segment_name()).is_writable()
     }
 
     fn is_executable(&self) -> bool {
@@ -629,8 +631,19 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn should_exclude(&self) -> bool {
-        // TODO
-        false
+        // TODO: We only support these fixed segments for now. We also need support for sections
+        // backed by the Mach-O indirect symbol table for dynamic linking.
+        !matches!(
+            SegmentName::from_bytes(self.segment_name()),
+            SegmentName::DATA | SegmentName::DATA_CONST | SegmentName::TEXT
+        ) || matches!(
+            self.flags.get(LE).typ(),
+            macho::S_NON_LAZY_SYMBOL_POINTERS
+                | macho::S_LAZY_SYMBOL_POINTERS
+                | macho::S_SYMBOL_STUBS
+                | macho::S_LAZY_DYLIB_SYMBOL_POINTERS
+                | macho::S_THREAD_LOCAL_VARIABLE_POINTERS
+        )
     }
 
     fn is_group(&self) -> bool {
@@ -770,15 +783,17 @@ impl platform::Symbol for SymtabEntry {
 pub(crate) struct SectionAttributes {
     ty: macho::SectionType,
     attr: SectionFlags,
+    writable: bool,
 }
 
 const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = S_ATTR_EXT_RELOC.with(S_ATTR_LOC_RELOC);
 
-impl From<SectionFlags> for SectionAttributes {
-    fn from(flags: SectionFlags) -> Self {
+impl SectionAttributes {
+    fn new(flags: SectionFlags, segment: Option<SegmentName>) -> Self {
         Self {
             ty: flags.typ(),
             attr: SectionFlags(flags.0 & SECTION_ATTRIBUTES),
+            writable: segment.is_some_and(SegmentName::is_writable),
         }
     }
 }
@@ -789,6 +804,7 @@ impl platform::SectionAttributes for SectionAttributes {
     fn merge(&mut self, rhs: Self) {
         self.ty = self.ty.max(rhs.ty);
         self.attr |= rhs.attr;
+        self.writable |= rhs.writable;
     }
 
     fn apply(
@@ -801,6 +817,7 @@ impl platform::SectionAttributes for SectionAttributes {
         // since S_REGULAR = 0 and more specialized types should win this tiebreak.
         info.section_attributes.ty = info.section_attributes.ty.max(self.ty);
         info.section_attributes.attr |= self.attr.without(SECTION_FLAGS_PROPAGATION_MASK);
+        info.section_attributes.writable |= self.writable;
     }
 
     fn is_null(&self) -> bool {
@@ -808,7 +825,7 @@ impl platform::SectionAttributes for SectionAttributes {
     }
 
     fn is_alloc(&self) -> bool {
-        false
+        true
     }
 
     fn is_executable(&self) -> bool {
@@ -821,7 +838,7 @@ impl platform::SectionAttributes for SectionAttributes {
     }
 
     fn is_writable(&self) -> bool {
-        false
+        self.writable
     }
 
     fn is_no_bits(&self) -> bool {
@@ -924,7 +941,7 @@ pub(crate) struct BuiltInSectionDetails {
 impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
-    kind: SectionKind::Primary(SectionIdentity::new(SectionName(&[]), ())),
+    kind: SectionKind::Primary(SectionIdentity::new(SectionName(&[]), None)),
     section_flags: SectionFlags(0),
     min_alignment: alignment::MIN,
 };
@@ -996,10 +1013,8 @@ impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
 
 impl platform::Platform for MachO {
     const NUM_SINGLE_PART_SECTIONS: u32 = SinglePartSectionId::Count as u32;
-    const NUM_BUILT_IN_REGULAR_SECTIONS: usize = RegularSectionId::Count as usize;
+    const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 0;
 
-    const TEXT_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::TEXT);
-    const DATA_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::DATA);
     const STRTAB_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::STRTAB);
     const SYMTAB_GLOBAL_SECTION_ID: Option<OutputSectionId> =
         Some(output_section_id::SYMTAB_GLOBAL);
@@ -1060,7 +1075,7 @@ impl platform::Platform for MachO {
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
     type ResolvedObjectExt<'data> = ();
-    type SectionIdentityExt = ();
+    type SectionIdentityExt = Option<SegmentName>;
     type GcUnit = crate::layout::SectionGcUnit;
 
     const HAS_NULL_SYMBOL_ENTRY: bool = true;
@@ -1073,7 +1088,10 @@ impl platform::Platform for MachO {
     }
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
-        header.flags.get(LE).into()
+        SectionAttributes::new(
+            header.flags.get(LE),
+            Some(SegmentName::from_bytes(header.segment_name())),
+        )
     }
 
     fn apply_force_keep_sections(
@@ -1265,24 +1283,27 @@ impl platform::Platform for MachO {
 
     fn program_segment_should_include_section(
         segment_def: Self::ProgramSegmentDef,
-        _section_info: &crate::output_section_id::SectionOutputInfo<Self>,
+        section_info: &crate::output_section_id::SectionOutputInfo<Self>,
         section_id: crate::output_section_id::OutputSectionId,
         _rosegment: bool,
     ) -> bool {
-        let mapped_segment = match section_id {
-            crate::output_section_id::FILE_HEADER => SegmentType::Text,
-            output_section_id::LOAD_COMMANDS => SegmentType::LoadCommands,
-            output_section_id::TEXT
-            | output_section_id::CSTRING
-            | output_section_id::CONST
-            | output_section_id::PLT_GOT => SegmentType::TextSections,
-            output_section_id::DATA => SegmentType::DataSections,
-            output_section_id::GOT => SegmentType::DataConstSections,
-            output_section_id::CHAINED_FIXUP_TABLE
-            | output_section_id::SYMTAB_GLOBAL
-            | output_section_id::STRTAB
-            | output_section_id::CODE_SIGNATURE => SegmentType::LinkeditSections,
-            _ => SegmentType::Unused,
+        let mapped_segment = match (section_id, section_info.kind) {
+            (crate::output_section_id::FILE_HEADER, _) => SegmentType::Text,
+            (output_section_id::LOAD_COMMANDS, _) => SegmentType::LoadCommands,
+            (
+                output_section_id::CHAINED_FIXUP_TABLE
+                | output_section_id::SYMTAB_GLOBAL
+                | output_section_id::STRTAB
+                | output_section_id::CODE_SIGNATURE,
+                _,
+            ) => SegmentType::LinkeditSections,
+            (_, SectionKind::Primary(identity)) => match identity.format_specific() {
+                Some(SegmentName::TEXT) => SegmentType::TextSections,
+                Some(SegmentName::DATA) => SegmentType::DataSections,
+                Some(SegmentName::DATA_CONST) => SegmentType::DataConstSections,
+                _ => SegmentType::Unused,
+            },
+            (_, _) => SegmentType::Unused,
         };
 
         match (segment_def.segment_type, mapped_segment) {
@@ -1302,15 +1323,21 @@ impl platform::Platform for MachO {
     -> Vec<crate::output_section_id::SectionOutputInfo<'data, Self>> {
         SECTION_DEFINITIONS
             .iter()
-            .map(|d| SectionOutputInfo {
-                section_attributes: d.section_flags.into(),
-                kind: d.kind,
-                min_alignment: d.min_alignment,
-                location_info: None,
-                secondary_order: None,
-                region_name: None,
-                fill: None,
-                phdrs: Vec::new(),
+            .map(|d| {
+                let segment = match d.kind {
+                    SectionKind::Primary(identity) => identity.format_specific(),
+                    SectionKind::Secondary(_) => None,
+                };
+                SectionOutputInfo {
+                    section_attributes: SectionAttributes::new(d.section_flags, segment),
+                    kind: d.kind,
+                    min_alignment: d.min_alignment,
+                    location_info: None,
+                    secondary_order: None,
+                    region_name: None,
+                    fill: None,
+                    phdrs: Vec::new(),
+                }
             })
             .collect()
     }
@@ -1518,7 +1545,7 @@ impl platform::Platform for MachO {
     fn allocate_header_sizes<'data>(
         prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        header_info: &crate::layout::HeaderInfo,
+        _header_info: &crate::layout::HeaderInfo,
         output_sections: &crate::output_section_id::OutputSections<Self>,
         resources: &layout::FinaliseSizesResources<'data, '_, Self>,
         args: &Self::Args,
@@ -1536,26 +1563,14 @@ impl platform::Platform for MachO {
                 + size_of::<SectionEntry>()
                     * count_sections_for_segment_type(output_sections, SegmentType::TextSections),
         );
-        if has_active_segment(header_info, SegmentType::DataSections) {
-            allocate_load_cmd(
-                size_of::<SegmentCommand>()
-                    + size_of::<SectionEntry>()
-                        * count_sections_for_segment_type(
-                            output_sections,
-                            SegmentType::DataSections,
-                        ),
-            );
+
+        for segment_type in [SegmentType::DataSections, SegmentType::DataConstSections] {
+            let count = count_sections_for_segment_type(output_sections, segment_type);
+            if count > 0 {
+                allocate_load_cmd(size_of::<SegmentCommand>() + size_of::<SectionEntry>() * count);
+            }
         }
-        if has_active_segment(header_info, SegmentType::DataConstSections) {
-            allocate_load_cmd(
-                size_of::<SegmentCommand>()
-                    + size_of::<SectionEntry>()
-                        * count_sections_for_segment_type(
-                            output_sections,
-                            SegmentType::DataConstSections,
-                        ),
-            );
-        }
+
         allocate_load_cmd(size_of::<SegmentCommand>());
         if resources.symbol_db.output_kind.is_executable() {
             allocate_load_cmd(size_of::<EntryPointCommand>());
@@ -1743,7 +1758,7 @@ impl platform::Platform for MachO {
     }
 
     fn build_output_order_and_program_segments<'data>(
-        _custom: &crate::output_section_id::CustomSectionIds,
+        custom: &crate::output_section_id::CustomSectionIds,
         output_kind: OutputKind,
         output_sections: &crate::output_section_id::OutputSections<'data, Self>,
         secondary: &crate::output_section_map::OutputSectionMap<
@@ -1754,19 +1769,73 @@ impl platform::Platform for MachO {
         crate::output_section_id::OutputOrder<'data>,
         crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
     ) {
+        // TODO: Order sections within each segment according to Mach-O conventions.
         let mut builder =
             OutputOrderBuilder::<Self>::new(output_kind, output_sections, secondary, false, &[]);
 
         // File header and all load commands.
         builder.add_section(crate::output_section_id::FILE_HEADER);
         builder.add_section(output_section_id::LOAD_COMMANDS);
+
         // Content of the sections (e.g. __text, __data).
-        builder.add_section(output_section_id::TEXT);
-        builder.add_section(output_section_id::CSTRING);
-        builder.add_section(output_section_id::CONST);
+        add_sections_in_segment(
+            &mut builder,
+            output_sections,
+            &custom.exec,
+            SegmentName::TEXT,
+        );
+
         builder.add_section(output_section_id::PLT_GOT);
-        builder.add_section(output_section_id::DATA);
+
+        add_sections_in_segment(&mut builder, output_sections, &custom.ro, SegmentName::TEXT);
+
+        add_sections_in_segment(
+            &mut builder,
+            output_sections,
+            &custom.exec,
+            SegmentName::DATA,
+        );
+        add_sections_in_segment(&mut builder, output_sections, &custom.ro, SegmentName::DATA);
+        add_sections_in_segment(
+            &mut builder,
+            output_sections,
+            &custom.data,
+            SegmentName::DATA,
+        );
+        add_sections_in_segment(
+            &mut builder,
+            output_sections,
+            &custom.bss,
+            SegmentName::DATA,
+        );
+
         builder.add_section(output_section_id::GOT);
+
+        add_sections_in_segment(
+            &mut builder,
+            output_sections,
+            &custom.exec,
+            SegmentName::DATA_CONST,
+        );
+        add_sections_in_segment(
+            &mut builder,
+            output_sections,
+            &custom.ro,
+            SegmentName::DATA_CONST,
+        );
+        add_sections_in_segment(
+            &mut builder,
+            output_sections,
+            &custom.data,
+            SegmentName::DATA_CONST,
+        );
+        add_sections_in_segment(
+            &mut builder,
+            output_sections,
+            &custom.bss,
+            SegmentName::DATA_CONST,
+        );
+
         // The rest (e.g. symbol table, string table).
         builder.add_section(output_section_id::STRTAB);
         builder.add_section(output_section_id::CHAINED_FIXUP_TABLE);
@@ -1824,15 +1893,24 @@ impl platform::Platform for MachO {
 
     fn section_identity<'data>(
         name: SectionName<'data>,
-        _section: &Self::SectionHeader,
+        section: &Self::SectionHeader,
     ) -> SectionIdentity<'data, Self> {
-        SectionIdentity::new(name, ())
+        SectionIdentity::new(name, Some(SegmentName::from_bytes(section.segment_name())))
     }
 
-    fn section_identity_from_name<'data>(
-        name: SectionName<'data>,
-    ) -> Option<SectionIdentity<'data, Self>> {
-        Some(SectionIdentity::new(name, ()))
+    fn fmt_section_identity(
+        section_name: SectionName<'_>,
+        segment_name: &Self::SectionIdentityExt,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        match segment_name {
+            Some(segment_name) => {
+                let segment_name = String::from_utf8_lossy(&segment_name.0);
+                let segment_name = segment_name.trim_end_matches('\0');
+                write!(f, "{segment_name},{section_name}")
+            }
+            None => write!(f, "{section_name}"),
+        }
     }
 }
 
@@ -1874,81 +1952,62 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     let mut defs = [DEFAULT_DEFS; NUM_BUILT_IN_SECTIONS];
 
     defs[crate::output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"FILE_HEADER"), ())),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"FILE_HEADER"), None)),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::LOAD_COMMANDS.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"LOAD_COMMANDS"), ())),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"LOAD_COMMANDS"), None)),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::LINK_EDIT_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(
             SectionName(SEG_LINKEDIT.as_bytes()),
-            (),
+            None,
         )),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"STRTAB"), ())),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"STRTAB"), None)),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::CHAINED_FIXUP_TABLE.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionIdentity::new(
             SectionName(b"DYLD_CHAINED_FIXUPS_TABLE"),
-            (),
+            None,
         )),
         min_alignment: alignment::USIZE,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"SYMTAB"), ())),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"SYMTAB"), None)),
         min_alignment: alignment::USIZE,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::CODE_SIGNATURE.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"CODE_SIGNATURE"), ())),
+        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"CODE_SIGNATURE"), None)),
         min_alignment: Alignment {
             exponent: CS_SECTION_ALIGNMENT_EXP,
         },
         ..DEFAULT_DEFS
     };
     defs[output_section_id::GOT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"__got"), ())),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(b"__got"),
+            Some(SegmentName::DATA_CONST),
+        )),
         section_flags: macho::S_NON_LAZY_SYMBOL_POINTERS.to_flags(),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::PLT_GOT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"__stubs"), ())),
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(b"__stubs"),
+            Some(SegmentName::TEXT),
+        )),
         section_flags: macho::S_SYMBOL_STUBS
             .to_flags()
             .with(macho::S_ATTR_PURE_INSTRUCTIONS)
             .with(macho::S_ATTR_SOME_INSTRUCTIONS),
         min_alignment: Alignment { exponent: 2 },
-        ..DEFAULT_DEFS
-    };
-    // Multi-part generated sections
-    // Start of regular sections
-    defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"__text"), ())),
-        section_flags: macho::S_REGULAR
-            .to_flags()
-            .with(macho::S_ATTR_PURE_INSTRUCTIONS)
-            .with(macho::S_ATTR_SOME_INSTRUCTIONS),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::CSTRING.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"__cstring"), ())),
-        section_flags: macho::S_CSTRING_LITERALS.to_flags(),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::CONST.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"__const"), ())),
-        section_flags: macho::S_REGULAR.to_flags(),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionIdentity::new(SectionName(b"__data"), ())),
-        section_flags: macho::S_REGULAR.to_flags(),
         ..DEFAULT_DEFS
     };
 
@@ -1989,12 +2048,7 @@ fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
     plt_address
 }
 
-// TODO: sort properly
 const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
-    SectionRule::exact_section_keep(b"__text", output_section_id::TEXT),
-    SectionRule::exact_section_keep(b"__cstring", output_section_id::CSTRING),
-    SectionRule::exact_section_keep(b"__const", output_section_id::CONST),
-    SectionRule::exact_section_keep(b"__data", output_section_id::DATA),
     // TODO: Add a Mach-O output section ID and rule for `__compact_unwind`.
 ];
 
@@ -2028,14 +2082,6 @@ pub(crate) const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
         count_as_segment: true,
     },
 ];
-
-fn has_active_segment(header_info: &crate::layout::HeaderInfo, segment_type: SegmentType) -> bool {
-    header_info.active_segment_ids.iter().any(|id| {
-        PROGRAM_SEGMENT_DEFS
-            .get(id.as_usize())
-            .is_some_and(|def| def.segment_type == segment_type)
-    })
-}
 
 fn count_sections_for_segment_type(
     output_sections: &crate::output_section_id::OutputSections<MachO>,
@@ -2108,6 +2154,22 @@ pub(crate) fn get_segment_sections<'data>(
         segment_sections: sections,
         segment_size,
     })
+}
+
+fn add_sections_in_segment<'data>(
+    builder: &mut OutputOrderBuilder<'_, 'data, MachO>,
+    output_sections: &crate::output_section_id::OutputSections<'data, MachO>,
+    sections: &[OutputSectionId],
+    segment: SegmentName,
+) {
+    for &section_id in sections {
+        if output_sections
+            .identity(section_id)
+            .is_some_and(|identity| identity.format_specific() == Some(segment))
+        {
+            builder.add_section(section_id);
+        }
+    }
 }
 
 #[inline(always)]
@@ -2200,11 +2262,5 @@ impl SinglePartSectionId {
 
     const fn output_section_id(self) -> OutputSectionId {
         OutputSectionId::from_u32(self as u32)
-    }
-}
-
-impl RegularSectionId {
-    const fn output_section_id(self) -> OutputSectionId {
-        crate::output_section_id::regular_section_base::<MachO>().offset(self as usize)
     }
 }
