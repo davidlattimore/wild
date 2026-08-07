@@ -926,20 +926,21 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
     header.imports_format.set(DYLD_CHAINED_IMPORT);
     header.symbols_format.set(0);
 
-    let data_const_segment_index = active_segments
-        .iter()
-        .position(|segment_type| segment_type.segment_type == SegmentType::DataConstSections);
-
     // 2) fill up dyld_chained_starts_in_image, which is `seg_count` (u32) followed by
     //    `seg_info_offset` ([u32; seg_count]); only __DATA_CONST,__got segment is covered
     starts_in_image[0].set(LE, segment_count as u32);
     starts_in_image[1..].fill(U32::new(LE, 0));
 
     // Early exit if we don't have any GOT entry to be encoded.
-    let Some(data_const_segment_index) = data_const_segment_index else {
+    if layout.section_layouts.get(output_section_id::GOT).mem_size == 0 {
         rest.zero();
         return Ok(());
-    };
+    }
+
+    let data_const_segment_index = active_segments
+        .iter()
+        .position(|segment| segment.segment_type == SegmentType::DataConstSections)
+        .ok_or_else(|| error!("non-empty __got requires __DATA_CONST segment"))?;
 
     // Accounts for both seg_count and __PAGEZERO.
     starts_in_image[data_const_segment_index + 2].set(LE, starts_in_image_len as u32);
