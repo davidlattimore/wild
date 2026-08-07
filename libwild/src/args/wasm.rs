@@ -365,7 +365,7 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
     parser
         .declare()
         .long("no-merge-data-segments")
-        .help("Disable symbol demangling")
+        .help("Disable data segment merging (default)")
         .execute(|_args, _modifier_stack| Ok(()));
 
     super::declare_common_args(&mut parser);
