@@ -42,7 +42,7 @@ jobs:
     timeout-minutes: 10
 
     container:
-      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
+      image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-f05d76af90966595dd3606a0ebf2a0db8281843f
 
     steps:
       # https://github.com/actions/runner/issues/3210
@@ -66,7 +66,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-f05d76af90966595dd3606a0ebf2a0db8281843f
     steps:
       - uses: actions/checkout@v7
         with:
@@ -84,7 +84,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-f05d76af90966595dd3606a0ebf2a0db8281843f
     steps:
       - uses: actions/checkout@v7
         with:
@@ -102,7 +102,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-f05d76af90966595dd3606a0ebf2a0db8281843f
     steps:
       - uses: actions/checkout@v7
         with:
@@ -120,7 +120,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-f05d76af90966595dd3606a0ebf2a0db8281843f
     steps:
       - name: Setup Wasmtime
         uses: bytecodealliance/actions/wasmtime/setup@v1
@@ -145,7 +145,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-wasm-amd64:sha-f05d76af90966595dd3606a0ebf2a0db8281843f
     steps:
       - uses: actions/checkout@v7
         with:
@@ -201,7 +201,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:sha-ddb9b8f4c97cbca5a555ce551cb41cd14f89dd94
+      image: ghcr.io/wild-linker/wild/ci-ubuntu-amd64:sha-f05d76af90966595dd3606a0ebf2a0db8281843f
     steps:
       - uses: actions/checkout@v7
         with:
