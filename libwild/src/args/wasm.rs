@@ -352,6 +352,22 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
             Ok(())
         });
 
+    parser
+        .declare()
+        .long("merge-data-segments")
+        .help("Merge data segments")
+        .execute(|args, _modifier_stack| {
+            // TODO: implement and make it default.
+            args.warn_unsupported("--merge-data-segments")?;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-merge-data-segments")
+        .help("Disable symbol demangling")
+        .execute(|_args, _modifier_stack| Ok(()));
+
     super::declare_common_args(&mut parser);
 
     parser
