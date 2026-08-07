@@ -500,32 +500,45 @@ fn process_archive<'data, P: Platform, F: FileSystem>(
     file: Option<&Arc<std::fs::File>>,
     state: &TemporaryState<'data, P, F>,
 ) -> Result<LoadedFileState<'data, P, F::Input>> {
-    let mut outputs = Vec::new();
+    let archive_data = input_ref.data();
+    let parent_file = input_ref.file;
+    let mut members = Vec::new();
 
-    for entry in ArchiveIterator::from_archive_bytes(input_ref.data())? {
+    for entry in ArchiveIterator::from_archive_bytes(archive_data)? {
         let entry = entry?;
         match entry {
             ArchiveEntry::Regular(archive_entry) => {
                 let start_offset = archive_entry.data_offset;
                 let end_offset = archive_entry.data_offset + archive_entry.entry_data.len();
-                let input_ref = InputRef {
-                    file: input_ref.file,
-                    data: &input_ref.data()[start_offset..end_offset],
-                    entry: Some(EntryMeta {
-                        identifier: archive_entry.ident,
-                        start_offset,
-                        end_offset,
-                    }),
-                };
-
-                let kind = FileKind::identify_bytes(input_ref.data())
-                    .with_context(|| format!("Failed process input `{input_ref}`"))?;
-
-                outputs.push(state.process_input(input_ref, file, kind)?);
+                let member_data = &archive_data[start_offset..end_offset];
+                let kind = FileKind::identify_bytes(member_data).with_context(|| {
+                    format!(
+                        "Failed process input `{}` in archive `{}`",
+                        archive_entry.ident.as_path().display(),
+                        parent_file.filename.display()
+                    )
+                })?;
+                members.push((start_offset, end_offset, archive_entry.ident, kind));
             }
             ArchiveEntry::Thin(_) => unreachable!(),
         }
     }
+
+    let outputs = members
+        .into_par_iter()
+        .map(|(start_offset, end_offset, ident, kind)| {
+            let member_ref = InputRef {
+                file: parent_file,
+                data: &archive_data[start_offset..end_offset],
+                entry: Some(EntryMeta {
+                    identifier: ident,
+                    start_offset,
+                    end_offset,
+                }),
+            };
+            state.process_input(member_ref, file, kind)
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(LoadedFileState::Archive(opened, outputs))
 }
@@ -536,51 +549,61 @@ fn process_thin_archive<'data, P: Platform, F: FileSystem>(
 ) -> Result<LoadedFileState<'data, P, F::Input>> {
     let absolute_path = &input_file.filename;
     let parent_path = absolute_path.parent().unwrap();
-    let mut files = Vec::new();
-    let mut parsed_files = Vec::new();
+    let modifiers = input_file.modifiers;
+    let archive_display = absolute_path.display().to_string();
 
+    // Collect thin-member paths first.
+    let mut entry_paths = Vec::new();
     for entry in ArchiveIterator::from_archive_bytes(input_file.data())? {
         match entry? {
             ArchiveEntry::Thin(entry) => {
-                let path = entry.ident.as_path();
-                let entry_path = parent_path.join(path);
-
-                let (input, file) = state
-                    .file_system
-                    .open_input(&entry_path, state.args.common().prepopulate_maps)
-                    .with_context(|| {
-                        format!(
-                            "Failed to open file referenced by thin archive `{}`",
-                            input_file.filename.display()
-                        )
-                    })?;
-
-                let input_file = InputFile {
-                    filename: entry_path.clone(),
-                    original_filename: entry_path,
-                    modifiers: Modifiers {
-                        archive_semantics: true,
-                        ..input_file.modifiers
-                    },
-                    data: Some(input),
-                };
-
-                let input_file = &*state.inputs_arena.alloc(input_file);
-
-                let input_ref = InputRef {
-                    file: input_file.as_ref(),
-                    data: input_file.data(),
-                    entry: None,
-                };
-
-                let kind = FileKind::identify_bytes(input_ref.data())
-                    .with_context(|| format!("Failed process input `{input_ref}`"))?;
-
-                parsed_files.push(state.process_input(input_ref, file.as_ref(), kind)?);
-                files.push(input_file);
+                entry_paths.push(parent_path.join(entry.ident.as_path()));
             }
             ArchiveEntry::Regular(_) => {}
         }
+    }
+
+    let results = entry_paths
+        .into_par_iter()
+        .map(|entry_path| {
+            let (input, file) = state
+                .file_system
+                .open_input(&entry_path, state.args.common().prepopulate_maps)
+                .with_context(|| {
+                    format!("Failed to open file referenced by thin archive `{archive_display}`")
+                })?;
+
+            let member_file = InputFile {
+                filename: entry_path.clone(),
+                original_filename: entry_path,
+                modifiers: Modifiers {
+                    archive_semantics: true,
+                    ..modifiers
+                },
+                data: Some(input),
+            };
+
+            let member_file = &*state.inputs_arena.alloc(member_file);
+
+            let input_ref = InputRef {
+                file: member_file.as_ref(),
+                data: member_file.data(),
+                entry: None,
+            };
+
+            let kind = FileKind::identify_bytes(input_ref.data())
+                .with_context(|| format!("Failed process input `{input_ref}`"))?;
+
+            let parsed = state.process_input(input_ref, file.as_ref(), kind)?;
+            Ok::<_, Error>((member_file, parsed))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut files = Vec::with_capacity(results.len());
+    let mut parsed_files = Vec::with_capacity(results.len());
+    for (member_file, parsed) in results {
+        files.push(member_file);
+        parsed_files.push(parsed);
     }
 
     Ok(LoadedFileState::ThinArchive(files, parsed_files))
