@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: "ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-1ecf7940be4518c515a505f295e2b1ac15a35e79"
+      image: "ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-f05d76af90966595dd3606a0ebf2a0db8281843f"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
