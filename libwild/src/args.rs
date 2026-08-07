@@ -877,6 +877,7 @@ impl<T: platform::Args> ArgumentParser<T> {
 
     #[must_use]
     fn generate_help(&self) -> String {
+        const HELP_COL1_WIDTH: usize = 30;
         let mut help = String::new();
         help.push_str("USAGE:\n    wild [OPTIONS] [FILES...]\n\nOPTIONS:\n");
 
@@ -885,8 +886,9 @@ impl<T: platform::Args> ArgumentParser<T> {
 
         // TODO: This is ad-hoc
         help.push_str(&format!(
-            "    {:<30} Read options from a file\n",
+            "    {:<width$} Read options from a file\n",
             "@<VALUE>",
+            width = HELP_COL1_WIDTH
         ));
 
         let mut help_to_options: HashMap<&str, Vec<String>> = HashMap::new();
@@ -919,7 +921,11 @@ impl<T: platform::Args> ArgumentParser<T> {
         for (prefix, handler) in prefix_options {
             if !processed_short_options.contains(prefix) && !handler.help_text.is_empty() {
                 let option_name = format!("-{prefix} <VALUE>");
-                help.push_str(&format!("    {option_name:<30} {}\n", handler.help_text));
+                help.push_str(&format!(
+                    "    {option_name:<width$} {}\n",
+                    handler.help_text,
+                    width = HELP_COL1_WIDTH
+                ));
 
                 // Add sub-options if they exist
                 let mut sub_options = handler.sub_options.iter().collect_vec();
@@ -934,8 +940,9 @@ impl<T: platform::Args> ArgumentParser<T> {
                     };
                     let option_name = format!("-{prefix} {display_name}");
                     help.push_str(&format!(
-                        "     {option_name:<29} {sub_help}\n",
-                        sub_help = sub.help
+                        "     {option_name:<width$} {sub_help}\n",
+                        sub_help = sub.help,
+                        width = HELP_COL1_WIDTH - 1
                     ));
                 }
             }
