@@ -62,22 +62,22 @@ jobs:
       - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
 
   external-tests:
-      name: Test Linux (mold tests)
-      runs-on: ubuntu-24.04
-      timeout-minutes: 10
-      container:
-        image: "ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-f05d76af90966595dd3606a0ebf2a0db8281843f"
-      steps:
-        - name: Checkout
-          uses: actions/checkout@v7
-          with:
-            persist-credentials: false
-            submodules: recursive
-        - uses: Swatinem/rust-cache@v2
-        - name: Check regressions
-          run: WILD_TEST_CROSS=all cargo test --features mold_tests external_test_suites/mold -- --skip expect_failure
-        - name: Check tests that should fail still fail
-          run: WILD_TEST_CROSS=all cargo test --features mold_tests expect_failure
+    name: Test Linux (mold tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: "ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-f05d76af90966595dd3606a0ebf2a0db8281843f"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: Swatinem/rust-cache@v2
+      - name: Check regressions
+        run: WILD_TEST_CROSS=all cargo test --features mold_tests external_test_suites/mold -- --skip expect_failure
+      - name: Check tests that should fail still fail
+        run: WILD_TEST_CROSS=all cargo test --features mold_tests expect_failure
 
   riscv-build:
     name: Build Linux (RISC-V)
