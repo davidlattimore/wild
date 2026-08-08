@@ -34,6 +34,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub mod coff;
 pub mod elf;
 pub mod macho;
 pub mod wasm;
@@ -140,6 +141,7 @@ impl Args {
         };
 
         let mut args = match platform {
+            PlatformKind::Coff => Args::Coff(coff::CoffArgs::new()?),
             PlatformKind::Elf => Args::Elf(elf::ElfArgs::new()?),
             PlatformKind::MachO => Args::MachO(macho::MachOArgs::new()?),
             PlatformKind::Wasm => Args::Wasm(wasm::WasmArgs::new()?),
@@ -171,6 +173,7 @@ impl Args {
         }
 
         match self {
+            Args::Coff(args) => args.parse(input),
             Args::Elf(args) => args.parse(input),
             Args::MachO(args) => args.parse(input),
             Args::Wasm(args) => args.parse(input),
@@ -193,6 +196,7 @@ impl Args {
 
     pub(crate) fn common(&self) -> &CommonArgs {
         match self {
+            Args::Coff(coff_args) => &coff_args.common,
             Args::Elf(elf_args) => &elf_args.common,
             Args::MachO(macho_args) => &macho_args.common,
             Args::Wasm(wasm_args) => &wasm_args.common,
@@ -201,6 +205,7 @@ impl Args {
 
     pub(crate) fn common_mut(&mut self) -> &mut CommonArgs {
         match self {
+            Args::Coff(coff_args) => &mut coff_args.common,
             Args::Elf(elf_args) => &mut elf_args.common,
             Args::MachO(macho_args) => &mut macho_args.common,
             Args::Wasm(wasm_args) => &mut wasm_args.common,
@@ -216,13 +221,14 @@ impl Args {
                     crate::arch::SUPPORTED_EMULATIONS
                 )?;
             }
-            Args::MachO(_) | Args::Wasm(_) => (),
+            Args::Coff(_) | Args::MachO(_) | Args::Wasm(_) => (),
         }
         Ok(())
     }
 }
 
 enum PlatformKind {
+    Coff,
     Elf,
     MachO,
     Wasm,
@@ -241,7 +247,7 @@ impl PlatformKind {
         match flavor {
             "gnu" | "ld" => Ok(PlatformKind::Elf),
             "darwin" | "ld64" => Ok(PlatformKind::MachO),
-            "link" => bail!("Windows (link flavor) is not yet supported"),
+            "link" => Ok(PlatformKind::Coff),
             "wasm" | "ld-wasm" => Ok(PlatformKind::Wasm),
             _ => bail!(
                 "Unknown flavor '{}'. Valid flavors: gnu, darwin, link",
@@ -252,6 +258,12 @@ impl PlatformKind {
 
     fn from_executable_name(name: &str) -> Option<Self> {
         let base_name = Path::new(name).file_stem().and_then(|n| n.to_str())?;
+
+        // MSVC-world tools are commonly invoked as `LINK.EXE`, so match those names without regard
+        // to case.
+        if base_name.eq_ignore_ascii_case("link") || base_name.eq_ignore_ascii_case("lld-link") {
+            return Some(PlatformKind::Coff);
+        }
 
         match base_name {
             "ld" => Some(PlatformKind::Elf),
@@ -501,6 +513,7 @@ pub struct ThreadPool {
 // TODO: remove
 #[allow(clippy::large_enum_variant)]
 pub enum Args {
+    Coff(coff::CoffArgs),
     Elf(elf::ElfArgs),
     MachO(macho::MachOArgs),
     Wasm(wasm::WasmArgs),
@@ -509,6 +522,7 @@ pub enum Args {
 impl std::fmt::Debug for Args {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Args::Coff(args) => args.fmt(f),
             Args::Elf(args) => args.fmt(f),
             Args::MachO(args) => args.fmt(f),
             Args::Wasm(args) => args.fmt(f),
@@ -1501,6 +1515,9 @@ mod tests {
 
         let args = Args::new(|| ["ld64.wild", "-flavor", "gnu"].into_iter()).unwrap();
         assert_matches!(args, Args::Elf(_));
+
+        let args = Args::new(|| ["wild", "-flavor", "link"].into_iter()).unwrap();
+        assert_matches!(args, Args::Coff(_));
 
         assert!(Args::new(|| ["ld.wild", "-flavor", "invalid"].into_iter()).is_err());
         assert!(Args::new(|| ["ld.wild", "-flavor"].into_iter()).is_err());
