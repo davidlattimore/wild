@@ -3086,12 +3086,10 @@ fn build_linker_input(
                     FatKind::Bit32 => make_macho_fat_file::<object::read::macho::FatArch32>(
                         &fat_archive_path,
                         &archive_path,
-                        MACHO_REGULAR_OBJECT_ALIGNMENT,
                     )?,
                     FatKind::Bit64 => make_macho_fat_file::<object::read::macho::FatArch64>(
                         &fat_archive_path,
                         &archive_path,
-                        MACHO_REGULAR_OBJECT_ALIGNMENT,
                     )?,
                 }
 
@@ -3121,16 +3119,12 @@ fn build_linker_input(
                     .with_extension("fat.o");
 
                 match fat_kind {
-                    FatKind::Bit32 => make_macho_fat_file::<object::read::macho::FatArch32>(
-                        &fat_path,
-                        &path,
-                        MACHO_REGULAR_OBJECT_ALIGNMENT,
-                    )?,
-                    FatKind::Bit64 => make_macho_fat_file::<object::read::macho::FatArch64>(
-                        &fat_path,
-                        &path,
-                        MACHO_REGULAR_OBJECT_ALIGNMENT,
-                    )?,
+                    FatKind::Bit32 => {
+                        make_macho_fat_file::<object::read::macho::FatArch32>(&fat_path, &path)?
+                    }
+                    FatKind::Bit64 => {
+                        make_macho_fat_file::<object::read::macho::FatArch64>(&fat_path, &path)?
+                    }
                 }
 
                 path = fat_path;
@@ -3164,16 +3158,12 @@ fn build_linker_input(
                     .with_extension("fat.dylib");
 
                 match fat_kind {
-                    FatKind::Bit32 => make_macho_fat_file::<object::read::macho::FatArch32>(
-                        &fat_path,
-                        &obj_path,
-                        MACHO_DYLIB_ALIGNMENT,
-                    )?,
-                    FatKind::Bit64 => make_macho_fat_file::<object::read::macho::FatArch64>(
-                        &fat_path,
-                        &obj_path,
-                        MACHO_DYLIB_ALIGNMENT,
-                    )?,
+                    FatKind::Bit32 => {
+                        make_macho_fat_file::<object::read::macho::FatArch32>(&fat_path, &obj_path)?
+                    }
+                    FatKind::Bit64 => {
+                        make_macho_fat_file::<object::read::macho::FatArch64>(&fat_path, &obj_path)?
+                    }
                 }
 
                 out.path = fat_path;
@@ -3190,23 +3180,18 @@ fn build_linker_input(
     Ok(linker_input)
 }
 
-const MACHO_REGULAR_OBJECT_ALIGNMENT: usize = 8;
-const MACHO_DYLIB_ALIGNMENT: usize = 16384;
+const MACHO_PAGE_ALIGNMENT: usize = 16384;
 
 /// Reads `contents_path` and puts it into a MachO fat object (`output_path`) containing just that
 /// one file.
-fn make_macho_fat_file<A: FatArch>(
-    output_path: &Path,
-    contents_path: &Path,
-    alignment: usize,
-) -> Result {
+fn make_macho_fat_file<A: FatArch>(output_path: &Path, contents_path: &Path) -> Result {
     let input = std::fs::read(contents_path)
         .with_context(|| format!("Failed to read {}", contents_path.display()))?;
 
     let mut output = Vec::new();
 
     let header_end = size_of::<object::macho::FatHeader>() + size_of::<A>();
-    let offset = header_end.next_multiple_of(alignment);
+    let offset = header_end.next_multiple_of(MACHO_PAGE_ALIGNMENT);
 
     output.extend_from_slice(object::bytes_of(&object::macho::FatHeader {
         magic: A::MAGIC.into(),
@@ -3219,7 +3204,7 @@ fn make_macho_fat_file<A: FatArch>(
         object::macho::CpuSubtype(0),
         offset,
         input.len(),
-        alignment,
+        MACHO_PAGE_ALIGNMENT,
     )?;
 
     let padding_size = offset - header_end;
