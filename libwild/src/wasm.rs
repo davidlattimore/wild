@@ -2388,13 +2388,12 @@ pub(crate) enum WasmGcUnit {
 enum WasmGcUnitState {
     #[default]
     Dead = 0,
-    Queued = 1,
-    Loaded = 2,
+    Live = 1,
 }
 
 impl WasmGcUnitState {
     fn is_live(self) -> bool {
-        self != Self::Dead
+        self == Self::Live
     }
 }
 
@@ -2444,26 +2443,25 @@ impl<'data> WasmObjectLayout<'data> {
         }
     }
 
-    /// Mark unit live and claim enqueue responsibility. Returns `true` only on `Dead → Queued`.
+    /// Mark live and claim enqueue.
     fn try_queue(&mut self, unit: WasmGcUnit) -> bool {
         match self.state_mut(unit) {
             Some(state) if *state == WasmGcUnitState::Dead => {
-                *state = WasmGcUnitState::Queued;
+                *state = WasmGcUnitState::Live;
                 true
             }
             _ => false,
         }
     }
 
-    fn claim_load(&mut self, unit: WasmGcUnit) -> bool {
-        let Some(state) = self.state_mut(unit) else {
-            return false;
-        };
-        if *state == WasmGcUnitState::Loaded {
-            return false;
+    fn mark_live(&mut self, unit: WasmGcUnit) -> bool {
+        match self.state_mut(unit) {
+            Some(state) => {
+                *state = WasmGcUnitState::Live;
+                true
+            }
+            None => false,
         }
-        *state = WasmGcUnitState::Loaded;
-        true
     }
 
     /// Decode code/data reloc sections and body/segment spans once per object.
@@ -2571,12 +2569,12 @@ impl<'data> WasmObjectLayout<'data> {
         !self.gc_states_ready || self.gc_data_segments.iter().all(|s| s.is_live())
     }
 
-    fn mark_all_units_loaded(&mut self) {
-        self.gc_defined_functions.fill(WasmGcUnitState::Loaded);
-        self.gc_defined_globals.fill(WasmGcUnitState::Loaded);
-        self.gc_data_segments.fill(WasmGcUnitState::Loaded);
-        self.gc_function_imports.fill(WasmGcUnitState::Loaded);
-        self.gc_global_imports.fill(WasmGcUnitState::Loaded);
+    fn mark_all_units_live(&mut self) {
+        self.gc_defined_functions.fill(WasmGcUnitState::Live);
+        self.gc_defined_globals.fill(WasmGcUnitState::Live);
+        self.gc_data_segments.fill(WasmGcUnitState::Live);
+        self.gc_function_imports.fill(WasmGcUnitState::Live);
+        self.gc_global_imports.fill(WasmGcUnitState::Live);
     }
 }
 
@@ -6122,7 +6120,7 @@ impl platform::Platform for Wasm {
         unit: Self::GcUnit,
         scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
-        if !object.format_specific.claim_load(unit) {
+        if !object.format_specific.mark_live(unit) {
             return Ok(());
         }
 
@@ -6708,7 +6706,7 @@ fn mark_all_wasm_units_live_and_scan_relocs<'data, 'scope, A: platform::Arch<Pla
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
     scope: &rayon::Scope<'scope>,
 ) -> Result {
-    object.format_specific.mark_all_units_loaded();
+    object.format_specific.mark_all_units_live();
     object
         .format_specific
         .ensure_relocs_decoded(object.object)?;
