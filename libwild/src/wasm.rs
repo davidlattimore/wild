@@ -2458,6 +2458,16 @@ impl<'data> WasmObjectLayout<'data> {
         self.gc_states_ready = true;
     }
 
+    fn state(&self, unit: WasmGcUnit) -> Option<WasmGcUnitState> {
+        match unit {
+            WasmGcUnit::DefinedFunction(i) => self.gc_defined_functions.get(i as usize).copied(),
+            WasmGcUnit::DefinedGlobal(i) => self.gc_defined_globals.get(i as usize).copied(),
+            WasmGcUnit::DataSegment(i) => self.gc_data_segments.get(i as usize).copied(),
+            WasmGcUnit::FunctionImport(i) => self.gc_function_imports.get(i as usize).copied(),
+            WasmGcUnit::GlobalImport(i) => self.gc_global_imports.get(i as usize).copied(),
+        }
+    }
+
     fn state_mut(&mut self, unit: WasmGcUnit) -> Option<&mut WasmGcUnitState> {
         match unit {
             WasmGcUnit::DefinedFunction(i) => self.gc_defined_functions.get_mut(i as usize),
@@ -2468,24 +2478,17 @@ impl<'data> WasmObjectLayout<'data> {
         }
     }
 
-    /// Mark live and claim enqueue.
-    fn try_queue(&mut self, unit: WasmGcUnit) -> bool {
+    fn is_dead(&self, unit: WasmGcUnit) -> bool {
+        self.state(unit) == Some(WasmGcUnitState::Dead)
+    }
+
+    fn mark_live(&mut self, unit: WasmGcUnit) -> bool {
         match self.state_mut(unit) {
             Some(state) if *state == WasmGcUnitState::Dead => {
                 *state = WasmGcUnitState::Live;
                 true
             }
             _ => false,
-        }
-    }
-
-    fn mark_live(&mut self, unit: WasmGcUnit) -> bool {
-        match self.state_mut(unit) {
-            Some(state) => {
-                *state = WasmGcUnitState::Live;
-                true
-            }
-            None => false,
         }
     }
 
@@ -6754,13 +6757,13 @@ fn mark_all_wasm_units_live_and_scan_relocs<'data, 'scope, A: platform::Arch<Pla
 }
 
 fn enqueue_wasm_gc_unit<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
-    object: &mut crate::layout::ObjectLayoutState<'data, Wasm>,
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
     unit: WasmGcUnit,
     resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
     scope: &rayon::Scope<'scope>,
 ) {
-    if object.format_specific.try_queue(unit) {
+    if object.format_specific.is_dead(unit) {
         queue.send_gc_unit_request::<A>(object.file_id, unit, resources, scope);
     }
 }
@@ -6768,7 +6771,7 @@ fn enqueue_wasm_gc_unit<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
 /// Roots: export section, EXPORTED / NO_STRIP linking flags, InitFuncs, `--export`.
 /// Entry arrives via `LoadGlobalSymbol` from the prelude path.
 fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
-    object: &mut crate::layout::ObjectLayoutState<'data, Wasm>,
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
     resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
     scope: &rayon::Scope<'scope>,
@@ -6859,7 +6862,7 @@ fn enqueue_wasm_force_export_roots<'data, 'scope, A: platform::Arch<Platform = W
 }
 
 fn walk_wasm_gc_unit_edges<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
-    object: &mut crate::layout::ObjectLayoutState<'data, Wasm>,
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
     unit: WasmGcUnit,
     resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
@@ -6900,7 +6903,7 @@ fn walk_wasm_gc_unit_edges<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
 }
 
 fn note_wasm_reloc_edge<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
-    object: &mut crate::layout::ObjectLayoutState<'data, Wasm>,
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
     reloc: &WasmRelocation,
     resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
