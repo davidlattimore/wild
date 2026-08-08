@@ -37,7 +37,6 @@
 // TODO: Missing `endbr64` relaxations.
 //#DiffIgnore:rel.match_failed.R_X86_64_GOTPCRELX
 //#DiffIgnore:rel.match_failed.R_X86_64_REX_GOTPCRELX
-//#DiffIgnore:rel.match_failed.R_X86_64_PLT32
 //#DiffIgnore:literal-byte-mismatch
 // TODO: Some conditions for required relaxations are wrong.
 //#DiffIgnore:rel.extra-opt.R_X86_64_GOTPCRELX.JmpIndirectToRelative*
