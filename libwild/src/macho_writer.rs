@@ -24,6 +24,7 @@ use crate::macho::CHAINED_FIXUP_PAGE_START_SIZE;
 use crate::macho::CS_BLOB_HEADERS_SIZE;
 use crate::macho::CS_BLOCK_SIZE;
 use crate::macho::CS_BLOCK_SIZE_EXP;
+use crate::macho::CS_CODE_DIRECTORY_SIZE;
 use crate::macho::CS_HASH_SIZE;
 use crate::macho::CS_HEADERS_SIZE;
 use crate::macho::ChainedFixupsHeader;
@@ -53,17 +54,6 @@ use crate::macho::get_segment_sections;
 use crate::macho::load_dylib_command_size;
 use crate::macho::output_section_id;
 use crate::macho::part_id;
-use crate::macho_object::CS_ADHOC;
-use crate::macho_object::CS_EXECSEG_MAIN_BINARY;
-use crate::macho_object::CS_HASHTYPE_SHA256;
-use crate::macho_object::CS_LINKER_SIGNED;
-use crate::macho_object::CS_SUPPORTSEXECSEG;
-use crate::macho_object::CSMAGIC_CODEDIRECTORY;
-use crate::macho_object::CSMAGIC_EMBEDDED_SIGNATURE;
-use crate::macho_object::CSSLOT_CODEDIRECTORY;
-use crate::macho_object::CodeSignatureBlobIndex;
-use crate::macho_object::CodeSignatureCodeDirectory;
-use crate::macho_object::CodeSignatureSuperBlob;
 use crate::macho_object::DYLD_CHAINED_IMPORT;
 use crate::macho_object::DYLD_CHAINED_PTR_64_OFFSET;
 use crate::macho_object::DyldChainedStartsInSegment;
@@ -94,6 +84,12 @@ use object::from_bytes_mut;
 use object::macho;
 use object::macho::CPU_SUBTYPE_ARM64_ALL;
 use object::macho::CPU_TYPE_ARM64;
+use object::macho::CS_ADHOC;
+use object::macho::CS_EXECSEG_MAIN_BINARY;
+use object::macho::CS_HASHTYPE_SHA256;
+use object::macho::CS_LINKER_SIGNED;
+use object::macho::CS_SUPPORTSEXECSEG;
+use object::macho::CSSLOT_CODEDIRECTORY;
 use object::macho::LC_BUILD_VERSION;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
@@ -116,6 +112,8 @@ use object::macho::SEG_PAGEZERO;
 use object::macho::SEG_TEXT;
 use object::macho::SegmentFlags;
 use object::slice_from_bytes_mut;
+use object::write::macho::CodeDirectory;
+use object::write::macho::CodeSignatureEncoder;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSlice;
@@ -1072,72 +1070,51 @@ fn write_code_signature_metadata(
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
     let code_signature = section_buffers.get_mut(output_section_id::CODE_SIGNATURE);
 
-    let (super_blob, rest): (&mut CodeSignatureSuperBlob, &mut [u8]) =
-        CodeSignatureSuperBlob::mut_from_prefix(code_signature)
-            .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
-    let (blob_indices, rest) = <[CodeSignatureBlobIndex]>::mut_from_prefix_with_elems(rest, 1)
-        .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
-    let blob_index = &mut blob_indices[0];
-    let (code_directories, rest) =
-        <[CodeSignatureCodeDirectory]>::mut_from_prefix_with_elems(rest, 1)
-            .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
-    let code_dir = &mut code_directories[0];
-    let (identifier, hashes) = rest.split_at_mut(padded_identifier_size);
-
-    super_blob.magic.set(CSMAGIC_EMBEDDED_SIGNATURE);
-    super_blob
-        .length
-        .set(code_signature_section.file_size as u32);
-    super_blob.count.set(1);
-
-    blob_index.type_.set(CSSLOT_CODEDIRECTORY);
-    blob_index.offset.set(CS_BLOB_HEADERS_SIZE as u32);
-    blob_index.padding.set(0);
-
-    code_dir.magic.set(CSMAGIC_CODEDIRECTORY);
-    code_dir
-        .length
-        .set((code_signature_section.file_size as u64 - CS_BLOB_HEADERS_SIZE) as u32);
-    code_dir.version.set(CS_SUPPORTSEXECSEG);
-    code_dir.flags.set(CS_ADHOC | CS_LINKER_SIGNED);
-    code_dir
-        .hash_offset
-        .set(size_of::<CodeSignatureCodeDirectory>() as u32 + padded_identifier_size as u32);
-    code_dir
-        .ident_offset
-        .set(size_of::<CodeSignatureCodeDirectory>() as u32);
-    code_dir.n_special_slots.set(0);
-    code_dir
-        .n_code_slots
-        .set(code_signature_section.file_offset.div_ceil(CS_BLOCK_SIZE) as u32);
-    code_dir
-        .code_limit
-        .set(code_signature_section.file_offset as u32);
-    code_dir.hash_size = CS_HASH_SIZE;
-    code_dir.hash_type = CS_HASHTYPE_SHA256;
-    code_dir.platform = 0;
-    code_dir.page_size = CS_BLOCK_SIZE_EXP;
-    code_dir.spare2.set(0);
-    code_dir.scatter_offset.set(0);
-    code_dir.team_offset.set(0);
-    code_dir.spare3.set(0);
-    code_dir.code_limit64.set(0);
+    let encoder = CodeSignatureEncoder;
+    let code_directory_size = encoder.code_directory_size(CS_SUPPORTSEXECSEG);
+    ensure!(
+        u64::from(code_directory_size) == CS_CODE_DIRECTORY_SIZE,
+        "Unexpected code directory size"
+    );
 
     let text_segment_size = get_segment_sections(layout, SegmentType::Text)
         .ok_or_else(|| error!("Text segment is mandatory"))?
         .segment_size;
-    code_dir
-        .exec_seg_base
-        .set(text_segment_size.file_offset as u64);
-    code_dir
-        .exec_seg_limit
-        .set(text_segment_size.file_size as u64);
-    // TODO: change once shared libraries are supported
-    code_dir.exec_seg_flags.set(CS_EXECSEG_MAIN_BINARY);
+    let code_directory = CodeDirectory {
+        length: (code_signature_section.file_size - CS_BLOB_HEADERS_SIZE as usize) as u32,
+        version: CS_SUPPORTSEXECSEG,
+        flags: CS_ADHOC | CS_LINKER_SIGNED,
+        hash_offset: code_directory_size + padded_identifier_size as u32,
+        ident_offset: code_directory_size,
+        n_special_slots: 0,
+        n_code_slots: code_signature_section.file_offset.div_ceil(CS_BLOCK_SIZE) as u32,
+        code_limit: code_signature_section.file_offset as u64,
+        hash_size: CS_HASH_SIZE,
+        hash_type: CS_HASHTYPE_SHA256,
+        platform: 0,
+        page_size: CS_BLOCK_SIZE_EXP,
+        scatter_offset: 0,
+        team_offset: 0,
+        exec_seg_base: text_segment_size.file_offset as u64,
+        exec_seg_limit: text_segment_size.file_size as u64,
+        // TODO: change once shared libraries are supported
+        exec_seg_flags: CS_EXECSEG_MAIN_BINARY,
+    };
 
+    let mut rest: &mut [u8] = code_signature;
+    encoder.signature_super_blob(&mut rest, code_signature_section.file_size as u32, 1);
+    encoder.blob_index(&mut rest, CSSLOT_CODEDIRECTORY, CS_BLOB_HEADERS_SIZE as u32);
+    let padding_size = CS_BLOB_HEADERS_SIZE as usize
+        - encoder.super_blob_size() as usize
+        - encoder.blob_index_size() as usize;
+    let (padding, mut rest) = rest.split_at_mut(padding_size);
+    padding.zero();
+    encoder.code_directory(&mut rest, &code_directory);
+
+    let (identifier, hashes) = rest.split_at_mut(padded_identifier_size);
     identifier[..code_signature_identifier.len()].copy_from_slice(code_signature_identifier);
-    identifier[code_signature_identifier.len()..].fill(0);
-    hashes.fill(0);
+    identifier[code_signature_identifier.len()..].zero();
+    hashes.zero();
 
     Ok(())
 }
