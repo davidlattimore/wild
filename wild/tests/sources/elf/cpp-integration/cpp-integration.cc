@@ -42,7 +42,6 @@
 //#DiffIgnore:rel.extra-opt.R_X86_64_GOTPCRELX.JmpIndirectToRelative*
 //#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexCmpIndirectToAbsolute*
 //#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute*
-//#DiffIgnore:rel.missing-opt.R_X86_64_GOTTPOFF.RexMovIndirectToAbsolute*
 //#Arch: x86_64
 
 //#Config:clang-pie:default
