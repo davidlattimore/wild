@@ -6601,30 +6601,21 @@ fn available_linkers_for_linux() -> Result<Vec<Linker>> {
 
 fn available_linkers_for_mac() -> Result<LinkerCatalog> {
     let mut linkers = Vec::new();
-    let mut unavailable = Vec::new();
+    let (path, sdk_path) = macos_toolchain()
+        .map_err(|reason| error!("Apple linker `ld` is required for Mach-O tests: {reason}"))?;
 
-    match macos_toolchain() {
-        Ok((path, sdk_path)) => {
-            linkers.push(Linker::ThirdParty(ThirdPartyLinker {
-                name: "ld",
-                gcc_name: "ld",
-                path: path.clone(),
-                cross_paths: HashMap::new(),
-                direct_args: vec![
-                    OsString::from("-syslibroot"),
-                    sdk_path.as_os_str().to_owned(),
-                    OsString::from("-lSystem"),
-                ],
-                enabled_by_default: true,
-            }));
-        }
-        Err(reason) => {
-            unavailable.push(UnavailableLinker {
-                gcc_name: "ld",
-                reason: reason.to_owned(),
-            });
-        }
-    }
+    linkers.push(Linker::ThirdParty(ThirdPartyLinker {
+        name: "ld",
+        gcc_name: "ld",
+        path: path.clone(),
+        cross_paths: HashMap::new(),
+        direct_args: vec![
+            OsString::from("-syslibroot"),
+            sdk_path.as_os_str().to_owned(),
+            OsString::from("-lSystem"),
+        ],
+        enabled_by_default: true,
+    }));
 
     if let Ok(path) = find_bin(&["ld64.lld"]) {
         linkers.push(Linker::ThirdParty(ThirdPartyLinker {
@@ -6641,7 +6632,7 @@ fn available_linkers_for_mac() -> Result<LinkerCatalog> {
 
     Ok(LinkerCatalog {
         available: linkers,
-        unavailable,
+        unavailable: Vec::new(),
     })
 }
 
