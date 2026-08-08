@@ -2408,6 +2408,8 @@ pub(crate) struct WasmObjectLayout<'data> {
     gc_data_segments: Vec<WasmGcUnitState>,
     gc_function_imports: Vec<WasmGcUnitState>,
     gc_global_imports: Vec<WasmGcUnitState>,
+    func_import_symbol_offsets: Vec<Vec<usize>>,
+    global_import_symbol_offsets: Vec<Vec<usize>>,
     relocs_ready: bool,
     code_relocations: Vec<WasmRelocation>,
     data_relocations: Vec<WasmRelocation>,
@@ -2430,6 +2432,29 @@ impl<'data> WasmObjectLayout<'data> {
         self.gc_data_segments = vec![WasmGcUnitState::Dead; file.num_data_segments as usize];
         self.gc_function_imports = vec![WasmGcUnitState::Dead; file.num_function_imports as usize];
         self.gc_global_imports = vec![WasmGcUnitState::Dead; file.num_global_imports as usize];
+
+        let mut func_import_symbol_offsets = vec![Vec::new(); file.num_function_imports as usize];
+        let mut global_import_symbol_offsets = vec![Vec::new(); file.num_global_imports as usize];
+        for (sym_offset, sym) in file.symbols.iter().enumerate() {
+            if !sym.is_undefined() {
+                continue;
+            }
+            match sym.kind {
+                WasmSymbolKind::Func => {
+                    if let Some(slots) = func_import_symbol_offsets.get_mut(sym.index as usize) {
+                        slots.push(sym_offset);
+                    }
+                }
+                WasmSymbolKind::Global => {
+                    if let Some(slots) = global_import_symbol_offsets.get_mut(sym.index as usize) {
+                        slots.push(sym_offset);
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.func_import_symbol_offsets = func_import_symbol_offsets;
+        self.global_import_symbol_offsets = global_import_symbol_offsets;
         self.gc_states_ready = true;
     }
 
@@ -6252,6 +6277,8 @@ impl platform::Platform for Wasm {
             gc_data_segments: Vec::new(),
             gc_function_imports: Vec::new(),
             gc_global_imports: Vec::new(),
+            func_import_symbol_offsets: Vec::new(),
+            global_import_symbol_offsets: Vec::new(),
             relocs_ready: false,
             code_relocations: Vec::new(),
             data_relocations: Vec::new(),
@@ -6912,16 +6939,21 @@ fn note_wasm_import_unit_definition<'data, 'scope, A: platform::Arch<Platform = 
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
     scope: &rayon::Scope<'scope>,
 ) {
-    let (kind, import_index) = match unit {
-        WasmGcUnit::FunctionImport(index) => (WasmSymbolKind::Func, index),
-        WasmGcUnit::GlobalImport(index) => (WasmSymbolKind::Global, index),
+    let offsets = match unit {
+        WasmGcUnit::FunctionImport(index) => object
+            .format_specific
+            .func_import_symbol_offsets
+            .get(index as usize)
+            .map_or(&[][..], Vec::as_slice),
+        WasmGcUnit::GlobalImport(index) => object
+            .format_specific
+            .global_import_symbol_offsets
+            .get(index as usize)
+            .map_or(&[][..], Vec::as_slice),
         _ => return,
     };
 
-    for (sym_offset, sym) in object.object.symbols.iter().enumerate() {
-        if !sym.is_undefined() || sym.kind != kind || sym.index != import_index {
-            continue;
-        }
+    for &sym_offset in offsets {
         send_wasm_definition_request::<A>(object, sym_offset, resources, queue, scope);
     }
 }
