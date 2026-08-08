@@ -4476,7 +4476,7 @@ fn write_sysv_hash_table<C: ElfClass>(
     let (chains, rest) = object::slice_from_bytes_mut::<u32>(rest, chain_count)
         .map_err(|_| error!("Insufficient bytes for .hash chains"))?;
 
-    debug_assert!(rest.is_empty());
+    debug_assert_eq!(rest, []);
 
     buckets.fill(0);
     chains.fill(0);
