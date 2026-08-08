@@ -2463,10 +2463,7 @@ impl<'data> WasmObjectLayout<'data> {
             return false;
         }
         *state = WasmGcUnitState::Loaded;
-        matches!(
-            unit,
-            WasmGcUnit::DefinedFunction(_) | WasmGcUnit::DataSegment(_)
-        )
+        true
     }
 
     /// Decode code/data reloc sections and body/segment spans once per object.
@@ -6125,10 +6122,18 @@ impl platform::Platform for Wasm {
             return Ok(());
         }
 
-        object
-            .format_specific
-            .ensure_relocs_decoded(object.object)?;
-        walk_wasm_gc_unit_edges::<A>(object, unit, resources, queue, scope)?;
+        match unit {
+            WasmGcUnit::DefinedFunction(_) | WasmGcUnit::DataSegment(_) => {
+                object
+                    .format_specific
+                    .ensure_relocs_decoded(object.object)?;
+                walk_wasm_gc_unit_edges::<A>(object, unit, resources, queue, scope)?;
+            }
+            WasmGcUnit::FunctionImport(_) | WasmGcUnit::GlobalImport(_) => {
+                note_wasm_import_unit_definition::<A>(object, unit, resources, queue, scope);
+            }
+            WasmGcUnit::DefinedGlobal(_) => {}
+        }
         Ok(())
     }
 
@@ -6886,14 +6891,47 @@ fn note_wasm_reloc_edge<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
         enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
     }
 
-    let local_symbol_id = object.symbol_id_range.offset_to_id(reloc.index as usize);
+    send_wasm_definition_request::<A>(object, reloc.index as usize, resources, queue, scope);
+    Ok(())
+}
+
+fn note_wasm_import_unit_definition<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    unit: WasmGcUnit,
+    resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
+    queue: &mut crate::layout::LocalWorkQueue<Wasm>,
+    scope: &rayon::Scope<'scope>,
+) {
+    let (kind, import_index) = match unit {
+        WasmGcUnit::FunctionImport(index) => (WasmSymbolKind::Func, index),
+        WasmGcUnit::GlobalImport(index) => (WasmSymbolKind::Global, index),
+        _ => return,
+    };
+
+    for (sym_offset, sym) in object.object.symbols.iter().enumerate() {
+        if !sym.is_undefined() || sym.kind != kind || sym.index != import_index {
+            continue;
+        }
+        send_wasm_definition_request::<A>(object, sym_offset, resources, queue, scope);
+    }
+}
+
+fn send_wasm_definition_request<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    local_symbol_offset: usize,
+    resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
+    queue: &mut crate::layout::LocalWorkQueue<Wasm>,
+    scope: &rayon::Scope<'scope>,
+) {
+    let local_symbol_id = object.symbol_id_range.offset_to_id(local_symbol_offset);
     let symbol_id = resources.symbol_db.definition(local_symbol_id);
-    let atomic_flags = resources.per_symbol_flags.get_atomic(symbol_id);
-    let previous_flags = atomic_flags.fetch_or(ValueFlags::DIRECT);
+    let previous_flags = resources
+        .per_symbol_flags
+        .get_atomic(symbol_id)
+        .fetch_or(ValueFlags::DIRECT);
     if !previous_flags.has_resolution() {
         queue.send_symbol_request::<A>(symbol_id, resources, scope);
     }
-    Ok(())
 }
 
 /// For unnamed undefined Func/Global symbols, derive the name from the corresponding import
