@@ -72,6 +72,7 @@ use object::read::macho::Segment;
 use std::borrow::Cow;
 use std::num::NonZeroU8;
 use std::num::NonZeroU64;
+use std::slice::Iter;
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct MachO;
@@ -320,10 +321,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         })
     }
 
-    fn parse(
-        input: &crate::input_data::InputBytes<'data>,
-        _args: &<Self::Platform as platform::Platform>::Args,
-    ) -> Result<Self> {
+    fn parse(input: &crate::input_data::InputBytes<'data>, _args: &MachOArgs) -> Result<Self> {
         // TODO
         Self::parse_bytes(input.data, input.kind == FileKind::MachODylib)
     }
@@ -340,30 +338,21 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.symbols.iter()
     }
 
-    fn symbol(
-        &self,
-        index: object::SymbolIndex,
-    ) -> Result<&<Self::Platform as platform::Platform>::SymtabEntry> {
+    fn symbol(&self, index: object::SymbolIndex) -> Result<&SymtabEntry> {
         Ok(self.symbols.symbol(index)?)
     }
 
-    fn section_size(
-        &self,
-        header: &<Self::Platform as platform::Platform>::SectionHeader,
-    ) -> Result<u64> {
+    fn section_size(&self, header: &SectionHeader) -> Result<u64> {
         Ok(header.size.get(LE))
     }
 
-    fn symbol_name(
-        &self,
-        symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
-    ) -> Result<&'data [u8]> {
+    fn symbol_name(&self, symbol: &SymtabEntry) -> Result<&'data [u8]> {
         Ok(symbol.name(LE, self.symbols.strings())?)
     }
 
     fn symbol_offset_in_section(
         &self,
-        symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
+        symbol: &SymtabEntry,
         section_index: object::SectionIndex,
     ) -> Result<u64> {
         let section = self.section(section_index)?;
@@ -380,46 +369,30 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.sections().len()
     }
 
-    fn section_iter<'a>(&'a self) -> <Self::Platform as platform::Platform>::SectionIterator<'a> {
+    fn section_iter<'a>(&'a self) -> Iter<'a, SectionHeader> {
         self.sections().iter()
     }
 
-    fn enumerate_sections(
-        &self,
-    ) -> impl Iterator<
-        Item = (
-            object::SectionIndex,
-            &<Self::Platform as platform::Platform>::SectionHeader,
-        ),
-    > {
+    fn enumerate_sections(&self) -> impl Iterator<Item = (object::SectionIndex, &SectionHeader)> {
         self.sections()
             .iter()
             .enumerate()
             .map(|(i, section)| (object::SectionIndex(i), section))
     }
 
-    fn section(
-        &self,
-        index: object::SectionIndex,
-    ) -> Result<&<Self::Platform as platform::Platform>::SectionHeader> {
+    fn section(&self, index: object::SectionIndex) -> Result<&SectionHeader> {
         self.sections()
             .get(index.0)
             .ok_or(error!("section index out of range"))
     }
 
-    fn section_by_name(
-        &self,
-        _name: &str,
-    ) -> Option<(
-        object::SectionIndex,
-        &<Self::Platform as platform::Platform>::SectionHeader,
-    )> {
+    fn section_by_name(&self, _name: &str) -> Option<(object::SectionIndex, &SectionHeader)> {
         todo!()
     }
 
     fn symbol_section(
         &self,
-        symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
+        symbol: &SymtabEntry,
         _index: object::SymbolIndex,
     ) -> Result<Option<object::SectionIndex>> {
         if symbol.n_type.typ() == N_SECT && symbol.n_sect != 0 {
@@ -430,7 +403,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
     }
 
-    fn symbol_versions(&self) -> &[<Self::Platform as platform::Platform>::SymbolVersionIndex] {
+    fn symbol_versions(&self) -> &[()] {
         todo!()
     }
 
@@ -448,7 +421,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn finalise_sizes_dynamic(
         &self,
         _lib_name: &[u8],
-        _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
+        _state: &mut DynamicLayoutStateExt,
         _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> Result {
         Ok(())
@@ -456,9 +429,9 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn apply_non_addressable_indexes_dynamic(
         &self,
-        _indexes: &mut <Self::Platform as platform::Platform>::NonAddressableIndexes,
-        _counts: &mut <Self::Platform as platform::Platform>::NonAddressableCounts,
-        _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
+        _indexes: &mut NonAddressableIndexes,
+        _counts: &mut (),
+        _state: &mut DynamicLayoutStateExt,
     ) -> Result {
         Ok(())
     }
@@ -471,16 +444,13 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(section.name())
     }
 
-    fn raw_section_data(
-        &self,
-        _section: &<Self::Platform as platform::Platform>::SectionHeader,
-    ) -> Result<&'data [u8]> {
+    fn raw_section_data(&self, _section: &SectionHeader) -> Result<&'data [u8]> {
         todo!()
     }
 
     fn section_data(
         &self,
-        _section: &<Self::Platform as platform::Platform>::SectionHeader,
+        _section: &SectionHeader,
         _member: &bumpalo_herd::Member<'data>,
         _loaded_metrics: &crate::resolution::LoadedMetrics,
     ) -> Result<&'data [u8]> {
@@ -496,25 +466,19 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn section_data_cow(
-        &self,
-        _section: &<Self::Platform as platform::Platform>::SectionHeader,
-    ) -> Result<std::borrow::Cow<'data, [u8]>> {
+    fn section_data_cow(&self, _section: &SectionHeader) -> Result<std::borrow::Cow<'data, [u8]>> {
         todo!()
     }
 
-    fn section_alignment(
-        &self,
-        section: &<Self::Platform as platform::Platform>::SectionHeader,
-    ) -> Result<u64> {
+    fn section_alignment(&self, section: &SectionHeader) -> Result<u64> {
         Ok(2u64.pow(section.align(LE)))
     }
 
     fn relocations(
         &self,
         index: object::SectionIndex,
-        _relocations: &<Self::Platform as platform::Platform>::RelocationSections,
-    ) -> Result<<Self::Platform as platform::Platform>::RelocationList<'data>> {
+        _relocations: &(),
+    ) -> Result<RelocationList<'data>> {
         Ok(RelocationList {
             relocations: self
                 .sections()
@@ -524,9 +488,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         })
     }
 
-    fn parse_relocations(
-        &self,
-    ) -> Result<<Self::Platform as platform::Platform>::RelocationSections> {
+    fn parse_relocations(&self) -> Result<()> {
         Ok(())
     }
 
@@ -541,27 +503,23 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         )
     }
 
-    fn dynamic_tag_values(
-        &self,
-    ) -> Option<<Self::Platform as platform::Platform>::DynamicTagValues<'data>> {
+    fn dynamic_tag_values(&self) -> Option<DynamicTagValues<'data>> {
         match self.kind {
             ObjectKind::Regular(_) => None,
             ObjectKind::Dylib => Some(DynamicTagValues::default()),
         }
     }
 
-    fn get_version_names(
-        &self,
-    ) -> Result<<Self::Platform as platform::Platform>::VersionNames<'data>> {
+    fn get_version_names(&self) -> Result<()> {
         Ok(())
     }
 
     fn get_symbol_name_and_version(
         &self,
-        symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
+        symbol: &SymtabEntry,
         _local_index: usize,
-        _version_names: &<Self::Platform as platform::Platform>::VersionNames<'data>,
-    ) -> Result<<Self::Platform as platform::Platform>::RawSymbolName<'data>> {
+        _version_names: &(),
+    ) -> Result<RawSymbolName<'data>> {
         Ok(RawSymbolName {
             name: self.symbol_name(symbol)?,
         })
@@ -574,21 +532,19 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         todo!()
     }
 
-    fn verneed_table(&self) -> Result<<Self::Platform as platform::Platform>::VerneedTable<'data>> {
+    fn verneed_table(&self) -> Result<VerneedTable<'data>> {
         Ok(VerneedTable { _phantom: &[] })
     }
 
     fn process_gnu_note_section(
         &self,
-        _state: &mut <Self::Platform as platform::Platform>::ObjectLayoutStateExt<'data>,
+        _state: &mut (),
         _section_index: object::SectionIndex,
     ) -> Result {
         todo!()
     }
 
-    fn dynamic_tags(
-        &self,
-    ) -> Result<&'data [<Self::Platform as platform::Platform>::DynamicEntry]> {
+    fn dynamic_tags(&self) -> Result<&'data [()]> {
         todo!()
     }
 }
@@ -846,11 +802,11 @@ impl platform::SectionAttributes for SectionAttributes {
         )
     }
 
-    fn flags(&self) -> <Self::Platform as platform::Platform>::SectionFlags {
+    fn flags(&self) -> SectionFlags {
         self.attr.with_type(self.ty)
     }
 
-    fn ty(&self) -> <Self::Platform as platform::Platform>::SectionType {
+    fn ty(&self) -> macho::SectionType {
         self.ty
     }
 
@@ -1060,7 +1016,7 @@ impl platform::Platform for MachO {
     type FinaliseSizesExt<'data> = FinaliseSizesExt;
     type LayoutExt<'data> = LayoutExt;
     type GdbIndexScanResult<'data> = ();
-    type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
+    type SectionIterator<'a> = Iter<'a, SectionHeader>;
     type DynamicTagValues<'data> = DynamicTagValues<'data>;
     type RelocationList<'data> = RelocationList<'data>;
     type DynamicLayoutStateExt<'data> = DynamicLayoutStateExt;
