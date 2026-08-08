@@ -38,9 +38,6 @@
 //#DiffIgnore:rel.match_failed.R_X86_64_GOTPCRELX
 //#DiffIgnore:rel.match_failed.R_X86_64_REX_GOTPCRELX
 //#DiffIgnore:literal-byte-mismatch
-// TODO: Some conditions for required relaxations are wrong.
-//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexCmpIndirectToAbsolute*
-//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute*
 //#Arch: x86_64
 
 //#Config:clang-pie:default

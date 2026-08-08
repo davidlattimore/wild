@@ -212,7 +212,7 @@ impl crate::platform::Arch for ElfX86_64 {
                             return Some(Relaxation {
                                 kind: RelaxationKind::RexMovIndirectToAbsolute(inst_offset),
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_32),
-                                mandatory: output_kind.is_static_executable(),
+                                mandatory: output_kind.is_static_executable() && is_absolute,
                             });
                         }
                         // sub *x(%rip), reg
@@ -220,7 +220,7 @@ impl crate::platform::Arch for ElfX86_64 {
                             return Some(Relaxation {
                                 kind: RelaxationKind::RexSubIndirectToAbsolute(inst_offset),
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_32),
-                                mandatory: output_kind.is_static_executable(),
+                                mandatory: output_kind.is_static_executable() && is_absolute,
                             });
                         }
                         // cmp *x(%rip), reg
@@ -228,7 +228,7 @@ impl crate::platform::Arch for ElfX86_64 {
                             return Some(Relaxation {
                                 kind: RelaxationKind::RexCmpIndirectToAbsolute(inst_offset),
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_32),
-                                mandatory: output_kind.is_static_executable(),
+                                mandatory: output_kind.is_static_executable() && is_absolute,
                             });
                         }
                         _ => return None,
