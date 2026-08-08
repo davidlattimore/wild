@@ -2606,10 +2606,14 @@ fn sort_relocations_by_offset(relocs: &mut [WasmRelocation]) {
     }
 }
 
-fn relocs_in_offset_range(relocs: &[WasmRelocation], start: u32, end: u32) -> &[WasmRelocation] {
+fn reloc_index_range(relocs: &[WasmRelocation], start: u32, end: u32) -> Range<usize> {
     let lo = relocs.partition_point(|r| r.offset < start);
     let hi = relocs.partition_point(|r| r.offset < end);
-    &relocs[lo..hi]
+    lo..hi
+}
+
+fn relocs_in_offset_range(relocs: &[WasmRelocation], start: u32, end: u32) -> &[WasmRelocation] {
+    &relocs[reloc_index_range(relocs, start, end)]
 }
 
 fn compute_function_body_spans(file: &File<'_>) -> Result<Vec<(u32, u32)>> {
@@ -6836,28 +6840,36 @@ fn walk_wasm_gc_unit_edges<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
     queue: &mut crate::layout::LocalWorkQueue<Wasm>,
     scope: &rayon::Scope<'scope>,
 ) -> Result {
-    let relocs: Vec<WasmRelocation> = {
-        let layout = &object.format_specific;
-        let slice = match unit {
-            WasmGcUnit::DefinedFunction(ordinal) => {
-                let Some(&(start, end)) = layout.function_body_spans.get(ordinal as usize) else {
-                    bail!("Wasm GC function ordinal {ordinal} out of range");
-                };
-                relocs_in_offset_range(&layout.code_relocations, start, end)
+    match unit {
+        WasmGcUnit::DefinedFunction(ordinal) => {
+            let Some(&(start, end)) = object
+                .format_specific
+                .function_body_spans
+                .get(ordinal as usize)
+            else {
+                bail!("Wasm GC function ordinal {ordinal} out of range");
+            };
+            let range = reloc_index_range(&object.format_specific.code_relocations, start, end);
+            for i in range {
+                let reloc = object.format_specific.code_relocations[i];
+                note_wasm_reloc_edge::<A>(object, &reloc, resources, queue, scope)?;
             }
-            WasmGcUnit::DataSegment(ordinal) => {
-                let Some(&(start, end)) = layout.data_segment_spans.get(ordinal as usize) else {
-                    bail!("Wasm GC data segment ordinal {ordinal} out of range");
-                };
-                relocs_in_offset_range(&layout.data_relocations, start, end)
+        }
+        WasmGcUnit::DataSegment(ordinal) => {
+            let Some(&(start, end)) = object
+                .format_specific
+                .data_segment_spans
+                .get(ordinal as usize)
+            else {
+                bail!("Wasm GC data segment ordinal {ordinal} out of range");
+            };
+            let range = reloc_index_range(&object.format_specific.data_relocations, start, end);
+            for i in range {
+                let reloc = object.format_specific.data_relocations[i];
+                note_wasm_reloc_edge::<A>(object, &reloc, resources, queue, scope)?;
             }
-            _ => return Ok(()),
-        };
-        slice.to_vec()
-    };
-
-    for reloc in &relocs {
-        note_wasm_reloc_edge::<A>(object, reloc, resources, queue, scope)?;
+        }
+        _ => {}
     }
     Ok(())
 }
