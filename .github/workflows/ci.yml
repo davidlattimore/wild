@@ -42,6 +42,7 @@ jobs:
     timeout-minutes: 10
 
     container:
+      # Note: when updating this image hash, update the other occurrences in this file too.
       image: ghcr.io/wild-linker/wild/${{ matrix.container }}:sha-f05d76af90966595dd3606a0ebf2a0db8281843f
 
     steps:
@@ -79,10 +80,23 @@ jobs:
       - name: Check tests that should fail still fail
         run: WILD_TEST_CROSS=all cargo test --features mold_tests expect_failure
 
-  riscv-build:
-    name: Build Linux (RISC-V)
+  linux-cross-build:
+    name: Build Linux (${{ matrix.arch }})
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: RISC-V
+            target: riscv64gc-unknown-linux-gnu
+            config: .cargo/config.toml.cross-riscv
+          - arch: LoongArch64
+            target: loongarch64-unknown-linux-gnu
+            config: .cargo/config.toml.cross-loongarch64
+          - arch: PPC64LE
+            target: powerpc64le-unknown-linux-gnu
+            config: .cargo/config.toml.cross-ppc64le
     container:
       image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-f05d76af90966595dd3606a0ebf2a0db8281843f
     steps:
@@ -92,46 +106,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
         with:
-          targets: riscv64gc-unknown-linux-gnu
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - run: cp -f .cargo/config.toml.cross-riscv .cargo/config.toml
-      - run: cargo build --target riscv64gc-unknown-linux-gnu
-
-  loongarch64-build:
-    name: Build Linux (LoongArch64)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-f05d76af90966595dd3606a0ebf2a0db8281843f
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-        id: rust-toolchain
-        with:
-          targets: loongarch64-unknown-linux-gnu
-      - uses: Swatinem/rust-cache@v2
-      - run: cp -f .cargo/config.toml.cross-loongarch64 .cargo/config.toml
-      - run: cargo build --target loongarch64-unknown-linux-gnu
-
-  ppc64le-build:
-    name: Build Linux (PPC64LE)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    container:
-      image: ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-f05d76af90966595dd3606a0ebf2a0db8281843f
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-        id: rust-toolchain
-        with:
-          targets: powerpc64le-unknown-linux-gnu
-      - uses: Swatinem/rust-cache@v2
-      - run: cp -f .cargo/config.toml.cross-ppc64le .cargo/config.toml
-      - run: cargo build --target powerpc64le-unknown-linux-gnu
+      - run: cp -f ${{ matrix.config }} .cargo/config.toml
+      - run: cargo build --target ${{ matrix.target }}
 
   wasip1-build:
     name: Build wasip1
