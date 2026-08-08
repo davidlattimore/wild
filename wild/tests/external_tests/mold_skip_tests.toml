@@ -13,14 +13,12 @@ tests = [
   "emit-relocs-cpp.sh",
   "emit-relocs-dead-sections.sh",
   "emit-relocs.sh",
-  "arch-x86_64-emit-relocs-relax.sh",
   "execute-only.sh",
   "fatal-warnings.sh",                     # `-warn-common` and `-fatal-warnings`
   "filter.sh",
   "global-offset-table.sh",                # `-defsym=foo=_GLOBAL_OFFSET_TABLE_`
   "icf-gcc-except-table.sh",               # `--icf`
-  "icf.sh",                                # `--icf`
-  "arch-x86_64-icf-personality.sh",
+  "icf.sh",                                # `--icf`  
   "icf-alignment-bug.sh",
   "icf-preemption.sh",
   "image-base.sh",
@@ -102,6 +100,8 @@ tests = [
   "arch-x86_64-z-rewrite-endbr2.sh",
   "arch-x86_64-z-shstk.sh",
   "arch-x86_64-z-text.sh",
+  "arch-x86_64-emit-relocs-relax.sh",
+  "arch-x86_64-icf-personality.sh",
 ]
 
 [skipped_groups.arch_aarch64]
