@@ -18,7 +18,9 @@ tests = [
   "filter.sh",
   "global-offset-table.sh",                # `-defsym=foo=_GLOBAL_OFFSET_TABLE_`
   "icf-gcc-except-table.sh",               # `--icf`
-  "icf.sh",                                # `--icf`
+  "icf.sh",                                # `--icf`  
+  "icf-alignment-bug.sh",
+  "icf-preemption.sh",
   "image-base.sh",
   "init-in-dso.sh",
   "init.sh",
@@ -52,7 +54,12 @@ tests = [
 
 [skipped_groups.version_script]
 reason = "Version script support"
-tests = ["version-script15.sh"]
+tests = [
+  "version-script15.sh",
+  "empty-default-symver.sh",
+  "linker-script-version.sh",
+  "version-script23.sh",
+]
 
 [skipped_groups.z_options]
 reason = "Related to -z"
@@ -62,6 +69,7 @@ tests = [
   "z-dynamic-undefined-weak.sh",
   "z-nodefaultlib.sh",
   "z-nodump.sh",
+  "z-pack-relative-relocs.sh",
   "z-rodynamic.sh",
   "z-sectionheader.sh",
   "z-start-stop-visibility.sh",
@@ -71,6 +79,7 @@ tests = [
 reason = "x86_64 specific tests"
 tests = [
   "arch-x86_64-address-equality.sh",
+  "arch-x86_64-comdat-signatures.sh",
   "arch-x86_64-empty-mergeable-section.sh",
   "arch-x86_64-execstack-if-needed.sh",
   "arch-x86_64-gnu-linkonce.sh",
@@ -91,6 +100,8 @@ tests = [
   "arch-x86_64-z-rewrite-endbr2.sh",
   "arch-x86_64-z-shstk.sh",
   "arch-x86_64-z-text.sh",
+  "arch-x86_64-emit-relocs-relax.sh",
+  "arch-x86_64-icf-personality.sh",
 ]
 
 [skipped_groups.arch_aarch64]
@@ -98,11 +109,18 @@ reason = "Aarch64 specific tests"
 tests = [
   "arch-aarch64-long-thunk.sh",
   "arch-aarch64-range-extension-thunk-disassembly.sh",
+  "arch-aarch64-emit-relocs-relax.sh",
+  "arch-aarch64-emit-relocs-tlsdesc-relax.sh",
 ]
 
 [skipped_groups.arch_riscv64]
 reason = "RISC-V specific tests"
-tests = ["arch-riscv64-relax-got.sh", "arch-riscv64-reloc-overflow.sh"]
+tests = [
+  "arch-riscv64-relax-got.sh",
+  "arch-riscv64-reloc-overflow.sh",
+  "arch-riscv64-emit-relocs-relax.sh",
+  "arch-riscv64-emit-relocs-tlsdesc-relax.sh",
+]
 
 [skipped_groups.arch_loongarch64]
 reason = "LoongArch64 specific tests"
@@ -111,6 +129,8 @@ tests = [
   "arch-loongarch64-relax-got-load.sh",
   "arch-loongarch64-relax-pcala-addi.sh",
   "arch-loongarch64-relax-tlsdesc.sh",
+  "arch-loongarch64-emit-relocs-relax.sh",
+  "arch-loongarch64-emit-relocs-tlsdesc-relax.sh",
 ]
 
 [skipped_groups.arch_ppc64le]
@@ -120,6 +140,10 @@ tests = ["arch-ppc64le-save-restore-gprs.sh"]
 [skipped_groups.tls]
 reason = "Related to TLS"
 tests = ["tls-common.sh", "tls-le-error.sh"]
+
+[skipped_groups.sframe]
+reason = "SFrame support"
+tests = ["sframe.sh"]
 
 [skipped_groups.ignore]
 reason = "We ignore these tests for some reasons"
@@ -163,7 +187,9 @@ tests = [
   "plt-symbols.sh",                 # Wild currently doesn't create entries in the symbol table with the `$plt` suffix unless `--got-plt-syms` is specified
   "run-clang.sh",                   # This test checks the comment section to verify if it's linked with mold.
   "start-lib.sh",                   # Passes when `--no-gc-sections` is passed.
+  "static-dso.sh",                  # Different message formats
   "stdout.sh",
+  "symver-dup.sh",                  # Different message formats
   "undefined.sh",                   # Passes when `--no-gc-sections` is passed.
   "undefined2.sh",                  # Passes when `--no-gc-sections` is passed.
   "unresolved-symbols.sh",          # Different message formats
@@ -206,6 +232,7 @@ tests = [
 [skipped_groups.misc]
 reason = "Not grouped yet"
 tests = [
+  "as-needed-gc.sh",
   "bno-symbolic.sh",
   "canonical-plt.sh",
   "common-archive.sh",
@@ -233,12 +260,14 @@ tests = [
   "symbol-version-multi.sh",
   "symbol-version.sh",
   "symbol-version2.sh",
+  "symtab-binding.sh",
   "symtab-dso.sh",
   "symtab-section-symbols.sh",
   "symtab.sh",
   "textrel2.sh",
   "unknown-section-type.sh",
   "versioned-undef.sh",
+  "versym-local-def.sh",
   "warn-symbol-type.sh",
   "weak-export-exe.sh",
   "weak-undef2.sh",
