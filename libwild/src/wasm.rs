@@ -2240,6 +2240,7 @@ pub(crate) struct WasmObjectIndexMap {
     pub(crate) data_addresses: Vec<u32>,
     pub(crate) got_mem_globals: Vec<Option<u32>>,
     pub(crate) got_func_globals: Vec<Option<u32>>,
+    pub(crate) function_symbol_redirects: Vec<Option<u32>>,
 }
 
 impl WasmObjectIndexMap {
@@ -2266,7 +2267,7 @@ impl WasmObjectIndexMap {
                     sym.kind == WasmSymbolKind::Func,
                     "R_WASM_FUNCTION_INDEX_* references non-function symbol"
                 );
-                remap_wasm_index(&self.function_indices, sym.index, "function")
+                self.output_function_index(reloc.index as usize, sym)
             }
             RelocationType::GlobalIndexLeb | RelocationType::GlobalIndexI32 => match sym.kind {
                 WasmSymbolKind::Global => {
@@ -2336,7 +2337,7 @@ impl WasmObjectIndexMap {
                     sym.kind == WasmSymbolKind::Func,
                     "R_WASM_TABLE_INDEX_* references non-function symbol"
                 );
-                let func_out = remap_wasm_index(&self.function_indices, sym.index, "function")?;
+                let func_out = self.output_function_index(reloc.index as usize, sym)?;
                 let slot = function_table_slots
                     .get(func_out as usize)
                     .copied()
@@ -2371,6 +2372,19 @@ impl WasmObjectIndexMap {
                 relocation_type_to_string(other)
             ),
         }
+    }
+
+    /// Output function index for a linking-section symbol.
+    fn output_function_index(&self, symbol_offset: usize, sym: &WasmSymbol) -> Result<u32> {
+        if let Some(out) = self
+            .function_symbol_redirects
+            .get(symbol_offset)
+            .copied()
+            .flatten()
+        {
+            return Ok(out);
+        }
+        remap_wasm_index(&self.function_indices, sym.index, "function")
     }
 }
 
@@ -3078,6 +3092,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             data_addresses: Vec::new(),
             got_mem_globals: Vec::new(),
             got_func_globals: Vec::new(),
+            function_symbol_redirects: Vec::new(),
         };
 
         for (i, resolution) in resolutions.function_resolutions.iter().enumerate() {
@@ -4290,6 +4305,47 @@ fn apply_got_func_to_index_maps(object_index_maps: &mut [WasmObjectIndexMap], go
     }
 }
 
+/// Map defined weak functions to the winning definition's output index.
+fn fill_function_symbol_redirects(
+    object_index_maps: &mut [WasmObjectIndexMap],
+    layout_inputs: &[WasmObjectLayoutInput<'_>],
+    symbol_db: &SymbolDb<'_, Wasm>,
+    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
+) {
+    for (obj_idx, input) in layout_inputs.iter().enumerate() {
+        let mut redirects = vec![None; input.symbols.len()];
+        for (sym_off, sym) in input.symbols.iter().enumerate() {
+            if sym.kind != WasmSymbolKind::Func || !sym.is_weak() || sym.is_undefined() {
+                continue;
+            }
+            let local_id = input.symbol_id_range.offset_to_id(sym_off);
+            let def_id = symbol_db.definition(local_id);
+            if def_id == local_id {
+                continue;
+            }
+            let Some(&def_obj_idx) = file_id_to_index.get(&symbol_db.file_id_for_symbol(def_id))
+            else {
+                continue;
+            };
+            let def_input = &layout_inputs[def_obj_idx];
+            let def_sym = &def_input.symbols[def_input.symbol_id_range.id_to_offset(def_id)];
+            if def_sym.kind != WasmSymbolKind::Func || def_sym.is_undefined() {
+                continue;
+            }
+            let Some(&out) = object_index_maps[def_obj_idx]
+                .function_indices
+                .get(def_sym.index as usize)
+            else {
+                continue;
+            };
+            if out != WASM_DEAD_INDEX {
+                redirects[sym_off] = Some(out);
+            }
+        }
+        object_index_maps[obj_idx].function_symbol_redirects = redirects;
+    }
+}
+
 fn got_func_debug_name(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     entry: &GotFuncEntry,
@@ -4503,11 +4559,8 @@ fn fill_got_func_inits(
             sym.kind == WasmSymbolKind::Func,
             "GOT.func symbol is not a function"
         );
-        let func_out = remap_wasm_index(
-            &layout.object_index_maps[entry.object_index].function_indices,
-            sym.index,
-            "function",
-        )?;
+        let func_out = layout.object_index_maps[entry.object_index]
+            .output_function_index(entry.symbol_offset, sym)?;
         let slot = layout
             .function_table_slots
             .get(func_out as usize)
@@ -4880,8 +4933,7 @@ fn collect_sorted_init_function_calls(
                 "Wasm constructor must take no parameters (got {} param(s))",
                 ty.params().len()
             );
-            let output_index =
-                remap_wasm_index(&index_map.function_indices, sym.index, "function")?;
+            let output_index = index_map.output_function_index(init.symbol_index as usize, sym)?;
             items.push((init.priority, output_index, ty.results().len()));
         }
     }
@@ -5431,6 +5483,12 @@ where
             }
             apply_got_mem_to_index_maps(&mut layout.object_index_maps, got_mem);
             apply_got_func_to_index_maps(&mut layout.object_index_maps, got_func);
+            fill_function_symbol_redirects(
+                &mut layout.object_index_maps,
+                &layout_inputs,
+                symbol_db,
+                &file_id_to_index,
+            );
         }
         {
             for input in &layout_inputs {
@@ -5577,7 +5635,7 @@ fn finalize_indirect_function_table(
                 sym.kind == WasmSymbolKind::Func,
                 "R_WASM_TABLE_INDEX_* references non-function symbol"
             );
-            let func_out = remap_wasm_index(&index_map.function_indices, sym.index, "function")?;
+            let func_out = index_map.output_function_index(sym_idx, sym)?;
             if weak_undef_funcs.contains(&func_out) {
                 continue;
             }
@@ -6827,6 +6885,15 @@ fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
         if let Some(unit) = wasm_gc_unit_for_symbol(object.object, sym) {
             enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
         }
+        if sym.is_weak() && sym.kind == WasmSymbolKind::Func && !sym.is_undefined() {
+            send_wasm_definition_request::<A>(
+                object,
+                init.symbol_index as usize,
+                resources,
+                queue,
+                scope,
+            );
+        }
     }
 
     enqueue_wasm_force_export_roots::<A>(object, resources, queue, scope);
@@ -6919,9 +6986,18 @@ fn note_wasm_reloc_edge<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
     };
 
     if !sym.is_undefined() {
-        // Prefer the local definition unit so weak/COMDAT losers still keep their local slot.
         if let Some(unit) = wasm_gc_unit_for_symbol(file, &sym) {
             enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
+        }
+
+        if sym.is_weak() && sym.kind == WasmSymbolKind::Func {
+            send_wasm_definition_request::<A>(
+                object,
+                reloc.index as usize,
+                resources,
+                queue,
+                scope,
+            );
         }
         return Ok(());
     }
