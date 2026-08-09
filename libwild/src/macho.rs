@@ -22,9 +22,6 @@ use crate::layout::SymbolCopyInfo;
 use crate::layout::SymbolResolutions;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
-use crate::macho_object::CodeSignatureBlobIndex;
-use crate::macho_object::CodeSignatureCodeDirectory;
-use crate::macho_object::CodeSignatureSuperBlob;
 use crate::macho_object::DyldChainedFixupsHeader;
 use crate::macho_object::DyldChainedStartsInSegment;
 use crate::macho_writer;
@@ -182,16 +179,18 @@ pub(crate) type SymtabCommand = object::macho::SymtabCommand<Endianness>;
 pub(crate) type BuildVersionCommand = object::macho::BuildVersionCommand<Endianness>;
 pub(crate) type UuidCommand = object::macho::UuidCommand<Endianness>;
 
-// TODO: move the following data types to object crate
-
 pub(crate) const CS_SECTION_ALIGNMENT_EXP: u8 = 4;
 pub(crate) const CS_SECTION_ALIGNMENT: u64 = 2u64.pow(CS_SECTION_ALIGNMENT_EXP as u32);
 
 pub(crate) const CS_BLOB_HEADERS_SIZE: u64 =
-    (size_of::<CodeSignatureSuperBlob>() + size_of::<CodeSignatureBlobIndex>()) as u64;
+    (size_of::<macho::CsSuperBlob>() + size_of::<macho::CsBlobIndex>()).next_multiple_of(8) as u64;
 const _: () = assert!(CS_BLOB_HEADERS_SIZE.is_multiple_of(8));
-pub(crate) const CS_HEADERS_SIZE: u64 =
-    CS_BLOB_HEADERS_SIZE + size_of::<CodeSignatureCodeDirectory>() as u64;
+pub(crate) const CS_CODE_DIRECTORY_SIZE: u64 = (size_of::<macho::CsCodeDirectoryV0>()
+    + size_of::<macho::CsCodeDirectoryV1>()
+    + size_of::<macho::CsCodeDirectoryV2>()
+    + size_of::<macho::CsCodeDirectoryV3>()
+    + size_of::<macho::CsCodeDirectoryV4>()) as u64;
+pub(crate) const CS_HEADERS_SIZE: u64 = CS_BLOB_HEADERS_SIZE + CS_CODE_DIRECTORY_SIZE;
 pub(crate) const CS_BLOCK_SIZE_EXP: u8 = 12;
 pub(crate) const CS_BLOCK_SIZE: usize = 2usize.pow(CS_BLOCK_SIZE_EXP as u32);
 // SHA-256 is being used

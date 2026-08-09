@@ -36,7 +36,7 @@ libc.workspace = true
 libloading = { workspace = true, optional = true }
 memchr.workspace = true
 memmap2.workspace = true
-object.workspace = true
+object = { workspace = true, features = ["write_std"] }
 perfetto-recorder.workspace = true
 rayon.workspace = true
 serde.workspace = true
@@ -70,7 +70,6 @@ cc.workspace = true
 
 [dev-dependencies]
 ar.workspace = true
-object = { workspace = true, features = ["write_std"] }
 tempfile.workspace = true
 
 [features]
