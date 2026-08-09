@@ -28,6 +28,7 @@ use crate::macho::CS_CODE_DIRECTORY_SIZE;
 use crate::macho::CS_HASH_SIZE;
 use crate::macho::CS_HEADERS_SIZE;
 use crate::macho::ChainedFixupsHeader;
+use crate::macho::ChainedStartsInSegment;
 use crate::macho::CodeSignatureCommand;
 use crate::macho::DYLINKER_PATH;
 use crate::macho::DyldChainedFixupsCommand;
@@ -54,9 +55,6 @@ use crate::macho::get_segment_sections;
 use crate::macho::load_dylib_command_size;
 use crate::macho::output_section_id;
 use crate::macho::part_id;
-use crate::macho_object::DYLD_CHAINED_IMPORT;
-use crate::macho_object::DYLD_CHAINED_PTR_64_OFFSET;
-use crate::macho_object::DyldChainedStartsInSegment;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionName;
@@ -90,6 +88,8 @@ use object::macho::CS_HASHTYPE_SHA256;
 use object::macho::CS_LINKER_SIGNED;
 use object::macho::CS_SUPPORTSEXECSEG;
 use object::macho::CSSLOT_CODEDIRECTORY;
+use object::macho::DYLD_CHAINED_IMPORT;
+use object::macho::DYLD_CHAINED_PTR_64_OFFSET;
 use object::macho::LC_BUILD_VERSION;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
@@ -121,7 +121,6 @@ use sha2::Digest;
 use sha2::Sha256;
 use std::ops::BitAnd;
 use tracing::debug_span;
-use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 
 const LE: Endianness = Endianness::Little;
@@ -903,26 +902,26 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
     );
     let starts_in_image_len = size_of::<u32>() * (segment_count + 1);
     let starts_in_segment_len =
-        size_of::<DyldChainedStartsInSegment>() + CHAINED_FIXUP_PAGE_START_SIZE as usize;
+        size_of::<ChainedStartsInSegment>() + CHAINED_FIXUP_PAGE_START_SIZE as usize;
     let imports_len = size_of::<u32>() * symbols.len();
 
     let starts_offset = size_of::<ChainedFixupsHeader>();
     let imports_offset = starts_offset + starts_in_image_len + starts_in_segment_len;
     let symbols_offset = imports_offset + imports_len;
 
-    let (header, rest) = ChainedFixupsHeader::mut_from_prefix(chained_fixup_table)
+    let (header, rest) = from_bytes_mut::<ChainedFixupsHeader>(chained_fixup_table)
         .map_err(|_| error!("Invalid chained fixups header allocation"))?;
     let (starts_in_image, rest) = slice_from_bytes_mut::<U32<Endianness>>(rest, segment_count + 1)
         .map_err(|_| error!("Invalid chained fixups starts allocation"))?;
 
     // 1) fill up ChainedFixupsHeader
-    header.fixups_version.set(0);
-    header.starts_offset.set(starts_offset as u32);
-    header.imports_offset.set(imports_offset as u32);
-    header.symbols_offset.set(symbols_offset as u32);
-    header.imports_count.set(symbols.len() as u32);
-    header.imports_format.set(DYLD_CHAINED_IMPORT);
-    header.symbols_format.set(0);
+    header.fixups_version.set(LE, 0);
+    header.starts_offset.set(LE, starts_offset as u32);
+    header.imports_offset.set(LE, imports_offset as u32);
+    header.symbols_offset.set(LE, symbols_offset as u32);
+    header.imports_count.set(LE, symbols.len() as u32);
+    header.imports_format.set(LE, DYLD_CHAINED_IMPORT);
+    header.symbols_format.set(LE, 0);
 
     // 2) fill up dyld_chained_starts_in_image, which is `seg_count` (u32) followed by
     //    `seg_info_offset` ([u32; seg_count]); only __DATA_CONST,__got segment is covered
@@ -943,7 +942,7 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
     // Accounts for both seg_count and __PAGEZERO.
     starts_in_image[data_const_segment_index + 2].set(LE, starts_in_image_len as u32);
 
-    let (starts_in_segment, rest) = DyldChainedStartsInSegment::mut_from_prefix(rest)
+    let (starts_in_segment, rest) = from_bytes_mut::<ChainedStartsInSegment>(rest)
         .map_err(|_| error!("Invalid chained fixups starts in segment allocation"))?;
     let (page_starts, rest) = slice_from_bytes_mut::<U16<Endianness>>(rest, 1)
         .map_err(|_| error!("Invalid chained fixups page starts allocation"))?;
@@ -955,19 +954,19 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
         .ok_or_else(|| error!("__DATA_CONST segment expected"))?
         .segment_size;
 
-    starts_in_segment.size.set(starts_in_segment_len as u32);
+    starts_in_segment.size.set(LE, starts_in_segment_len as u32);
     starts_in_segment
         .page_size
-        .set(MACHO_PAGE_ALIGNMENT.value() as u16);
+        .set(LE, MACHO_PAGE_ALIGNMENT.value() as u16);
     starts_in_segment
         .pointer_format
-        .set(DYLD_CHAINED_PTR_64_OFFSET);
+        .set(LE, DYLD_CHAINED_PTR_64_OFFSET);
     starts_in_segment
         .segment_offset
-        .set(data_const_segment.file_offset as u64);
-    starts_in_segment.max_valid_pointer.set(0);
+        .set(LE, data_const_segment.file_offset as u64);
+    starts_in_segment.max_valid_pointer.set(LE, 0);
     // TODO:
-    starts_in_segment.page_count.set(1);
+    starts_in_segment.page_count.set(LE, 1);
     page_starts[0].set(LE, 0);
 
     // 4) fill up all imported symbols chunked by the pages
