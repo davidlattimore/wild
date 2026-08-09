@@ -22,8 +22,6 @@ use crate::layout::SymbolCopyInfo;
 use crate::layout::SymbolResolutions;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
-use crate::macho_object::DyldChainedFixupsHeader;
-use crate::macho_object::DyldChainedStartsInSegment;
 use crate::macho_writer;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrderBuilder;
@@ -152,7 +150,7 @@ pub(crate) const DYLINKER_PATH: &[u8] = b"/usr/lib/dyld";
 pub(crate) const MAX_SEGMENT_COUNT: usize = 6;
 pub(crate) const CHAINED_FIXUP_TABLE_BASE_SIZE: u64 = (size_of::<ChainedFixupsHeader>()
     + size_of::<u32>() * (MAX_SEGMENT_COUNT + /* leading segment count */ 1)
-    + size_of::<DyldChainedStartsInSegment>())
+    + size_of::<ChainedStartsInSegment>())
     as u64;
 pub(crate) const CHAINED_FIXUP_IMPORT_SIZE: u64 = size_of::<u32>() as u64;
 pub(crate) const CHAINED_FIXUP_PAGE_START_SIZE: u64 = size_of::<u16>() as u64;
@@ -175,7 +173,8 @@ pub(crate) type DylinkerCommand = object::macho::DylinkerCommand<Endianness>;
 pub(crate) type DylibCommand = object::macho::DylibCommand<Endianness>;
 pub(crate) type CodeSignatureCommand = object::macho::LinkeditDataCommand<Endianness>;
 pub(crate) type DyldChainedFixupsCommand = object::macho::LinkeditDataCommand<Endianness>;
-pub(crate) type ChainedFixupsHeader = DyldChainedFixupsHeader;
+pub(crate) type ChainedFixupsHeader = object::macho::DyldChainedFixupsHeader<Endianness>;
+pub(crate) type ChainedStartsInSegment = object::macho::DyldChainedStartsInSegment<Endianness>;
 pub(crate) type SymtabCommand = object::macho::SymtabCommand<Endianness>;
 pub(crate) type BuildVersionCommand = object::macho::BuildVersionCommand<Endianness>;
 pub(crate) type UuidCommand = object::macho::UuidCommand<Endianness>;
