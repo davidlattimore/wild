@@ -1474,7 +1474,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: Arch<Platform = Self>>(
         args: &ElfArgs,
-        groups: &'files [layout::GroupState<'data, Self>],
+        groups: &'files mut [layout::GroupState<'data, Self>],
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> Result<LayoutExt>
     where

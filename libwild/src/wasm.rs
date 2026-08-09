@@ -20,6 +20,7 @@ use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::timing_phase;
+use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use crate::wasm_writer::OutputExport;
 use crate::wasm_writer::OutputGlobal;
@@ -210,6 +211,9 @@ const ZERO_I32_INIT_EXPR: &[u8] = &[0x41, 0x00];
 /// `i32.const 1` for `DEFAULT_TABLE_BASE`.
 const DEFAULT_TABLE_BASE_INIT_EXPR: &[u8] = &[0x41, 0x01];
 
+/// Sentinel for a GC'd Wasm index slot.
+const WASM_DEAD_INDEX: u32 = u32::MAX;
+
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
     #[debug(skip)]
@@ -239,6 +243,12 @@ pub(crate) struct File<'data> {
     /// Entries from the `target_features` custom section, if present.
     #[debug(skip)]
     pub(crate) target_features: Vec<WasmTargetFeature<'data>>,
+
+    pub(crate) num_function_imports: u32,
+    pub(crate) num_global_imports: u32,
+    pub(crate) num_defined_functions: u32,
+    pub(crate) num_defined_globals: u32,
+    pub(crate) num_data_segments: u32,
 }
 
 /// One entry of the Wasm tool-conventions `target_features` custom section.
@@ -1704,12 +1714,14 @@ fn build_name_section<'data>(
             };
             match sym.kind {
                 WasmSymbolKind::Func
-                    if let Some(&out_idx) = index_map.function_indices.get(sym.index as usize) =>
+                    if let Some(&out_idx) = index_map.function_indices.get(sym.index as usize)
+                        && out_idx != WASM_DEAD_INDEX =>
                 {
                     function_names.push((out_idx, name));
                 }
                 WasmSymbolKind::Global
-                    if let Some(&out_idx) = index_map.global_indices.get(sym.index as usize) =>
+                    if let Some(&out_idx) = index_map.global_indices.get(sym.index as usize)
+                        && out_idx != WASM_DEAD_INDEX =>
                 {
                     global_names.push((out_idx, name));
                 }
@@ -2135,16 +2147,21 @@ fn layout_object_data<'data>(
     let mut segment_relocations =
         classify_data_relocations(&input.data_segments, &input.data_relocations);
     let mut segments = Vec::with_capacity(input.data_segments.len());
-    for (segment_index, segment) in input.data_segments.iter().enumerate() {
+    for (filtered_idx, segment) in input.data_segments.iter().enumerate() {
         let DataKind::Active { memory_index, .. } = segment.kind else {
             bail!("passive data segments are not emitted");
         };
         let output_memory_index =
             remap_wasm_index(&index_map.memory_indices, memory_index, "memory")?;
+        let original_index = input
+            .data_segment_original_indices
+            .get(filtered_idx)
+            .copied()
+            .unwrap_or(filtered_idx as u32);
         // Linking `SegmentInfo.alignment` is a power-of-two exponent.
         let align = input
             .segment_alignments
-            .get(segment_index)
+            .get(original_index as usize)
             .copied()
             .unwrap_or(crate::alignment::MIN);
         *memory_cursor = u32::try_from(align.align_up(u64::from(*memory_cursor)))
@@ -2160,9 +2177,9 @@ fn layout_object_data<'data>(
             .checked_add(u32::try_from(segment.data.len()).context("Wasm data segment too large")?)
             .ok_or_else(|| crate::error!("Wasm output memory offset overflow"))?;
         segments.push(WasmDataSegmentLayout {
-            segment_index: u32::try_from(segment_index).context("too many Wasm data segments")?,
+            segment_index: original_index,
             data: segment.data,
-            relocations: std::mem::take(&mut segment_relocations[segment_index]),
+            relocations: std::mem::take(&mut segment_relocations[filtered_idx]),
             output_memory_index,
             output_memory_offset,
             encoded_output_size,
@@ -2357,11 +2374,331 @@ impl WasmObjectIndexMap {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum WasmGcUnit {
+    DefinedFunction(u32),
+    DefinedGlobal(u32),
+    DataSegment(u32),
+    FunctionImport(u32),
+    GlobalImport(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+enum WasmGcUnitState {
+    #[default]
+    Dead = 0,
+    Live = 1,
+}
+
+impl WasmGcUnitState {
+    fn is_live(self) -> bool {
+        self == Self::Live
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct WasmObjectLayout<'data> {
     pub(crate) symbol_id_range: crate::symbol_db::SymbolIdRange,
     pub(crate) file_id: crate::input_data::FileId,
+    // Set once per-unit GC states have been allocated at object activate.
+    gc_states_ready: bool,
+    gc_defined_functions: Vec<WasmGcUnitState>,
+    gc_defined_globals: Vec<WasmGcUnitState>,
+    gc_data_segments: Vec<WasmGcUnitState>,
+    gc_function_imports: Vec<WasmGcUnitState>,
+    gc_global_imports: Vec<WasmGcUnitState>,
+    func_import_symbol_offsets: Vec<Vec<usize>>,
+    global_import_symbol_offsets: Vec<Vec<usize>>,
+    relocs_ready: bool,
+    code_relocations: Vec<WasmRelocation>,
+    data_relocations: Vec<WasmRelocation>,
+    function_body_spans: Vec<(u32, u32)>,
+    data_segment_spans: Vec<(u32, u32)>,
+    defined_function_live_ordinal: Vec<u32>,
+    defined_global_live_ordinal: Vec<u32>,
     _phantom: std::marker::PhantomData<&'data ()>,
+}
+
+impl<'data> WasmObjectLayout<'data> {
+    /// Allocate per-unit GC states from the object's unit counts.
+    fn ensure_gc_states(&mut self, file: &File<'_>) {
+        if self.gc_states_ready {
+            return;
+        }
+        self.gc_defined_functions =
+            vec![WasmGcUnitState::Dead; file.num_defined_functions as usize];
+        self.gc_defined_globals = vec![WasmGcUnitState::Dead; file.num_defined_globals as usize];
+        self.gc_data_segments = vec![WasmGcUnitState::Dead; file.num_data_segments as usize];
+        self.gc_function_imports = vec![WasmGcUnitState::Dead; file.num_function_imports as usize];
+        self.gc_global_imports = vec![WasmGcUnitState::Dead; file.num_global_imports as usize];
+
+        let mut func_import_symbol_offsets = vec![Vec::new(); file.num_function_imports as usize];
+        let mut global_import_symbol_offsets = vec![Vec::new(); file.num_global_imports as usize];
+        for (sym_offset, sym) in file.symbols.iter().enumerate() {
+            if !sym.is_undefined() {
+                continue;
+            }
+            match sym.kind {
+                WasmSymbolKind::Func => {
+                    if let Some(slots) = func_import_symbol_offsets.get_mut(sym.index as usize) {
+                        slots.push(sym_offset);
+                    }
+                }
+                WasmSymbolKind::Global => {
+                    if let Some(slots) = global_import_symbol_offsets.get_mut(sym.index as usize) {
+                        slots.push(sym_offset);
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.func_import_symbol_offsets = func_import_symbol_offsets;
+        self.global_import_symbol_offsets = global_import_symbol_offsets;
+        self.gc_states_ready = true;
+    }
+
+    fn state(&self, unit: WasmGcUnit) -> Option<WasmGcUnitState> {
+        match unit {
+            WasmGcUnit::DefinedFunction(i) => self.gc_defined_functions.get(i as usize).copied(),
+            WasmGcUnit::DefinedGlobal(i) => self.gc_defined_globals.get(i as usize).copied(),
+            WasmGcUnit::DataSegment(i) => self.gc_data_segments.get(i as usize).copied(),
+            WasmGcUnit::FunctionImport(i) => self.gc_function_imports.get(i as usize).copied(),
+            WasmGcUnit::GlobalImport(i) => self.gc_global_imports.get(i as usize).copied(),
+        }
+    }
+
+    fn state_mut(&mut self, unit: WasmGcUnit) -> Option<&mut WasmGcUnitState> {
+        match unit {
+            WasmGcUnit::DefinedFunction(i) => self.gc_defined_functions.get_mut(i as usize),
+            WasmGcUnit::DefinedGlobal(i) => self.gc_defined_globals.get_mut(i as usize),
+            WasmGcUnit::DataSegment(i) => self.gc_data_segments.get_mut(i as usize),
+            WasmGcUnit::FunctionImport(i) => self.gc_function_imports.get_mut(i as usize),
+            WasmGcUnit::GlobalImport(i) => self.gc_global_imports.get_mut(i as usize),
+        }
+    }
+
+    fn is_dead(&self, unit: WasmGcUnit) -> bool {
+        self.state(unit) == Some(WasmGcUnitState::Dead)
+    }
+
+    fn mark_live(&mut self, unit: WasmGcUnit) -> bool {
+        match self.state_mut(unit) {
+            Some(state) if *state == WasmGcUnitState::Dead => {
+                *state = WasmGcUnitState::Live;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Decode code/data reloc sections and body/segment spans once per object.
+    fn ensure_relocs_decoded(&mut self, file: &File<'_>) -> Result {
+        if self.relocs_ready {
+            return Ok(());
+        }
+
+        let code_section_index = file.standard_section_index[section_id::CODE as usize];
+        let mut code_relocations: Vec<WasmRelocation> = code_section_index
+            .and_then(|code_idx| {
+                file.reloc_sections
+                    .iter()
+                    .find(|s| s.target_section_index == code_idx)
+            })
+            .map(|s| s.decode_entries(file.data))
+            .transpose()?
+            .unwrap_or_default();
+        sort_relocations_by_offset(&mut code_relocations);
+
+        let data_section_index = file.standard_section_index[section_id::DATA as usize];
+        let mut data_relocations: Vec<WasmRelocation> = data_section_index
+            .and_then(|data_idx| {
+                file.reloc_sections
+                    .iter()
+                    .find(|s| s.target_section_index == data_idx)
+            })
+            .map(|s| s.decode_entries(file.data))
+            .transpose()?
+            .unwrap_or_default();
+        sort_relocations_by_offset(&mut data_relocations);
+
+        self.function_body_spans = compute_function_body_spans(file)?;
+        self.data_segment_spans = compute_data_segment_spans(file)?;
+        self.code_relocations = code_relocations;
+        self.data_relocations = data_relocations;
+        self.relocs_ready = true;
+        Ok(())
+    }
+
+    /// Pack live defined function/global ordinals into dense 0..n maps after the GC walk.
+    fn compute_live_ordinals(&mut self) {
+        self.defined_function_live_ordinal = pack_live_ordinals(&self.gc_defined_functions);
+        self.defined_global_live_ordinal = pack_live_ordinals(&self.gc_defined_globals);
+    }
+
+    fn take_decoded_relocs(&mut self) -> (bool, Vec<WasmRelocation>, Vec<WasmRelocation>) {
+        let ready = self.relocs_ready;
+        self.relocs_ready = false;
+        (
+            ready,
+            std::mem::take(&mut self.code_relocations),
+            std::mem::take(&mut self.data_relocations),
+        )
+    }
+
+    fn is_data_segment_live(&self, index: usize) -> bool {
+        self.gc_data_segments
+            .get(index)
+            .is_some_and(|s| s.is_live())
+    }
+
+    fn is_defined_function_live(&self, index: usize) -> bool {
+        self.gc_defined_functions
+            .get(index)
+            .is_some_and(|s| s.is_live())
+    }
+
+    fn is_defined_global_live(&self, index: usize) -> bool {
+        self.gc_defined_globals
+            .get(index)
+            .is_some_and(|s| s.is_live())
+    }
+
+    fn live_function_import_bits(&self) -> Vec<bool> {
+        self.gc_function_imports
+            .iter()
+            .map(|s| s.is_live())
+            .collect()
+    }
+
+    fn live_global_import_bits(&self) -> Vec<bool> {
+        self.gc_global_imports.iter().map(|s| s.is_live()).collect()
+    }
+
+    /// True when GC state was never allocated (object not activated) or every unit is live.
+    fn all_units_live(&self) -> bool {
+        !self.gc_states_ready
+            || (self.gc_defined_functions.iter().all(|s| s.is_live())
+                && self.gc_defined_globals.iter().all(|s| s.is_live())
+                && self.gc_data_segments.iter().all(|s| s.is_live())
+                && self.gc_function_imports.iter().all(|s| s.is_live())
+                && self.gc_global_imports.iter().all(|s| s.is_live()))
+    }
+
+    fn all_defined_functions_live(&self) -> bool {
+        !self.gc_states_ready || self.gc_defined_functions.iter().all(|s| s.is_live())
+    }
+
+    fn all_defined_globals_live(&self) -> bool {
+        !self.gc_states_ready || self.gc_defined_globals.iter().all(|s| s.is_live())
+    }
+
+    fn all_data_segments_live(&self) -> bool {
+        !self.gc_states_ready || self.gc_data_segments.iter().all(|s| s.is_live())
+    }
+
+    fn mark_all_units_live(&mut self) {
+        self.gc_defined_functions.fill(WasmGcUnitState::Live);
+        self.gc_defined_globals.fill(WasmGcUnitState::Live);
+        self.gc_data_segments.fill(WasmGcUnitState::Live);
+        self.gc_function_imports.fill(WasmGcUnitState::Live);
+        self.gc_global_imports.fill(WasmGcUnitState::Live);
+    }
+}
+
+fn pack_live_ordinals(states: &[WasmGcUnitState]) -> Vec<u32> {
+    let mut next = 0u32;
+    states
+        .iter()
+        .map(|state| {
+            if state.is_live() {
+                let ordinal = next;
+                next += 1;
+                ordinal
+            } else {
+                WASM_DEAD_INDEX
+            }
+        })
+        .collect()
+}
+
+fn identity_ordinals(n: usize) -> Vec<u32> {
+    (0..n as u32).collect()
+}
+
+fn sort_relocations_by_offset(relocs: &mut [WasmRelocation]) {
+    if relocs.windows(2).any(|w| w[0].offset > w[1].offset) {
+        relocs.sort_unstable_by_key(|r| r.offset);
+    }
+}
+
+fn reloc_index_range(relocs: &[WasmRelocation], start: u32, end: u32) -> Range<usize> {
+    let lo = relocs.partition_point(|r| r.offset < start);
+    let hi = relocs.partition_point(|r| r.offset < end);
+    lo..hi
+}
+
+fn relocs_in_offset_range(relocs: &[WasmRelocation], start: u32, end: u32) -> &[WasmRelocation] {
+    &relocs[reloc_index_range(relocs, start, end)]
+}
+
+fn compute_function_body_spans(file: &File<'_>) -> Result<Vec<(u32, u32)>> {
+    let Some(reader) = file.code_section_reader()? else {
+        return Ok(Vec::new());
+    };
+    let code_payload_start = file.standard_section_index[section_id::CODE as usize]
+        .and_then(|i| file.sections.get(i as usize))
+        .map_or(0, |h| h.payload_range.start as usize);
+    reader
+        .into_iter()
+        .map(|res| {
+            let body = res?;
+            let range = body.range();
+            let start = u32::try_from(range.start - code_payload_start)
+                .context("Wasm function body offset overflow")?;
+            let end = u32::try_from(range.end - code_payload_start)
+                .context("Wasm function body end overflow")?;
+            Ok((start, end))
+        })
+        .collect()
+}
+
+fn compute_data_segment_spans(file: &File<'_>) -> Result<Vec<(u32, u32)>> {
+    let segments = file.data_segments()?;
+    let mut spans = Vec::with_capacity(segments.len());
+    for segment in &segments {
+        let encoded = wasm_data_segment_encoded_size(&segment.kind, segment.data.len())?;
+        let start = segment.section_offset;
+        let end = start
+            .checked_add(encoded)
+            .ok_or_else(|| crate::error!("Wasm data segment span overflow"))?;
+        spans.push((start, end));
+    }
+    Ok(spans)
+}
+
+/// Map a linking symbol to its file-local GC unit, if any.
+fn wasm_gc_unit_for_symbol(file: &File<'_>, symbol: &WasmSymbol) -> Option<WasmGcUnit> {
+    match symbol.kind {
+        WasmSymbolKind::Func if symbol.is_undefined() => {
+            Some(WasmGcUnit::FunctionImport(symbol.index))
+        }
+        WasmSymbolKind::Func => symbol
+            .index
+            .checked_sub(file.num_function_imports)
+            .map(WasmGcUnit::DefinedFunction),
+        WasmSymbolKind::Global if symbol.is_undefined() => {
+            Some(WasmGcUnit::GlobalImport(symbol.index))
+        }
+        WasmSymbolKind::Global => symbol
+            .index
+            .checked_sub(file.num_global_imports)
+            .map(WasmGcUnit::DefinedGlobal),
+        WasmSymbolKind::Data if !symbol.is_undefined() => {
+            Some(WasmGcUnit::DataSegment(symbol.index))
+        }
+        _ => None,
+    }
 }
 
 #[derive(Debug)]
@@ -2371,6 +2708,8 @@ struct WasmObjectLayoutInput<'data> {
     types: Vec<wasmparser::FuncType>,
     function_imports: Vec<WasmFunctionImport<'data>>,
     global_imports: Vec<WasmGlobalImport<'data>>,
+    live_function_imports: Vec<bool>,
+    live_global_imports: Vec<bool>,
     memory_imports: Vec<MemoryType>,
     table_imports: Vec<wasmparser::TableType>,
     module_functions: Vec<u32>,
@@ -2381,6 +2720,7 @@ struct WasmObjectLayoutInput<'data> {
     unsupported_output: Vec<&'static str>,
     code_relocations: Vec<WasmRelocation>,
     data_segments: Vec<WasmDataSegment<'data>>,
+    data_segment_original_indices: Vec<u32>,
     segment_alignments: &'data [Alignment],
     data_relocations: Vec<WasmRelocation>,
     symbols: &'data [WasmSymbol],
@@ -2388,6 +2728,8 @@ struct WasmObjectLayoutInput<'data> {
     target_features: &'data [WasmTargetFeature<'data>],
     symbol_id_range: crate::symbol_db::SymbolIdRange,
     file_id: crate::input_data::FileId,
+    defined_function_live_ordinal: Vec<u32>,
+    defined_global_live_ordinal: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2412,9 +2754,17 @@ struct WasmObjectOutputLayout<'data> {
 impl<'data> WasmObjectLayoutInput<'data> {
     fn from_file(
         file: &'data File<'data>,
-        symbol_id_range: crate::symbol_db::SymbolIdRange,
-        file_id: crate::input_data::FileId,
+        layout: &WasmObjectLayout<'data>,
+        handed_off_relocs: (bool, Vec<WasmRelocation>, Vec<WasmRelocation>),
     ) -> Result<Self> {
+        let symbol_id_range = layout.symbol_id_range;
+        let file_id = layout.file_id;
+
+        let all_live = layout.all_units_live();
+        let keep_all_functions = layout.all_defined_functions_live();
+        let keep_all_globals = layout.all_defined_globals_live();
+        let keep_all_data_segments = layout.all_data_segments_live();
+
         let mut types = Vec::new();
         if let Some(type_section) = file.type_section_reader()? {
             for group in type_section {
@@ -2460,27 +2810,46 @@ impl<'data> WasmObjectLayoutInput<'data> {
             }
         }
 
-        let code_section_index = file.standard_section_index[section_id::CODE as usize];
-        let code_relocations: Vec<WasmRelocation> = code_section_index
-            .and_then(|code_idx| {
-                file.reloc_sections
-                    .iter()
-                    .find(|s| s.target_section_index == code_idx)
-            })
-            .map(|s| s.decode_entries(file.data))
-            .transpose()?
-            .unwrap_or_default();
+        let live_function_imports = if all_live {
+            vec![true; function_imports.len()]
+        } else {
+            layout.live_function_import_bits()
+        };
+        let live_global_imports = if all_live {
+            vec![true; global_imports.len()]
+        } else {
+            layout.live_global_import_bits()
+        };
 
+        let code_section_index = file.standard_section_index[section_id::CODE as usize];
         let data_section_index = file.standard_section_index[section_id::DATA as usize];
-        let data_relocations: Vec<WasmRelocation> = data_section_index
-            .and_then(|data_idx| {
-                file.reloc_sections
-                    .iter()
-                    .find(|s| s.target_section_index == data_idx)
-            })
-            .map(|s| s.decode_entries(file.data))
-            .transpose()?
-            .unwrap_or_default();
+
+        let (relocs_were_ready, taken_code, taken_data) = handed_off_relocs;
+        let (code_relocations_all, data_relocations_all) = if relocs_were_ready {
+            (taken_code, taken_data)
+        } else {
+            let mut code_relocations: Vec<WasmRelocation> = code_section_index
+                .and_then(|code_idx| {
+                    file.reloc_sections
+                        .iter()
+                        .find(|s| s.target_section_index == code_idx)
+                })
+                .map(|s| s.decode_entries(file.data))
+                .transpose()?
+                .unwrap_or_default();
+            sort_relocations_by_offset(&mut code_relocations);
+            let mut data_relocations: Vec<WasmRelocation> = data_section_index
+                .and_then(|data_idx| {
+                    file.reloc_sections
+                        .iter()
+                        .find(|s| s.target_section_index == data_idx)
+                })
+                .map(|s| s.decode_entries(file.data))
+                .transpose()?
+                .unwrap_or_default();
+            sort_relocations_by_offset(&mut data_relocations);
+            (code_relocations, data_relocations)
+        };
 
         // TODO(wasm): Currently relocs targeting `.debug*` are ignored (not applied, not emitted).
         let has_unsupported_non_code_relocs = file.reloc_sections.iter().any(|s| {
@@ -2495,7 +2864,9 @@ impl<'data> WasmObjectLayoutInput<'data> {
         if has_unsupported_non_code_relocs {
             unsupported_output.push("non-code relocation");
         }
-        if !data_relocations.is_empty() && !data_relocations_are_supported(&data_relocations) {
+        if !data_relocations_all.is_empty()
+            && !data_relocations_are_supported(&data_relocations_all)
+        {
             unsupported_output.push("data relocation");
         }
         if file.standard_section_index[section_id::TABLE as usize].is_some() {
@@ -2504,23 +2875,23 @@ impl<'data> WasmObjectLayoutInput<'data> {
         if file.standard_section_index[section_id::START as usize].is_some() {
             unsupported_output.push("start");
         }
-        let data_segments = file.data_segments()?;
-        for segment in &data_segments {
+        let all_data_segments = file.data_segments()?;
+        for segment in &all_data_segments {
             if let DataKind::Passive = segment.kind {
                 unsupported_output.push("passive data segment");
                 break;
             }
         }
 
-        let module_functions = file.module_functions()?;
-        let function_bodies = file.function_bodies()?;
+        let all_module_functions = file.module_functions()?;
+        let all_function_bodies = file.function_bodies()?;
         ensure!(
-            module_functions.len() == function_bodies.len(),
+            all_module_functions.len() == all_function_bodies.len(),
             "Wasm function and code section counts differ"
         );
         let memories = file.memories()?;
 
-        let globals = file
+        let all_globals = file
             .module_globals()?
             .into_iter()
             .map(|global| {
@@ -2534,6 +2905,96 @@ impl<'data> WasmObjectLayoutInput<'data> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+
+        let defined_function_live_ordinal = if keep_all_functions {
+            identity_ordinals(all_module_functions.len())
+        } else {
+            layout.defined_function_live_ordinal.clone()
+        };
+        let defined_global_live_ordinal = if keep_all_globals {
+            identity_ordinals(all_globals.len())
+        } else {
+            layout.defined_global_live_ordinal.clone()
+        };
+
+        let (module_functions, function_bodies, code_relocations) = if keep_all_functions {
+            // All defined functions live.
+            (
+                all_module_functions,
+                all_function_bodies,
+                code_relocations_all,
+            )
+        } else {
+            let mut module_functions = Vec::new();
+            let mut function_bodies = Vec::new();
+            let mut code_relocations = Vec::new();
+            for (i, (ty, body)) in all_module_functions
+                .into_iter()
+                .zip(all_function_bodies)
+                .enumerate()
+            {
+                if !layout.is_defined_function_live(i) {
+                    continue;
+                }
+                let body_start = body.code_offset;
+                let body_end = body_start + body.bytes.len() as u32;
+                code_relocations.extend_from_slice(relocs_in_offset_range(
+                    &code_relocations_all,
+                    body_start,
+                    body_end,
+                ));
+                module_functions.push(ty);
+                function_bodies.push(body);
+            }
+            sort_relocations_by_offset(&mut code_relocations);
+            (module_functions, function_bodies, code_relocations)
+        };
+
+        let globals = if keep_all_globals {
+            all_globals
+        } else {
+            all_globals
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, global)| layout.is_defined_global_live(i).then_some(global))
+                .collect()
+        };
+
+        let (data_segments, data_segment_original_indices, data_relocations) =
+            if keep_all_data_segments {
+                let n = all_data_segments.len();
+                let original_indices = (0..n as u32).collect();
+                (all_data_segments, original_indices, data_relocations_all)
+            } else {
+                let mut data_segments = Vec::new();
+                let mut data_segment_original_indices = Vec::new();
+                let mut data_relocations = Vec::new();
+                for (i, segment) in all_data_segments.into_iter().enumerate() {
+                    if !layout.is_data_segment_live(i) {
+                        continue;
+                    }
+                    let encoded =
+                        wasm_data_segment_encoded_size(&segment.kind, segment.data.len())?;
+                    let start = segment.section_offset;
+                    let end = start
+                        .checked_add(encoded)
+                        .ok_or_else(|| crate::error!("Wasm data segment span overflow"))?;
+                    data_relocations.extend_from_slice(relocs_in_offset_range(
+                        &data_relocations_all,
+                        start,
+                        end,
+                    ));
+                    data_segment_original_indices
+                        .push(u32::try_from(i).context("too many data segments")?);
+                    data_segments.push(segment);
+                }
+                sort_relocations_by_offset(&mut data_relocations);
+                (
+                    data_segments,
+                    data_segment_original_indices,
+                    data_relocations,
+                )
+            };
 
         let mut exports = Vec::new();
         if let Some(export_section) = file.export_section_reader()? {
@@ -2552,6 +3013,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
             types,
             function_imports,
             global_imports,
+            live_function_imports,
+            live_global_imports,
             memory_imports,
             table_imports,
             module_functions,
@@ -2562,6 +3025,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             unsupported_output,
             code_relocations,
             data_segments,
+            data_segment_original_indices,
             segment_alignments: file.segment_alignments.as_slice(),
             data_relocations,
             symbols: file.symbols.as_slice(),
@@ -2569,6 +3033,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
             target_features: file.target_features.as_slice(),
             symbol_id_range,
             file_id,
+            defined_function_live_ordinal,
+            defined_global_live_ordinal,
         })
     }
 
@@ -2602,9 +3068,11 @@ impl<'data> WasmObjectLayoutInput<'data> {
         let mut index_map = WasmObjectIndexMap {
             type_indices,
             function_indices: Vec::with_capacity(
-                self.function_imports.len() + self.module_functions.len(),
+                self.function_imports.len() + self.defined_function_live_ordinal.len(),
             ),
-            global_indices: Vec::with_capacity(self.global_imports.len() + self.globals.len()),
+            global_indices: Vec::with_capacity(
+                self.global_imports.len() + self.defined_global_live_ordinal.len(),
+            ),
             memory_indices: Vec::with_capacity(self.memory_imports.len() + self.memories.len()),
             table_indices: vec![0; self.table_imports.len()],
             data_addresses: Vec::new(),
@@ -2613,6 +3081,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
         };
 
         for (i, resolution) in resolutions.function_resolutions.iter().enumerate() {
+            if !self.live_function_imports.get(i).copied().unwrap_or(false) {
+                index_map.function_indices.push(WASM_DEAD_INDEX);
+                continue;
+            }
             match *resolution {
                 ImportResolution::Unresolved => {
                     let output_function_index = shared_imports
@@ -2650,6 +3122,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
                         "Wasm function import resolution references object index \
                          {def_object_index} out of range"
                     );
+                    ensure!(
+                        local_defined_index != WASM_DEAD_INDEX,
+                        "Wasm function import resolved to a GC'd definition"
+                    );
                     let target_bases = &all_index_bases[def_object_index];
                     let output_function_index = target_bases
                         .defined_function_base
@@ -2667,6 +3143,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
         }
 
         for (i, resolution) in resolutions.global_resolutions.iter().enumerate() {
+            if !self.live_global_imports.get(i).copied().unwrap_or(false) {
+                index_map.global_indices.push(WASM_DEAD_INDEX);
+                continue;
+            }
             match *resolution {
                 ImportResolution::Unresolved => {
                     let output_global_index = shared_imports
@@ -2703,6 +3183,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
                         "Wasm global import resolution references object index {object_index} out \
                          of range"
                     );
+                    ensure!(
+                        local_defined_index != WASM_DEAD_INDEX,
+                        "Wasm global import resolved to a GC'd definition"
+                    );
                     let target_bases = &all_index_bases[object_index];
                     let output_global_index = target_bases
                         .defined_global_base
@@ -2718,25 +3202,36 @@ impl<'data> WasmObjectLayoutInput<'data> {
         }
 
         let mut function_type_indices = Vec::with_capacity(self.module_functions.len());
-        for (i, &local_type_index) in self.module_functions.iter().enumerate() {
+        for &local_type_index in &self.module_functions {
             let output_type_index = index_bases
                 .type_index_base
                 .checked_add(local_type_index)
                 .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
-            let output_function_index = index_bases
-                .defined_function_base
-                .checked_add(u32::try_from(i).context("too many Wasm functions")?)
-                .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
             function_type_indices.push(output_type_index);
-            index_map.function_indices.push(output_function_index);
+        }
+        // Full function index space: imports (above) + original defined ordinals.
+        for &dense_or_dead in &self.defined_function_live_ordinal {
+            if dense_or_dead == WASM_DEAD_INDEX {
+                index_map.function_indices.push(WASM_DEAD_INDEX);
+            } else {
+                let output_function_index = index_bases
+                    .defined_function_base
+                    .checked_add(dense_or_dead)
+                    .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+                index_map.function_indices.push(output_function_index);
+            }
         }
 
-        for i in 0..self.globals.len() {
-            let output_global_index = index_bases
-                .defined_global_base
-                .checked_add(u32::try_from(i).context("too many Wasm globals")?)
-                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-            index_map.global_indices.push(output_global_index);
+        for &dense_or_dead in &self.defined_global_live_ordinal {
+            if dense_or_dead == WASM_DEAD_INDEX {
+                index_map.global_indices.push(WASM_DEAD_INDEX);
+            } else {
+                let output_global_index = index_bases
+                    .defined_global_base
+                    .checked_add(dense_or_dead)
+                    .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+                index_map.global_indices.push(output_global_index);
+            }
         }
 
         // Imported and defined memories are merged into a single output memory.
@@ -2907,6 +3402,9 @@ fn collect_shared_unresolved_imports<'data>(
     for (obj_idx, (input, res)) in inputs.iter().zip(resolutions.iter()).enumerate() {
         let mut func_map = vec![None; input.function_imports.len()];
         for (i, import) in input.function_imports.iter().enumerate() {
+            if !input.live_function_imports.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if !matches!(
                 res.function_resolutions.get(i),
                 Some(ImportResolution::Unresolved)
@@ -2951,6 +3449,9 @@ fn collect_shared_unresolved_imports<'data>(
 
         let mut global_map = vec![None; input.global_imports.len()];
         for (i, import) in input.global_imports.iter().enumerate() {
+            if !input.live_global_imports.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if !matches!(
                 res.global_resolutions.get(i),
                 Some(ImportResolution::Unresolved)
@@ -2990,12 +3491,35 @@ fn collect_shared_unresolved_imports<'data>(
     })
 }
 
-fn local_defined_function_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> u32 {
-    sym.index - input.function_imports.len() as u32
+fn local_defined_function_index(
+    input: &WasmObjectLayoutInput<'_>,
+    sym: &WasmSymbol,
+) -> Result<u32> {
+    let original = sym.index - input.function_imports.len() as u32;
+    let dense = input
+        .defined_function_live_ordinal
+        .get(original as usize)
+        .copied()
+        .unwrap_or(WASM_DEAD_INDEX);
+    ensure!(
+        dense != WASM_DEAD_INDEX,
+        "reference to GC'd Wasm defined function {original}"
+    );
+    Ok(dense)
 }
 
-fn local_defined_global_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> u32 {
-    sym.index - input.global_imports.len() as u32
+fn local_defined_global_index(input: &WasmObjectLayoutInput<'_>, sym: &WasmSymbol) -> Result<u32> {
+    let original = sym.index - input.global_imports.len() as u32;
+    let dense = input
+        .defined_global_live_ordinal
+        .get(original as usize)
+        .copied()
+        .unwrap_or(WASM_DEAD_INDEX);
+    ensure!(
+        dense != WASM_DEAD_INDEX,
+        "reference to GC'd Wasm defined global {original}"
+    );
+    Ok(dense)
 }
 
 /// Resolve cross-object imports. For each object's undefined function/global symbol, checks whether
@@ -3047,12 +3571,22 @@ fn resolve_import_symbols<'data>(
     ensure!(u32::try_from(import_count).is_ok(), "too many Wasm imports");
     let mut resolutions = vec![ImportResolution::Unresolved; import_count];
 
+    let live_imports = match kind {
+        WasmSymbolKind::Func => input.live_function_imports.as_slice(),
+        WasmSymbolKind::Global => input.live_global_imports.as_slice(),
+        _ => &[],
+    };
+
     for (sym_offset, sym) in input.symbols.iter().enumerate() {
         if !sym.is_undefined() || sym.kind != kind {
             continue;
         }
         let import_idx = sym.index as usize;
         if import_idx >= import_count {
+            continue;
+        }
+        // Dead import slots are not emitted.
+        if !live_imports.get(import_idx).copied().unwrap_or(false) {
             continue;
         }
         let resolution = resolve_one_import(
@@ -3076,6 +3610,9 @@ fn resolve_import_symbols<'data>(
         _ => Vec::new(),
     };
     for (import_idx, name) in import_names.iter().enumerate() {
+        if !live_imports.get(import_idx).copied().unwrap_or(false) {
+            continue;
+        }
         if !matches!(resolutions[import_idx], ImportResolution::Unresolved) {
             continue;
         }
@@ -3127,7 +3664,7 @@ fn resolve_one_import<'data>(
             );
             Ok(ImportResolution::ResolvedFunction {
                 object_index: def_obj_idx,
-                local_defined_index: local_defined_function_index(def_input, def_sym),
+                local_defined_index: local_defined_function_index(def_input, def_sym)?,
             })
         }
         WasmSymbolKind::Global => {
@@ -3138,7 +3675,7 @@ fn resolve_one_import<'data>(
             );
             Ok(ImportResolution::ResolvedGlobal {
                 object_index: def_obj_idx,
-                local_defined_index: local_defined_global_index(def_input, def_sym),
+                local_defined_index: local_defined_global_index(def_input, def_sym)?,
             })
         }
         _ => Ok(ImportResolution::Unresolved),
@@ -3189,14 +3726,24 @@ struct LinkerImportAbsorption {
 }
 
 impl LinkerImportAbsorption {
-    fn from_resolutions(resolutions: &ObjectImportResolutions) -> Self {
+    fn from_resolutions(
+        resolutions: &ObjectImportResolutions,
+        live_function_imports: &[bool],
+        live_global_imports: &[bool],
+    ) -> Self {
         let mut absorption = Self::default();
-        for resolution in &resolutions.function_resolutions {
+        for (i, resolution) in resolutions.function_resolutions.iter().enumerate() {
+            if !live_function_imports.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if let ImportResolution::LinkerDefined(WasmLinkerSymbol::CallCtors) = *resolution {
                 absorption.needs_ctors = true;
             }
         }
-        for resolution in &resolutions.global_resolutions {
+        for (i, resolution) in resolutions.global_resolutions.iter().enumerate() {
+            if !live_global_imports.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if let ImportResolution::LinkerDefined(known) = *resolution {
                 match known {
                     WasmLinkerSymbol::MemoryBase => absorption.needs_memory_base = true,
@@ -3345,6 +3892,7 @@ fn setup_got_mem_and_indices<'data>(
     let shared_imports = collect_shared_unresolved_imports(layout_inputs, resolutions)?;
 
     let indices = LinkerDefinedIndices::compute(
+        layout_inputs,
         resolutions,
         shared_imports.function_count(),
         shared_imports.global_count(),
@@ -3420,6 +3968,9 @@ fn absorb_weak_undef_function_imports<'data>(
         .zip(resolutions.iter().zip(pure_weak_flags.iter()))
     {
         for (i, import) in input.function_imports.iter().enumerate() {
+            if !input.live_function_imports.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if !matches!(
                 res.function_resolutions.get(i),
                 Some(ImportResolution::Unresolved)
@@ -3440,6 +3991,9 @@ fn absorb_weak_undef_function_imports<'data>(
         .zip(resolutions.iter_mut().zip(pure_weak_flags.iter()))
     {
         for (i, import) in input.function_imports.iter().enumerate() {
+            if !input.live_function_imports.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             if !matches!(
                 res.function_resolutions.get(i),
                 Some(ImportResolution::Unresolved)
@@ -4025,6 +4579,7 @@ struct LinkerDefinedIndexRequest {
 
 impl LinkerDefinedIndices {
     fn compute(
+        layout_inputs: &[WasmObjectLayoutInput<'_>],
         import_resolutions: &[ObjectImportResolutions],
         function_import_count: u32,
         global_import_count: u32,
@@ -4037,8 +4592,12 @@ impl LinkerDefinedIndices {
         let mut needs_tls_base = false;
         let mut needs_ctors = request.has_init_funcs;
 
-        for resolutions in import_resolutions {
-            let absorption = LinkerImportAbsorption::from_resolutions(resolutions);
+        for (input, resolutions) in layout_inputs.iter().zip(import_resolutions.iter()) {
+            let absorption = LinkerImportAbsorption::from_resolutions(
+                resolutions,
+                &input.live_function_imports,
+                &input.live_global_imports,
+            );
             needs_ctors |= absorption.needs_ctors;
             needs_memory_base |= absorption.needs_memory_base;
             needs_table_base |= absorption.needs_table_base;
@@ -4276,11 +4835,24 @@ fn function_type_for_symbol<'a>(
     let type_index = if sym_index < n_imports {
         input.function_imports[sym_index].type_index
     } else {
-        let local = sym_index - n_imports;
-        *input
-            .module_functions
-            .get(local)
-            .ok_or_else(|| crate::error!("Wasm function index {} out of range", sym.index))?
+        let original = sym_index - n_imports;
+        let dense = input
+            .defined_function_live_ordinal
+            .get(original)
+            .copied()
+            .unwrap_or(WASM_DEAD_INDEX);
+        ensure!(
+            dense != WASM_DEAD_INDEX,
+            "Wasm init/reference to GC'd function index {}",
+            sym.index
+        );
+        *input.module_functions.get(dense as usize).ok_or_else(|| {
+            crate::error!(
+                "Wasm function index {} out of range (dense {dense}, live len {})",
+                sym.index,
+                input.module_functions.len()
+            )
+        })?
     };
     input
         .types
@@ -4708,7 +5280,7 @@ fn ensure_force_exports<'data>(
 }
 
 fn build_output_module_layout<'data, 'files>(
-    groups: &'files [layout::GroupState<'data, Wasm>],
+    groups: &'files mut [layout::GroupState<'data, Wasm>],
     symbol_db: &crate::symbol_db::SymbolDb<'data, Wasm>,
 ) -> Result<WasmLayout<'data>>
 where
@@ -4718,14 +5290,30 @@ where
 
     let layout_inputs = {
         timing_phase!("Collect Wasm object layout inputs");
+        let handed_off_relocs: Vec<_> = groups
+            .iter_mut()
+            .flat_map(|group| group.files.iter_mut())
+            .filter_map(|file| match file {
+                layout::FileLayoutState::Object(object) => {
+                    Some(object.format_specific.take_decoded_relocs())
+                }
+                _ => None,
+            })
+            .collect();
+
         let objects_and_states: Vec<_> = layout::objects_iter(groups)
             .map(|state| (&state.object, &state.format_specific))
             .collect();
+        ensure!(
+            objects_and_states.len() == handed_off_relocs.len(),
+            "Wasm layout input count does not match taken reloc count"
+        );
         objects_and_states
             .par_iter()
-            .map(|(object, state)| {
+            .zip(handed_off_relocs.into_par_iter())
+            .map(|((object, state), relocs)| {
                 verbose_timing_phase!("Collect Wasm object layout input");
-                WasmObjectLayoutInput::from_file(object, state.symbol_id_range, state.file_id)
+                WasmObjectLayoutInput::from_file(object, state, relocs)
             })
             .collect::<Result<Vec<_>>>()?
     };
@@ -5004,6 +5592,7 @@ fn finalize_indirect_function_table(
         .object_index_maps
         .iter()
         .flat_map(|m| m.function_indices.iter().copied())
+        .filter(|&idx| idx != WASM_DEAD_INDEX)
         .max()
         .unwrap_or(0);
     let mut slots_by_func = vec![u32::MAX; max_func as usize + 1];
@@ -5100,22 +5689,37 @@ pub(crate) fn finalize_reloc_value(reloc: &WasmRelocation, base: u32) -> Result<
     }
 }
 
-fn data_symbol_memory_address(
+fn data_segment_memory_offsets_by_original_index(
     object_data_layout: &[WasmDataSegmentLayout<'_>],
+) -> Vec<Option<u32>> {
+    let max_index = object_data_layout
+        .iter()
+        .map(|s| s.segment_index)
+        .max()
+        .map_or(0, |i| i as usize);
+    let mut by_original = vec![None; max_index.saturating_add(1)];
+    for segment in object_data_layout {
+        let idx = segment.segment_index as usize;
+        by_original[idx] = Some(segment.output_memory_offset);
+    }
+    by_original
+}
+
+/// Address of a defined data symbol, or `None` when its segment was GC'd.
+fn try_data_symbol_memory_address(
+    segment_memory_offsets: &[Option<u32>],
     sym: &WasmSymbol,
-) -> Result<u32> {
+) -> Result<Option<u32>> {
     ensure!(
         sym.kind == WasmSymbolKind::Data,
         "memory address relocation references non-data symbol"
     );
-    let segment = object_data_layout
-        .get(sym.index as usize)
-        .filter(|segment| segment.segment_index == sym.index)
-        .ok_or_else(|| crate::error!("Wasm data symbol segment {} not found", sym.index))?;
-    segment
-        .output_memory_offset
-        .checked_add(sym.offset)
-        .ok_or_else(|| crate::error!("Wasm data symbol address overflow"))
+    let Some(Some(segment_base)) = segment_memory_offsets.get(sym.index as usize) else {
+        return Ok(None);
+    };
+    Ok(Some(segment_base.checked_add(sym.offset).ok_or_else(
+        || crate::error!("Wasm data symbol address overflow"),
+    )?))
 }
 
 /// Wasm symbols synthesized by the linker.
@@ -5199,6 +5803,11 @@ fn compute_data_addresses(
     heap_end: Option<u32>,
     stack_first: bool,
 ) -> Result {
+    let segment_offsets_by_object: Vec<Vec<Option<u32>>> = object_data_layouts
+        .iter()
+        .map(|layout| data_segment_memory_offsets_by_original_index(layout))
+        .collect();
+
     for (obj_idx, (index_map, symbols)) in object_index_maps
         .iter_mut()
         .zip(per_object_symbols.iter())
@@ -5212,8 +5821,11 @@ fn compute_data_addresses(
             let symbol_id = layout_inputs[obj_idx].symbol_id_range.offset_to_id(sym_idx);
 
             if !sym.is_undefined() {
-                data_addresses[sym_idx] =
-                    data_symbol_memory_address(&object_data_layouts[obj_idx], sym)?;
+                if let Some(addr) =
+                    try_data_symbol_memory_address(&segment_offsets_by_object[obj_idx], sym)?
+                {
+                    data_addresses[sym_idx] = addr;
+                }
                 continue;
             }
 
@@ -5225,8 +5837,12 @@ fn compute_data_addresses(
                 let def_sym =
                     per_object_symbols[def_obj_idx][def_id.to_offset(def_input.symbol_id_range)];
                 if !def_sym.is_undefined() {
-                    data_addresses[sym_idx] =
-                        data_symbol_memory_address(&object_data_layouts[def_obj_idx], &def_sym)?;
+                    if let Some(addr) = try_data_symbol_memory_address(
+                        &segment_offsets_by_object[def_obj_idx],
+                        &def_sym,
+                    )? {
+                        data_addresses[sym_idx] = addr;
+                    }
                     continue;
                 }
             }
@@ -5319,10 +5935,17 @@ fn classify_code_relocations<'data>(
 }
 
 fn remap_wasm_index(indices: &[u32], index: u32, kind: &str) -> Result<u32> {
-    indices
-        .get(index as usize)
-        .copied()
-        .ok_or_else(|| crate::error!("Wasm {kind} index {index} out of range"))
+    let mapped = indices.get(index as usize).copied().ok_or_else(|| {
+        crate::error!(
+            "Wasm {kind} index {index} out of range (map len {})",
+            indices.len()
+        )
+    })?;
+    ensure!(
+        mapped != WASM_DEAD_INDEX,
+        "Wasm {kind} index {index} was removed by GC"
+    );
+    Ok(mapped)
 }
 
 impl platform::Platform for Wasm {
@@ -5376,7 +5999,7 @@ impl platform::Platform for Wasm {
     type VerneedTable<'data> = VerneedTable<'data>;
     type ResolvedObjectExt<'data> = WasmObjectLayout<'data>;
     type SectionIdentityExt = ();
-    type GcUnit = NoGcUnit;
+    type GcUnit = WasmGcUnit;
 
     fn write_output_file<'data, A: platform::Arch<Platform = Self>, F: FileSystem>(
         output: &crate::file_writer::Output<F>,
@@ -5418,9 +6041,16 @@ impl platform::Platform for Wasm {
     }
 
     fn post_gc<'data>(
-        _groups: &mut [crate::layout::GroupState<Self>],
+        groups: &mut [crate::layout::GroupState<Self>],
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> crate::error::Result {
+        for group in groups {
+            for file in &mut group.files {
+                if let crate::layout::FileLayoutState::Object(object) = file {
+                    object.format_specific.compute_live_ordinals();
+                }
+            }
+        }
         Ok(())
     }
 
@@ -5487,32 +6117,54 @@ impl platform::Platform for Wasm {
     }
 
     fn gc_unit_for_symbol<'data>(
-        _object: &Self::File<'data>,
-        _symbol: &Self::SymtabEntry,
+        object: &Self::File<'data>,
+        symbol: &Self::SymtabEntry,
         _symbol_index: object::SymbolIndex,
     ) -> crate::error::Result<Option<Self::GcUnit>> {
-        Ok(None)
+        Ok(wasm_gc_unit_for_symbol(object, symbol))
     }
 
     fn activate_object_gc<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        _resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
-        _queue: &mut crate::layout::LocalWorkQueue<Self>,
-        _scope: &rayon::Scope<'scope>,
+        resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
+        queue: &mut crate::layout::LocalWorkQueue<Self>,
+        scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
+        object.format_specific.ensure_gc_states(object.object);
+        if resources.symbol_db.args.should_gc_sections() {
+            enqueue_wasm_gc_roots::<A>(object, resources, queue, scope)?;
+        } else {
+            mark_all_wasm_units_live_and_scan_relocs::<A>(object, resources, queue, scope)?;
+        }
         Ok(())
     }
 
     fn load_gc_unit<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        _resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
-        _queue: &mut crate::layout::LocalWorkQueue<Self>,
+        resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
+        queue: &mut crate::layout::LocalWorkQueue<Self>,
         unit: Self::GcUnit,
-        _scope: &rayon::Scope<'scope>,
+        scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
-        match unit {}
+        if !object.format_specific.mark_live(unit) {
+            return Ok(());
+        }
+
+        match unit {
+            WasmGcUnit::DefinedFunction(_) | WasmGcUnit::DataSegment(_) => {
+                object
+                    .format_specific
+                    .ensure_relocs_decoded(object.object)?;
+                walk_wasm_gc_unit_edges::<A>(object, unit, resources, queue, scope)?;
+            }
+            WasmGcUnit::FunctionImport(_) | WasmGcUnit::GlobalImport(_) => {
+                note_wasm_import_unit_definition::<A>(object, unit, resources, queue, scope);
+            }
+            WasmGcUnit::DefinedGlobal(_) => {}
+        }
+        Ok(())
     }
 
     fn load_object_section_relocations<'data, 'scope, A: platform::Arch<Platform = Self>>(
@@ -5622,6 +6274,21 @@ impl platform::Platform for Wasm {
         WasmObjectLayout {
             symbol_id_range,
             file_id,
+            gc_states_ready: false,
+            gc_defined_functions: Vec::new(),
+            gc_defined_globals: Vec::new(),
+            gc_data_segments: Vec::new(),
+            gc_function_imports: Vec::new(),
+            gc_global_imports: Vec::new(),
+            func_import_symbol_offsets: Vec::new(),
+            global_import_symbol_offsets: Vec::new(),
+            relocs_ready: false,
+            code_relocations: Vec::new(),
+            data_relocations: Vec::new(),
+            function_body_spans: Vec::new(),
+            data_segment_spans: Vec::new(),
+            defined_function_live_ordinal: Vec::new(),
+            defined_global_live_ordinal: Vec::new(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -5634,7 +6301,7 @@ impl platform::Platform for Wasm {
 
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
         _args: &Self::Args,
-        groups: &'files [layout::GroupState<'data, Self>],
+        groups: &'files mut [layout::GroupState<'data, Self>],
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> crate::error::Result<Self::FinaliseSizesExt<'data>>
     where
@@ -5972,6 +6639,23 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
     // undefined; the canonical name lives in the import entry instead.
     backfill_unnamed_import_symbols(input, &standard_section_index, &sections, &mut symbols)?;
 
+    let (num_function_imports, num_global_imports) =
+        count_function_and_global_imports(input, &standard_section_index, &sections)?;
+    let num_defined_functions = section_entry_count(
+        input,
+        &standard_section_index,
+        &sections,
+        section_id::FUNCTION,
+    )?;
+    let num_defined_globals = section_entry_count(
+        input,
+        &standard_section_index,
+        &sections,
+        section_id::GLOBAL,
+    )?;
+    let num_data_segments =
+        section_entry_count(input, &standard_section_index, &sections, section_id::DATA)?;
+
     Ok(File {
         data: input,
         sections,
@@ -5981,7 +6665,318 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         init_funcs,
         reloc_sections,
         target_features,
+        num_function_imports,
+        num_global_imports,
+        num_defined_functions,
+        num_defined_globals,
+        num_data_segments,
     })
+}
+
+fn count_function_and_global_imports(
+    data: &[u8],
+    standard_section_index: &[Option<u32>; STANDARD_SECTION_LOOKUP_LEN],
+    sections: &[SectionHeader],
+) -> Result<(u32, u32)> {
+    let Some(section_index) = standard_section_index[section_id::IMPORT as usize] else {
+        return Ok((0, 0));
+    };
+    let header = sections
+        .get(section_index as usize)
+        .ok_or_else(|| crate::error!("Wasm import section index out of range"))?;
+    let payload = data
+        .get(header.payload_range_usize())
+        .ok_or_else(|| crate::error!("Wasm import section payload out of bounds"))?;
+    let reader = ImportSectionReader::new(BinaryReader::new(
+        payload,
+        header.payload_range.start as usize,
+    ))?;
+    let mut num_function_imports = 0u32;
+    let mut num_global_imports = 0u32;
+    for import in reader.into_imports() {
+        match import?.ty {
+            TypeRef::Func(_) | TypeRef::FuncExact(_) => {
+                num_function_imports = num_function_imports
+                    .checked_add(1)
+                    .ok_or_else(|| crate::error!("too many Wasm function imports"))?;
+            }
+            TypeRef::Global(_) => {
+                num_global_imports = num_global_imports
+                    .checked_add(1)
+                    .ok_or_else(|| crate::error!("too many Wasm global imports"))?;
+            }
+            _ => {}
+        }
+    }
+    Ok((num_function_imports, num_global_imports))
+}
+
+fn section_entry_count(
+    data: &[u8],
+    standard_section_index: &[Option<u32>; STANDARD_SECTION_LOOKUP_LEN],
+    sections: &[SectionHeader],
+    section_id: u8,
+) -> Result<u32> {
+    let Some(section_index) = standard_section_index[section_id as usize] else {
+        return Ok(0);
+    };
+    let header = sections
+        .get(section_index as usize)
+        .ok_or_else(|| crate::error!("Wasm section index out of range"))?;
+    let payload = data
+        .get(header.payload_range_usize())
+        .ok_or_else(|| crate::error!("Wasm section payload out of bounds"))?;
+    let mut reader = BinaryReader::new(payload, header.payload_range.start as usize);
+    Ok(reader.read_var_u32()?)
+}
+
+fn mark_all_wasm_units_live_and_scan_relocs<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
+    object: &mut crate::layout::ObjectLayoutState<'data, Wasm>,
+    resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
+    queue: &mut crate::layout::LocalWorkQueue<Wasm>,
+    scope: &rayon::Scope<'scope>,
+) -> Result {
+    object.format_specific.mark_all_units_live();
+    object
+        .format_specific
+        .ensure_relocs_decoded(object.object)?;
+
+    let code_len = object.format_specific.code_relocations.len();
+    for i in 0..code_len {
+        let reloc = object.format_specific.code_relocations[i];
+        note_wasm_reloc_edge::<A>(object, &reloc, resources, queue, scope)?;
+    }
+    let data_len = object.format_specific.data_relocations.len();
+    for i in 0..data_len {
+        let reloc = object.format_specific.data_relocations[i];
+        note_wasm_reloc_edge::<A>(object, &reloc, resources, queue, scope)?;
+    }
+
+    enqueue_wasm_force_export_roots::<A>(object, resources, queue, scope);
+    Ok(())
+}
+
+fn enqueue_wasm_gc_unit<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    unit: WasmGcUnit,
+    resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
+    queue: &mut crate::layout::LocalWorkQueue<Wasm>,
+    scope: &rayon::Scope<'scope>,
+) {
+    if object.format_specific.is_dead(unit) {
+        queue.send_gc_unit_request::<A>(object.file_id, unit, resources, scope);
+    }
+}
+
+/// Roots: export section, EXPORTED / NO_STRIP linking flags, InitFuncs, `--export`.
+/// Entry arrives via `LoadGlobalSymbol` from the prelude path.
+fn enqueue_wasm_gc_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
+    queue: &mut crate::layout::LocalWorkQueue<Wasm>,
+    scope: &rayon::Scope<'scope>,
+) -> Result {
+    let file = object.object;
+    let num_function_imports = file.num_function_imports;
+    let num_global_imports = file.num_global_imports;
+
+    if let Some(export_section) = file.export_section_reader()? {
+        for export in export_section {
+            let export = export?;
+            let unit = match export.kind {
+                wasmparser::ExternalKind::Func | wasmparser::ExternalKind::FuncExact => {
+                    if export.index < num_function_imports {
+                        Some(WasmGcUnit::FunctionImport(export.index))
+                    } else {
+                        Some(WasmGcUnit::DefinedFunction(
+                            export.index - num_function_imports,
+                        ))
+                    }
+                }
+                wasmparser::ExternalKind::Global => {
+                    if export.index < num_global_imports {
+                        Some(WasmGcUnit::GlobalImport(export.index))
+                    } else {
+                        Some(WasmGcUnit::DefinedGlobal(export.index - num_global_imports))
+                    }
+                }
+                _ => None,
+            };
+            if let Some(unit) = unit {
+                enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
+            }
+        }
+    }
+
+    for sym_index in 0..object.object.symbols.len() {
+        let sym = &object.object.symbols[sym_index];
+        let flags = SymbolFlags::from_bits_truncate(sym.flags);
+        if !(flags.contains(SymbolFlags::EXPORTED) || flags.contains(SymbolFlags::NO_STRIP)) {
+            continue;
+        }
+        if let Some(unit) = wasm_gc_unit_for_symbol(object.object, sym) {
+            enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
+        }
+    }
+
+    for init_index in 0..object.object.init_funcs.len() {
+        let init = object.object.init_funcs[init_index];
+        let Some(sym) = object.object.symbols.get(init.symbol_index as usize) else {
+            bail!("InitFuncs symbol index {} out of range", init.symbol_index);
+        };
+        if let Some(unit) = wasm_gc_unit_for_symbol(object.object, sym) {
+            enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
+        }
+    }
+
+    enqueue_wasm_force_export_roots::<A>(object, resources, queue, scope);
+
+    Ok(())
+}
+
+fn enqueue_wasm_force_export_roots<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
+    queue: &mut crate::layout::LocalWorkQueue<Wasm>,
+    scope: &rayon::Scope<'scope>,
+) {
+    for name in resources.symbol_db.args.force_export_symbol_names() {
+        let Some(symbol_id) = resources
+            .symbol_db
+            .get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()))
+        else {
+            continue;
+        };
+        let def_id = resources.symbol_db.definition(symbol_id);
+        if resources.symbol_db.file_id_for_symbol(def_id) != object.file_id {
+            continue;
+        }
+        let old_flags = resources
+            .per_symbol_flags
+            .get_atomic(def_id)
+            .fetch_or(ValueFlags::DIRECT);
+        if !old_flags.has_resolution() {
+            queue.send_symbol_request::<A>(def_id, resources, scope);
+        }
+    }
+}
+
+fn walk_wasm_gc_unit_edges<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    unit: WasmGcUnit,
+    resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
+    queue: &mut crate::layout::LocalWorkQueue<Wasm>,
+    scope: &rayon::Scope<'scope>,
+) -> Result {
+    match unit {
+        WasmGcUnit::DefinedFunction(ordinal) => {
+            let Some(&(start, end)) = object
+                .format_specific
+                .function_body_spans
+                .get(ordinal as usize)
+            else {
+                bail!("Wasm GC function ordinal {ordinal} out of range");
+            };
+            let range = reloc_index_range(&object.format_specific.code_relocations, start, end);
+            for i in range {
+                let reloc = object.format_specific.code_relocations[i];
+                note_wasm_reloc_edge::<A>(object, &reloc, resources, queue, scope)?;
+            }
+        }
+        WasmGcUnit::DataSegment(ordinal) => {
+            let Some(&(start, end)) = object
+                .format_specific
+                .data_segment_spans
+                .get(ordinal as usize)
+            else {
+                bail!("Wasm GC data segment ordinal {ordinal} out of range");
+            };
+            let range = reloc_index_range(&object.format_specific.data_relocations, start, end);
+            for i in range {
+                let reloc = object.format_specific.data_relocations[i];
+                note_wasm_reloc_edge::<A>(object, &reloc, resources, queue, scope)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn note_wasm_reloc_edge<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    reloc: &WasmRelocation,
+    resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
+    queue: &mut crate::layout::LocalWorkQueue<Wasm>,
+    scope: &rayon::Scope<'scope>,
+) -> Result {
+    if reloc.ty == RelocationType::TypeIndexLeb {
+        return Ok(());
+    }
+
+    let file = object.object;
+    let Some(sym) = file.symbols.get(reloc.index as usize).copied() else {
+        bail!("Wasm relocation symbol index {} out of range", reloc.index);
+    };
+
+    if !sym.is_undefined() {
+        // Prefer the local definition unit so weak/COMDAT losers still keep their local slot.
+        if let Some(unit) = wasm_gc_unit_for_symbol(file, &sym) {
+            enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
+        }
+        return Ok(());
+    }
+
+    // Undefined: keep the local import slot live (host / linker-defined / cross-object).
+    if let Some(unit) = wasm_gc_unit_for_symbol(file, &sym) {
+        enqueue_wasm_gc_unit::<A>(object, unit, resources, queue, scope);
+    }
+
+    send_wasm_definition_request::<A>(object, reloc.index as usize, resources, queue, scope);
+    Ok(())
+}
+
+fn note_wasm_import_unit_definition<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    unit: WasmGcUnit,
+    resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
+    queue: &mut crate::layout::LocalWorkQueue<Wasm>,
+    scope: &rayon::Scope<'scope>,
+) {
+    let offsets = match unit {
+        WasmGcUnit::FunctionImport(index) => object
+            .format_specific
+            .func_import_symbol_offsets
+            .get(index as usize)
+            .map_or(&[][..], Vec::as_slice),
+        WasmGcUnit::GlobalImport(index) => object
+            .format_specific
+            .global_import_symbol_offsets
+            .get(index as usize)
+            .map_or(&[][..], Vec::as_slice),
+        _ => return,
+    };
+
+    for &sym_offset in offsets {
+        send_wasm_definition_request::<A>(object, sym_offset, resources, queue, scope);
+    }
+}
+
+fn send_wasm_definition_request<'data, 'scope, A: platform::Arch<Platform = Wasm>>(
+    object: &crate::layout::ObjectLayoutState<'data, Wasm>,
+    local_symbol_offset: usize,
+    resources: &'scope crate::layout::GraphResources<'data, 'scope, Wasm>,
+    queue: &mut crate::layout::LocalWorkQueue<Wasm>,
+    scope: &rayon::Scope<'scope>,
+) {
+    let local_symbol_id = object.symbol_id_range.offset_to_id(local_symbol_offset);
+    let symbol_id = resources.symbol_db.definition(local_symbol_id);
+    let previous_flags = resources
+        .per_symbol_flags
+        .get_atomic(symbol_id)
+        .fetch_or(ValueFlags::DIRECT);
+    if !previous_flags.has_resolution() {
+        queue.send_symbol_request::<A>(symbol_id, resources, scope);
+    }
 }
 
 /// For unnamed undefined Func/Global symbols, derive the name from the corresponding import
@@ -6168,10 +7163,6 @@ impl SinglePartSectionId {
     }
 }
 
-// TODO: Implement GC for wasm.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum NoGcUnit {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6186,6 +7177,8 @@ mod tests {
             types: Vec::new(),
             function_imports: Vec::new(),
             global_imports: Vec::new(),
+            live_function_imports: Vec::new(),
+            live_global_imports: Vec::new(),
             memory_imports: Vec::new(),
             table_imports: Vec::new(),
             module_functions: Vec::new(),
@@ -6196,6 +7189,7 @@ mod tests {
             unsupported_output: Vec::new(),
             code_relocations: Vec::new(),
             data_segments: Vec::new(),
+            data_segment_original_indices: Vec::new(),
             segment_alignments: &[],
             data_relocations: Vec::new(),
             symbols: &[],
@@ -6203,6 +7197,8 @@ mod tests {
             target_features: features,
             symbol_id_range: crate::symbol_db::SymbolIdRange::empty(),
             file_id: crate::input_data::FileId::new(0, file),
+            defined_function_live_ordinal: Vec::new(),
+            defined_global_live_ordinal: Vec::new(),
         }
     }
 

@@ -40,6 +40,7 @@ pub struct WasmArgs {
     // When set, the output `memory.initial` is raised to at least this many bytes (must be
     // page-aligned). `None` means size is derived from data / stack layout only.
     pub(crate) initial_memory: Option<u64>,
+    pub(crate) gc_sections: bool,
 }
 
 impl WasmArgs {
@@ -61,6 +62,7 @@ impl Default for WasmArgs {
             stack_first: true,
             entry: Some(DEFAULT_ENTRY.to_owned()),
             initial_memory: None,
+            gc_sections: true,
         }
     }
 }
@@ -119,6 +121,10 @@ impl platform::Args for WasmArgs {
 
     fn loadable_segment_alignment(&self) -> crate::alignment::Alignment {
         WASM_PAGE_ALIGNMENT
+    }
+
+    fn should_gc_sections(&self) -> bool {
+        self.gc_sections
     }
 
     fn should_merge_sections(&self) -> bool {
@@ -201,9 +207,9 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
     parser
         .declare()
         .long("gc-sections")
-        .help("Enable removal of unused sections")
-        .execute(|_args, _modifier_stack| {
-            // TODO
+        .help("Enable removal of unused sections (default)")
+        .execute(|args, _modifier_stack| {
+            args.gc_sections = true;
             Ok(())
         });
 
@@ -211,8 +217,8 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .declare()
         .long("no-gc-sections")
         .help("Disable removal of unused sections")
-        .execute(|_args, _modifier_stack| {
-            // TODO
+        .execute(|args, _modifier_stack| {
+            args.gc_sections = false;
             Ok(())
         });
 

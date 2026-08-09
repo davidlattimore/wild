@@ -626,7 +626,7 @@ pub(crate) trait Platform:
 
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: Arch<Platform = Self>>(
         args: &Self::Args,
-        groups: &'files [layout::GroupState<'data, Self>],
+        groups: &'files mut [layout::GroupState<'data, Self>],
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> Result<Self::FinaliseSizesExt<'data>>
     where
