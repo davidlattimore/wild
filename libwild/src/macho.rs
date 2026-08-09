@@ -1003,6 +1003,15 @@ impl platform::Platform for MachO {
     const NUM_SINGLE_PART_SECTIONS: u32 = SinglePartSectionId::Count as u32;
     const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 0;
 
+    // The macOS kernel caches code signature state by vnode. Reusing a previously executed output's
+    // inode after changing its contents can therefore cause the new executable to SIGKILL, even
+    // though its new signature verifies successfully.
+    const DEFAULT_FILE_REPLACEMENT_MODE: crate::FileReplacementMode = if cfg!(target_os = "macos") {
+        crate::FileReplacementMode::UnlinkAndReplace
+    } else {
+        crate::FileReplacementMode::UpdateInPlaceWithFallback
+    };
+
     const STRTAB_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::STRTAB);
     const SYMTAB_GLOBAL_SECTION_ID: Option<OutputSectionId> =
         Some(output_section_id::SYMTAB_GLOBAL);
