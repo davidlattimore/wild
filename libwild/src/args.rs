@@ -1490,7 +1490,7 @@ mod tests {
         assert_matches!(args, Args::Elf(_));
         args.parse(|| ["wild", "-flavor", "gnu"].into_iter())
             .unwrap();
-        assert!(args.common().inputs.is_empty());
+        assert_eq!(args.common().inputs, []);
 
         let args = Args::new(|| ["wild", "-flavor", "darwin"].into_iter()).unwrap();
         assert_matches!(args, Args::MachO(_));

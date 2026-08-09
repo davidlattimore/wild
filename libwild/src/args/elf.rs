@@ -2351,9 +2351,9 @@ mod tests {
     fn test_arguments_from_string() {
         use crate::args::arguments_from_string;
 
-        assert!(arguments_from_string("").unwrap().is_empty());
-        assert!(arguments_from_string("''").unwrap().is_empty());
-        assert!(arguments_from_string("\"\"").unwrap().is_empty());
+        assert_eq!(arguments_from_string("").unwrap(), Vec::<String>::new());
+        assert_eq!(arguments_from_string("''").unwrap(), Vec::<String>::new());
+        assert_eq!(arguments_from_string("\"\"").unwrap(), Vec::<String>::new());
         assert_eq!(
             arguments_from_string(r#""foo" "bar""#).unwrap(),
             ["foo", "bar"]

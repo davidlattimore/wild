@@ -401,6 +401,6 @@ mod tests {
     fn export_is_not_treated_as_input_path() {
         let args = parse_args(["--export", "__main_void", "-o", "out.wasm"]);
         assert_eq!(args.export_symbols, ["__main_void"]);
-        assert!(args.common.inputs.is_empty());
+        assert_eq!(args.common.inputs, []);
     }
 }
