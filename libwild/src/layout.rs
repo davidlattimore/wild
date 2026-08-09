@@ -514,13 +514,10 @@ fn update_redirect_resolutions<'data, P: Platform>(
     verbose_timing_phase!("Update symdef resolutions");
 
     for group in &symbol_db.groups {
-        let mut symbol_id = group.symbol_id_range().start();
-
         match group {
             Group::Prelude(prelude) => {
                 for def_info in &prelude.symbol_definitions {
                     update_defsym_symbol_resolution(
-                        symbol_id,
                         def_info,
                         symbol_db,
                         resolutions,
@@ -530,14 +527,12 @@ fn update_redirect_resolutions<'data, P: Platform>(
                         sizeof_headers,
                         &[],
                     )?;
-                    symbol_id = symbol_id.next();
                 }
             }
             Group::LinkerScripts(scripts) => {
                 for script in scripts {
                     for def_info in &script.parsed.symbol_defs {
                         update_defsym_symbol_resolution(
-                            symbol_id,
                             def_info,
                             symbol_db,
                             resolutions,
@@ -547,7 +542,6 @@ fn update_redirect_resolutions<'data, P: Platform>(
                             sizeof_headers,
                             resolved_location_counters,
                         )?;
-                        symbol_id = symbol_id.next();
                     }
                 }
             }
@@ -561,7 +555,6 @@ fn update_redirect_resolutions<'data, P: Platform>(
 }
 
 fn update_defsym_symbol_resolution<'data, P: Platform>(
-    symbol_id: SymbolId,
     def_info: &InternalSymDefInfo<'data, P>,
     symbol_db: &SymbolDb<'data, P>,
     resolutions: &mut [Option<Resolution<P>>],
@@ -598,9 +591,14 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
             },
         )?;
 
-        let Some(resolution) = &mut resolutions[symbol_id.as_usize()] else {
-            return Ok(());
-        };
+        let canonical_symbol_id = symbol_db
+            .get_unversioned(&UnversionedSymbolName::prehashed(def_info.name))
+            .map(|id| symbol_db.definition(id))
+            .ok_or_else(|| redirect.missing_target(def_info.name))?;
+
+        let resolution = resolutions[canonical_symbol_id.as_usize()]
+            .as_mut()
+            .ok_or_else(|| redirect.missing_resolution(def_info.name))?;
 
         resolution.raw_value = value;
     }
