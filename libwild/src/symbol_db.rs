@@ -1661,13 +1661,15 @@ fn load_linker_script_symbols<'data, P: Platform>(
     for (offset, definition) in script.parsed.symbol_defs.iter().enumerate() {
         let symbol_id = script.symbol_id_range.offset_to_id(offset);
 
-        outputs.add_non_versioned(PendingSymbol::from_prehashed(
-            symbol_id,
-            PreHashed::new(
-                UnversionedSymbolName::new(definition.name),
-                hash_bytes(definition.name),
-            ),
-        ));
+        if !definition.name.is_empty() {
+            outputs.add_non_versioned(PendingSymbol::from_prehashed(
+                symbol_id,
+                PreHashed::new(
+                    UnversionedSymbolName::new(definition.name),
+                    hash_bytes(definition.name),
+                ),
+            ));
+        }
 
         let mut flags = ValueFlags::NON_INTERPOSABLE;
         // PROVIDE_HIDDEN symbols have hidden visibility, which means they should be

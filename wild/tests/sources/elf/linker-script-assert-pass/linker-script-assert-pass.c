@@ -5,6 +5,7 @@
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64
 //#ExpectSym:symbol11 address=0x80
+//#ExpectSym:symbol11_assert address=0x1
 
 #include "../common/runtime.h"
 

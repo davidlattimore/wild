@@ -4,12 +4,10 @@
 /// features. Symbol resolution and full location counter semantics (e.g. ALIGN with a non-zero
 /// current address) will be implemented in future work.
 use crate::bail;
-use crate::error::Context;
 use crate::error::Result;
-use crate::grouping::Group;
+use crate::input_data::InputRef;
 use crate::layout;
 use crate::layout::OutputRecordLayout;
-use crate::layout::Resolution;
 use crate::linker_script::Expression;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
@@ -26,62 +24,6 @@ fn line_number(file_bytes: &[u8], remainder: &[u8]) -> u32 {
     let parsed_len = file_bytes.len().saturating_sub(remainder.len());
     let consumed = &file_bytes[..parsed_len];
     consumed.iter().filter(|&&b| b == b'\n').count() as u32 + 1
-}
-
-/// Evaluate all ASSERT commands from all processed linker scripts.
-/// Must be called after layout is complete so section sizes/addresses are known.
-pub(crate) fn evaluate_assertions<'data, P: Platform>(
-    symbol_db: &SymbolDb<'data, P>,
-    section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    output_sections: &OutputSections<'data, P>,
-    resolutions: &[Option<Resolution<P>>],
-    sizeof_headers: u64,
-    memory_regions: &HashMap<&[u8], layout::MemoryRegion>,
-    resolved_location_counters: &[ResolvedLocationCounter],
-) -> Result {
-    for group in &symbol_db.groups {
-        let Group::LinkerScripts(scripts) = group else {
-            continue;
-        };
-        for script in scripts {
-            let parsed = &script.parsed;
-            for assertion in &parsed.assertions {
-                let line = line_number(parsed.file_bytes, assertion.remainder);
-                let result = evaluate_expression(
-                    &assertion.expression,
-                    &SymbolLoc::None,
-                    section_layouts,
-                    output_sections,
-                    memory_regions,
-                    symbol_db,
-                    sizeof_headers,
-                    resolved_location_counters,
-                    &|name| {
-                        let Some(target_symbol_id) =
-                            symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
-                        else {
-                            bail!(
-                                "Undefined symbol '{}' referenced in expression",
-                                String::from_utf8_lossy(name)
-                            );
-                        };
-
-                        let canonical_target_id = symbol_db.definition(target_symbol_id);
-                        Ok(resolutions[canonical_target_id.as_usize()]
-                            .as_ref()
-                            .map_or(0, |r| r.raw_value))
-                    },
-                )
-                .with_context(|| format!("{}:{}: Failed to evaluate ASSERT", parsed.input, line))?;
-
-                if result == 0 {
-                    let msg = String::from_utf8_lossy(assertion.message);
-                    bail!("{}:{}: {msg}", parsed.input, line);
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 #[derive(Clone, Default)]
@@ -129,6 +71,7 @@ fn evaluate_location<'data, P: Platform>(
 pub(crate) fn evaluate_expression<'data, P: Platform>(
     expr: &Expression<'data>,
     expr_loc: &SymbolLoc,
+    input_ref: Option<&InputRef<'data>>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections<'data, P>,
     memory_regions: &HashMap<&[u8], layout::MemoryRegion>,
@@ -141,6 +84,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
     let value = evaluate_expression_value(
         expr,
         expr_loc,
+        input_ref,
         section_layouts,
         output_sections,
         memory_regions,
@@ -175,6 +119,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
 fn evaluate_expression_value<'data, P: Platform>(
     expr: &Expression<'data>,
     expr_loc: &SymbolLoc,
+    input_ref: Option<&InputRef<'data>>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections<'data, P>,
     memory_regions: &HashMap<&[u8], layout::MemoryRegion>,
@@ -189,6 +134,7 @@ fn evaluate_expression_value<'data, P: Platform>(
             evaluate_expression_value(
                 $e,
                 expr_loc,
+                input_ref,
                 section_layouts,
                 output_sections,
                 memory_regions,
@@ -312,6 +258,18 @@ fn evaluate_expression_value<'data, P: Platform>(
         Expression::Defined(name) => Ok(symbol_db
             .get_unversioned(&UnversionedSymbolName::prehashed(name))
             .map_or(0, |_| 1)),
+        Expression::Assert(assert_command) => {
+            let result = eval!(&assert_command.expression)?;
+            if result == 0 {
+                let msg = String::from_utf8_lossy(assert_command.message);
+                let Some(input_ref) = input_ref else {
+                    bail!("{msg}");
+                };
+                let line = line_number(input_ref.data(), assert_command.remainder);
+                bail!("{}:{}: {msg}", input_ref, line);
+            }
+            Ok(result)
+        }
     }
 }
 
@@ -437,12 +395,15 @@ mod tests {
     use super::*;
     use crate::OsFileSystem;
     use crate::elf::Elf64;
-    use crate::grouping::Group;
     use crate::grouping::SequencedLinkerScript;
     use crate::input_data::FileId;
     use crate::layout::MemoryRegion;
     use crate::linker_script::AssertCommand;
+    use crate::parsing::InternalSymDefInfo;
     use crate::parsing::ProcessedLinkerScript;
+    use crate::parsing::Redirect;
+    use crate::parsing::RedirectKind;
+    use crate::parsing::SymbolPlacement;
     use crate::symbol_db::SymbolDb;
     use crate::symbol_db::SymbolIdRange;
     use colosseum::sync::Arena;
@@ -471,6 +432,7 @@ mod tests {
             evaluate_expression::<Elf64>(
                 expr,
                 &SymbolLoc::None,
+                None,
                 layouts,
                 sections,
                 &HashMap::new(),
@@ -791,17 +753,29 @@ mod tests {
         );
     }
 
-    fn make_group<'data>(assertions: Vec<AssertCommand<'static>>) -> Group<'data, Elf64> {
-        let script = SequencedLinkerScript {
+    fn make_script<'data>(
+        assertions: &[AssertCommand<'static>],
+    ) -> SequencedLinkerScript<'data, Elf64> {
+        SequencedLinkerScript {
             parsed: ProcessedLinkerScript {
                 input: crate::input_data::InputRef {
                     file: crate::input_data::InputFileRef::for_testing(),
                     data: &[],
                     entry: None,
                 },
-                symbol_defs: Vec::new(),
-                assertions,
-                file_bytes: b"",
+                symbol_defs: assertions
+                    .iter()
+                    .map(|assertion| {
+                        InternalSymDefInfo::new(
+                            SymbolPlacement::Redirect(Redirect {
+                                kind: RedirectKind::Script,
+                                expression: Expression::Assert(assertion.clone()),
+                                loc: SymbolLoc::None,
+                            }),
+                            b"",
+                        )
+                    })
+                    .collect(),
                 memory_regions: Vec::new(),
                 program_headers: Vec::new(),
                 location_counters: Vec::new(),
@@ -809,28 +783,55 @@ mod tests {
             },
             symbol_id_range: SymbolIdRange::empty(),
             file_id: FileId::new(0, 0),
-        };
-        Group::LinkerScripts(vec![script])
+        }
+    }
+
+    fn evaluate_assertions<'data>(
+        script: &SequencedLinkerScript<'data, Elf64>,
+        symbol_db: &SymbolDb<'data, Elf64>,
+        section_layouts: &OutputSectionMap<OutputRecordLayout>,
+        output_sections: &OutputSections<'data, Elf64>,
+        sizeof_headers: u64,
+        memory_regions: &HashMap<&[u8], layout::MemoryRegion>,
+        resolved_location_counters: &[ResolvedLocationCounter],
+    ) -> Result {
+        for assertion in &script.parsed.symbol_defs {
+            let SymbolPlacement::Redirect(redirect) = &assertion.placement else {
+                continue;
+            };
+            evaluate_expression(
+                &redirect.expression,
+                &SymbolLoc::None,
+                None,
+                section_layouts,
+                output_sections,
+                memory_regions,
+                symbol_db,
+                sizeof_headers,
+                resolved_location_counters,
+                &|_| unreachable!(),
+            )?;
+        }
+        Ok(())
     }
 
     #[test]
     fn test_evaluate_assertions_passes() {
         with_dummy_context(|layouts, sections, symbol_db| {
-            let group = make_group(vec![AssertCommand {
-                expression: Expression::Equal(
+            let script = make_script(&[AssertCommand {
+                expression: Box::new(Expression::Equal(
                     Box::new(Expression::Number(1)),
                     Box::new(Expression::Number(1)),
-                ),
+                )),
                 message: b"should pass",
                 remainder: b"",
             }]);
-            symbol_db.add_group(group);
             assert!(
-                evaluate_assertions::<Elf64>(
+                evaluate_assertions(
+                    &script,
                     symbol_db,
                     layouts,
                     sections,
-                    &[],
                     0,
                     &HashMap::new(),
                     &[]
@@ -843,17 +844,16 @@ mod tests {
     #[test]
     fn test_evaluate_assertions_fails() {
         with_dummy_context(|layouts, sections, symbol_db| {
-            let group = make_group(vec![AssertCommand {
-                expression: Expression::Number(0),
+            let script = make_script(&[AssertCommand {
+                expression: Box::new(Expression::Number(0)),
                 message: b"intentional failure",
                 remainder: b"",
             }]);
-            symbol_db.add_group(group);
-            let err = evaluate_assertions::<Elf64>(
+            let err = evaluate_assertions(
+                &script,
                 symbol_db,
                 layouts,
                 sections,
-                &[],
                 0,
                 &HashMap::new(),
                 &[],
@@ -888,6 +888,7 @@ mod tests {
                 evaluate_expression::<Elf64>(
                     expr,
                     &SymbolLoc::None,
+                    None,
                     layouts,
                     sections,
                     &regions,
