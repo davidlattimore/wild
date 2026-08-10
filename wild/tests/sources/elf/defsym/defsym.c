@@ -33,6 +33,11 @@
 //#ReferenceLinkers:
 //#ExpectError:Symbol 'notexist' referenced by --defsym
 
+//#Config:repeat_defs:default
+//#LinkArgs:--defsym=bar=0x1000 --defsym=bar=bar*2 --defsym=baz=0x5000
+//#ExpectSym:bar address=0x2000
+//#ExpectSym:baz address=0x5000
+
 int foo(void) { return 0; }
 
 void _start(void) { foo(); }
