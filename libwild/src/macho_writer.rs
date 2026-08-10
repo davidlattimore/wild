@@ -1103,11 +1103,6 @@ fn write_code_signature_metadata(
     let mut rest: &mut [u8] = code_signature;
     encoder.signature_super_blob(&mut rest, code_signature_section.file_size as u32, 1);
     encoder.blob_index(&mut rest, CSSLOT_CODEDIRECTORY, CS_BLOB_HEADERS_SIZE as u32);
-    let padding_size = CS_BLOB_HEADERS_SIZE as usize
-        - encoder.super_blob_size() as usize
-        - encoder.blob_index_size() as usize;
-    let (padding, mut rest) = rest.split_at_mut(padding_size);
-    padding.zero();
     encoder.code_directory(&mut rest, &code_directory);
 
     let (identifier, hashes) = rest.split_at_mut(padded_identifier_size);

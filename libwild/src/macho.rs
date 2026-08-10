@@ -183,8 +183,7 @@ pub(crate) const CS_SECTION_ALIGNMENT_EXP: u8 = 4;
 pub(crate) const CS_SECTION_ALIGNMENT: u64 = 2u64.pow(CS_SECTION_ALIGNMENT_EXP as u32);
 
 pub(crate) const CS_BLOB_HEADERS_SIZE: u64 =
-    (size_of::<macho::CsSuperBlob>() + size_of::<macho::CsBlobIndex>()).next_multiple_of(8) as u64;
-const _: () = assert!(CS_BLOB_HEADERS_SIZE.is_multiple_of(8));
+    (size_of::<macho::CsSuperBlob>() + size_of::<macho::CsBlobIndex>()) as u64;
 pub(crate) const CS_CODE_DIRECTORY_SIZE: u64 = (size_of::<macho::CsCodeDirectoryV0>()
     + size_of::<macho::CsCodeDirectoryV1>()
     + size_of::<macho::CsCodeDirectoryV2>()
