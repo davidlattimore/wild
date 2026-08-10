@@ -1,10 +1,11 @@
+use crate::args::ArgumentParser;
 use crate::args::CommonArgs;
-use crate::args::Input;
-use crate::args::InputSpec;
 use crate::args::Modifiers;
+use crate::args::OptionSyntax;
 use crate::bail;
 use crate::error::Result;
 use crate::platform;
+use crate::platform::Args as _;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -122,130 +123,205 @@ impl platform::Args for CoffArgs {
         true
     }
 
-    fn is_ignored_flag(&self, _flag: &str) -> bool {
-        false
+    fn is_ignored_flag(&self, flag: &str) -> bool {
+        // `flag` has had its prefix stripped, but still carries any attached value and the case the
+        // user wrote, e.g. `WHOLEARCHIVE:foo.lib`.
+        let name = flag.split_once(':').map_or(flag, |(name, _value)| name);
+
+        IGNORED_FLAGS.contains(&name.to_ascii_lowercase().as_str())
     }
 }
 
 // Parse the supplied input arguments, which should not include the program name.
-pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(args: &mut CoffArgs, input: I) -> Result {
-    let tokens = input.map(|arg| arg.as_ref().to_owned()).collect::<Vec<_>>();
+pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
+    args: &mut CoffArgs,
+    mut input: I,
+) -> Result {
+    let mut modifier_stack = vec![Modifiers::default()];
 
-    parse_tokens(args, tokens.iter().map(String::as_str))?;
+    let arg_parser = setup_argument_parser();
+    while let Some(arg) = input.next() {
+        let arg = arg.as_ref();
 
-    args.common.report_unrecognized()
+        arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
+    }
+
+    args.common.report_unrecognized()?;
+
+    Ok(())
 }
 
-/// Options that rustc's MSVC linker driver emits that we recognise but ignore, because they only
-/// affect outputs we don't produce yet or optimisations we don't implement.
-const IGNORED_OPTIONS: &[&str] = &[
-    // Debug info, PDB paths, import library, visualisers, module definition file and
-    // optimisations.
-    "debug",
+/// link.exe spells its options differently to the GNU-style linkers: names are case-insensitive,
+/// take either a `/` or a `-` prefix and carry their value as `NAME:value`, with no separate-token
+/// form.
+const COFF_OPTION_SYNTAX: OptionSyntax = OptionSyntax {
+    prefixes: &["/", "-"],
+    value_separator: ':',
+    case_insensitive: true,
+    allows_separate_value: false,
+};
+
+/// Options that rustc's MSVC linker driver emits that we ignore without comment, because they
+/// affect only outputs we don't produce yet, or because ignoring them already matches what we do.
+/// These appear on virtually every link line, so warning about them would be pure noise. The value,
+/// if any, is ignored too.
+const SILENTLY_IGNORED_FLAGS: &[&str] = &[
+    // PDB paths and debugger visualisers, which relate to debug info we don't emit.
     "pdb",
     "pdbaltpath",
-    "implib",
     "natvis",
-    "def",
+    // Optimisations we don't implement, e.g. `/OPT:REF,NOICF`.
     "opt",
-    // Control-flow guard, e.g. `/guard:cf`, and archive member handling.
-    "guard",
-    "wholearchive",
-    // Take an optional `:NO` value, e.g. `/NXCOMPAT:NO`.
-    "nxcompat",
-    "dynamicbase",
     // Manifest generation and warnings-as-errors, e.g. `/MANIFEST:EMBED`, `/MANIFESTUAC:NO`,
     // `/MANIFESTINPUT:foo.manifest`, `/WX:NO`.
     "manifest",
     "manifestinput",
     "manifestuac",
     "wx",
+    // Take an optional `:NO` value, e.g. `/NXCOMPAT:NO`. These request PE header bits that we
+    // don't emit yet, so ignoring them doesn't change the set of linked inputs.
+    "nxcompat",
+    "dynamicbase",
+];
+
+/// Options that we accept but that change either the output or the set of linked inputs when
+/// ignored, so we warn rather than silently dropping them. These deliberately aren't declared on
+/// the parser: leaving them undeclared routes them through the unrecognized-option fallback, which
+/// reports them via [`platform::Args::is_ignored_flag`] with the spelling the user wrote. That
+/// fallback passes the name with its value still attached, so `is_ignored_flag` splits it itself.
+const IGNORED_FLAGS: &[&str] = &[
+    // Control-flow guard, which we don't emit. `/DEBUG` is handled separately, since its `NONE`
+    // value requests exactly what we do.
+    "guard",
+    // An import library and a module definition file, which we don't produce.
+    "implib",
+    "def",
+    // Changes which archive members get linked, e.g. `/WHOLEARCHIVE:foo.lib`.
+    "wholearchive",
 ];
 
 /// Ignored options that take no value, so `/NOLOGO:x` is an error just like `/DLL:x` is.
-const IGNORED_NO_VALUE_OPTIONS: &[&str] = &["nologo"];
+const IGNORED_NO_VALUE_FLAGS: &[&str] = &["nologo"];
 
-/// MSVC options don't fit the GNU-style declarative parser used by the other platforms: names are
-/// case-insensitive, take either a `/` or a `-` prefix and carry their value as `NAME:value`.
-fn parse_tokens<'a, I: Iterator<Item = &'a str>>(args: &mut CoffArgs, input: I) -> Result {
-    for arg in input {
-        let Some(option) = arg.strip_prefix('/').or_else(|| arg.strip_prefix('-')) else {
-            add_input(args, arg);
-            continue;
-        };
+fn setup_argument_parser() -> ArgumentParser<CoffArgs> {
+    let mut parser = ArgumentParser::<CoffArgs>::with_syntax(COFF_OPTION_SYNTAX);
 
-        let (name, value) = option
-            .split_once(':')
-            .map_or((option, None), |(name, value)| (name, Some(value)));
+    parser
+        .declare_with_param()
+        .long("out")
+        .help("Set the output filename")
+        .execute(|args, _modifier_stack, value| {
+            args.common.output = Arc::from(Path::new(value));
+            Ok(())
+        });
 
-        match name.to_ascii_lowercase().as_str() {
-            "out" => {
-                let value = required_value("/OUT", value)?;
-                args.common.output = Arc::from(Path::new(value));
-            }
-            "entry" => {
-                args.entry = Some(required_value("/ENTRY", value)?.to_owned());
-            }
-            "subsystem" => {
-                let value = required_value("/SUBSYSTEM", value)?;
-                args.subsystem = Some(parse_subsystem(value)?);
-            }
-            "dll" => {
-                no_value("/DLL", value)?;
-                args.is_dll = true;
-            }
-            "machine" => {
-                let value = required_value("/MACHINE", value)?;
-                if !value.eq_ignore_ascii_case("x64") && !value.eq_ignore_ascii_case("amd64") {
-                    bail!("unsupported /MACHINE value `{value}`; only X64 is supported");
-                }
-                args.machine = CoffMachine::X86_64;
-            }
-            "libpath" => {
-                let value = required_value("/LIBPATH", value)?;
-                args.common.save_dir.handle_file(value);
-                args.lib_search_path.push(Box::from(Path::new(value)));
-            }
-            "defaultlib" => {
-                let value = required_value("/DEFAULTLIB", value)?;
-                args.default_libraries.push(value.to_owned());
-            }
-            // `/NODEFAULTLIB:lib` excludes one library, a bare `/NODEFAULTLIB` excludes all of
-            // them. Precedence over `/DEFAULTLIB` is applied when default libraries are resolved.
-            "nodefaultlib" => match value {
-                Some(value) if !value.is_empty() => {
-                    args.excluded_default_libraries.push(value.to_owned());
-                }
-                _ => args.no_default_libraries = true,
-            },
-            name if IGNORED_NO_VALUE_OPTIONS.contains(&name) => {
-                no_value(arg, value)?;
-            }
-            name if IGNORED_OPTIONS.contains(&name) => {}
-            // A prefixed token whose name isn't in the table above is an input only if that name
-            // looks like a path, since on Unix hosts absolute paths begin with `/` too.
-            _ if name.contains(['/', '\\']) => add_input(args, arg),
-            _ => args.common.unrecognized_options.push(arg.to_owned()),
-        }
-    }
+    parser
+        .declare_with_param()
+        .long("entry")
+        .help("Set the entry point symbol")
+        .execute(|args, _modifier_stack, value| {
+            args.entry = Some(value.to_owned());
+            Ok(())
+        });
 
-    Ok(())
+    parser
+        .declare_with_param()
+        .long("subsystem")
+        .help("Set the subsystem, optionally with a version")
+        .execute(|args, _modifier_stack, value| {
+            args.subsystem = Some(parse_subsystem(value)?);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("dll")
+        .help("Build a DLL rather than an executable")
+        .execute(|args, _modifier_stack| {
+            args.is_dll = true;
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("machine")
+        .help("Set the target machine")
+        .execute(|args, _modifier_stack, value| {
+            if !value.eq_ignore_ascii_case("x64") && !value.eq_ignore_ascii_case("amd64") {
+                bail!("unsupported /MACHINE value `{value}`; only X64 is supported");
+            }
+            args.machine = CoffMachine::X86_64;
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("libpath")
+        .help("Add directory to library search path")
+        .execute(|args, _modifier_stack, value| {
+            args.common.save_dir.handle_file(value);
+            args.lib_search_path.push(Box::from(Path::new(value)));
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("defaultlib")
+        .help("Add a default library")
+        .execute(|args, _modifier_stack, value| {
+            args.default_libraries.push(value.to_owned());
+            Ok(())
+        });
+
+    // `/NODEFAULTLIB:lib` excludes one library, a bare `/NODEFAULTLIB` excludes all of them.
+    // Precedence over `/DEFAULTLIB` is applied when default libraries are resolved.
+    parser
+        .declare_with_optional_param()
+        .long("nodefaultlib")
+        .help("Ignore one default library, or all of them if no library is named")
+        .execute(|args, _modifier_stack, value| {
+            match value {
+                // An empty value is a malformed library name rather than a bare `/NODEFAULTLIB`.
+                Some("") => bail!("missing value for /NODEFAULTLIB"),
+                Some(value) => args.excluded_default_libraries.push(value.to_owned()),
+                None => args.no_default_libraries = true,
+            }
+            Ok(())
+        });
+
+    // `/DEBUG:NONE` asks for no debug info, which is what we produce, so only the forms that
+    // request a PDB warn.
+    parser
+        .declare_with_optional_param()
+        .long("debug")
+        .execute(|args, _modifier_stack, value| {
+            match value {
+                Some(value) if value.eq_ignore_ascii_case("none") => {}
+                Some(value) => args.warn_unsupported(&format!("/DEBUG:{value}"))?,
+                None => args.warn_unsupported("/DEBUG")?,
+            }
+            Ok(())
+        });
+
+    add_silently_ignored_flags(&mut parser);
+
+    parser
 }
 
-/// Returns the non-empty value attached to an option with `:`. link.exe has no separate-token form.
-fn required_value<'a>(option: &str, value: Option<&'a str>) -> Result<&'a str> {
-    match value {
-        Some(value) if !value.is_empty() => Ok(value),
-        _ => bail!("missing value for {option}"),
+fn add_silently_ignored_flags(parser: &mut ArgumentParser<CoffArgs>) {
+    for flag in SILENTLY_IGNORED_FLAGS {
+        parser
+            .declare_with_optional_param()
+            .long(flag)
+            .execute(|_args, _modifier_stack, _value| Ok(()));
     }
-}
 
-/// Rejects `NAME:value` for options that take no value.
-fn no_value(option: &str, value: Option<&str>) -> Result {
-    if value.is_some() {
-        bail!("{option} does not take a value");
+    for flag in IGNORED_NO_VALUE_FLAGS {
+        parser
+            .declare()
+            .long(flag)
+            .execute(|_args, _modifier_stack| Ok(()));
     }
-    Ok(())
 }
 
 /// Parses `/SUBSYSTEM:name[,major[.minor]]`. The version only sets optional-header fields we don't
@@ -276,15 +352,6 @@ fn parse_subsystem(value: &str) -> Result<Subsystem> {
     }
 }
 
-fn add_input(args: &mut CoffArgs, value: &str) {
-    args.common.save_dir.handle_file(value);
-    args.common.inputs.push(Input {
-        spec: InputSpec::File(Box::from(Path::new(value))),
-        search_first: None,
-        modifiers: Modifiers::default(),
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::CoffArgs;
@@ -292,6 +359,8 @@ mod tests {
     use super::parse;
     use crate::args::InputSpec;
     use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::Mutex;
 
     /// A link line of the shape that rustc emits when targeting `x86_64-pc-windows-msvc`.
     const RUSTC_LINK_LINE: &[&str] = &[
@@ -480,6 +549,14 @@ mod tests {
         assert!(args.excluded_default_libraries.is_empty());
     }
 
+    /// An empty value is a malformed library name, not the bare form, so link.exe rejects it.
+    #[test]
+    fn nodefaultlib_rejects_an_empty_value() {
+        let message = parse_error(["/NODEFAULTLIB:"]);
+
+        assert!(message.contains("missing value"), "{message}");
+    }
+
     #[test]
     fn unknown_options_are_an_error() {
         for arg in ["/FOO", "-FOO:bar"] {
@@ -503,25 +580,39 @@ mod tests {
         assert!(message.contains("/FOO"), "{message}");
     }
 
+    /// Parses `args`, returning the parsed arguments along with any warnings that were emitted.
+    fn parse_capturing_warnings<'a>(
+        args: impl IntoIterator<Item = &'a str>,
+    ) -> (CoffArgs, Vec<String>) {
+        let mut coff_args = CoffArgs::default();
+        let warnings = Arc::new(Mutex::new(Vec::new()));
+        let warnings_clone = warnings.clone();
+        coff_args.common.warning_callback = Box::new(move |warning| {
+            warnings_clone
+                .lock()
+                .unwrap()
+                .push(warning.warning().to_owned());
+        });
+
+        parse(&mut coff_args, args.into_iter()).unwrap();
+
+        let warnings = warnings.lock().unwrap().clone();
+        (coff_args, warnings)
+    }
+
     #[test]
-    fn rustc_ignored_options_are_accepted() {
+    fn rustc_silently_ignored_options_are_accepted() {
         let ignored = [
             "/NOLOGO",
-            "/DEBUG",
-            "/DEBUG:FULL",
+            "/DEBUG:NONE",
             "/NXCOMPAT",
             "/NXCOMPAT:NO",
+            "/DYNAMICBASE",
             "/DYNAMICBASE:NO",
             "/OPT:REF,NOICF",
             "/PDBALTPATH:%_PDB%",
             "/PDB:out.pdb",
-            "/IMPLIB:out.lib",
             "/NATVIS:types.natvis",
-            "/DEF:exports.def",
-            "/WHOLEARCHIVE",
-            "/WHOLEARCHIVE:foo.lib",
-            "/guard:cf",
-            "/DYNAMICBASE",
             "/MANIFEST",
             "/MANIFEST:EMBED",
             "/MANIFEST:NO",
@@ -532,11 +623,61 @@ mod tests {
         ];
 
         for arg in ignored {
-            let args = parse_args([arg, "main.obj"]);
+            let (args, warnings) = parse_capturing_warnings([arg, "main.obj"]);
 
             assert_eq!(input_paths(&args), [Path::new("main.obj")], "for {arg}");
             assert!(args.common.unrecognized_options.is_empty(), "for {arg}");
+            assert!(
+                warnings.is_empty(),
+                "unexpected warning for {arg}: {warnings:?}"
+            );
         }
+    }
+
+    #[test]
+    fn unsupported_options_warn() {
+        let unsupported = [
+            "/DEBUG",
+            "/DEBUG:FULL",
+            "/IMPLIB:out.lib",
+            "/DEF:exports.def",
+            "/WHOLEARCHIVE",
+            "/WHOLEARCHIVE:foo.lib",
+            "/guard:cf",
+        ];
+
+        for arg in unsupported {
+            let (args, warnings) = parse_capturing_warnings([arg, "main.obj"]);
+
+            assert_eq!(input_paths(&args), [Path::new("main.obj")], "for {arg}");
+            assert!(args.common.unrecognized_options.is_empty(), "for {arg}");
+            // These spellings are already canonical, so both warning paths agree on the text.
+            assert_eq!(
+                warnings,
+                [format!("{arg} is not yet supported")],
+                "for {arg}"
+            );
+        }
+    }
+
+    /// The two warning paths quote the option differently. Flags in `IGNORED_FLAGS` reach
+    /// `warn_unsupported` through the unrecognized-option fallback, which still has the whole
+    /// argument, so they echo the user's spelling. `/DEBUG` is declared, so its handler sees only
+    /// the value and has to rebuild the name in canonical form.
+    #[test]
+    fn warnings_quote_the_users_spelling_except_for_debug() {
+        let (_args, warnings) = parse_capturing_warnings(["/wholearchive:Foo.lib"]);
+        assert_eq!(warnings, ["/wholearchive:Foo.lib is not yet supported"]);
+
+        let (_args, warnings) = parse_capturing_warnings(["/debug:full"]);
+        assert_eq!(warnings, ["/DEBUG:full is not yet supported"]);
+    }
+
+    #[test]
+    fn unsupported_options_warn_with_a_dash_prefix() {
+        let (_args, warnings) = parse_capturing_warnings(["-WHOLEARCHIVE:foo.lib"]);
+
+        assert_eq!(warnings, ["-WHOLEARCHIVE:foo.lib is not yet supported"]);
     }
 
     #[test]
@@ -560,25 +701,27 @@ mod tests {
     }
 
     #[test]
-    fn path_shaped_tokens_are_inputs_not_options() {
-        let args = parse_args([
-            "/tmp/foo.obj",
-            "/usr/lib/bar.lib",
-            "./x.obj",
-            "foo.lib",
-            "/OUT:a.exe",
-        ]);
+    fn unprefixed_tokens_are_inputs() {
+        let args = parse_args(["./x.obj", "foo.lib", "sub\\dir\\y.obj", "/OUT:a.exe"]);
 
         assert_eq!(
             input_paths(&args),
             [
-                Path::new("/tmp/foo.obj"),
-                Path::new("/usr/lib/bar.lib"),
                 Path::new("./x.obj"),
-                Path::new("foo.lib")
+                Path::new("foo.lib"),
+                Path::new("sub\\dir\\y.obj")
             ]
         );
         assert_eq!(&*args.common.output, Path::new("a.exe"));
+    }
+
+    /// On Unix hosts, an absolute path starts with the same character as an option. link.exe has no
+    /// such ambiguity, so we treat these as options and report them as unrecognized.
+    #[test]
+    fn unix_absolute_paths_are_treated_as_options() {
+        let message = parse_error(["/tmp/foo.obj"]);
+
+        assert!(message.contains("unrecognized option(s)"), "{message}");
     }
 
     #[test]
