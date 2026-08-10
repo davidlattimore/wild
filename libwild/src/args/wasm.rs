@@ -27,11 +27,15 @@ pub(crate) const DEFAULT_STACK_SIZE: u32 = 64 * 1024;
 /// Default entry symbol for Wasm command modules.
 pub(crate) const DEFAULT_ENTRY: &str = "_start";
 
+/// Default export name for the module's linear memory.
+pub(crate) const DEFAULT_MEMORY_EXPORT_NAME: &str = "memory";
+
 #[derive(Debug)]
 pub struct WasmArgs {
     pub(crate) common: super::CommonArgs,
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) export_symbols: Vec<String>,
+    pub(crate) export_memory: Option<String>,
     pub(crate) z_stack_size: u32,
     // Since LLVM 22, the default option is true.
     pub(crate) stack_first: bool,
@@ -50,6 +54,12 @@ impl WasmArgs {
             ..Default::default()
         })
     }
+
+    pub(crate) fn memory_export_name(&self) -> &str {
+        self.export_memory
+            .as_deref()
+            .unwrap_or(DEFAULT_MEMORY_EXPORT_NAME)
+    }
 }
 
 impl Default for WasmArgs {
@@ -62,6 +72,7 @@ impl Default for WasmArgs {
             stack_first: true,
             entry: Some(DEFAULT_ENTRY.to_owned()),
             initial_memory: None,
+            export_memory: None,
             gc_sections: true,
         }
     }
@@ -228,6 +239,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Force a symbol to be exported")
         .execute(|args, _modifier_stack, value| {
             args.export_symbols.push(value.to_owned());
+            Ok(())
+        });
+
+    parser
+        .declare_with_optional_param()
+        .long("export-memory")
+        .help("Export the module's memory (default name \"memory\")")
+        .execute(|args, _modifier_stack, value| {
+            args.export_memory = Some(value.unwrap_or(DEFAULT_MEMORY_EXPORT_NAME).to_owned());
             Ok(())
         });
 
