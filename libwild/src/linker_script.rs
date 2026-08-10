@@ -1205,7 +1205,7 @@ fn parse_section_command<'input>(
         }
         return Ok(SectionCommand::SymbolAssignment(SymbolAssignment {
             name,
-            expr: op.expand(name, expanded),
+            expr: expanded,
         }));
     }
 
