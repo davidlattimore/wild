@@ -5148,15 +5148,7 @@ fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>]) -> MemoryType
 }
 
 fn ensure_memory_export<'data>(exports: &mut Vec<OutputExport<'data>>, name: &'data str) {
-    if let Some(existing) = exports
-        .iter_mut()
-        .find(|export| matches!(export.kind, wasmparser::ExternalKind::Memory))
-    {
-        // Honour an explicit/custom export name even if an input already exported memory.
-        existing.name = name;
-        existing.index = 0;
-        return;
-    }
+    exports.retain(|export| !matches!(export.kind, wasmparser::ExternalKind::Memory));
     exports.push(OutputExport {
         name,
         kind: wasmparser::ExternalKind::Memory,
