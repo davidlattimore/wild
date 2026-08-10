@@ -5147,15 +5147,18 @@ fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>]) -> MemoryType
     }
 }
 
-fn ensure_memory_export(exports: &mut Vec<OutputExport<'_>>) {
-    if exports
-        .iter()
-        .any(|export| matches!(export.kind, wasmparser::ExternalKind::Memory))
+fn ensure_memory_export<'data>(exports: &mut Vec<OutputExport<'data>>, name: &'data str) {
+    if let Some(existing) = exports
+        .iter_mut()
+        .find(|export| matches!(export.kind, wasmparser::ExternalKind::Memory))
     {
+        // Honour an explicit/custom export name even if an input already exported memory.
+        existing.name = name;
+        existing.index = 0;
         return;
     }
     exports.push(OutputExport {
-        name: "memory",
+        name,
         kind: wasmparser::ExternalKind::Memory,
         index: 0,
     });
@@ -5536,7 +5539,9 @@ where
             layout
                 .memories
                 .push(linker_output_memory_type(&layout_inputs));
-            ensure_memory_export(&mut layout.exports);
+        }
+        if !layout.memories.is_empty() {
+            ensure_memory_export(&mut layout.exports, symbol_db.args.memory_export_name());
         }
         layout.data_end = memory_cursor;
         let initial_pages =
