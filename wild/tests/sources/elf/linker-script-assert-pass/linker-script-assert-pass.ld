@@ -45,3 +45,10 @@ ASSERT(!DEFINED(symbol5), "symbol5 should not be defined");
 ASSERT(DEFINED(symbol6), "symbol6 must be defined");
 ASSERT(DEFINED(symbol7), "symbol7 must be defined");
 ASSERT(!DEFINED(symbol8), "symbol8 should not be defined");
+
+symbol9 = 0;
+symbol9 += 0x10;
+symbol9 /= 0x2;
+symbol9 <<= 0x3;
+symbol9 |= 0x100;
+ASSERT(symbol9 == 0x140, "symbol9 must be 0x140");
