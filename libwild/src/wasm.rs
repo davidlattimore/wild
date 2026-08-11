@@ -1601,6 +1601,13 @@ impl WasmEncodedSections {
     }
 }
 
+/// Per-object name entries.
+#[derive(Default)]
+struct ObjectNameEntries<'a> {
+    functions: Vec<(u32, &'a str)>,
+    globals: Vec<(u32, &'a str)>,
+}
+
 fn add_encoded_section_size(
     sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     part_id: PartId,
@@ -1704,41 +1711,42 @@ fn build_name_section<'data>(
         set_name_first_wins(&mut function_names, idx, "__wasm_call_ctors");
     }
 
-    let per_object_names: Vec<(Vec<(u32, &str)>, Vec<(u32, &str)>)> = layout_inputs
+    let per_object_names: Vec<ObjectNameEntries<'_>> = layout_inputs
         .par_iter()
         .zip(layout.object_index_maps.par_iter())
         .map(|(input, index_map)| {
             verbose_timing_phase!("Collect Wasm object name entries");
-            let mut obj_funcs = Vec::new();
-            let mut obj_globals = Vec::new();
+            let mut entries = ObjectNameEntries::default();
             for sym in input.symbols {
                 let Some(name) = wasm_symbol_name_str(input.data, sym) else {
                     continue;
                 };
                 match sym.kind {
                     WasmSymbolKind::Func
-                        if let Some(&out_idx) = index_map.function_indices.get(sym.index as usize)
+                        if let Some(&out_idx) =
+                            index_map.function_indices.get(sym.index as usize)
                             && out_idx != WASM_DEAD_INDEX =>
                     {
-                        obj_funcs.push((out_idx, name));
+                        entries.functions.push((out_idx, name));
                     }
                     WasmSymbolKind::Global
-                        if let Some(&out_idx) = index_map.global_indices.get(sym.index as usize)
+                        if let Some(&out_idx) =
+                            index_map.global_indices.get(sym.index as usize)
                             && out_idx != WASM_DEAD_INDEX =>
                     {
-                        obj_globals.push((out_idx, name));
+                        entries.globals.push((out_idx, name));
                     }
                     _ => {}
                 }
             }
-            (obj_funcs, obj_globals)
+            entries
         })
         .collect();
-    for (obj_funcs, obj_globals) in per_object_names {
-        for (out_idx, name) in obj_funcs {
+    for entries in per_object_names {
+        for (out_idx, name) in entries.functions {
             set_name_first_wins(&mut function_names, out_idx, name);
         }
-        for (out_idx, name) in obj_globals {
+        for (out_idx, name) in entries.globals {
             set_name_first_wins(&mut global_names, out_idx, name);
         }
     }
