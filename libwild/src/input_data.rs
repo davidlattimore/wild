@@ -903,30 +903,20 @@ impl Input {
                 })
             }
             InputSpec::Lib(lib_name) => {
+                let mut filenames = Vec::new();
                 if self.modifiers.allow_shared {
-                    let filename = format!("lib{lib_name}.so");
-                    if let Some(path) = search_for_file(
-                        file_system,
-                        args.lib_search_path(),
-                        self.search_first.as_ref(),
-                        &filename,
-                    ) {
-                        return Ok(InputPath {
-                            absolute: std::path::absolute(&path)?,
-                            original: PathBuf::from(filename),
-                        });
-                    }
+                    filenames.push(PathBuf::from(format!("lib{lib_name}.so")));
                 }
-                let filename = format!("lib{lib_name}.a");
-                if let Some(path) = search_for_file(
+                filenames.push(PathBuf::from(format!("lib{lib_name}.a")));
+                if let Some((path, filename_index)) = search_for_files(
                     file_system,
                     args.lib_search_path(),
                     self.search_first.as_ref(),
-                    &filename,
+                    &filenames,
                 ) {
                     return Ok(InputPath {
                         absolute: std::path::absolute(&path)?,
-                        original: PathBuf::from(filename),
+                        original: filenames[filename_index].clone(),
                     });
                 }
                 let filename = format!("lib{lib_name}.tbd");
@@ -981,6 +971,27 @@ fn search_for_file(
         }
     }
     None
+}
+
+fn search_for_files(
+    file_system: &impl FileSystem,
+    lib_search_path: &[Box<Path>],
+    search_first: Option<&PathBuf>,
+    filenames: &[PathBuf],
+) -> Option<(PathBuf, usize)> {
+    let search_dir = |dir: &Path| {
+        filenames.iter().enumerate().find_map(|(index, filename)| {
+            let path = dir.join(filename);
+            file_system
+                .file_type(&path)
+                .is_ok()
+                .then_some((path, index))
+        })
+    };
+
+    search_first
+        .and_then(|dir| search_dir(dir))
+        .or_else(|| lib_search_path.iter().find_map(|dir| search_dir(dir)))
 }
 
 const FILE_INDEX_BITS: u32 = 8;

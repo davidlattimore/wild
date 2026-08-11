@@ -224,10 +224,15 @@
 //!
 //! ## Inputs
 //!
-//! The following input types support an optional template parameter. This should look something
-//! like `Shared:template(--push-state --as-needed $O --pop-state):filename.c`.
+//! The following input types support optional modifiers. This should look something like
+//! `Shared:template(--push-state --as-needed $O --pop-state):filename.c` or
+//! `Shared:as(lib/libfoo.so),noadd:filename.c`.
 //! `$O` is replaced with the built input path. `$OUT_DIR` is replaced with the test build
 //! directory (same as in `LinkArgs`). At least one of `$O` or `$OUT_DIR` must appear.
+//! `as(path)` writes an Archive or Shared input to the specified path relative to `$OUT_DIR`.
+//! Shared inputs using `as(path)` must also use `SoSingleLinker`. `noadd` builds the input without
+//! adding it directly to the final linker command, allowing it to be found via mechanisms such as
+//! `-L` and `-l` instead.
 //!
 //! Object:{source-filename}[:extra-compilation-args] Builds the specified filename as a regular
 //! object and adds it to the link.
@@ -1769,6 +1774,19 @@ struct Dep {
     /// Overrides how the dependency will be added to the command-line with $O as a placeholder for
     /// the output file.
     template: Option<Vec<String>>,
+
+    /// Overrides the path at which the dependency is written, relative to the build directory.
+    output_path: Option<PathBuf>,
+
+    /// Whether to add this dependency directly to the final linker command.
+    auto_add: bool,
+}
+
+struct ParsedDepModifiers<'a> {
+    template: Option<Vec<String>>,
+    output_path: Option<PathBuf>,
+    auto_add: bool,
+    files: &'a str,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -2102,6 +2120,105 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
     }
 
     Ok(configs)
+}
+
+fn parse_dep_modifiers(arg: &str) -> Result<ParsedDepModifiers<'_>> {
+    if !arg.starts_with("template(")
+        && !arg.starts_with("as(")
+        && !arg.starts_with("noadd:")
+        && !arg.starts_with("noadd,")
+    {
+        return Ok(ParsedDepModifiers {
+            template: None,
+            output_path: None,
+            auto_add: true,
+            files: arg,
+        });
+    }
+
+    let mut depth = 0;
+    let mut separator = None;
+    for (index, ch) in arg.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                ensure!(depth > 0, "Unmatched ')' in dependency modifiers");
+                depth -= 1;
+            }
+            ':' if depth == 0 => {
+                separator = Some(index);
+                break;
+            }
+            _ => {}
+        }
+    }
+    ensure!(depth == 0, "Unclosed '(' in dependency modifiers");
+    let separator = separator.context("Dependency modifiers must be followed by ':'")?;
+    let (modifiers, arg) = arg.split_at(separator);
+    let arg = &arg[1..];
+
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut depth = 0;
+    for (index, ch) in modifiers.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&modifiers[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&modifiers[start..]);
+
+    let mut template = None;
+    let mut output_path = None;
+    let mut auto_add = true;
+    for part in parts {
+        if let Some(value) = part
+            .strip_prefix("template(")
+            .and_then(|value| value.strip_suffix(')'))
+        {
+            ensure!(template.is_none(), "Duplicate template modifier");
+            let template_parts = value.split(' ').map(str::to_owned).collect_vec();
+            if !template_parts.iter().any(|a| {
+                a.contains(TEMPLATE_PLACEHOLDER) || a.contains(TEMPLATE_OUT_DIR_PLACEHOLDER)
+            }) {
+                bail!(
+                    "Template `{value}` must contain {TEMPLATE_PLACEHOLDER} or \
+                     {TEMPLATE_OUT_DIR_PLACEHOLDER}"
+                );
+            }
+            template = Some(template_parts);
+        } else if let Some(value) = part
+            .strip_prefix("as(")
+            .and_then(|value| value.strip_suffix(')'))
+        {
+            ensure!(output_path.is_none(), "Duplicate as modifier");
+            let path = PathBuf::from(value);
+            ensure!(!path.as_os_str().is_empty(), "as() path must not be empty");
+            ensure!(
+                path.components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_))),
+                "as() path must be relative to the build directory and must not contain '.' or '..'"
+            );
+            output_path = Some(path);
+        } else if part == "noadd" {
+            ensure!(auto_add, "Duplicate noadd modifier");
+            auto_add = false;
+        } else {
+            bail!("Unknown dependency modifier `{part}`");
+        }
+    }
+
+    Ok(ParsedDepModifiers {
+        template,
+        output_path,
+        auto_add,
+        files: arg,
+    })
 }
 
 fn process_directive(
@@ -2464,24 +2581,17 @@ fn process_directive(
         | "LinkerScript"
         | "AugmentLinkerScript") => {
             let input_type = InputType::from_str(input_type)?;
-
-            let mut arg = arg;
-            let mut template = None;
-            if let Some(rest) = arg.strip_prefix("template(") {
-                let (t, rest) = rest
-                    .split_once("):")
-                    .with_context(|| format!("Missing '):' in {arg}"))?;
-                let parts = t.split(' ').map(|p| p.to_owned()).collect_vec();
-                if !parts.iter().any(|a| {
-                    a.contains(TEMPLATE_PLACEHOLDER) || a.contains(TEMPLATE_OUT_DIR_PLACEHOLDER)
-                }) {
-                    bail!(
-                        "Template `{t}` must contain {TEMPLATE_PLACEHOLDER} or \
-                         {TEMPLATE_OUT_DIR_PLACEHOLDER}"
-                    );
-                }
-                template = Some(parts);
-                arg = rest;
+            let ParsedDepModifiers {
+                template,
+                output_path,
+                auto_add,
+                files: arg,
+            } = parse_dep_modifiers(arg)?;
+            if output_path.is_some() {
+                ensure!(
+                    matches!(input_type, InputType::Archive | InputType::SharedObject),
+                    "as() is only supported for Archive and Shared inputs"
+                );
             }
 
             let files = arg
@@ -2499,6 +2609,8 @@ fn process_directive(
                 files,
                 input_type,
                 template,
+                output_path,
+                auto_add,
             })
         }
         "RemoveSection" => config.remove_sections.push(arg.to_owned()),
@@ -2600,6 +2712,8 @@ impl ProgramInputs {
                 )],
                 input_type: InputType::Object,
                 template: None,
+                output_path: None,
+                auto_add: true,
             },
             config,
             linker,
@@ -2976,6 +3090,7 @@ struct LinkerInput {
     command: Option<LinkCommand>,
     messages: Option<LinkerMessages>,
     template: Option<Vec<String>>,
+    auto_add: bool,
 }
 
 impl LinkerInput {
@@ -2986,6 +3101,7 @@ impl LinkerInput {
             command: None,
             messages: None,
             template: None,
+            auto_add: true,
         }
     }
 
@@ -2996,6 +3112,7 @@ impl LinkerInput {
             command: Some(command),
             messages: Some(messages),
             template: None,
+            auto_add: true,
         }
     }
 
@@ -3006,6 +3123,7 @@ impl LinkerInput {
             command: None,
             messages: None,
             template: None,
+            auto_add: true,
         }
     }
 }
@@ -3032,7 +3150,14 @@ fn build_linker_input(
     if let [single_file] = dep.files.as_slice()
         && single_file.path.extension().is_some_and(|e| e == "a")
     {
-        return Ok(LinkerInput::new(single_file.path.clone()));
+        ensure!(
+            dep.output_path.is_none(),
+            "as() is not supported when using a prebuilt archive"
+        );
+        let mut input = LinkerInput::new(single_file.path.clone());
+        input.template = dep.template.clone();
+        input.auto_add = dep.auto_add;
+        return Ok(input);
     }
 
     let config = config.config_for_deps();
@@ -3062,10 +3187,15 @@ fn build_linker_input(
         .file_stem()
         .context("Invalid source filename")?;
 
-    let archive_path = config
-        .build_dir()
-        .join(archive_basename)
-        .with_extension("a");
+    let archive_path = dep.output_path.as_ref().map_or_else(
+        || {
+            config
+                .build_dir()
+                .join(archive_basename)
+                .with_extension("a")
+        },
+        |path| config.build_dir().join(path),
+    );
 
     let mut linker_input = match dep.input_type {
         InputType::Archive
@@ -3073,6 +3203,7 @@ fn build_linker_input(
         | InputType::FatArchive
         | InputType::FatArchive64 => {
             let thin = matches!(dep.input_type, InputType::ThinArchive);
+            std::fs::create_dir_all(archive_path.parent().unwrap())?;
             if !is_newer(&archive_path, objects.iter().map(|o| &o.path)) {
                 make_archive(&archive_path, &objects, thin, &config)?;
             }
@@ -3136,6 +3267,12 @@ fn build_linker_input(
         | InputType::Relocatable
         | InputType::FatDylib
         | InputType::FatDylib64 => {
+            if dep.output_path.is_some() {
+                ensure!(
+                    config.so_single_linker.is_some(),
+                    "Shared inputs using as() must also set SoSingleLinker"
+                );
+            }
             let linker = config.so_single_linker.as_ref().unwrap_or(linker);
             let kind = if dep.input_type == InputType::Relocatable {
                 IntermediateKind::Partial
@@ -3143,7 +3280,11 @@ fn build_linker_input(
                 IntermediateKind::Shared
             };
             let ext = config.platform.intermediate_extension(kind)?;
-            let obj_path = first_obj_path.with_extension(format!("{linker}.{ext}"));
+            let obj_path = dep.output_path.as_ref().map_or_else(
+                || first_obj_path.with_extension(format!("{linker}.{ext}")),
+                |path| config.build_dir().join(path),
+            );
+            std::fs::create_dir_all(obj_path.parent().unwrap())?;
             let mut out =
                 linker.link_intermediate(&objects, &obj_path, &config, cross_arch, kind)?;
             let assertions = Assertions::default();
@@ -3176,6 +3317,7 @@ fn build_linker_input(
     };
 
     linker_input.template = dep.template.clone();
+    linker_input.auto_add = dep.auto_add;
 
     Ok(linker_input)
 }
@@ -4509,6 +4651,9 @@ fn add_inputs_to_command(config: &Config, inputs: &[LinkerInput], command: &mut 
     }
 
     for input in inputs {
+        if !input.auto_add {
+            continue;
+        }
         command.args(input.prefix_arg);
         if let Some(template) = input.template.as_ref() {
             let path_str = input.path.to_str().expect("Non-UTF-8 paths not supported");
