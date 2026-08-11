@@ -85,6 +85,7 @@ pub(crate) mod thunks;
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tidy_tests;
 pub(crate) mod timing;
+pub(crate) mod trie;
 pub(crate) mod validation;
 pub(crate) mod value_flags;
 pub(crate) mod verification;

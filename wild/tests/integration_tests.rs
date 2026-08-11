@@ -43,12 +43,14 @@
 //! For Wasm modules, this checks that the name is present in the export section. Symbol properties
 //! are not yet supported for Wasm.
 //!
-//! ExpectDynSym:symbol-name As for ExpectSym, but for dynamic symbols.
+//! ExpectDynSym:symbol-name As for ExpectSym, but for dynamic symbols. For Mach-O, checks the
+//! exports trie.
 //!
 //! NoSym:symbol-name Checks that the specified symbol name is not defined in either .symtab or
 //! .dynsym. For Wasm modules, checks that the name is not present in the export section.
 //!
-//! NoDynSym:symbol-name Checks that the specified symbol name is not defined in .dynsym.
+//! NoDynSym:symbol-name Checks that the specified symbol name is not defined in .dynsym. For
+//! Mach-O, checks the exports trie.
 //!
 //! ExpectEntry:symbol-name|address Checks that the executable entry point refers to the specified
 //! symbol or numeric address. Symbols are supported for ELF and Mach-O. Numeric addresses are
@@ -346,8 +348,11 @@ use object::ObjectSection;
 use object::ObjectSymbol as _;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
+use object::macho::LC_DYLD_EXPORTS_TRIE;
+use object::macho::SEG_LINKEDIT;
 use object::macho::SEG_TEXT;
 use object::read::elf::ProgramHeader;
+use object::read::macho::ExportData;
 use object::read::macho::LoadCommandVariant;
 use object::read::macho::Segment;
 use regex::Regex;
@@ -4785,6 +4790,7 @@ impl Assertions {
             expected_dynsym_entries: self.expected_dynsym_entries.clone(),
             expected_entry: self.expected_entry.clone(),
             no_sym: self.no_sym.clone(),
+            no_dynsym: self.no_dynsym.clone(),
             does_not_contain: self.does_not_contain.clone(),
             contains_strings: self.contains_strings.clone(),
             expect_dynamic: self.expect_dynamic,
@@ -4801,12 +4807,23 @@ impl Assertions {
 
         self.verify_file_kind(obj)?;
         verify_symbol_assertions(obj, &self.expected_symtab_entries, obj.symbols(), "symtab")?;
+        let exports = verify_macho_exports(obj, bytes)?;
+        verify_macho_export_assertions(&exports, &self.expected_dynsym_entries)?;
+
         verify_symbol_assertions(
             obj,
             &self.expected_dynsym_entries,
-            obj.dynamic_symbols(),
-            "dynsym",
+            obj.symbols(),
+            "Mach-O symbol table",
         )?;
+
+        for absent in self.no_dynsym.iter().chain(&self.no_sym) {
+            ensure!(
+                !exports.contains_key(absent.as_bytes()),
+                "Symbol `{absent}` should not exist in Mach-O exports trie"
+            );
+        }
+
         self.verify_macho_entry(obj)?;
         self.verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
         self.verify_expected_sections(obj)?;
@@ -5705,6 +5722,153 @@ fn verify_no_overlapping_segments(obj: &object::File) -> Result {
         }
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct MachOExport {
+    address: u64,
+    flags: object::macho::ExportSymbolFlags,
+}
+
+fn verify_macho_export_assertions(
+    exports: &HashMap<Vec<u8>, MachOExport>,
+    assertions: &[ExpectedSymtabEntry],
+) -> Result {
+    for expected in assertions {
+        let export = exports.get(expected.name.as_bytes()).with_context(|| {
+            format!(
+                "Missing expected symbol in Mach-O exports trie: {}",
+                expected.name
+            )
+        })?;
+
+        if let Some(expected_address) = expected.assertions.absolute_address {
+            ensure!(
+                export.address == expected_address,
+                "Expected Mach-O export `{}` to have address {expected_address:#x}, but it had \
+                 {:#x}",
+                expected.name,
+                export.address
+            );
+        }
+
+        if let Some(expected_binding) = expected.assertions.binding.as_deref() {
+            ensure!(
+                matches!(expected_binding, "global" | "weak"),
+                "Mach-O export `{}` has invalid expected binding `{expected_binding}`; expected \
+                 global or weak",
+                expected.name
+            );
+
+            let actual_binding = if export
+                .flags
+                .contains(object::macho::EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION)
+            {
+                "weak"
+            } else {
+                "global"
+            };
+
+            ensure!(
+                actual_binding == expected_binding,
+                "Expected Mach-O export `{}` to have binding `{expected_binding}`, but it had \
+                 `{actual_binding}`",
+                expected.name
+            );
+        }
+    }
+    Ok(())
+}
+
+fn verify_macho_exports(obj: &object::File, bytes: &[u8]) -> Result<HashMap<Vec<u8>, MachOExport>> {
+    let object::File::MachO64(file) = obj else {
+        return Ok(HashMap::new());
+    };
+
+    let e = file.endianness();
+    let mut load_commands = file.macho_load_commands()?;
+    let mut text_vmaddr = None;
+    let mut linkedit_range = None;
+    let mut exports_command = None;
+
+    while let Some(load_command) = load_commands.next()? {
+        match load_command.variant()? {
+            LoadCommandVariant::Segment64(segment, _) => match segment.name() {
+                name if name == SEG_TEXT.as_bytes() => {
+                    text_vmaddr = Some(segment.vmaddr.get(e));
+                }
+                name if name == SEG_LINKEDIT.as_bytes() => {
+                    let start = segment.fileoff.get(e);
+                    let end = start
+                        .checked_add(segment.filesize.get(e))
+                        .context("Mach-O __LINKEDIT range overflow")?;
+                    linkedit_range = Some(start..end);
+                }
+                _ => {}
+            },
+            LoadCommandVariant::LinkeditData(command)
+                if command.cmd.get(e) == LC_DYLD_EXPORTS_TRIE =>
+            {
+                ensure!(
+                    exports_command.replace(command).is_none(),
+                    "Multiple LC_DYLD_EXPORTS_TRIE commands"
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let Some(command) = exports_command else {
+        return Ok(HashMap::new());
+    };
+
+    let image_base = text_vmaddr.context("Missing Mach-O __TEXT segment")?;
+    let linkedit_range = linkedit_range.context("Missing Mach-O __LINKEDIT segment")?;
+    let data_start = u64::from(command.dataoff.get(e));
+
+    let data_end = data_start
+        .checked_add(u64::from(command.datasize.get(e)))
+        .context("Mach-O exports trie range overflow")?;
+
+    ensure!(
+        data_start >= linkedit_range.start && data_end <= linkedit_range.end,
+        "Mach-O exports trie range {data_start:#x}..{data_end:#x} is outside __LINKEDIT \
+         {:#x}..{:#x}",
+        linkedit_range.start,
+        linkedit_range.end
+    );
+
+    let mut exports = HashMap::new();
+    for export in command.exports_trie(e, bytes)? {
+        let export = export?;
+        let name = export.name().to_vec();
+
+        let ExportData::Regular { address } = export.data() else {
+            bail!(
+                "Unsupported non-regular Mach-O export `{}`",
+                String::from_utf8_lossy(&name)
+            );
+        };
+
+        let flags = export.flags();
+        let address = if flags.kind() == object::macho::EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE {
+            *address
+        } else {
+            image_base
+                .checked_add(*address)
+                .context("Mach-O export address overflow")?
+        };
+
+        ensure!(
+            exports
+                .insert(name.clone(), MachOExport { address, flags })
+                .is_none(),
+            "Duplicate symbol in Mach-O exports trie: {}",
+            String::from_utf8_lossy(&name)
+        );
+    }
+
+    Ok(exports)
 }
 
 fn verify_chained_fixups_segment_offsets(obj: &object::File, bytes: &[u8]) -> Result {

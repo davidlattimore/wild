@@ -612,6 +612,10 @@ fn update_dynamic_symbol_resolutions<'data, P: Platform>(
     layouts: &[GroupLayout<'data, P>],
     resolutions: &mut [Option<Resolution<P>>],
 ) {
+    if P::DYNSYM_SECTION_ID.is_none() {
+        return;
+    }
+
     timing_phase!("Update dynamic symbol resolutions");
 
     let Some(FileLayout::Epilogue(epilogue)) = layouts.last().and_then(|g| g.files.last()) else {
