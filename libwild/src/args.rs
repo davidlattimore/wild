@@ -649,8 +649,8 @@ struct OptionSyntax {
     case_insensitive: bool,
 
     /// Whether an option that takes a value may instead take it from the following token. When
-    /// false, as for link.exe, the value must be attached to the option name, so a missing value is
-    /// an error, as is a value supplied to an option that doesn't take one.
+    /// false, as for link.exe, the value must be attached to the option name, so a missing value
+    /// is an error, as is a value supplied to an option that doesn't take one.
     allows_separate_value: bool,
 }
 
@@ -688,8 +688,8 @@ impl OptionSyntax {
 }
 
 struct ArgumentParser<T> {
-    options: HashMap<String, OptionHandler<T>>, // Long option lookup
-    short_options: HashMap<String, OptionHandler<T>>, // Short option lookup
+    options: HashMap<&'static str, OptionHandler<T>>, // Long option lookup
+    short_options: HashMap<&'static str, OptionHandler<T>>, // Short option lookup
     prefix_options: HashMap<&'static str, PrefixOptionHandler<T>>, // For options like -L, -l, etc.
     syntax: OptionSyntax,
 }
@@ -1042,9 +1042,7 @@ impl<T: platform::Args> ArgumentParser<T> {
 
         // Add short-only options
         for (short_char, handler) in &self.short_options {
-            if !processed_short_options.contains(short_char.as_str())
-                && !handler.help_text.is_empty()
-            {
+            if !processed_short_options.contains(short_char) && !handler.help_text.is_empty() {
                 let short_suffix = handler.handler.help_suffix_short();
                 help_to_options
                     .entry(handler.help_text)
@@ -1079,16 +1077,27 @@ impl<T: platform::Args> ArgumentParser<T> {
 
 impl<T> ArgumentParser<T> {
     fn insert_long_option(&mut self, name: &'static str, handler: OptionHandler<T>) {
-        let key = self.syntax.lookup_key(name).into_owned();
+        self.assert_valid_key(name);
         assert!(
-            self.options.insert(key, handler).is_none(),
+            self.options.insert(name, handler).is_none(),
             "Option --{name} registered more than once"
         );
     }
 
     fn insert_short_option(&mut self, name: &'static str, handler: OptionHandler<T>) {
-        let key = self.syntax.lookup_key(name).into_owned();
-        self.short_options.insert(key, handler);
+        self.assert_valid_key(name);
+        self.short_options.insert(name, handler);
+    }
+
+    /// Options on case-insensitive platforms must be declared in lowercase, since arguments are
+    /// lowercased before they're looked up.
+    fn assert_valid_key(&self, name: &'static str) {
+        if self.syntax.case_insensitive {
+            assert!(
+                !name.contains(|c: char| c.is_ascii_uppercase()),
+                "Option {name} must be declared in lowercase"
+            );
+        }
     }
 }
 
