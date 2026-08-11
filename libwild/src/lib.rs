@@ -266,6 +266,7 @@ impl<F: FileSystem> Linker<F> {
         }
 
         match args {
+            Args::Coff(_) => crate::bail!("PE/COFF (Windows) support is not yet implemented"),
             Args::Elf(elf_args) => crate::elf::link_for_arch(self, elf_args),
             Args::MachO(macho_args) => crate::macho::link_for_arch(self, macho_args),
             Args::Wasm(wasm_args) => crate::wasm::link_for_arch(self, wasm_args),

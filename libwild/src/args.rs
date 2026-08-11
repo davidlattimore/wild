@@ -27,6 +27,7 @@ use itertools::Itertools;
 use jobserver::Acquired;
 use jobserver::Client;
 use rayon::ThreadPoolBuilder;
+use std::borrow::Cow;
 use std::fmt::Display;
 use std::io::Write;
 use std::num::NonZeroUsize;
@@ -34,6 +35,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub mod coff;
 pub mod elf;
 pub mod macho;
 pub mod wasm;
@@ -140,6 +142,7 @@ impl Args {
         };
 
         let mut args = match platform {
+            PlatformKind::Coff => Args::Coff(coff::CoffArgs::new()?),
             PlatformKind::Elf => Args::Elf(elf::ElfArgs::new()?),
             PlatformKind::MachO => Args::MachO(macho::MachOArgs::new()?),
             PlatformKind::Wasm => Args::Wasm(wasm::WasmArgs::new()?),
@@ -171,6 +174,7 @@ impl Args {
         }
 
         match self {
+            Args::Coff(args) => args.parse(input),
             Args::Elf(args) => args.parse(input),
             Args::MachO(args) => args.parse(input),
             Args::Wasm(args) => args.parse(input),
@@ -193,6 +197,7 @@ impl Args {
 
     pub(crate) fn common(&self) -> &CommonArgs {
         match self {
+            Args::Coff(coff_args) => &coff_args.common,
             Args::Elf(elf_args) => &elf_args.common,
             Args::MachO(macho_args) => &macho_args.common,
             Args::Wasm(wasm_args) => &wasm_args.common,
@@ -201,6 +206,7 @@ impl Args {
 
     pub(crate) fn common_mut(&mut self) -> &mut CommonArgs {
         match self {
+            Args::Coff(coff_args) => &mut coff_args.common,
             Args::Elf(elf_args) => &mut elf_args.common,
             Args::MachO(macho_args) => &mut macho_args.common,
             Args::Wasm(wasm_args) => &mut wasm_args.common,
@@ -216,13 +222,14 @@ impl Args {
                     crate::arch::SUPPORTED_EMULATIONS
                 )?;
             }
-            Args::MachO(_) | Args::Wasm(_) => (),
+            Args::Coff(_) | Args::MachO(_) | Args::Wasm(_) => (),
         }
         Ok(())
     }
 }
 
 enum PlatformKind {
+    Coff,
     Elf,
     MachO,
     Wasm,
@@ -241,7 +248,7 @@ impl PlatformKind {
         match flavor {
             "gnu" | "ld" => Ok(PlatformKind::Elf),
             "darwin" | "ld64" => Ok(PlatformKind::MachO),
-            "link" => bail!("Windows (link flavor) is not yet supported"),
+            "link" => Ok(PlatformKind::Coff),
             "wasm" | "ld-wasm" => Ok(PlatformKind::Wasm),
             _ => bail!(
                 "Unknown flavor '{}'. Valid flavors: gnu, darwin, link",
@@ -252,6 +259,12 @@ impl PlatformKind {
 
     fn from_executable_name(name: &str) -> Option<Self> {
         let base_name = Path::new(name).file_stem().and_then(|n| n.to_str())?;
+
+        // MSVC-world tools are commonly invoked as `LINK.EXE`, so match those names without regard
+        // to case.
+        if base_name.eq_ignore_ascii_case("link") || base_name.eq_ignore_ascii_case("lld-link") {
+            return Some(PlatformKind::Coff);
+        }
 
         match base_name {
             "ld" => Some(PlatformKind::Elf),
@@ -501,6 +514,7 @@ pub struct ThreadPool {
 // TODO: remove
 #[allow(clippy::large_enum_variant)]
 pub enum Args {
+    Coff(coff::CoffArgs),
     Elf(elf::ElfArgs),
     MachO(macho::MachOArgs),
     Wasm(wasm::WasmArgs),
@@ -509,6 +523,7 @@ pub enum Args {
 impl std::fmt::Debug for Args {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Args::Coff(args) => args.fmt(f),
             Args::Elf(args) => args.fmt(f),
             Args::MachO(args) => args.fmt(f),
             Args::Wasm(args) => args.fmt(f),
@@ -621,10 +636,62 @@ pub(crate) enum UnresolvedSymbols {
     IgnoreAll,
 }
 
+/// Describes how a platform spells its options. GNU-style platforms use the default, whereas
+/// link.exe-style platforms accept a `/` prefix, ignore case and attach values with `:`.
+#[derive(Clone, Copy)]
+struct OptionSyntax {
+    /// Prefixes that introduce an option. Matched in order, so longer prefixes must come first.
+    prefixes: &'static [&'static str],
+
+    /// The character that attaches a value to an option name, e.g. `=` in `--foo=bar`.
+    value_separator: char,
+
+    case_insensitive: bool,
+
+    /// Whether an option that takes a value may instead take it from the following token. When
+    /// false, as for link.exe, the value must be attached to the option name, so a missing value
+    /// is an error, as is a value supplied to an option that doesn't take one.
+    allows_separate_value: bool,
+}
+
+impl Default for OptionSyntax {
+    fn default() -> Self {
+        Self {
+            prefixes: &["--", "-"],
+            value_separator: '=',
+            case_insensitive: false,
+            allows_separate_value: true,
+        }
+    }
+}
+
+impl OptionSyntax {
+    /// Strips the first matching option prefix from `arg`, returning the rest of the argument.
+    fn strip_prefix<'a>(&self, arg: &'a str) -> Option<&'a str> {
+        self.prefixes
+            .iter()
+            .find_map(|prefix| arg.strip_prefix(prefix))
+    }
+
+    fn starts_with_prefix(&self, arg: &str) -> bool {
+        self.strip_prefix(arg).is_some()
+    }
+
+    /// Returns the key under which an option with this name should be stored and looked up.
+    fn lookup_key<'a>(&self, name: &'a str) -> Cow<'a, str> {
+        if self.case_insensitive {
+            Cow::Owned(name.to_ascii_lowercase())
+        } else {
+            Cow::Borrowed(name)
+        }
+    }
+}
+
 struct ArgumentParser<T> {
     options: HashMap<&'static str, OptionHandler<T>>, // Long option lookup
     short_options: HashMap<&'static str, OptionHandler<T>>, // Short option lookup
     prefix_options: HashMap<&'static str, PrefixOptionHandler<T>>, // For options like -L, -l, etc.
+    syntax: OptionSyntax,
 }
 
 impl<T: platform::Args> Default for ArgumentParser<T> {
@@ -636,10 +703,16 @@ impl<T: platform::Args> Default for ArgumentParser<T> {
 impl<T: platform::Args> ArgumentParser<T> {
     #[must_use]
     fn new() -> Self {
+        Self::with_syntax(OptionSyntax::default())
+    }
+
+    #[must_use]
+    fn with_syntax(syntax: OptionSyntax) -> Self {
         Self {
             options: HashMap::new(),
             short_options: HashMap::new(),
             prefix_options: HashMap::new(),
+            syntax,
         }
     }
 
@@ -709,101 +782,67 @@ impl<T: platform::Args> ArgumentParser<T> {
             return Ok(());
         }
 
-        if let Some(stripped) = strip_option(arg) {
-            // Check for option with '=' syntax
-            if let Some(eq_pos) = stripped.find('=') {
-                let option_name = &stripped[..eq_pos];
-                let value = &stripped[eq_pos + 1..];
+        if let Some(stripped) = self.syntax.strip_prefix(arg) {
+            // Check for an option that carries its value attached, e.g. `--foo=bar` or `/FOO:bar`.
+            if let Some(sep_pos) = stripped.find(self.syntax.value_separator) {
+                let option_name = &stripped[..sep_pos];
+                let value = &stripped[sep_pos + self.syntax.value_separator.len_utf8()..];
 
-                if let Some(handler) = self.options.get(option_name) {
+                // The option as the user wrote it, without the value, for error messages.
+                let arg_name = &arg[..arg.len() - stripped.len() + sep_pos];
+
+                if let Some(handler) = self
+                    .options
+                    .get(self.syntax.lookup_key(option_name).as_ref())
+                {
                     match &handler.handler {
-                        OptionHandlerFn::WithParam(f) => f(args, modifier_stack, value)?,
+                        OptionHandlerFn::WithParam(f) => {
+                            ensure!(
+                                !value.is_empty() || self.syntax.allows_separate_value,
+                                "missing value for {arg_name}"
+                            );
+                            f(args, modifier_stack, value)?;
+                        }
                         OptionHandlerFn::WithThreeParams(_) => {
-                            bail!("multi-argument option cannot use the '=' syntax")
+                            bail!(
+                                "multi-argument option cannot use the '{}' syntax",
+                                self.syntax.value_separator
+                            )
                         }
                         OptionHandlerFn::OptionalParam(f) => f(args, modifier_stack, Some(value))?,
-                        OptionHandlerFn::NoParam(_) => return Ok(()),
+                        OptionHandlerFn::NoParam(_) => {
+                            ensure!(
+                                self.syntax.allows_separate_value,
+                                "{arg} does not take a value"
+                            );
+                            return Ok(());
+                        }
                     }
                     return Ok(());
                 }
             } else {
-                if stripped == "build-id"
-                    && let Some(handler) = self.options.get(stripped)
-                    && let OptionHandlerFn::WithParam(f) = &handler.handler
-                {
-                    f(args, modifier_stack, "fast")?;
-                    return Ok(());
-                }
+                let key = self.syntax.lookup_key(stripped);
 
-                if let Some(handler) = self.options.get(stripped) {
-                    match &handler.handler {
-                        OptionHandlerFn::NoParam(f) => f(args, modifier_stack)?,
-                        OptionHandlerFn::WithParam(f) => {
-                            let next_arg = input
-                                .next()
-                                .with_context(|| format!("Missing argument to {arg}"))?;
-                            f(args, modifier_stack, next_arg.as_ref())?;
-                        }
-                        OptionHandlerFn::WithThreeParams(f) => {
-                            let first_arg = input
-                                .next()
-                                .with_context(|| format!("Missing first argument to {arg}"))?;
-                            let second_arg = input
-                                .next()
-                                .with_context(|| format!("Missing second argument to {arg}"))?;
-                            let third_arg = input
-                                .next()
-                                .with_context(|| format!("Missing third argument to {arg}"))?;
-                            f(
-                                args,
-                                modifier_stack,
-                                first_arg.as_ref(),
-                                second_arg.as_ref(),
-                                third_arg.as_ref(),
-                            )?;
-                        }
-                        OptionHandlerFn::OptionalParam(f) => {
-                            f(args, modifier_stack, None)?;
-                        }
+                if let Some(handler) = self.options.get(key.as_ref()) {
+                    // `--build-id` on its own means `--build-id=fast` rather than taking the
+                    // following token as its value.
+                    if key.as_ref() == "build-id"
+                        && let OptionHandlerFn::WithParam(f) = &handler.handler
+                    {
+                        f(args, modifier_stack, "fast")?;
+                        return Ok(());
                     }
+
+                    self.invoke_handler(args, modifier_stack, arg, &handler.handler, input)?;
                     return Ok(());
                 }
             }
         }
 
         if arg.starts_with('-') && !arg.starts_with("--") && arg.len() > 1 {
-            let option_name = &arg[1..];
-            if let Some(handler) = self.short_options.get(option_name) {
-                match &handler.handler {
-                    OptionHandlerFn::NoParam(f) => f(args, modifier_stack)?,
-                    OptionHandlerFn::WithParam(f) => {
-                        let next_arg = input
-                            .next()
-                            .with_context(|| format!("Missing argument to {arg}"))?;
-                        f(args, modifier_stack, next_arg.as_ref())?;
-                    }
-                    OptionHandlerFn::WithThreeParams(f) => {
-                        let first_arg = input
-                            .next()
-                            .with_context(|| format!("Missing first argument to {arg}"))?;
-                        let second_arg = input
-                            .next()
-                            .with_context(|| format!("Missing second argument to {arg}"))?;
-                        let third_arg = input
-                            .next()
-                            .with_context(|| format!("Missing third argument to {arg}"))?;
-                        f(
-                            args,
-                            modifier_stack,
-                            first_arg.as_ref(),
-                            second_arg.as_ref(),
-                            third_arg.as_ref(),
-                        )?;
-                    }
-                    OptionHandlerFn::OptionalParam(f) => {
-                        f(args, modifier_stack, None)?;
-                    }
-                }
+            let option_name = self.syntax.lookup_key(&arg[1..]);
+            if let Some(handler) = self.short_options.get(option_name.as_ref()) {
+                self.invoke_handler(args, modifier_stack, arg, &handler.handler, input)?;
                 return Ok(());
             }
         }
@@ -852,8 +891,8 @@ impl<T: platform::Args> ArgumentParser<T> {
             }
         }
 
-        if arg.starts_with('-') {
-            if let Some(stripped) = strip_option(arg)
+        if self.syntax.starts_with_prefix(arg) {
+            if let Some(stripped) = self.syntax.strip_prefix(arg)
                 && args.is_ignored_flag(stripped)
             {
                 args.warn_unsupported(arg)?;
@@ -871,6 +910,59 @@ impl<T: platform::Args> ArgumentParser<T> {
             search_first: None,
             modifiers: *modifier_stack.last().unwrap(),
         });
+
+        Ok(())
+    }
+
+    /// Runs `handler`, taking any values it needs from `input`. `arg` is the argument as it was
+    /// written, for use in error messages.
+    fn invoke_handler<S: AsRef<str>, I: Iterator<Item = S>>(
+        &self,
+        args: &mut T,
+        modifier_stack: &mut Vec<Modifiers>,
+        arg: &str,
+        handler: &OptionHandlerFn<T>,
+        input: &mut I,
+    ) -> Result<()> {
+        if !self.syntax.allows_separate_value
+            && matches!(
+                handler,
+                OptionHandlerFn::WithParam(_) | OptionHandlerFn::WithThreeParams(_)
+            )
+        {
+            bail!("missing value for {arg}");
+        }
+
+        match handler {
+            OptionHandlerFn::NoParam(f) => f(args, modifier_stack)?,
+            OptionHandlerFn::WithParam(f) => {
+                let next_arg = input
+                    .next()
+                    .with_context(|| format!("Missing argument to {arg}"))?;
+                f(args, modifier_stack, next_arg.as_ref())?;
+            }
+            OptionHandlerFn::WithThreeParams(f) => {
+                let first_arg = input
+                    .next()
+                    .with_context(|| format!("Missing first argument to {arg}"))?;
+                let second_arg = input
+                    .next()
+                    .with_context(|| format!("Missing second argument to {arg}"))?;
+                let third_arg = input
+                    .next()
+                    .with_context(|| format!("Missing third argument to {arg}"))?;
+                f(
+                    args,
+                    modifier_stack,
+                    first_arg.as_ref(),
+                    second_arg.as_ref(),
+                    third_arg.as_ref(),
+                )?;
+            }
+            OptionHandlerFn::OptionalParam(f) => {
+                f(args, modifier_stack, None)?;
+            }
+        }
 
         Ok(())
     }
@@ -985,10 +1077,27 @@ impl<T: platform::Args> ArgumentParser<T> {
 
 impl<T> ArgumentParser<T> {
     fn insert_long_option(&mut self, name: &'static str, handler: OptionHandler<T>) {
+        self.assert_valid_key(name);
         assert!(
             self.options.insert(name, handler).is_none(),
             "Option --{name} registered more than once"
         );
+    }
+
+    fn insert_short_option(&mut self, name: &'static str, handler: OptionHandler<T>) {
+        self.assert_valid_key(name);
+        self.short_options.insert(name, handler);
+    }
+
+    /// Options on case-insensitive platforms must be declared in lowercase, since arguments are
+    /// lowercased before they're looked up.
+    fn assert_valid_key(&self, name: &'static str) {
+        if self.syntax.case_insensitive {
+            assert!(
+                !name.contains(|c: char| c.is_ascii_uppercase()),
+                "Option {name} must be declared in lowercase"
+            );
+        }
     }
 }
 
@@ -1174,8 +1283,7 @@ impl<'a, T> OptionDeclaration<'a, T, NoParam> {
 
         for option in self.short_names {
             self.parser
-                .short_options
-                .insert(option, option_handler.clone());
+                .insert_short_option(option, option_handler.clone());
         }
     }
 }
@@ -1197,8 +1305,7 @@ impl<'a, T> OptionDeclaration<'a, T, WithParam> {
 
         for option in self.short_names {
             self.parser
-                .short_options
-                .insert(option, option_handler.clone());
+                .insert_short_option(option, option_handler.clone());
         }
 
         for prefix in self.prefixes {
@@ -1227,8 +1334,7 @@ impl<'a, T> OptionDeclaration<'a, T, WithThreeParams> {
 
         for option in self.short_names {
             self.parser
-                .short_options
-                .insert(option, option_handler.clone());
+                .insert_short_option(option, option_handler.clone());
         }
     }
 }
@@ -1247,14 +1353,9 @@ impl<'a, T> OptionDeclaration<'a, T, WithOptionalParam> {
 
         for option in self.short_names {
             self.parser
-                .short_options
-                .insert(option, option_handler.clone());
+                .insert_short_option(option, option_handler.clone());
         }
     }
-}
-
-fn strip_option(arg: &str) -> Option<&str> {
-    arg.strip_prefix("--").or(arg.strip_prefix('-'))
 }
 
 pub(crate) fn parse_number(s: &str) -> Result<u64> {
@@ -1501,6 +1602,9 @@ mod tests {
 
         let args = Args::new(|| ["ld64.wild", "-flavor", "gnu"].into_iter()).unwrap();
         assert_matches!(args, Args::Elf(_));
+
+        let args = Args::new(|| ["wild", "-flavor", "link"].into_iter()).unwrap();
+        assert_matches!(args, Args::Coff(_));
 
         assert!(Args::new(|| ["ld.wild", "-flavor", "invalid"].into_iter()).is_err());
         assert!(Args::new(|| ["ld.wild", "-flavor"].into_iter()).is_err());
