@@ -119,16 +119,25 @@ fn check_mold_tests_regression(mold_test: PathBuf) -> Result {
 fn verify_skipped_mold_tests_still_fail(mold_test: PathBuf) -> Result {
     let output = run_mold_test(&mold_test)?;
     if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.lines().any(|line| line.trim() == "skipped") {
+            return Err(format!(
+                "Test `{}` was skipped, so its expected failure was not exercised.\nOutput:\n{stdout}",
+                mold_test.display()
+            )
+            .into());
+        }
+
         let linker = external_linker_name();
         let message = if using_third_party_linker() {
             format!(
-                "Test `{}` is in the skip list (fails with wild) but passes with '{linker}'. This indicates the failure may be wild-specific.",
-                mold_test.display()
+                "Test `{}` is in the skip list (fails with wild) but passes with '{linker}'. This indicates the failure may be wild-specific.\nOutput:\n{stdout}",
+                mold_test.display(),
             )
         } else {
             format!(
-                "Test `{}` is in skip list but now passes. Should be removed from skip list.",
-                mold_test.display()
+                "Test `{}` is in skip list but now passes. Should be removed from skip list.\nOutput:\n{stdout}",
+                mold_test.display(),
             )
         };
         return Err(message.into());
