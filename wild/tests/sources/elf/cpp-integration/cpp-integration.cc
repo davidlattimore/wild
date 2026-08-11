@@ -34,7 +34,7 @@
 //#DiffIgnore:section.rela.plt.link
 // Wild uses similar order as LLD, which is different from GNU ld.
 //#DiffIgnore:init_array
-// TODO: Missing `endbr64` relaxations.
+// TODO: We probably picked weak symbols from different objects than GNU ld.
 //#DiffIgnore:rel.match_failed.R_X86_64_GOTPCRELX
 //#DiffIgnore:rel.match_failed.R_X86_64_REX_GOTPCRELX
 //#DiffIgnore:literal-byte-mismatch
