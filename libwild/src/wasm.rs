@@ -1873,60 +1873,90 @@ impl<'data> WasmLayout<'data> {
         got_func: &GotFunc,
     ) -> Result {
         timing_phase!("Encode Wasm metadata sections");
-        let type_section = crate::wasm_writer::build_type_section(&self.output_types)?;
-        if !type_section.is_empty() {
-            self.encoded_sections.ty = Some(encode_wasm_section(&type_section));
+
+        {
+            timing_phase!("Encode Wasm type section");
+            let type_section = crate::wasm_writer::build_type_section(&self.output_types)?;
+            if !type_section.is_empty() {
+                self.encoded_sections.ty = Some(encode_wasm_section(&type_section));
+            }
         }
 
-        let import_section = crate::wasm_writer::build_import_section(&self.imports)?;
-        if !import_section.is_empty() {
-            self.encoded_sections.import = Some(encode_wasm_section(&import_section));
+        {
+            timing_phase!("Encode Wasm import section");
+            let import_section = crate::wasm_writer::build_import_section(&self.imports)?;
+            if !import_section.is_empty() {
+                self.encoded_sections.import = Some(encode_wasm_section(&import_section));
+            }
         }
 
-        let function_section =
-            crate::wasm_writer::build_function_section(&self.function_type_indices);
-        if !function_section.is_empty() {
-            self.encoded_sections.function = Some(encode_wasm_section(&function_section));
+        {
+            timing_phase!("Encode Wasm function section");
+            let function_section =
+                crate::wasm_writer::build_function_section(&self.function_type_indices);
+            if !function_section.is_empty() {
+                self.encoded_sections.function = Some(encode_wasm_section(&function_section));
+            }
         }
 
-        let global_section = crate::wasm_writer::build_global_section(&self.globals)?;
-        if !global_section.is_empty() {
-            self.encoded_sections.global = Some(encode_wasm_section(&global_section));
+        {
+            timing_phase!("Encode Wasm global section");
+            let global_section = crate::wasm_writer::build_global_section(&self.globals)?;
+            if !global_section.is_empty() {
+                self.encoded_sections.global = Some(encode_wasm_section(&global_section));
+            }
         }
 
-        let export_section = crate::wasm_writer::build_export_section(&self.exports);
-        if !export_section.is_empty() {
-            self.encoded_sections.export = Some(encode_wasm_section(&export_section));
+        {
+            timing_phase!("Encode Wasm export section");
+            let export_section = crate::wasm_writer::build_export_section(&self.exports);
+            if !export_section.is_empty() {
+                self.encoded_sections.export = Some(encode_wasm_section(&export_section));
+            }
         }
 
-        let memory_section = crate::wasm_writer::build_memory_section(&self.memories);
-        if !memory_section.is_empty() {
-            self.encoded_sections.memory = Some(encode_wasm_section(&memory_section));
+        {
+            timing_phase!("Encode Wasm memory section");
+            let memory_section = crate::wasm_writer::build_memory_section(&self.memories);
+            if !memory_section.is_empty() {
+                self.encoded_sections.memory = Some(encode_wasm_section(&memory_section));
+            }
         }
 
         if !self.tables.is_empty() {
+            timing_phase!("Encode Wasm table section");
             let table_section = crate::wasm_writer::build_table_section(&self.tables)?;
             self.encoded_sections.table = Some(encode_wasm_section(&table_section));
         }
 
         if !self.element_functions.is_empty() {
+            timing_phase!("Encode Wasm element section");
             let element_section =
                 crate::wasm_writer::build_element_section(&self.element_functions);
             self.encoded_sections.element = Some(encode_wasm_section(&element_section));
         }
 
-        if let Some(name_section) =
-            build_name_section(self, layout_inputs, indices, got_mem, got_func)
         {
-            self.encoded_sections.name = Some(encode_wasm_section(&name_section));
+            timing_phase!("Encode Wasm name section");
+            if let Some(name_section) =
+                build_name_section(self, layout_inputs, indices, got_mem, got_func)
+            {
+                self.encoded_sections.name = Some(encode_wasm_section(&name_section));
+            }
         }
 
-        if let Some(target_features) = build_target_features_section(layout_inputs)? {
-            self.encoded_sections.target_features = Some(encode_wasm_section(&target_features));
+        {
+            timing_phase!("Encode Wasm target_features section");
+            if let Some(target_features) = build_target_features_section(layout_inputs)? {
+                self.encoded_sections.target_features = Some(encode_wasm_section(&target_features));
+            }
         }
 
-        self.code_section_size = compute_code_section_size(&self.function_bodies);
-        self.data_section_size = compute_data_section_size(&self.object_data_layouts);
+        {
+            timing_phase!("Compute Wasm code/data section sizes");
+            self.code_section_size = compute_code_section_size(&self.function_bodies);
+            self.data_section_size = compute_data_section_size(&self.object_data_layouts);
+        }
 
         Ok(())
     }
@@ -3407,6 +3437,8 @@ fn collect_shared_unresolved_imports<'data>(
     inputs: &[WasmObjectLayoutInput<'data>],
     resolutions: &[ObjectImportResolutions],
 ) -> Result<SharedUnresolvedImports<'data>> {
+    timing_phase!("Collect shared unresolved Wasm imports");
+
     let mut functions: Vec<SharedFunctionImport<'data>> = Vec::new();
     let mut globals: Vec<SharedGlobalImport<'data>> = Vec::new();
     let mut func_key_to_idx: HashMap<(&str, &str), u32> = HashMap::new();
@@ -3899,46 +3931,58 @@ fn setup_got_mem_and_indices<'data>(
     LayoutRelocScan,
     SharedUnresolvedImports<'data>,
 )> {
+    timing_phase!("Setup Wasm GOT and indices");
+
     let mut scan = scan_layout_relocations(layout_inputs, symbol_db, file_id_to_index)?;
 
-    absorb_got_mem_imports(&scan.got_mem, layout_inputs, resolutions, symbol_db)?;
-    let weak_undef_stubs = absorb_weak_undef_function_imports(layout_inputs, resolutions)?;
-    absorb_got_func_imports(&scan.got_func, layout_inputs, resolutions, symbol_db)?;
+    let weak_undef_stubs = {
+        timing_phase!("Absorb Wasm GOT and weak-undef imports");
+        absorb_got_mem_imports(&scan.got_mem, layout_inputs, resolutions, symbol_db)?;
+        let weak_undef_stubs = absorb_weak_undef_function_imports(layout_inputs, resolutions)?;
+        absorb_got_func_imports(&scan.got_func, layout_inputs, resolutions, symbol_db)?;
+        weak_undef_stubs
+    };
+
     let shared_imports = collect_shared_unresolved_imports(layout_inputs, resolutions)?;
 
-    let indices = LinkerDefinedIndices::compute(
-        layout_inputs,
-        resolutions,
-        shared_imports.function_count(),
-        shared_imports.global_count(),
-        weak_undef_stubs,
-        LinkerDefinedIndexRequest {
-            has_init_funcs,
-            wrap_entry,
-            got_mem_count: scan.got_mem.len(),
-            got_func_count: scan.got_func.len(),
-            needs_memory_base: scan.needs_memory_base,
-            needs_table_base: scan.needs_table_base,
-        },
-    )?;
+    let indices = {
+        timing_phase!("Reserve linker-defined Wasm indices");
+        let indices = LinkerDefinedIndices::compute(
+            layout_inputs,
+            resolutions,
+            shared_imports.function_count(),
+            shared_imports.global_count(),
+            weak_undef_stubs,
+            LinkerDefinedIndexRequest {
+                has_init_funcs,
+                wrap_entry,
+                got_mem_count: scan.got_mem.len(),
+                got_func_count: scan.got_func.len(),
+                needs_memory_base: scan.needs_memory_base,
+                needs_table_base: scan.needs_table_base,
+            },
+        )?;
 
-    if !scan.got_mem.is_empty() {
-        let first_got = indices
-            .got_mem_global_base
-            .ok_or_else(|| crate::error!("GOT.mem entries present but no global base reserved"))?;
-        scan.got_mem.per_object_global_indices =
-            assign_got_slot_global_indices(&scan.per_object_got_mem_slots, first_got)?;
-        finalize_got_mem_import_resolutions(resolutions, first_got)?;
-    }
+        if !scan.got_mem.is_empty() {
+            let first_got = indices.got_mem_global_base.ok_or_else(|| {
+                crate::error!("GOT.mem entries present but no global base reserved")
+            })?;
+            scan.got_mem.per_object_global_indices =
+                assign_got_slot_global_indices(&scan.per_object_got_mem_slots, first_got)?;
+            finalize_got_mem_import_resolutions(resolutions, first_got)?;
+        }
 
-    if !scan.got_func.is_empty() {
-        let first_got = indices
-            .got_func_global_base
-            .ok_or_else(|| crate::error!("GOT.func entries present but no global base reserved"))?;
-        scan.got_func.per_object_global_indices =
-            assign_got_slot_global_indices(&scan.per_object_got_func_slots, first_got)?;
-        finalize_got_func_import_resolutions(resolutions, first_got)?;
-    }
+        if !scan.got_func.is_empty() {
+            let first_got = indices.got_func_global_base.ok_or_else(|| {
+                crate::error!("GOT.func entries present but no global base reserved")
+            })?;
+            scan.got_func.per_object_global_indices =
+                assign_got_slot_global_indices(&scan.per_object_got_func_slots, first_got)?;
+            finalize_got_func_import_resolutions(resolutions, first_got)?;
+        }
+
+        indices
+    };
 
     Ok((indices, scan, shared_imports))
 }
@@ -4105,6 +4149,8 @@ fn scan_layout_relocations(
     symbol_db: &SymbolDb<'_, Wasm>,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
 ) -> Result<LayoutRelocScan> {
+    timing_phase!("Scan Wasm layout relocations");
+
     let mut mem_def_to_slot: HashMap<SymbolId, usize> = HashMap::new();
     let mut mem_entries = Vec::new();
     let mut per_object_got_mem_slots = vec![Vec::new(); layout_inputs.len()];
@@ -5922,6 +5968,8 @@ fn allocate_wasm_object_index_bases(
     shared_imports: &SharedUnresolvedImports<'_>,
     indices: &LinkerDefinedIndices,
 ) -> Result<Vec<WasmObjectIndexBases>> {
+    timing_phase!("Allocate Wasm object index bases");
+
     let mut index_bases = Vec::with_capacity(layout_inputs.len());
     let mut next_type_index = 0u32;
     let function_import_count = shared_imports.function_count();
