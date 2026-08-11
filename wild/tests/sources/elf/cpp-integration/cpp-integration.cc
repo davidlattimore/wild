@@ -37,6 +37,7 @@
 // TODO: We probably picked weak symbols from different objects than GNU ld.
 //#DiffIgnore:rel.match_failed.R_X86_64_GOTPCRELX
 //#DiffIgnore:rel.match_failed.R_X86_64_REX_GOTPCRELX
+//#DiffIgnore:rel.match_failed.R_X86_64_PLT32
 //#DiffIgnore:literal-byte-mismatch
 //#Arch: x86_64
 
