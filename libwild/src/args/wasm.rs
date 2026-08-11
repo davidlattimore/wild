@@ -44,6 +44,7 @@ pub struct WasmArgs {
     // When set, the output `memory.initial` is raised to at least this many bytes (must be
     // page-aligned). `None` means size is derived from data / stack layout only.
     pub(crate) initial_memory: Option<u64>,
+    pub(crate) max_memory: Option<u64>,
     pub(crate) gc_sections: bool,
 }
 
@@ -72,6 +73,7 @@ impl Default for WasmArgs {
             stack_first: true,
             entry: Some(DEFAULT_ENTRY.to_owned()),
             initial_memory: None,
+            max_memory: None,
             export_memory: None,
             gc_sections: true,
         }
@@ -328,6 +330,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Initial size of the linear memory in bytes")
         .execute(|args, _modifier_stack, value| {
             args.initial_memory = Some(parse_number(value)?);
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("max-memory")
+        .help("Maximum size of the linear memory in bytes")
+        .execute(|args, _modifier_stack, value| {
+            args.max_memory = Some(parse_number(value)?);
             Ok(())
         });
 
