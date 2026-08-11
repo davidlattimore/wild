@@ -30,7 +30,7 @@ end lists the features required to link the Linux kernel.
 | `NOCROSSREFS(sections...)` | ❌ | |
 | `INSERT [AFTER\|BEFORE] section` | ❌ | |
 | Top-level symbol assignment (`sym = expr`) | ✅ | |
-| Compound assignment operators (`+=`, `-=`, etc.) | ❌ | |
+| Compound assignment operators (`+=`, `-=`, etc.) | ✅ | |
 | `PHDRS` command for explicit program header definition | 🧪 | The `AT` attribute is not yet supported |
 
 ## SECTIONS Block
