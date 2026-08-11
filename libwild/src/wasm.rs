@@ -1624,8 +1624,11 @@ fn build_name_section<'data>(
     got_mem: &GotMem,
     got_func: &GotFunc,
 ) -> Option<wasm_encoder::NameSection> {
-    let mut function_names: Vec<(u32, &str)> = Vec::new();
-    let mut global_names: Vec<(u32, &str)> = Vec::new();
+    let (n_func_imports, n_global_imports) = count_output_imports(layout);
+    let n_funcs = n_func_imports + layout.function_type_indices.len();
+    let n_globals = n_global_imports + layout.globals.len();
+    let mut function_names: Vec<Option<&str>> = vec![None; n_funcs];
+    let mut global_names: Vec<Option<&str>> = vec![None; n_globals];
     let mut got_mem_names: Vec<String> = Vec::new();
     let mut got_func_names: Vec<String> = Vec::new();
 
@@ -1635,11 +1638,11 @@ fn build_name_section<'data>(
     for import in &layout.imports {
         match import.entity {
             crate::wasm_writer::OutputImportEntity::Function { .. } => {
-                function_names.push((next_func_import, import.name));
+                set_name_first_wins(&mut function_names, next_func_import, import.name);
                 next_func_import += 1;
             }
             crate::wasm_writer::OutputImportEntity::Global(_) => {
-                global_names.push((next_global_import, import.name));
+                set_name_first_wins(&mut global_names, next_global_import, import.name);
                 next_global_import += 1;
             }
         }
@@ -1647,16 +1650,16 @@ fn build_name_section<'data>(
 
     // Linker-synthesised functions / globals.
     if let Some(idx) = indices.memory_base_global {
-        global_names.push((idx, "__memory_base"));
+        set_name_first_wins(&mut global_names, idx, "__memory_base");
     }
     if let Some(idx) = indices.table_base_global {
-        global_names.push((idx, "__table_base"));
+        set_name_first_wins(&mut global_names, idx, "__table_base");
     }
     if let Some(idx) = indices.stack_pointer_global {
-        global_names.push((idx, "__stack_pointer"));
+        set_name_first_wins(&mut global_names, idx, "__stack_pointer");
     }
     if let Some(idx) = indices.tls_base_global {
-        global_names.push((idx, "__tls_base"));
+        set_name_first_wins(&mut global_names, idx, "__tls_base");
     }
     if let Some(got_base) = indices.got_mem_global_base {
         got_mem_names.reserve(got_mem.entries.len());
@@ -1685,8 +1688,7 @@ fn build_name_section<'data>(
             got_mem_names.push(name);
         }
         for (i, name) in got_mem_names.iter().enumerate() {
-            let idx = got_base + i as u32;
-            global_names.push((idx, name.as_str()));
+            set_name_first_wins(&mut global_names, got_base + i as u32, name.as_str());
         }
     }
     if let Some(got_base) = indices.got_func_global_base {
@@ -1695,80 +1697,111 @@ fn build_name_section<'data>(
             got_func_names.push(got_func_debug_name(layout_inputs, entry, i));
         }
         for (i, name) in got_func_names.iter().enumerate() {
-            let idx = got_base + i as u32;
-            global_names.push((idx, name.as_str()));
+            set_name_first_wins(&mut global_names, got_base + i as u32, name.as_str());
         }
     }
     if let Some(idx) = indices.call_ctors_func {
-        function_names.push((idx, "__wasm_call_ctors"));
+        set_name_first_wins(&mut function_names, idx, "__wasm_call_ctors");
     }
 
-    // Names from linking-section symbols on each input object.
-    for (obj_idx, input) in layout_inputs.iter().enumerate() {
-        let Some(index_map) = layout.object_index_maps.get(obj_idx) else {
-            continue;
-        };
-        for sym in input.symbols {
-            let Some(name) = wasm_symbol_name_str(input.data, sym) else {
-                continue;
-            };
-            match sym.kind {
-                WasmSymbolKind::Func
-                    if let Some(&out_idx) = index_map.function_indices.get(sym.index as usize)
-                        && out_idx != WASM_DEAD_INDEX =>
-                {
-                    function_names.push((out_idx, name));
+    let per_object_names: Vec<(Vec<(u32, &str)>, Vec<(u32, &str)>)> = layout_inputs
+        .par_iter()
+        .zip(layout.object_index_maps.par_iter())
+        .map(|(input, index_map)| {
+            verbose_timing_phase!("Collect Wasm object name entries");
+            let mut obj_funcs = Vec::new();
+            let mut obj_globals = Vec::new();
+            for sym in input.symbols {
+                let Some(name) = wasm_symbol_name_str(input.data, sym) else {
+                    continue;
+                };
+                match sym.kind {
+                    WasmSymbolKind::Func
+                        if let Some(&out_idx) = index_map.function_indices.get(sym.index as usize)
+                            && out_idx != WASM_DEAD_INDEX =>
+                    {
+                        obj_funcs.push((out_idx, name));
+                    }
+                    WasmSymbolKind::Global
+                        if let Some(&out_idx) = index_map.global_indices.get(sym.index as usize)
+                            && out_idx != WASM_DEAD_INDEX =>
+                    {
+                        obj_globals.push((out_idx, name));
+                    }
+                    _ => {}
                 }
-                WasmSymbolKind::Global
-                    if let Some(&out_idx) = index_map.global_indices.get(sym.index as usize)
-                        && out_idx != WASM_DEAD_INDEX =>
-                {
-                    global_names.push((out_idx, name));
-                }
-                _ => {}
             }
+            (obj_funcs, obj_globals)
+        })
+        .collect();
+    for (obj_funcs, obj_globals) in per_object_names {
+        for (out_idx, name) in obj_funcs {
+            set_name_first_wins(&mut function_names, out_idx, name);
+        }
+        for (out_idx, name) in obj_globals {
+            set_name_first_wins(&mut global_names, out_idx, name);
         }
     }
 
     for export in &layout.exports {
         match export.kind {
             wasmparser::ExternalKind::Func => {
-                function_names.push((export.index, export.name));
+                set_name_first_wins(&mut function_names, export.index, export.name);
             }
             wasmparser::ExternalKind::Global => {
-                global_names.push((export.index, export.name));
+                set_name_first_wins(&mut global_names, export.index, export.name);
             }
             _ => {}
         }
     }
 
-    if function_names.is_empty() && global_names.is_empty() {
+    let function_map = name_map_from_dense(&function_names);
+    let global_map = name_map_from_dense(&global_names);
+    if function_map.is_none() && global_map.is_none() {
         return None;
     }
 
     let mut section = NameSection::new();
-    if let Some(map) = finalize_name_map(&mut function_names) {
+    if let Some(map) = function_map {
         section.functions(&map);
     }
-    if let Some(map) = finalize_name_map(&mut global_names) {
+    if let Some(map) = global_map {
         section.globals(&map);
     }
     Some(section)
 }
 
-fn finalize_name_map(entries: &mut [(u32, &str)]) -> Option<NameMap> {
-    if entries.is_empty() {
+fn count_output_imports(layout: &WasmLayout<'_>) -> (usize, usize) {
+    let mut functions = 0usize;
+    let mut globals = 0usize;
+    for import in &layout.imports {
+        match import.entity {
+            crate::wasm_writer::OutputImportEntity::Function { .. } => functions += 1,
+            crate::wasm_writer::OutputImportEntity::Global(_) => globals += 1,
+        }
+    }
+    (functions, globals)
+}
+
+fn set_name_first_wins<'a>(names: &mut Vec<Option<&'a str>>, index: u32, name: &'a str) {
+    let i = index as usize;
+    if i >= names.len() {
+        names.resize(i + 1, None);
+    }
+    if names[i].is_none() {
+        names[i] = Some(name);
+    }
+}
+
+fn name_map_from_dense(names: &[Option<&str>]) -> Option<NameMap> {
+    if names.iter().all(Option::is_none) {
         return None;
     }
-    entries.sort_by_key(|(a, _)| *a);
     let mut map = NameMap::new();
-    let mut last_idx = None;
-    for &(idx, name) in entries.iter() {
-        if last_idx == Some(idx) {
-            continue;
+    for (idx, name) in names.iter().enumerate() {
+        if let Some(name) = name {
+            map.append(idx as u32, name);
         }
-        last_idx = Some(idx);
-        map.append(idx, name);
     }
     Some(map)
 }
