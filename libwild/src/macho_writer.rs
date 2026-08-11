@@ -42,11 +42,9 @@ use crate::macho::MACHO_START_MEM_ADDRESS;
 use crate::macho::MAX_SEGMENT_COUNT;
 use crate::macho::MachO;
 use crate::macho::PLT_ENTRY_SIZE;
-use crate::macho::PROGRAM_SEGMENT_DEFS;
-use crate::macho::SEG_DATA_CONST;
 use crate::macho::SectionEntry;
 use crate::macho::SegmentCommand;
-use crate::macho::SegmentType;
+use crate::macho::SegmentName;
 use crate::macho::SymtabCommand;
 use crate::macho::UuidCommand;
 use crate::macho::code_signature_identifier;
@@ -54,6 +52,7 @@ use crate::macho::code_signature_padded_identifier_size;
 use crate::macho::get_segment_sections;
 use crate::macho::load_dylib_command_size;
 use crate::macho::output_section_id;
+use crate::macho::output_section_id::LOAD_COMMANDS;
 use crate::macho::part_id;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputSectionId;
@@ -106,10 +105,6 @@ use object::macho::N_ABS;
 use object::macho::N_SECT;
 use object::macho::PLATFORM_MACOS;
 use object::macho::RelocationInfo;
-use object::macho::SEG_DATA;
-use object::macho::SEG_LINKEDIT;
-use object::macho::SEG_PAGEZERO;
-use object::macho::SEG_TEXT;
 use object::macho::SegmentFlags;
 use object::slice_from_bytes_mut;
 use object::write::macho::CodeDirectory;
@@ -213,7 +208,7 @@ fn write_prelude<'data>(
     );
 
     let header_buffer = buffers.get_mut(crate::part_id::FILE_HEADER);
-    populate_file_header(layout, prelude, take_mut(header_buffer)?)?;
+    populate_file_header(layout, prelude, take_mut(header_buffer)?);
     ensure!(header_buffer.is_empty(), "Excess FILE_HEADER allocation");
 
     let mut load_command_buffer = slice_from_all_bytes_mut(buffers.get_mut(part_id::LOAD_COMMANDS));
@@ -341,9 +336,8 @@ fn populate_file_header(
     layout: &MachOLayout,
     prelude: &PreludeLayout<MachO>,
     header: &mut FileHeader,
-) -> Result {
-    let load_commands_info = get_segment_sections(layout, SegmentType::LoadCommands)
-        .ok_or_else(|| error!("LoadCommands segment is mandatory"))?;
+) {
+    let load_commands_info = layout.section_layouts.get(LOAD_COMMANDS);
 
     header.magic.set(BigEndian, MH_CIGAM_64);
     header.cputype.set(LE, CPU_TYPE_ARM64);
@@ -354,13 +348,12 @@ fn populate_file_header(
         .set(LE, prelude.format_specific.load_command_count as u32);
     header
         .sizeofcmds
-        .set(LE, load_commands_info.segment_size.file_size as u32);
+        .set(LE, load_commands_info.file_size as u32);
     header.flags.set(
         LE,
         macho::MH_PIE | macho::MH_DYLDLINK | macho::MH_NOUNDEFS | macho::MH_TWOLEVEL,
     );
     header.reserved.set(LE, 0);
-    Ok(())
 }
 
 fn split_segment_command_buffer(
@@ -381,7 +374,7 @@ fn write_segment_commands(layout: &MachOLayout, load_commands: &mut &mut [u8]) -
     let load_cmd_err = |()| error!("Invalid LOAD_COMMANDS allocation");
     let pagezero_segment = take_mut(load_commands)?;
     write_segment(
-        SEG_PAGEZERO,
+        SegmentName::PAGEZERO,
         macho::VmProt(0),
         pagezero_segment,
         0,
@@ -392,117 +385,41 @@ fn write_segment_commands(layout: &MachOLayout, load_commands: &mut &mut [u8]) -
         SegmentFlags::default(),
     );
 
-    let text_segment_sections = get_segment_sections(layout, SegmentType::TextSections)
-        .ok_or_else(|| error!("TextSections segment is mandatory"))?
-        .segment_sections;
-    // The __TEXT segment in the layout includes also all the commands!
-    let text_segment_size = get_segment_sections(layout, SegmentType::Text)
-        .ok_or_else(|| error!("Text segment is mandatory"))?
-        .segment_size;
-    let command_size =
-        size_of::<SegmentCommand>() + size_of::<SectionEntry>() * text_segment_sections.len();
-    let (text_segment, text_sections) = split_segment_command_buffer(
-        load_commands
-            .split_off_mut(..command_size)
-            .ok_or_else(|| load_cmd_err(()))?,
-        text_segment_sections.len(),
-    )?;
-    write_segment(
-        SEG_TEXT,
-        macho::VM_PROT_READ | macho::VM_PROT_EXECUTE,
-        text_segment,
-        text_segment_size.file_offset as u64,
-        text_segment_size.file_size as u64,
-        text_segment_size.mem_offset,
-        text_segment_size.mem_size,
-        text_segment_sections.len(),
-        SegmentFlags::default(),
-    );
-    write_sections(SEG_TEXT, text_sections, &text_segment_sections)?;
+    for segment_layout in &layout.segment_layouts.segments {
+        let segment_id = segment_layout.id;
+        let segment_def = *layout.program_segments.segment_def(segment_id);
 
-    if let Some(data_segment_info) = get_segment_sections(layout, SegmentType::DataSections) {
-        let data_segment_sections = data_segment_info.segment_sections;
-        let data_segment_size = data_segment_info.segment_size;
-        let command_size =
-            size_of::<SegmentCommand>() + size_of::<SectionEntry>() * data_segment_sections.len();
-        let (data_segment, data_sections) = split_segment_command_buffer(
+        let segment_sections = get_segment_sections(layout, segment_id);
+        let section_count = segment_sections.len();
+        let command_size = size_of::<SegmentCommand>() + size_of::<SectionEntry>() * section_count;
+
+        let (segment, sections) = split_segment_command_buffer(
             load_commands
                 .split_off_mut(..command_size)
                 .ok_or_else(|| load_cmd_err(()))?,
-            data_segment_sections.len(),
+            section_count,
         )?;
+
+        let size = segment_layout.sizes;
         write_segment(
-            SEG_DATA,
-            macho::VM_PROT_READ | macho::VM_PROT_WRITE,
-            data_segment,
-            data_segment_size.file_offset as u64,
-            data_segment_size.file_size as u64,
-            data_segment_size.mem_offset,
-            data_segment_size.mem_size,
-            data_segment_sections.len(),
-            SegmentFlags::default(),
+            segment_def.name,
+            segment_def.prot,
+            segment,
+            size.file_offset as u64,
+            size.file_size as u64,
+            size.mem_offset,
+            size.mem_size,
+            section_count,
+            segment_def.flags,
         );
-        write_sections(SEG_DATA, data_sections, &data_segment_sections)?;
+        write_sections(segment_def.name, sections, &segment_sections);
     }
 
-    if let Some(data_const_segment_info) =
-        get_segment_sections(layout, SegmentType::DataConstSections)
-    {
-        let data_const_segment_sections = data_const_segment_info.segment_sections;
-        let data_const_segment_size = data_const_segment_info.segment_size;
-        let command_size = size_of::<SegmentCommand>()
-            + size_of::<SectionEntry>() * data_const_segment_sections.len();
-        let (data_const_segment, data_const_sections) = split_segment_command_buffer(
-            load_commands
-                .split_off_mut(..command_size)
-                .ok_or_else(|| load_cmd_err(()))?,
-            data_const_segment_sections.len(),
-        )?;
-        write_segment(
-            SEG_DATA_CONST,
-            macho::VM_PROT_READ | macho::VM_PROT_WRITE,
-            data_const_segment,
-            data_const_segment_size.file_offset as u64,
-            data_const_segment_size.file_size as u64,
-            data_const_segment_size.mem_offset,
-            data_const_segment_size.mem_size,
-            data_const_segment_sections.len(),
-            macho::SG_READ_ONLY,
-        );
-        write_sections(
-            SEG_DATA_CONST,
-            data_const_sections,
-            &data_const_segment_sections,
-        )?;
-    }
-
-    let linkedit_segment_size = get_segment_sections(layout, SegmentType::LinkeditSections)
-        .ok_or_else(|| error!("LinkeditSections segment is mandatory"))?
-        .segment_size;
-    let linkedit_segment = from_bytes_mut(
-        load_commands
-            .split_off_mut(..size_of::<SegmentCommand>())
-            .ok_or_else(|| load_cmd_err(()))?,
-    )
-    .map_err(load_cmd_err)?
-    .0;
-    write_segment(
-        SEG_LINKEDIT,
-        macho::VM_PROT_READ,
-        linkedit_segment,
-        linkedit_segment_size.file_offset as u64,
-        linkedit_segment_size.file_size as u64,
-        linkedit_segment_size.mem_offset,
-        linkedit_segment_size.mem_size,
-        // The sections in the __LINKEDIT are "hidden".
-        0,
-        SegmentFlags::default(),
-    );
     Ok(())
 }
 
 fn write_segment(
-    seg_name: &str,
+    seg_name: SegmentName,
     prot_flags: object::macho::VmProt,
     segment_cmd: &mut SegmentCommand,
     file_offset: u64,
@@ -517,8 +434,7 @@ fn write_segment(
         LE,
         (size_of::<SegmentCommand>() + size_of::<SectionEntry>() * section_count) as u32,
     );
-    segment_cmd.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
-    segment_cmd.segname[seg_name.len()..].zero();
+    segment_cmd.segname = seg_name.into_bytes();
     segment_cmd.fileoff.set(LE, file_offset);
     segment_cmd.filesize.set(LE, file_size);
     segment_cmd.vmaddr.set(LE, mem_offset);
@@ -530,22 +446,19 @@ fn write_segment(
 }
 
 fn write_sections(
-    seg_name: &str,
+    seg_name: SegmentName,
     sections: &mut [SectionEntry],
     segment_sections: &[(
         OutputRecordLayout,
-        Option<SectionName<'_>>,
+        SectionName<'_>,
         crate::macho::SectionFlags,
     )],
-) -> Result {
+) {
     for (section, (size, section_name, section_flags)) in sections.iter_mut().zip(segment_sections)
     {
-        let section_name = section_name
-            .ok_or_else(|| error!("section name must be known"))?
-            .0;
+        let section_name = section_name.0;
 
-        section.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
-        section.segname[seg_name.len()..].zero();
+        section.segname = seg_name.into_bytes();
         section.sectname[..section_name.len()].copy_from_slice(section_name);
         section.sectname[section_name.len()..].zero();
         section.addr.set(LE, size.mem_offset);
@@ -566,8 +479,6 @@ fn write_sections(
         section.reserved2.set(LE, reserved2);
         section.reserved3.set(LE, 0);
     }
-
-    Ok(())
 }
 
 fn write_object<'data, A: Arch<Platform = MachO>>(
@@ -887,13 +798,8 @@ fn write_code_signature_command(layout: &MachOLayout, command: &mut CodeSignatur
 
 fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8]) -> Result {
     let symbols = &layout.format_specific.imported_symbols;
+    let active_segments = &layout.segment_layouts.segments;
 
-    let active_segments = PROGRAM_SEGMENT_DEFS
-        .iter()
-        .filter(|segment| {
-            segment.count_as_segment && get_segment_sections(layout, segment.segment_type).is_some()
-        })
-        .collect_vec();
     // The __PAGEZERO segment needs to be added manually.
     let segment_count = active_segments.len() + 1;
     ensure!(
@@ -934,9 +840,12 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
         return Ok(());
     }
 
-    let data_const_segment_index = active_segments
+    let (data_const_segment_index, data_const_segment) = active_segments
         .iter()
-        .position(|segment| segment.segment_type == SegmentType::DataConstSections)
+        .enumerate()
+        .find(|(_, segment)| {
+            layout.program_segments.segment_def(segment.id).name == SegmentName::DATA_CONST
+        })
         .ok_or_else(|| error!("non-empty __got requires __DATA_CONST segment"))?;
 
     // Accounts for both seg_count and __PAGEZERO.
@@ -950,10 +859,6 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
         .map_err(|_| error!("Invalid chained fixups imports allocation"))?;
 
     // 3) fill up DyldChainedStartsInSegment for the __got section
-    let data_const_segment = get_segment_sections(layout, SegmentType::DataConstSections)
-        .ok_or_else(|| error!("__DATA_CONST segment expected"))?
-        .segment_size;
-
     starts_in_segment.size.set(LE, starts_in_segment_len as u32);
     starts_in_segment
         .page_size
@@ -963,7 +868,7 @@ fn write_chained_fixup_table(layout: &MachOLayout, chained_fixup_table: &mut [u8
         .set(LE, DYLD_CHAINED_PTR_64_OFFSET);
     starts_in_segment
         .segment_offset
-        .set(LE, data_const_segment.file_offset as u64);
+        .set(LE, data_const_segment.sizes.file_offset as u64);
     starts_in_segment.max_valid_pointer.set(LE, 0);
     // TODO:
     starts_in_segment.page_count.set(LE, 1);
@@ -1076,9 +981,13 @@ fn write_code_signature_metadata(
         "Unexpected code directory size"
     );
 
-    let text_segment_size = get_segment_sections(layout, SegmentType::Text)
-        .ok_or_else(|| error!("Text segment is mandatory"))?
-        .segment_size;
+    let text_segment = layout
+        .segment_layouts
+        .segments
+        .iter()
+        .find(|segment| layout.program_segments.segment_def(segment.id).name == SegmentName::TEXT)
+        .ok_or_else(|| error!("__TEXT segment is mandatory"))?;
+
     let code_directory = CodeDirectory {
         length: (code_signature_section.file_size - CS_BLOB_HEADERS_SIZE as usize) as u32,
         version: CS_SUPPORTSEXECSEG,
@@ -1094,8 +1003,8 @@ fn write_code_signature_metadata(
         page_size: CS_BLOCK_SIZE_EXP,
         scatter_offset: 0,
         team_offset: 0,
-        exec_seg_base: text_segment_size.file_offset as u64,
-        exec_seg_limit: text_segment_size.file_size as u64,
+        exec_seg_base: text_segment.sizes.file_offset as u64,
+        exec_seg_limit: text_segment.sizes.file_size as u64,
         // TODO: change once shared libraries are supported
         exec_seg_flags: CS_EXECSEG_MAIN_BINARY,
     };
@@ -1273,25 +1182,14 @@ fn write_symbols<'data>(
 fn macho_section_index(layout: &MachOLayout<'_>, section_id: OutputSectionId) -> Result<u8> {
     // The section index is one-based.
     let mut section_idx = 1u8;
-    let mut in_section_segment = false;
     for event in &layout.output_order {
         match event {
-            OrderEvent::SegmentStart(segment_id) => {
-                let segment_type = layout.program_segments.segment_def(segment_id).segment_type;
-                // TODO: Right now, the various load commands are mapped as "sections", so we can't
-                // just take the mapped index of the output "section".
-                in_section_segment = matches!(
-                    segment_type,
-                    SegmentType::TextSections
-                        | SegmentType::DataSections
-                        | SegmentType::DataConstSections
-                );
-            }
-            OrderEvent::SegmentEnd(_) => {
-                in_section_segment = false;
-            }
             OrderEvent::Section(current)
-                if in_section_segment && layout.output_sections.will_emit_section(current) =>
+                if layout.output_sections.will_emit_section(current)
+                    && layout
+                        .output_sections
+                        .identity(current)
+                        .is_some_and(|identity| identity.format_specific().is_some()) =>
             {
                 if current == section_id {
                     return Ok(section_idx);

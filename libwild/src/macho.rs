@@ -22,7 +22,13 @@ use crate::layout::SymbolCopyInfo;
 use crate::layout::SymbolResolutions;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
+use crate::macho::output_section_id::CHAINED_FIXUP_TABLE;
+use crate::macho::output_section_id::CODE_SIGNATURE;
+use crate::macho::output_section_id::LOAD_COMMANDS;
+use crate::macho::output_section_id::STRTAB;
+use crate::macho::output_section_id::SYMTAB_GLOBAL;
 use crate::macho_writer;
+use crate::output_section_id::FILE_HEADER;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrderBuilder;
 use crate::output_section_id::OutputSectionId;
@@ -34,6 +40,8 @@ use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
+use crate::program_segments::ProgramSegmentId;
+use crate::program_segments::ProgramSegments;
 use crate::resolution;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::Visibility;
@@ -157,8 +165,6 @@ pub(crate) const CHAINED_FIXUP_PAGE_START_SIZE: u64 = size_of::<u16>() as u64;
 pub(crate) const GOT_ENTRY_SIZE: u64 = 8;
 pub(crate) const PLT_ENTRY_SIZE: u64 = 12;
 
-pub(crate) const SEG_DATA_CONST: &str = "__DATA_CONST";
-
 type SectionHeader = Section64<crate::macho::Endianness>;
 type SectionTable<'data> = &'data [Section64<crate::macho::Endianness>];
 type SymbolTable<'data> = object::read::macho::SymbolTable<'data, macho::MachHeader64<Endianness>>;
@@ -214,9 +220,16 @@ pub(crate) fn load_dylib_command_size(path: &[u8]) -> usize {
 pub(crate) struct SegmentName([u8; 16]);
 
 impl SegmentName {
-    const TEXT: Self = Self::from_bytes(b"__TEXT");
-    const DATA: Self = Self::from_bytes(b"__DATA");
-    const DATA_CONST: Self = Self::from_bytes(b"__DATA_CONST");
+    pub(crate) const PAGEZERO: Self = Self::from_bytes(b"__PAGEZERO");
+    pub(crate) const TEXT: Self = Self::from_bytes(b"__TEXT");
+    pub(crate) const DATA: Self = Self::from_bytes(b"__DATA");
+    pub(crate) const DATA_CONST: Self = Self::from_bytes(b"__DATA_CONST");
+    pub(crate) const LINKEDIT: Self = Self::from_bytes(b"__LINKEDIT");
+    pub(crate) const LLVM: Self = Self::from_bytes(b"__LLVM");
+
+    pub(crate) const fn into_bytes(self) -> [u8; 16] {
+        self.0
+    }
 
     const fn from_bytes(name: &[u8]) -> Self {
         assert!(name.len() <= 16);
@@ -226,7 +239,14 @@ impl SegmentName {
     }
 
     fn is_writable(self) -> bool {
-        matches!(self, Self::DATA | Self::DATA_CONST)
+        !matches!(self, Self::PAGEZERO | Self::TEXT | Self::LINKEDIT)
+    }
+}
+
+impl std::fmt::Display for SegmentName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = String::from_utf8_lossy(&self.0);
+        write!(f, "{}", name.trim_end_matches('\0'))
     }
 }
 
@@ -582,19 +602,21 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn should_exclude(&self) -> bool {
-        // TODO: We only support these fixed segments for now. We also need support for sections
-        // backed by the Mach-O indirect symbol table for dynamic linking.
-        !matches!(
-            SegmentName::from_bytes(self.segment_name()),
-            SegmentName::DATA | SegmentName::DATA_CONST | SegmentName::TEXT
-        ) || matches!(
-            self.flags.get(LE).typ(),
-            macho::S_NON_LAZY_SYMBOL_POINTERS
-                | macho::S_LAZY_SYMBOL_POINTERS
-                | macho::S_SYMBOL_STUBS
-                | macho::S_LAZY_DYLIB_SYMBOL_POINTERS
-                | macho::S_THREAD_LOCAL_VARIABLE_POINTERS
-        )
+        // TODO: We need support for sections backed by the Mach-O indirect symbol table for dynamic
+        // linking.
+        self.flags.get(LE).intersects(macho::S_ATTR_DEBUG)
+            || matches!(
+                SegmentName::from_bytes(self.segment_name()),
+                SegmentName::PAGEZERO | SegmentName::LINKEDIT | SegmentName::LLVM
+            )
+            || matches!(
+                self.flags.get(LE).typ(),
+                macho::S_NON_LAZY_SYMBOL_POINTERS
+                    | macho::S_LAZY_SYMBOL_POINTERS
+                    | macho::S_SYMBOL_STUBS
+                    | macho::S_LAZY_DYLIB_SYMBOL_POINTERS
+                    | macho::S_THREAD_LOCAL_VARIABLE_POINTERS
+            )
     }
 
     fn is_group(&self) -> bool {
@@ -818,52 +840,56 @@ impl platform::NonAddressableIndexes for NonAddressableIndexes {
     }
 }
 
-// TODO: update comment
+impl platform::SegmentType for () {}
 
-#[derive(Debug, Copy, Clone, Default, PartialEq)]
-pub(crate) enum SegmentType {
-    Text,
-    LoadCommands,
-    TextSections,
-    DataSections,
-    DataConstSections,
-    LinkeditSections,
-    // The other ELF-specific (or unused) parts/sections will be collected here.
-    #[default]
-    Unused,
+/// Represents an actual segment.
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct ProgramSegmentDef {
+    // TODO: When we implement -segprot, we should support both initprot and maxprot here.
+    pub(crate) name: SegmentName,
+    pub(crate) prot: macho::VmProt,
+    pub(crate) flags: macho::SegmentFlags,
 }
 
-impl platform::SegmentType for SegmentType {}
+impl ProgramSegmentDef {
+    fn new(name: SegmentName) -> Self {
+        let (prot, flags) = match name {
+            SegmentName::TEXT => (
+                macho::VM_PROT_READ | macho::VM_PROT_EXECUTE,
+                macho::SegmentFlags::default(),
+            ),
+            SegmentName::DATA_CONST => (
+                macho::VM_PROT_READ | macho::VM_PROT_WRITE,
+                macho::SG_READ_ONLY,
+            ),
+            SegmentName::LINKEDIT => (macho::VM_PROT_READ, macho::SegmentFlags::default()),
+            _ => (
+                macho::VM_PROT_READ | macho::VM_PROT_WRITE,
+                macho::SegmentFlags::default(),
+            ),
+        };
 
-#[derive(Debug, Copy, Clone, Default, PartialEq)]
-pub(crate) struct ProgramSegmentDef {
-    pub(crate) segment_type: SegmentType,
-    pub(crate) count_as_segment: bool,
+        Self { name, prot, flags }
+    }
 }
 
 impl std::fmt::Display for ProgramSegmentDef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.segment_type)
+        std::fmt::Display::fmt(&self.name, f)
     }
 }
 
 impl platform::ProgramSegmentDef for ProgramSegmentDef {
     fn is_writable(self) -> bool {
-        false
+        self.prot.contains(macho::VM_PROT_WRITE)
     }
 
     fn is_executable(self) -> bool {
-        false
+        self.prot.contains(macho::VM_PROT_EXECUTE)
     }
 
     fn always_keep(self) -> bool {
-        matches!(
-            self.segment_type,
-            SegmentType::Text
-                | SegmentType::LoadCommands
-                | SegmentType::TextSections
-                | SegmentType::LinkeditSections
-        )
+        matches!(self.name, SegmentName::TEXT | SegmentName::LINKEDIT)
     }
 
     fn is_loadable(self) -> bool {
@@ -879,7 +905,13 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     }
 
     fn order_key(self) -> usize {
-        self.segment_type as usize
+        match self.name {
+            SegmentName::TEXT => 0,
+            SegmentName::DATA_CONST => 1,
+            SegmentName::DATA => 2,
+            SegmentName::LINKEDIT => 4,
+            _ => 3,
+        }
     }
 }
 
@@ -991,7 +1023,7 @@ impl platform::Platform for MachO {
     type SectionFlags = SectionFlags;
     type SectionAttributes = SectionAttributes;
     type SectionType = macho::SectionType;
-    type SegmentType = SegmentType;
+    type SegmentType = ();
     type ProgramSegmentDef = ProgramSegmentDef;
     type BuiltInSectionDetails = BuiltInSectionDetails;
     type RelocationSections = ();
@@ -1026,8 +1058,11 @@ impl platform::Platform for MachO {
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
     type ResolvedObjectExt<'data> = ();
-    type SectionIdentityExt = Option<SegmentName>;
     type GcUnit = crate::layout::SectionGcUnit;
+
+    /// Mach-O sections are associated with a SegmentName, while synthetic regions (FILE_HEADER,
+    /// LOAD_COMMANDS, etc.) are not.
+    type SectionIdentityExt = Option<SegmentName>;
 
     const HAS_NULL_SYMBOL_ENTRY: bool = true;
 
@@ -1225,7 +1260,7 @@ impl platform::Platform for MachO {
     }
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
-        PROGRAM_SEGMENT_DEFS
+        &[]
     }
 
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
@@ -1238,28 +1273,15 @@ impl platform::Platform for MachO {
         section_id: crate::output_section_id::OutputSectionId,
         _rosegment: bool,
     ) -> bool {
-        let mapped_segment = match (section_id, section_info.kind) {
-            (crate::output_section_id::FILE_HEADER, _) => SegmentType::Text,
-            (output_section_id::LOAD_COMMANDS, _) => SegmentType::LoadCommands,
-            (
-                output_section_id::CHAINED_FIXUP_TABLE
-                | output_section_id::SYMTAB_GLOBAL
-                | output_section_id::STRTAB
-                | output_section_id::CODE_SIGNATURE,
-                _,
-            ) => SegmentType::LinkeditSections,
-            (_, SectionKind::Primary(identity)) => match identity.format_specific() {
-                Some(SegmentName::TEXT) => SegmentType::TextSections,
-                Some(SegmentName::DATA) => SegmentType::DataSections,
-                Some(SegmentName::DATA_CONST) => SegmentType::DataConstSections,
-                _ => SegmentType::Unused,
-            },
-            (_, _) => SegmentType::Unused,
-        };
-
-        match (segment_def.segment_type, mapped_segment) {
-            (SegmentType::Text, SegmentType::LoadCommands | SegmentType::TextSections) => true,
-            _ => segment_def.segment_type == mapped_segment,
+        match (section_id, section_info.kind) {
+            (FILE_HEADER | LOAD_COMMANDS, _) => segment_def.name == SegmentName::TEXT,
+            (STRTAB | CHAINED_FIXUP_TABLE | SYMTAB_GLOBAL | CODE_SIGNATURE, _) => {
+                segment_def.name == SegmentName::LINKEDIT
+            }
+            (_, SectionKind::Primary(identity)) => {
+                identity.format_specific() == Some(segment_def.name)
+            }
+            (_, SectionKind::Secondary(_)) => false,
         }
     }
 
@@ -1496,7 +1518,8 @@ impl platform::Platform for MachO {
     fn allocate_header_sizes<'data>(
         prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        _header_info: &crate::layout::HeaderInfo,
+        header_info: &crate::layout::HeaderInfo,
+        program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
         output_sections: &crate::output_section_id::OutputSections<Self>,
         resources: &layout::FinaliseSizesResources<'data, '_, Self>,
         args: &Self::Args,
@@ -1508,21 +1531,18 @@ impl platform::Platform for MachO {
             prelude.format_specific.load_command_count += 1;
         };
 
+        // Separately emitted __PAGEZERO.
         allocate_load_cmd(size_of::<SegmentCommand>());
-        allocate_load_cmd(
-            size_of::<SegmentCommand>()
-                + size_of::<SectionEntry>()
-                    * count_sections_for_segment_type(output_sections, SegmentType::TextSections),
-        );
 
-        for segment_type in [SegmentType::DataSections, SegmentType::DataConstSections] {
-            let count = count_sections_for_segment_type(output_sections, segment_type);
-            if count > 0 {
-                allocate_load_cmd(size_of::<SegmentCommand>() + size_of::<SectionEntry>() * count);
-            }
+        for &segment_id in &header_info.active_segment_ids {
+            let segment = program_segments.segment_def(segment_id);
+            allocate_load_cmd(
+                size_of::<SegmentCommand>()
+                    + size_of::<SectionEntry>()
+                        * count_sections_for_segment(output_sections, *segment),
+            );
         }
 
-        allocate_load_cmd(size_of::<SegmentCommand>());
         if resources.symbol_db.output_kind.is_executable() {
             allocate_load_cmd(size_of::<EntryPointCommand>());
         }
@@ -1721,8 +1741,44 @@ impl platform::Platform for MachO {
         crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
     ) {
         // TODO: Order sections within each segment according to Mach-O conventions.
-        let mut builder =
-            OutputOrderBuilder::<Self>::new(output_kind, output_sections, secondary, false, &[]);
+        let arbitrary_segments: Vec<SegmentName> = output_sections
+            .ids_with_info()
+            .filter_map(|(_, info)| match info.kind {
+                SectionKind::Primary(identity) => identity.format_specific(),
+                SectionKind::Secondary(_) => None,
+            })
+            .filter(|name| {
+                !matches!(
+                    *name,
+                    SegmentName::PAGEZERO
+                        | SegmentName::TEXT
+                        | SegmentName::DATA_CONST
+                        | SegmentName::DATA
+                        | SegmentName::LINKEDIT
+                )
+            })
+            .unique()
+            .collect();
+
+        let segment_defs = [
+            SegmentName::TEXT,
+            SegmentName::DATA_CONST,
+            SegmentName::DATA,
+        ]
+        .into_iter()
+        .chain(arbitrary_segments.iter().copied())
+        .chain([SegmentName::LINKEDIT])
+        .map(ProgramSegmentDef::new)
+        .collect();
+
+        let mut builder = OutputOrderBuilder::<Self>::new(
+            segment_defs,
+            output_kind,
+            output_sections,
+            secondary,
+            false,
+            &[],
+        );
 
         // File header and all load commands.
         builder.add_section(crate::output_section_id::FILE_HEADER);
@@ -1737,55 +1793,25 @@ impl platform::Platform for MachO {
         );
 
         builder.add_section(output_section_id::PLT_GOT);
-
         add_sections_in_segment(&mut builder, output_sections, &custom.ro, SegmentName::TEXT);
-
-        add_sections_in_segment(
-            &mut builder,
-            output_sections,
-            &custom.exec,
-            SegmentName::DATA,
-        );
-        add_sections_in_segment(&mut builder, output_sections, &custom.ro, SegmentName::DATA);
-        add_sections_in_segment(
-            &mut builder,
-            output_sections,
-            &custom.data,
-            SegmentName::DATA,
-        );
-        add_sections_in_segment(
-            &mut builder,
-            output_sections,
-            &custom.bss,
-            SegmentName::DATA,
-        );
-
         builder.add_section(output_section_id::GOT);
 
-        add_sections_in_segment(
-            &mut builder,
-            output_sections,
-            &custom.exec,
-            SegmentName::DATA_CONST,
-        );
-        add_sections_in_segment(
-            &mut builder,
-            output_sections,
-            &custom.ro,
-            SegmentName::DATA_CONST,
-        );
-        add_sections_in_segment(
-            &mut builder,
-            output_sections,
-            &custom.data,
-            SegmentName::DATA_CONST,
-        );
-        add_sections_in_segment(
-            &mut builder,
-            output_sections,
-            &custom.bss,
-            SegmentName::DATA_CONST,
-        );
+        for segment in [SegmentName::DATA_CONST, SegmentName::DATA] {
+            add_sections_in_segment(&mut builder, output_sections, &custom.exec, segment);
+            add_sections_in_segment(&mut builder, output_sections, &custom.ro, segment);
+            add_sections_in_segment(&mut builder, output_sections, &custom.data, segment);
+            add_sections_in_segment(&mut builder, output_sections, &custom.bss, segment);
+        }
+
+        // Arbitrary segment sections are added in first-seen order.
+        for segment in arbitrary_segments {
+            for (section_id, info) in output_sections.ids_with_info() {
+                if matches!(info.kind, SectionKind::Primary(identity) if identity.format_specific() == Some(segment))
+                {
+                    builder.add_section(section_id);
+                }
+            }
+        }
 
         // The rest (e.g. symbol table, string table).
         builder.add_section(output_section_id::STRTAB);
@@ -1797,21 +1823,13 @@ impl platform::Platform for MachO {
     }
 
     fn align_load_segment_start(
-        segment_def: ProgramSegmentDef,
+        _segment_def: ProgramSegmentDef,
         segment_alignment: Alignment,
         file_offset: &mut usize,
         mem_offset: &mut u64,
     ) {
-        match segment_def.segment_type {
-            SegmentType::Text
-            | SegmentType::DataSections
-            | SegmentType::DataConstSections
-            | SegmentType::LinkeditSections => {
-                *file_offset = segment_alignment.align_up(*file_offset as u64) as usize;
-                *mem_offset = segment_alignment.align_up(*mem_offset);
-            }
-            _ => {}
-        }
+        *file_offset = segment_alignment.align_up(*file_offset as u64) as usize;
+        *mem_offset = segment_alignment.align_up(*mem_offset);
     }
 
     fn default_symtab_entry() -> Self::SymtabEntry {
@@ -1855,11 +1873,7 @@ impl platform::Platform for MachO {
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
         match segment_name {
-            Some(segment_name) => {
-                let segment_name = String::from_utf8_lossy(&segment_name.0);
-                let segment_name = segment_name.trim_end_matches('\0');
-                write!(f, "{segment_name},{section_name}")
-            }
+            Some(segment_name) => write!(f, "{segment_name},{section_name}"),
             None => write!(f, "{section_name}"),
         }
     }
@@ -2003,89 +2017,62 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     // TODO: Add a Mach-O output section ID and rule for `__compact_unwind`.
 ];
 
-pub(crate) const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
-    ProgramSegmentDef {
-        segment_type: SegmentType::Text,
-        // Not a real segment from the Macho-O definition.
-        count_as_segment: true,
-    },
-    ProgramSegmentDef {
-        // Not a real segment from the Macho-O definition.
-        segment_type: SegmentType::LoadCommands,
-        // included in SegmentType::Text
-        count_as_segment: false,
-    },
-    ProgramSegmentDef {
-        segment_type: SegmentType::TextSections,
-        // included in SegmentType::Text
-        count_as_segment: false,
-    },
-    ProgramSegmentDef {
-        segment_type: SegmentType::DataSections,
-        count_as_segment: true,
-    },
-    ProgramSegmentDef {
-        segment_type: SegmentType::DataConstSections,
-        count_as_segment: true,
-    },
-    ProgramSegmentDef {
-        segment_type: SegmentType::LinkeditSections,
-        count_as_segment: true,
-    },
-];
+fn section_header_name_for_segment<'data>(
+    output_sections: &crate::output_section_id::OutputSections<'data, MachO>,
+    section_id: OutputSectionId,
+    segment_def: ProgramSegmentDef,
+) -> Option<SectionName<'data>> {
+    if !output_sections.will_emit_section(section_id) {
+        return None;
+    }
 
-fn count_sections_for_segment_type(
+    output_sections
+        .identity(section_id)
+        .filter(|identity| identity.format_specific().is_some())
+        .filter(|_| output_sections.should_include_in_segment(section_id, segment_def))
+        .map(|identity| identity.section_name())
+}
+
+fn count_sections_for_segment(
     output_sections: &crate::output_section_id::OutputSections<MachO>,
-    segment_type: SegmentType,
+    segment_def: ProgramSegmentDef,
 ) -> usize {
-    let segment_def = ProgramSegmentDef {
-        segment_type,
-        count_as_segment: false,
-    };
     output_sections
         .ids_with_info()
         .filter(|(section_id, _)| {
-            output_sections.will_emit_section(*section_id)
-                && output_sections.should_include_in_segment(*section_id, segment_def)
+            section_header_name_for_segment(output_sections, *section_id, segment_def).is_some()
         })
         .count()
 }
 
-pub(crate) struct SegmentSectionsInfo<'data> {
-    pub(crate) segment_size: OutputRecordLayout,
-    pub(crate) segment_sections:
-        Vec<(OutputRecordLayout, Option<SectionName<'data>>, SectionFlags)>,
-}
-
 pub(crate) fn get_segment_sections<'data>(
     layout: &Layout<'data, MachO>,
-    segment_type: SegmentType,
-) -> Option<SegmentSectionsInfo<'data>> {
+    segment_id: ProgramSegmentId,
+) -> Vec<(OutputRecordLayout, SectionName<'data>, SectionFlags)> {
     let mut in_matching_segment = false;
-    let mut sections = Vec::new();
-    let mut segment_id = None;
+    let mut segment_sections = Vec::new();
+    let segment_def = *layout.program_segments.segment_def(segment_id);
 
     for event in &layout.output_order {
         match event {
-            OrderEvent::SegmentStart(seg_id)
-                if layout.program_segments.segment_def(seg_id).segment_type == segment_type =>
-            {
-                segment_id = Some(seg_id);
+            OrderEvent::SegmentStart(seg_id) if seg_id == segment_id => {
                 in_matching_segment = true;
             }
-            OrderEvent::SegmentEnd(seg_id)
-                if layout.program_segments.segment_def(seg_id).segment_type == segment_type
-                    && in_matching_segment =>
-            {
+            OrderEvent::SegmentEnd(seg_id) if seg_id == segment_id && in_matching_segment => {
                 break;
             }
-            OrderEvent::Section(section_id)
-                if in_matching_segment && layout.output_sections.will_emit_section(section_id) =>
-            {
-                let sizes = *layout.section_layouts.get(section_id);
-                sections.push((
-                    sizes,
-                    layout.output_sections.name(section_id),
+            OrderEvent::Section(section_id) if in_matching_segment => {
+                let Some(section_name) = section_header_name_for_segment(
+                    &layout.output_sections,
+                    section_id,
+                    segment_def,
+                ) else {
+                    continue;
+                };
+
+                segment_sections.push((
+                    *layout.merged_section_layouts.get(section_id),
+                    section_name,
                     layout.output_sections.section_flags(section_id),
                 ));
             }
@@ -2093,18 +2080,7 @@ pub(crate) fn get_segment_sections<'data>(
         }
     }
 
-    let segment_id = segment_id?;
-    let segment_size = layout
-        .segment_layouts
-        .segments
-        .iter()
-        .find(|seg| seg.id == segment_id)
-        .map(|seg| seg.sizes);
-
-    segment_size.map(|segment_size| SegmentSectionsInfo {
-        segment_sections: sections,
-        segment_size,
-    })
+    segment_sections
 }
 
 fn add_sections_in_segment<'data>(

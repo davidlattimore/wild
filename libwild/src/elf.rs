@@ -2354,6 +2354,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         prelude: &mut layout::PreludeLayoutState<'data, Self>,
         sizes: &mut OutputSectionPartMap<u64>,
         header_info: &layout::HeaderInfo,
+        _program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
         output_sections: &OutputSections<Self>,
         _resources: &layout::FinaliseSizesResources<'data, '_, Self>,
         _args: &Self::Args,
@@ -2439,6 +2440,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         location_counters: &[crate::layout_rules::LocationCounter<'data>],
     ) -> (OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>) {
         let mut builder = OutputOrderBuilder::<Self>::new(
+            Self::program_segment_defs().to_vec(),
             output_kind,
             output_sections,
             secondary,
@@ -2515,6 +2517,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         location_counters: &[crate::layout_rules::LocationCounter<'data>],
     ) -> Result<(OutputOrder<'data>, ProgramSegments<Self::ProgramSegmentDef>)> {
         let mut builder = OutputOrderBuilder::<Self>::new(
+            Self::program_segment_defs().to_vec(),
             output_kind,
             output_sections,
             secondary,

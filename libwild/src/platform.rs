@@ -753,6 +753,7 @@ pub(crate) trait Platform:
         prelude: &mut PreludeLayoutState<'data, Self>,
         sizes: &mut OutputSectionPartMap<u64>,
         header_info: &layout::HeaderInfo,
+        program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
         output_sections: &OutputSections<Self>,
         resources: &layout::FinaliseSizesResources<'data, '_, Self>,
         args: &Self::Args,
