@@ -29,7 +29,7 @@
 //#Config:static-no-relax:default
 //#CompArgs:-fmerge-constants
 //#LinkerDriver:g++
-//#LinkArgs:-static -Wl,-z,now,-no-relax
+//#LinkArgs:-no-pie -static -Wl,-z,now,-no-relax
 //#DiffIgnore:rel.extra-got-plt-got
 //#DiffIgnore:section.rela.plt.link
 // Wild uses similar order as LLD, which is different from GNU ld.
