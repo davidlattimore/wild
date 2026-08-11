@@ -5056,10 +5056,11 @@ const fn wasm_page_size() -> u64 {
     crate::args::wasm::WASM_PAGE_SIZE
 }
 
-/// Maximum linear-memory size in bytes for wasm32.
-const WASM32_MAX_MEMORY_BYTES: u64 = (1u64 << 32) - wasm_page_size();
+/// Size of the wasm32 linear-memory address space.
+const WASM32_ADDRESS_SPACE_BYTES: u64 = 1u64 << 32;
 
-const WASM32_MAX_MEMORY_LIMIT_BYTES: u64 = 1u64 << 32;
+/// Largest initial memory size.
+const WASM32_MAX_INITIAL_MEMORY_BYTES: u64 = WASM32_ADDRESS_SPACE_BYTES - wasm_page_size();
 
 fn ensure_memory_covers(
     layout: &mut WasmLayout<'_>,
@@ -5083,8 +5084,8 @@ fn ensure_memory_covers(
             "initial memory must be aligned to the page size ({page} bytes)"
         );
         ensure!(
-            requested <= WASM32_MAX_MEMORY_BYTES,
-            "initial memory too large, cannot be greater than {WASM32_MAX_MEMORY_BYTES}"
+            requested <= WASM32_MAX_INITIAL_MEMORY_BYTES,
+            "initial memory too large, cannot be greater than {WASM32_MAX_INITIAL_MEMORY_BYTES}"
         );
         ensure!(
             bytes_needed <= requested,
@@ -5109,8 +5110,8 @@ fn ensure_memory_covers(
             "maximum memory must be aligned to the page size ({page} bytes)"
         );
         ensure!(
-            requested <= WASM32_MAX_MEMORY_LIMIT_BYTES,
-            "maximum memory too large, cannot be greater than {WASM32_MAX_MEMORY_LIMIT_BYTES}"
+            requested <= WASM32_ADDRESS_SPACE_BYTES,
+            "maximum memory too large, cannot be greater than {WASM32_ADDRESS_SPACE_BYTES}"
         );
         ensure!(
             initial_bytes <= requested,
