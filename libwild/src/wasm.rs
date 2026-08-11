@@ -5059,11 +5059,14 @@ const fn wasm_page_size() -> u64 {
 /// Maximum linear-memory size in bytes for wasm32.
 const WASM32_MAX_MEMORY_BYTES: u64 = (1u64 << 32) - wasm_page_size();
 
+const WASM32_MAX_MEMORY_LIMIT_BYTES: u64 = 1u64 << 32;
+
 fn ensure_memory_covers(
     layout: &mut WasmLayout<'_>,
     stack_size: u32,
     stack_first: bool,
     initial_memory: Option<u64>,
+    max_memory: Option<u64>,
 ) -> Result<u64> {
     let page = wasm_page_size();
     let mut bytes_needed = u64::from(layout.data_end.max(layout.memory_base));
@@ -5096,7 +5099,30 @@ fn ensure_memory_covers(
             memory.initial = memory.initial.max(pages_needed);
         }
     }
-    Ok(layout.memories.iter().map(|m| m.initial).max().unwrap_or(0))
+
+    let initial_pages = layout.memories.iter().map(|m| m.initial).max().unwrap_or(0);
+    let initial_bytes = initial_pages.saturating_mul(page);
+
+    if let Some(requested) = max_memory {
+        ensure!(
+            requested.is_multiple_of(page),
+            "maximum memory must be aligned to the page size ({page} bytes)"
+        );
+        ensure!(
+            requested <= WASM32_MAX_MEMORY_LIMIT_BYTES,
+            "maximum memory too large, cannot be greater than {WASM32_MAX_MEMORY_LIMIT_BYTES}"
+        );
+        ensure!(
+            initial_bytes <= requested,
+            "maximum memory too small, {initial_bytes} bytes needed"
+        );
+        let max_pages = requested / page;
+        for memory in &mut layout.memories {
+            memory.maximum = Some(max_pages);
+        }
+    }
+
+    Ok(initial_pages)
 }
 
 /// `__heap_end` = end of initial linear memory (`memory.initial * page_size`).
@@ -5412,6 +5438,7 @@ where
     let stack_size = symbol_db.args.z_stack_size;
     let stack_first = symbol_db.args.stack_first;
     let initial_memory = symbol_db.args.initial_memory;
+    let max_memory = symbol_db.args.max_memory;
     if stack_size > 0 {
         ensure_stack_size_aligned(stack_size)?;
     }
@@ -5536,8 +5563,13 @@ where
             ensure_memory_export(&mut layout.exports, symbol_db.args.memory_export_name());
         }
         layout.data_end = memory_cursor;
-        let initial_pages =
-            ensure_memory_covers(&mut layout, stack_size, stack_first, initial_memory)?;
+        let initial_pages = ensure_memory_covers(
+            &mut layout,
+            stack_size,
+            stack_first,
+            initial_memory,
+            max_memory,
+        )?;
         // wasm-ld only defines `__heap_end` when linear memory exists (end of `memory.initial`).
         let heap_end = if layout.memories.is_empty() {
             None
@@ -7458,11 +7490,14 @@ mod tests {
             ..Default::default()
         };
 
-        let pages = ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, true, None).unwrap();
+        let pages =
+            ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, true, None, None).unwrap();
         assert_eq!(pages, 1);
         assert_eq!(layout.memories[0].initial, 1);
+        assert_eq!(layout.memories[0].maximum, None);
 
-        let pages = ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, false, None).unwrap();
+        let pages =
+            ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, false, None, None).unwrap();
         let expected_pages = (u64::from(data_end) + u64::from(DEFAULT_STACK_SIZE))
             .div_ceil(wasm_page_size())
             .max(1);
