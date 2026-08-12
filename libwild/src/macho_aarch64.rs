@@ -4,6 +4,7 @@
 use crate::bail;
 use crate::ensure;
 use crate::macho::MachO;
+use crate::platform::PreviousRelocationInfo;
 use linker_utils::elf::AArch64Instruction;
 use linker_utils::elf::AllowedRange;
 use linker_utils::elf::PAGE_MASK_4KB;
@@ -217,6 +218,10 @@ impl crate::platform::Arch for MachOAArch64 {
         section_flags: <Self::Platform as crate::platform::Platform>::SectionFlags,
         non_zero_address: bool,
         relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
+        _sym_addr: u64,
+        _section_address: u64,
+        _rel_addend: i64,
+        _previous_relocation: Option<PreviousRelocationInfo<object::macho::RelocationInfo>>,
     ) -> Option<Self::Relaxation> {
         todo!()
     }

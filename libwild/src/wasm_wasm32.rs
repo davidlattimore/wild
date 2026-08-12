@@ -1,3 +1,4 @@
+use crate::platform::PreviousRelocationInfo;
 use crate::wasm::Wasm;
 use crate::wasm::relocation_type_to_string;
 use wasmparser::RelocationType;
@@ -99,6 +100,10 @@ impl crate::platform::Arch for WasmWasm32 {
         _section_flags: <Self::Platform as crate::platform::Platform>::SectionFlags,
         _non_zero_address: bool,
         _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
+        _sym_addr: u64,
+        _section_address: u64,
+        _rel_addend: i64,
+        _previous_relocation: Option<PreviousRelocationInfo<RelocationType>>,
     ) -> Option<Self::Relaxation> {
         // Wasm doesn't currently support any relaxations.
         None

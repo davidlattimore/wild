@@ -3,6 +3,7 @@ use crate::elf::Elf64;
 use crate::error;
 use crate::error::Result;
 use crate::platform::Platform;
+use crate::platform::PreviousRelocationInfo;
 use linker_utils::bit_misc::BitExtraction;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -95,6 +96,10 @@ impl crate::platform::Arch for ElfPpc64 {
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
         relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
+        _sym_addr: u64,
+        _section_address: u64,
+        _rel_addend: i64,
+        _previous_relocation: Option<PreviousRelocationInfo<object::elf::RelocationType>>,
     ) -> Option<Self::Relaxation>
     where
         Self: std::marker::Sized,

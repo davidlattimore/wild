@@ -11,6 +11,7 @@ use crate::error;
 use crate::error::Result;
 use crate::malfunction_point_ret;
 use crate::platform::Platform;
+use crate::platform::PreviousRelocationInfo;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -154,6 +155,10 @@ impl crate::platform::Arch for ElfX86_64 {
         section_flags: SectionFlags,
         _non_zero_address: bool,
         _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
+        _sym_addr: u64,
+        _section_address: u64,
+        _rel_addend: i64,
+        _previous_relocation: Option<PreviousRelocationInfo<object::elf::RelocationType>>,
     ) -> Option<Self::Relaxation> {
         let is_known_address = flags.is_address();
         let is_absolute = flags.is_absolute() && !flags.is_dynamic();
@@ -602,6 +607,10 @@ fn test_relaxation() {
             shf::EXECINSTR,
             true,
             None,
+            0,
+            0,
+            0,
+            None,
         ) {
             r.apply(&mut out, &mut offset, &mut 0);
 
@@ -618,6 +627,10 @@ fn test_relaxation() {
             OutputKind::StaticExecutable(RelocationModel::Relocatable),
             shf::EXECINSTR,
             true,
+            None,
+            0,
+            0,
+            0,
             None,
         ) {
             out.copy_from_slice(bytes_in);
