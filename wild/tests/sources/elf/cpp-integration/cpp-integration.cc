@@ -29,21 +29,16 @@
 //#Config:static-no-relax:default
 //#CompArgs:-fmerge-constants
 //#LinkerDriver:g++
-//#LinkArgs:-static -Wl,-z,now,-no-relax
+//#LinkArgs:-no-pie -static -Wl,-z,now,-no-relax
 //#DiffIgnore:rel.extra-got-plt-got
 //#DiffIgnore:section.rela.plt.link
 // Wild uses similar order as LLD, which is different from GNU ld.
 //#DiffIgnore:init_array
-// TODO: Missing `endbr64` relaxations.
+// TODO: We probably picked weak symbols from different objects than GNU ld.
 //#DiffIgnore:rel.match_failed.R_X86_64_GOTPCRELX
 //#DiffIgnore:rel.match_failed.R_X86_64_REX_GOTPCRELX
 //#DiffIgnore:rel.match_failed.R_X86_64_PLT32
 //#DiffIgnore:literal-byte-mismatch
-// TODO: Some conditions for required relaxations are wrong.
-//#DiffIgnore:rel.extra-opt.R_X86_64_GOTPCRELX.JmpIndirectToRelative*
-//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexCmpIndirectToAbsolute*
-//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute*
-//#DiffIgnore:rel.missing-opt.R_X86_64_GOTTPOFF.RexMovIndirectToAbsolute*
 //#Arch: x86_64
 
 //#Config:clang-pie:default
