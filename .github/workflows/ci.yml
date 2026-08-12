@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ['main']
+    branches: [ 'main' ]
   pull_request:
-    branches: ['**']
+    branches: [ '**' ]
   workflow_dispatch:
 
 permissions:
@@ -339,3 +339,15 @@ jobs:
         run: nix build .#checks.x86_64-linux.${MATRIX_CHECK} -L --show-trace
         env:
           MATRIX_CHECK: ${{ matrix.check }}
+
+  reuse-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: REUSE Compliance Check
+        uses: fsfe/reuse-action@v6
