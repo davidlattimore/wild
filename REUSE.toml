@@ -24,6 +24,7 @@ path = [
   "LICENSE-APACHE",
   "LICENSE-MIT",
   "LINKER_SCRIPT_SUPPORT.md",
+  "PACKAGING.md",
   "README.md",
   "RELEASING.md",
   "REUSE.toml",
