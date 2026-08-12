@@ -8,6 +8,7 @@ use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::fs::FileReplacementMode;
+use crate::fs::FileType;
 use crate::fs::FileWriteMode;
 use crate::layout::GroupLayout;
 use crate::layout::Layout;
@@ -15,7 +16,6 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
-use crate::platform;
 use crate::platform::Args;
 use crate::platform::Platform;
 use crate::timing_phase;
@@ -95,13 +95,13 @@ struct SectionAllocation {
 }
 
 impl<F: FileSystem> Output<F> {
-    pub(crate) fn new(
-        args: &impl platform::Args,
+    pub(crate) fn new<P: Platform>(
+        args: &P::Args,
         output_kind: OutputKind,
         file_system: Arc<F>,
     ) -> Output<F> {
         let file_replacement_mode = args.common().file_replacement_mode.unwrap_or_else(|| {
-            default_file_replacement_mode(args, output_kind, file_system.as_ref())
+            default_file_replacement_mode::<P>(args, output_kind, file_system.as_ref())
         });
 
         let creator = if args.common().available_threads.get() > 1 {
@@ -222,8 +222,8 @@ impl<F: FileSystem> Output<F> {
 }
 
 /// Returns the file replacement mode that we should use to write to the specified path.
-fn default_file_replacement_mode(
-    args: &impl platform::Args,
+fn default_file_replacement_mode<P: Platform>(
+    args: &P::Args,
     output_kind: OutputKind,
     file_system: &impl FileSystem,
 ) -> FileReplacementMode {
@@ -231,11 +231,15 @@ fn default_file_replacement_mode(
         return FileReplacementMode::UnlinkAndReplace;
     }
 
-    if file_system.file_type(args.output()).is_err() {
+    let Ok(file_type) = file_system.file_type(args.output()) else {
         return FileReplacementMode::UnlinkAndReplace;
+    };
+
+    if file_type != FileType::File {
+        return FileReplacementMode::UpdateInPlaceWithFallback;
     }
 
-    FileReplacementMode::UpdateInPlaceWithFallback
+    P::DEFAULT_FILE_REPLACEMENT_MODE
 }
 
 /// Delete the old output file. Note, this is only used when running from a single thread.

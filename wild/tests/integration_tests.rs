@@ -206,6 +206,9 @@
 //! having been pre-filled with random data. It then compares the output of the two runs to verify
 //! that they're the same.
 //!
+//! TestRelinkAfterRun:{bool} Run Wild's output, relink it at the same path, then run it again.
+//! Verifies that relinking replaces the output file rather than updating its inode in place.
+//!
 //! AssertOutputFileMatches:{filename}:{regex} Verifies that a file in the output directory contains
 //! at least one line matching the specified regex. Such output files are generally written by
 //! specifying a flag in LinkArgs that uses $OUT_DIR.
@@ -1275,6 +1278,7 @@ struct Config {
     requires_rust_musl: bool,
     requires_linker_plugin: bool,
     test_update_in_place: bool,
+    test_relink_after_run: bool,
     test_config: TestConfig,
     tracked_files: Vec<PathBuf>,
     so_single_linker: Option<Linker>,
@@ -2052,6 +2056,7 @@ impl Config {
             rustc_channel: RustcChannel::Default,
             requires_rust_musl: false,
             test_update_in_place: false,
+            test_relink_after_run: false,
             test_config: test_config.clone(),
             tracked_files: Default::default(),
             available_linkers: linker_catalog.available.clone(),
@@ -2681,6 +2686,9 @@ fn process_directive(
         "TestUpdateInPlace" => {
             config.test_update_in_place = arg.parse()?;
         }
+        "TestRelinkAfterRun" => {
+            config.test_relink_after_run = arg.parse()?;
+        }
         "DriverMode" => {
             config.driver_mode = Some(DriverMode::from_str(arg).map_err(|_| {
                 error!(
@@ -2742,6 +2750,11 @@ impl ProgramInputs {
 
         if config.test_update_in_place && matches!(linker, Linker::Wild) {
             self.run_update_in_place_test(&inputs, config, cross_arch, &link_output)?;
+        }
+
+        #[cfg(target_os = "macos")]
+        if config.test_relink_after_run && config.should_run && linker.is_wild() {
+            self.run_relink_after_run_test(linker, &inputs, config, cross_arch, &link_output)?;
         }
 
         let shared_objects = inputs
@@ -2827,6 +2840,37 @@ impl ProgramInputs {
                 cmd = updated_link_output.command,
             );
         }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn run_relink_after_run_test(
+        &self,
+        linker: &Linker,
+        inputs: &[LinkerInput],
+        config: &Config,
+        cross_arch: Option<Architecture>,
+        reference_output: &LinkOutput,
+    ) -> Result {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let file = std::fs::File::open(&reference_output.binary)
+            .with_context(|| format!("Failed to open {}", reference_output.binary.display()))?;
+
+        reference_output
+            .run(cross_arch)
+            .with_context(|| format!("Failed to run {}", reference_output.binary.display()))?;
+
+        let reference_output = linker.link(self.name(), inputs, config, cross_arch)?;
+        let metadata = file.metadata()?;
+        let relinked_metadata = std::fs::metadata(&reference_output.binary)?;
+
+        ensure!(
+            (metadata.dev(), metadata.ino()) != (relinked_metadata.dev(), relinked_metadata.ino()),
+            "Reused inode for {} when relinking",
+            reference_output.binary.display()
+        );
 
         Ok(())
     }
@@ -2943,13 +2987,10 @@ impl Debug for SectionDiff {
 const TEST_BINARY_TIMEOUT: Duration = std::time::Duration::from_secs(10);
 const EXIT_SUCCESS: i32 = 42;
 
-impl Program<'_> {
+impl LinkOutput {
     fn run(&self, cross_arch: Option<Architecture>) -> Result {
-        if self.link_output.command.config.platform == PlatformKind::Wasm {
-            return run_wasm_with_wasmtime(
-                &self.link_output.binary,
-                self.link_output.linker_used.name(),
-            );
+        if self.command.config.platform == PlatformKind::Wasm {
+            return run_wasm_with_wasmtime(&self.binary, self.linker_used.name());
         }
 
         let mut command = if let Some(arch) = cross_arch {
@@ -2963,10 +3004,10 @@ impl Program<'_> {
                 c.arg(format!("LD_LIBRARY_PATH={}", extra_lib_paths.join(":")));
             }
 
-            c.arg(&self.link_output.binary);
+            c.arg(&self.binary);
             c
         } else {
-            Command::new(&self.link_output.binary)
+            Command::new(&self.binary)
         };
 
         // Similarly to cargo test, capture all the run-time output, since it may contain useful
@@ -3018,12 +3059,12 @@ impl Program<'_> {
         // In particular: All initialization, termination and entry routines of the shared library
         // need to be safe and entry_sym has to be of type `extern "C" fn() -> i32`.
         let exit_code = unsafe {
-            let lib = Library::new(&self.link_output.binary)
+            let lib = Library::new(&self.binary)
                 .map_err(|e| error!("{}", std::error::Error::source(&e).unwrap_or(&e)))
                 .with_context(|| {
                     format!(
                         "Cannot load shared library {}",
-                        self.link_output.binary.to_string_lossy()
+                        self.binary.to_string_lossy()
                     )
                 })?;
             let entry = lib
@@ -7041,11 +7082,13 @@ fn run_with_config(
                 // compiled and dynamically linked to load the shared library instead.
                 if cross_arch.is_none() && !is_musl_used() {
                     program
+                        .link_output
                         .run_as_dynlib(func)
                         .with_context(|| format!("Failed to load shared library. {program}"))?;
                 }
             } else {
                 program
+                    .link_output
                     .run(cross_arch)
                     .with_context(|| format!("Failed to run program. {program}"))?;
             }

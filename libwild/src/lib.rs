@@ -334,7 +334,7 @@ impl<F: FileSystem> Linker<F> {
 
         let output_kind = OutputKind::new(args, file_loader);
 
-        let mut output = file_writer::Output::new(args, output_kind, self.file_system.clone());
+        let mut output = file_writer::Output::new::<P>(args, output_kind, self.file_system.clone());
 
         let mut output_sections =
             OutputSections::with_base_address(A::start_memory_address(output_kind), output_kind);

@@ -6,6 +6,7 @@ use crate::arch::Architecture;
 use crate::bail;
 use crate::env;
 use crate::error::Warning;
+use crate::fs::FileReplacementMode;
 use crate::grouping::Group;
 use crate::grouping::SequencedLinkerScript;
 use crate::input_data::FileLoader;
@@ -266,6 +267,10 @@ pub(crate) trait Platform:
 {
     const NUM_SINGLE_PART_SECTIONS: u32;
     const NUM_BUILT_IN_REGULAR_SECTIONS: usize;
+
+    /// How existing regular output files are replaced when the user doesn't specify a mode.
+    const DEFAULT_FILE_REPLACEMENT_MODE: FileReplacementMode =
+        FileReplacementMode::UpdateInPlaceWithFallback;
 
     // TODO: Some of these are very specific to a single platform. Investigate if the code that
     // references them could be moved, allowing the constant to be deleted.
