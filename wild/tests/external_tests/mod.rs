@@ -1,3 +1,5 @@
+#[cfg(feature = "lld_tests")]
+mod lld_tests;
 mod mold_tests;
 
 use crate::Filter;
