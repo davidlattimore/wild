@@ -8,7 +8,6 @@ use crate::Result;
 use libtest_mimic::Failed;
 use libtest_mimic::Trial;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Command;
 
 const PREFIX: &str = "external_test_suites/lld";
@@ -40,29 +39,61 @@ pub(crate) fn collect_tests(tests: &mut Vec<Trial>, filter: &crate::Filter) -> R
 }
 
 fn run_lld_test(test_file: &Path) -> Result {
-    // Check if required LLVM tools are available
     let llvm_mc = find_tool("llvm-mc")?;
     let filecheck = find_tool("FileCheck")?;
-
     let content = std::fs::read_to_string(test_file)?;
     let tmpdir = tempfile::tempdir()?;
 
-    // Extract and execute RUN: lines
+    for cmd in extract_run_lines(&content) {
+        let cmd = substitute_vars(&cmd, test_file, tmpdir.path());
+        let cmd = substitute_tools(&cmd, &llvm_mc, &filecheck);
+        execute_command(&cmd)?;
+    }
+    Ok(())
+}
+
+/// Extracts RUN: lines from the test file, joining lines that end in a
+/// trailing `\` continuation character into a single logical command, per
+/// the LLVM lit RUN line syntax:
+/// https://llvm.org/docs/TestingGuide.html#run-lines
+fn extract_run_lines(content: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+    let mut current: Option<String> = None;
+
     for line in content.lines() {
-        let Some(cmd) = line
+        let Some(rest) = line
             .trim()
             .strip_prefix("// RUN:")
             .or_else(|| line.trim().strip_prefix("# RUN:"))
         else {
             continue;
         };
+        let rest = rest.trim();
 
-        let cmd = substitute_vars(cmd.trim(), test_file, tmpdir.path());
-        let cmd = substitute_tools(&cmd, &llvm_mc, &filecheck);
+        let (piece, continues) = match rest.strip_suffix('\\') {
+            Some(stripped) => (stripped.trim_end(), true),
+            None => (rest, false),
+        };
 
-        execute_command(&cmd)?;
+        current = Some(match current.take() {
+            Some(mut buf) => {
+                buf.push(' ');
+                buf.push_str(piece);
+                buf
+            }
+            None => piece.to_string(),
+        });
+
+        if !continues {
+            commands.push(current.take().unwrap());
+        }
     }
-    Ok(())
+
+    if let Some(buf) = current {
+        commands.push(buf);
+    }
+
+    commands
 }
 
 fn substitute_vars(cmd: &str, test_file: &Path, tmpdir: &Path) -> String {
@@ -72,17 +103,10 @@ fn substitute_vars(cmd: &str, test_file: &Path, tmpdir: &Path) -> String {
 }
 
 fn substitute_tools(cmd: &str, llvm_mc: &str, filecheck: &str) -> String {
-    let wild = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("wild");
-
+    const WILD: &str = env!("CARGO_BIN_EXE_wild");
     cmd.replace("llvm-mc", llvm_mc)
         .replace("FileCheck", filecheck)
-        .replace("ld.lld", &format!("{} -m elf_x86_64", wild.display()))
+        .replace("ld.lld", &format!("{WILD} -m elf_x86_64"))
 }
 
 fn find_tool(name: &str) -> Result<String> {

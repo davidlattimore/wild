@@ -1,4 +1,3 @@
-#[cfg(feature = "lld_tests")]
 mod lld_tests;
 mod mold_tests;
 
@@ -18,7 +17,9 @@ pub(super) fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
         mold_tests::collect_tests(tests, filter)?;
     }
 
-    let _ = (tests, filter);
+    if cfg!(feature = "lld_tests") {
+        lld_tests::collect_tests(tests, filter)?;
+    }
 
     Ok(())
 }
