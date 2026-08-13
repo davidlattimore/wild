@@ -245,6 +245,11 @@ impl<'data> LinkerPlugin<'data> {
         let plugin_loaded =
             file_loader.load_inputs(&plugin_outputs.generated_inputs, symbol_db.args, &mut None)?;
 
+        // Temporarily restore original (pre-wrap) name mappings so that definitions of wrapped
+        // names in the LTO output are registered as alternatives of the original symbols rather
+        // than of `__wrap_*`.
+        symbol_db.restore_wrapped_symbol_names();
+
         symbol_db.add_inputs(
             per_symbol_flags,
             output_sections,
@@ -947,17 +952,17 @@ fn get_symbol_resolution<'data, C: ElfClass>(
     // plugin needs to know the pre-wrap state.
     let wrap_names = symbol_db.args.symbol_names_to_wrap();
     let is_wrapped = wrap_names.iter().any(|w| w.as_bytes() == raw_name.name);
-    if is_wrapped {
-        return if sym.is_undefined() {
-            PluginSymbolResolution::ResolvedExec
-        } else {
-            PluginSymbolResolution::PreemptedReg
-        };
-    }
 
-    let symbol_id = symbol_db
-        .get(&PreHashedSymbolName::from_raw(&raw_name), true)
-        .map(|id| symbol_db.definition(id));
+    let symbol_id = if is_wrapped {
+        let real_name = format!("__real_{}", String::from_utf8_lossy(raw_name.name));
+        symbol_db
+            .get_unversioned(&UnversionedSymbolName::prehashed(real_name.as_bytes()))
+            .map(|id| symbol_db.definition(id))
+    } else {
+        symbol_db
+            .get(&PreHashedSymbolName::from_raw(&raw_name), true)
+            .map(|id| symbol_db.definition(id))
+    };
 
     let Some(symbol_id) = symbol_id else {
         return PluginSymbolResolution::Undef;
@@ -966,6 +971,11 @@ fn get_symbol_resolution<'data, C: ElfClass>(
     if symbol_id.is_undefined() {
         PluginSymbolResolution::Undef
     } else if sym.is_undefined() {
+        // Wrapped symbols are always reported as resolved outside IR.
+        if is_wrapped {
+            return PluginSymbolResolution::ResolvedExec;
+        }
+
         let defining_file = symbol_db.file(symbol_db.file_id_for_symbol(symbol_id));
 
         match defining_file {
@@ -992,6 +1002,9 @@ fn get_symbol_resolution<'data, C: ElfClass>(
         } else {
             PluginSymbolResolution::PrevailingDefIronly
         }
+    } else if is_wrapped {
+        // Wrapped symbols use the regular (non-IR) preemption codes.
+        PluginSymbolResolution::PreemptedReg
     } else {
         let defining_file = symbol_db.file(symbol_db.file_id_for_symbol(symbol_id));
         match defining_file {

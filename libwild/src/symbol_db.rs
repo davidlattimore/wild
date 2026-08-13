@@ -608,6 +608,28 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         }
     }
 
+    /// Restores name-table entries for wrapped symbols to their original (pre-wrap) definitions.
+    #[cfg(all(feature = "plugins", unix))]
+    pub(crate) fn restore_wrapped_symbol_names(&mut self) {
+        let wrap = self.args.symbol_names_to_wrap();
+        if wrap.is_empty() {
+            return;
+        }
+
+        let allocator = self.herd.get();
+
+        for name in wrap {
+            let name_bytes = allocator.alloc_slice_copy(name.as_bytes());
+            let real_name = allocator.alloc_slice_copy(format!("__real_{name}").as_bytes());
+
+            if let Some(orig_id) =
+                self.get_unversioned(&UnversionedSymbolName::prehashed(real_name))
+            {
+                self.override_name(UnversionedSymbolName::prehashed(name_bytes), orig_id);
+            }
+        }
+    }
+
     /// Overrides `name` to point to `symbol_id`. Returns the old symbol ID for `name`.
     fn override_name(
         &mut self,
