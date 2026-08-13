@@ -41,9 +41,7 @@ tests = [
   "sort-debug-info-merged.sh",             # `-Map`
   "sort-debug-info.sh",                    # `-Map`
   "spare-program-headers.sh",
-  "static-archive.sh",                     # error: Undefined symbol main, passes with GNU ld
   "synthetic-symbols.sh",                  # `--image-base`
-  "thin-archive.sh",                       # error: Undefined symbol main, passes with GNU ld
   "trace-symbol-symver.sh",
   "trace-symbol.sh",
   "undefined-glob-gc-sections.sh",
@@ -198,6 +196,8 @@ tests = [
   "warn-unresolved-symbols.sh",     # Different message formats
   "whole-archive.sh",               # Passes when `--no-gc-sections` is passed.
   "z-defs.sh",                      # Different message formats
+  "thin-archive.sh",                # Different `--trace` output formats
+  "static-archive.sh",              # Different `--trace` output formats
 ]
 
 [skipped_groups.lto]

@@ -1603,11 +1603,11 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         });
 
     parser
-        .declare_with_param()
+        .declare()
         .short("t")
         .long("trace")
         .help("Print opened input files")
-        .execute(|args, _modifier_stack, _value| {
+        .execute(|args, _modifier_stack| {
             args.trace = true;
             Ok(())
         });
