@@ -3521,6 +3521,7 @@ fn report_disallowed_unresolved_imports<'data>(
                 WasmSymbolKind::Data => {
                     let symbol_id = input.symbol_id_range.offset_to_id(sym_offset);
                     symbol_db.definition(symbol_id) == symbol_id
+                        && live_relocs_reference_symbol(input, sym_offset)
                 }
                 _ => false,
             };
@@ -3543,6 +3544,17 @@ fn report_disallowed_unresolved_imports<'data>(
         return Ok(());
     }
     bail!("{}", errors.join("\n"));
+}
+
+fn live_relocs_reference_symbol(input: &WasmObjectLayoutInput<'_>, sym_offset: usize) -> bool {
+    let Ok(idx) = u32::try_from(sym_offset) else {
+        return false;
+    };
+    input
+        .code_relocations
+        .iter()
+        .chain(input.data_relocations.iter())
+        .any(|reloc| reloc.index == idx)
 }
 
 fn collect_shared_unresolved_imports<'data>(
