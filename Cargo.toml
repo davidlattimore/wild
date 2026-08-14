@@ -190,6 +190,9 @@ strip = true
 inherits = "dev"
 debug = 0
 
+[workspace.lints.rust]
+ffi_unwind_calls = "warn"
+
 [workspace.lints.clippy]
 # It's not always desirable to use if-let instead of a match, especially if you might later end up
 # adding more branches to the match.
@@ -312,6 +315,15 @@ format_push_string = "allow"
 redundant_clone = "warn"
 unnecessary_struct_initialization = "warn"
 derive_partial_eq_without_eq = "warn"
+debug_assert_with_mut_call = "warn"
+fallible_impl_from = "warn"
+non_send_fields_in_send_ty = "warn"
+transmute_undefined_repr = "warn"
+uninhabited_references = "warn"
+read_zero_byte_vec = "warn"
+path_buf_push_overwrite = "warn"
+mixed_read_write_in_expression = "warn"
+as_ptr_cast_mut = "warn"
 
 # We do a bit of hashing, especially in the integration tests. Optimising this speeds up tests.
 [profile.dev.package."foldhash"]
