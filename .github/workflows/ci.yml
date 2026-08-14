@@ -151,7 +151,7 @@ jobs:
         with:
           targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2.85.8
+      - uses: taiki-e/install-action@v2.85.11
         with:
           tool: wasm-tools
       - name: Setup Wasmtime
@@ -204,7 +204,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
-      - uses: taiki-e/install-action@v2.85.8
+      - uses: taiki-e/install-action@v2.85.11
         with:
           tool: cargo-hack,cargo-minimal-versions,taplo
       - uses: Swatinem/rust-cache@v2
