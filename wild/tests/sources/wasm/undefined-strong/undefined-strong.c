@@ -5,6 +5,14 @@
 //#CompArgs: -DTEST_DATA
 //#ExpectError: undefined symbol: missing_data
 
+//#Config:function-pic
+//#CompArgs: -fPIC
+//#ExpectError: undefined symbol: missing_host_fn
+
+//#Config:data-pic
+//#CompArgs: -DTEST_DATA -fPIC
+//#ExpectError: undefined symbol: missing_data
+
 #ifdef TEST_DATA
 extern int missing_data;
 

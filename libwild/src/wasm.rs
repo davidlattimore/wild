@@ -3498,14 +3498,30 @@ fn report_disallowed_unresolved_imports<'data>(
             }
 
             let is_unresolved = match sym.kind {
-                WasmSymbolKind::Func => res
-                    .function_resolutions
-                    .get(sym.index as usize)
-                    .is_some_and(|r| matches!(r, ImportResolution::Unresolved)),
-                WasmSymbolKind::Global => res
-                    .global_resolutions
-                    .get(sym.index as usize)
-                    .is_some_and(|r| matches!(r, ImportResolution::Unresolved)),
+                WasmSymbolKind::Func => {
+                    let idx = sym.index as usize;
+                    input
+                        .live_function_imports
+                        .get(idx)
+                        .copied()
+                        .unwrap_or(false)
+                        && res
+                            .function_resolutions
+                            .get(idx)
+                            .is_some_and(|r| matches!(r, ImportResolution::Unresolved))
+                }
+                WasmSymbolKind::Global => {
+                    let idx = sym.index as usize;
+                    input
+                        .live_global_imports
+                        .get(idx)
+                        .copied()
+                        .unwrap_or(false)
+                        && res
+                            .global_resolutions
+                            .get(idx)
+                            .is_some_and(|r| matches!(r, ImportResolution::Unresolved))
+                }
                 WasmSymbolKind::Data => {
                     let symbol_id = input.symbol_id_range.offset_to_id(sym_offset);
                     symbol_db.definition(symbol_id) == symbol_id
@@ -4212,10 +4228,10 @@ fn resolve_got_mem_def(
         let def_ok = def_input
             .symbols
             .get(def_off)
-            .is_some_and(|s| s.kind == WasmSymbolKind::Data && !s.is_undefined());
+            .is_some_and(|s| s.kind == WasmSymbolKind::Data);
         ensure!(
             def_ok,
-            "GOT.mem for `{}` requires a defined data symbol in the link",
+            "GOT.mem for `{}` requires a data symbol in the link",
             symbol_db.symbol_name_for_display(def_id)
         );
         return Ok(GotMemDef::Object {

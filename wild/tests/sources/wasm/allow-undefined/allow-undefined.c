@@ -10,6 +10,19 @@
 //#RunEnabled: false
 //#ExpectFuncImportCount: 0
 
+//#Config:function-pic
+//#CompArgs: -fPIC
+//#LinkArgs: --allow-undefined
+//#RunEnabled: false
+//#ExpectFuncImport: env/missing_host_fn=1
+//#ExpectFuncImportCount: 1
+
+//#Config:data-pic
+//#CompArgs: -DTEST_DATA -fPIC
+//#LinkArgs: --allow-undefined
+//#RunEnabled: false
+//#ExpectFuncImportCount: 0
+
 #ifdef TEST_DATA
 extern int missing_data;
 
