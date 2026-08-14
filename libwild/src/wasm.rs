@@ -3512,11 +3512,7 @@ fn report_disallowed_unresolved_imports<'data>(
                 }
                 WasmSymbolKind::Global => {
                     let idx = sym.index as usize;
-                    input
-                        .live_global_imports
-                        .get(idx)
-                        .copied()
-                        .unwrap_or(false)
+                    input.live_global_imports.get(idx).copied().unwrap_or(false)
                         && res
                             .global_resolutions
                             .get(idx)
