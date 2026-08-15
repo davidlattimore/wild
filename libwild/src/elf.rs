@@ -6066,12 +6066,11 @@ fn classify_symbol_relocation<
         flags,
         symbol_db.output_kind,
         section_flags,
-        true,
         None,
-        1,    // sym_addr: assume non-zero
-        0,    // section_address
-        0,    // rel_addend
-        None, // previous_relocation
+        1,
+        0,
+        0,
+        None,
     )
     .filter(|relaxation| args.should_relax() || relaxation.is_mandatory())
     {

@@ -3124,7 +3124,6 @@ fn apply_relocation<
         flags,
         output_kind,
         section_info.section_flags,
-        resolution.raw_value != 0,
         relax_deltas,
         resolution.raw_value,
         section_address,

@@ -98,7 +98,6 @@ impl crate::platform::Arch for WasmWasm32 {
         _flags: crate::value_flags::ValueFlags,
         _output_kind: crate::output_kind::OutputKind,
         _section_flags: <Self::Platform as crate::platform::Platform>::SectionFlags,
-        _non_zero_address: bool,
         _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
         _sym_addr: u64,
         _section_address: u64,

@@ -165,7 +165,6 @@ impl crate::platform::Arch for ElfAArch64 {
         flags: crate::value_flags::ValueFlags,
         output_kind: crate::output_kind::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
-        _non_zero_address: bool,
         _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
         sym_addr: u64,
         section_address: u64,
