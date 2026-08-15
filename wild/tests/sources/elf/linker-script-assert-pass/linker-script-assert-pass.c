@@ -4,7 +4,9 @@
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64
+//#ExpectSym:symbol10 section=".data",offset-in-section=0x10040
 //#ExpectSym:symbol11 address=0x80
+//#ExpectSym:symbol10_assert section=".data",offset-in-section=1
 //#ExpectSym:symbol11_assert address=0x1
 
 #include "../common/runtime.h"
