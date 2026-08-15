@@ -546,7 +546,7 @@ mod tests {
         let args = parse_args(["/NODEFAULTLIB"]);
 
         assert!(args.no_default_libraries);
-        assert!(args.excluded_default_libraries.is_empty());
+        assert_eq!(args.excluded_default_libraries, Vec::<String>::new());
     }
 
     /// An empty value is a malformed library name, not the bare form, so link.exe rejects it.
@@ -697,7 +697,7 @@ mod tests {
         let args = parse_args(["/LIBPATH:some/dir"]);
 
         assert_eq!(args.lib_search_path[0].as_ref(), Path::new("some/dir"));
-        assert!(args.common.inputs.is_empty());
+        assert_eq!(args.common.inputs, []);
     }
 
     #[test]
@@ -753,7 +753,7 @@ mod tests {
             input_paths(&args),
             [Path::new("main.o"), Path::new("foo.lib")]
         );
-        assert!(args.common.unrecognized_options.is_empty());
+        assert_eq!(args.common.unrecognized_options, Vec::<String>::new());
         assert!(!args.is_dll);
     }
 }
