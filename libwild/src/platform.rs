@@ -198,7 +198,6 @@ pub(crate) trait Arch: Send + Sync + 'static {
         flags: ValueFlags,
         output_kind: OutputKind,
         section_flags: <Self::Platform as Platform>::SectionFlags,
-        non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
         sym_addr: u64,
         section_address: u64,

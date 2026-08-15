@@ -193,9 +193,8 @@ impl crate::platform::Arch for ElfRiscV64 {
         flags: crate::value_flags::ValueFlags,
         output_kind: crate::output_kind::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
-        non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
-        _sym_addr: u64,
+        sym_addr: u64,
         _section_address: u64,
         _rel_addend: i64,
         _previous_relocation: Option<PreviousRelocationInfo<object::elf::RelocationType>>,
@@ -216,7 +215,7 @@ impl crate::platform::Arch for ElfRiscV64 {
 
         match relocation_kind {
             object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT if !interposable => {
-                return if non_zero_address {
+                return if sym_addr != 0 {
                     if is_jalr_deleted(section_bytes, offset) {
                         // Rewrite auipc into jal.
                         Some(Relaxation {
