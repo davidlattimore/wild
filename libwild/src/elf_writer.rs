@@ -72,6 +72,7 @@ use crate::platform::Arch;
 use crate::platform::Args as _;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
+use crate::platform::PreviousRelocationInfo;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Relaxation as _;
 use crate::platform::Relocation;
@@ -3125,6 +3126,19 @@ fn apply_relocation<
         section_info.section_flags,
         resolution.raw_value != 0,
         relax_deltas,
+        resolution.raw_value,
+        section_address,
+        rel.addend(),
+        relocation_cache
+            .previous
+            .as_ref()
+            .filter(|r| r.symbol() == rel.symbol())
+            .map(|r| PreviousRelocationInfo {
+                kind: r.raw_type(),
+                offset: r.offset(),
+                symbol: r.symbol(),
+                addend: r.addend(),
+            }),
     )
     .filter(|relaxation| layout.args().relax || relaxation.is_mandatory());
 

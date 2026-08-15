@@ -10,14 +10,18 @@ use crate::layout::Layout;
 use crate::malfunction_point_ret;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
+use crate::platform::PreviousRelocationInfo;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::aarch64::relocation_type_from_raw;
+use linker_utils::bit_misc::BitExtraction;
 use linker_utils::elf::AArch64Instruction;
+use linker_utils::elf::AllowedRange;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::PAGE_MASK_4KB;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::SIZE_4KB;
+use linker_utils::elf::Sign;
 use linker_utils::elf::aarch64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
@@ -163,6 +167,12 @@ impl crate::platform::Arch for ElfAArch64 {
         section_flags: linker_utils::elf::SectionFlags,
         _non_zero_address: bool,
         _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
+        sym_addr: u64,
+        section_address: u64,
+        rel_addend: i64,
+        previous_relocation: Option<
+            PreviousRelocationInfo<<Self::Platform as Platform>::RelocationInfo>,
+        >,
     ) -> Option<Self::Relaxation>
     where
         Self: std::marker::Sized,
@@ -307,7 +317,50 @@ impl crate::platform::Arch for ElfAArch64 {
                     mandatory: false,
                 });
             }
-
+            // Relax ADRP+ADD to NOP+ADR. Applied at ADD position when previous relocation
+            // was ADRP for the same symbol at the consecutive offset.
+            object::elf::R_AARCH64_ADD_ABS_LO12_NC
+                if !interposable && flags.is_address() && sym_addr != 0 =>
+            {
+                if let Some(prev) = previous_relocation
+                    && prev.kind == object::elf::R_AARCH64_ADR_PREL_PG_HI21
+                    && prev.offset + 4 == offset_in_section
+                    && prev.addend == 0
+                {
+                    let offset = offset_in_section as usize;
+                    if let Some(adrp_bytes) = offset
+                        .checked_sub(4)
+                        .and_then(|s| section_bytes.get(s..offset))
+                        && let Some(add_bytes) = section_bytes.get(offset..offset + 4)
+                    {
+                        let adrp_instr =
+                            u64::from(u32::from_le_bytes(adrp_bytes.try_into().unwrap()));
+                        let add_instr =
+                            u64::from(u32::from_le_bytes(add_bytes.try_into().unwrap()));
+                        if (adrp_instr as u32 & 0x9f000000) == 0x90000000
+                            && (add_instr as u32 & 0xffc00000) == 0x91000000
+                            && adrp_instr.extract_bit_range(0..5)
+                                == add_instr.extract_bit_range(0..5)
+                            && adrp_instr.extract_bit_range(0..5)
+                                == add_instr.extract_bit_range(5..10)
+                        {
+                            let add_place = section_address + offset_in_section;
+                            let diff = (sym_addr as i64)
+                                .wrapping_add(rel_addend)
+                                .wrapping_sub(add_place as i64);
+                            if AllowedRange::from_bit_size(21, Sign::Signed).contains(diff) {
+                                return Some(Relaxation {
+                                    kind: RelaxationKind::AdrpAddToNopAdr,
+                                    rel_info: rel_info_from_type!(
+                                        object::elf::R_AARCH64_ADR_PREL_LO21
+                                    ),
+                                    mandatory: false,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
             _ => (),
         }
 

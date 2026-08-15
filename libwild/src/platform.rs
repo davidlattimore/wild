@@ -200,6 +200,12 @@ pub(crate) trait Arch: Send + Sync + 'static {
         section_flags: <Self::Platform as Platform>::SectionFlags,
         non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
+        sym_addr: u64,
+        section_address: u64,
+        rel_addend: i64,
+        previous_relocation: Option<
+            PreviousRelocationInfo<<Self::Platform as Platform>::RelocationInfo>,
+        >,
     ) -> Option<Self::Relaxation>;
 
     /// Fill `buf` with NOP padding.
@@ -259,6 +265,15 @@ pub(crate) struct RelaxSymbolInfo {
     pub output_address: u64,
     /// Whether the symbol may be interposed at runtime.
     pub is_interposable: bool,
+}
+
+/// Information about the previous relocation, used for pair-based relaxations.
+#[allow(dead_code)]
+pub(crate) struct PreviousRelocationInfo<RelInfo> {
+    pub kind: RelInfo,
+    pub offset: u64,
+    pub symbol: Option<object::SymbolIndex>,
+    pub addend: i64,
 }
 
 /// A platform for which we support writing producing linked outputs.

@@ -6068,6 +6068,10 @@ fn classify_symbol_relocation<
         section_flags,
         true,
         None,
+        1,    // sym_addr: assume non-zero
+        0,    // section_address
+        0,    // rel_addend
+        None, // previous_relocation
     )
     .filter(|relaxation| args.should_relax() || relaxation.is_mandatory())
     {

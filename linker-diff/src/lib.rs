@@ -229,6 +229,9 @@ impl Config {
                 // LLD does some different relaxations to us
                 "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.ReplaceWithNop.*",
                 "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.ReplaceWithNop.*",
+                // Wild and lld relax ADRP+ADD to NOP+ADR, but GNU ld does not.
+                "rel.extra-opt.R_AARCH64_ADD_ABS_LO12_NC.AdrpAddToNopAdr.*",
+                "rel.extra-opt.R_AARCH64_ADR_PREL_PG_HI21.ReplaceWithNop.*",
                 // The other linkers set properties on sections if all input sections have that
                 // property. For sections like .rodata, this seems like an unimportant behaviour to
                 // replicate.
