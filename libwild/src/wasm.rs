@@ -352,6 +352,10 @@ impl WasmSymbol {
         self.raw_flags().contains(SymbolFlags::VISIBILITY_HIDDEN)
     }
 
+    pub(crate) fn is_explicit_name(&self) -> bool {
+        self.raw_flags().contains(SymbolFlags::EXPLICIT_NAME)
+    }
+
     fn has_name(&self) -> bool {
         self.name_len != 0
     }
@@ -3474,6 +3478,69 @@ impl<'data> SharedUnresolvedImports<'data> {
     }
 }
 
+fn report_disallowed_unresolved_imports<'data>(
+    inputs: &[WasmObjectLayoutInput<'data>],
+    resolutions: &[ObjectImportResolutions],
+    symbol_db: &SymbolDb<'data, Wasm>,
+) -> Result {
+    if symbol_db.args.allow_undefined {
+        return Ok(());
+    }
+
+    let mut errors: Vec<String> = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+
+    for (input, res) in inputs.iter().zip(resolutions.iter()) {
+        let file_display = symbol_db.file(input.file_id).to_string();
+        for (sym_offset, sym) in input.symbols.iter().enumerate() {
+            if !sym.is_undefined() || sym.is_weak() || sym.is_explicit_name() {
+                continue;
+            }
+
+            let is_unresolved = match sym.kind {
+                WasmSymbolKind::Func => {
+                    let idx = sym.index as usize;
+                    input
+                        .live_function_imports
+                        .get(idx)
+                        .copied()
+                        .unwrap_or(false)
+                        && res
+                            .function_resolutions
+                            .get(idx)
+                            .is_some_and(|r| matches!(r, ImportResolution::Unresolved))
+                }
+                WasmSymbolKind::Global => {
+                    let idx = sym.index as usize;
+                    input.live_global_imports.get(idx).copied().unwrap_or(false)
+                        && res
+                            .global_resolutions
+                            .get(idx)
+                            .is_some_and(|r| matches!(r, ImportResolution::Unresolved))
+                }
+                _ => false,
+            };
+            if !is_unresolved {
+                continue;
+            }
+            let Some(name) = wasm_symbol_name_str(input.data, sym) else {
+                bail!(
+                    "{file_display}: undefined symbol with no name (linking symbol index {sym_offset})"
+                );
+            };
+            if !seen.insert((file_display.clone(), name.to_owned())) {
+                continue;
+            }
+            errors.push(format!("{file_display}: undefined symbol: {name}"));
+        }
+    }
+
+    if errors.is_empty() {
+        return Ok(());
+    }
+    bail!("{}", errors.join("\n"));
+}
+
 fn collect_shared_unresolved_imports<'data>(
     inputs: &[WasmObjectLayoutInput<'data>],
     resolutions: &[ObjectImportResolutions],
@@ -3983,7 +4050,7 @@ fn setup_got_mem_and_indices<'data>(
         absorb_got_func_imports(&scan.got_func, layout_inputs, resolutions, symbol_db)?;
         weak_undef_stubs
     };
-
+    report_disallowed_unresolved_imports(layout_inputs, resolutions, symbol_db)?;
     let shared_imports = collect_shared_unresolved_imports(layout_inputs, resolutions)?;
 
     let indices = {
@@ -4153,10 +4220,10 @@ fn resolve_got_mem_def(
         let def_ok = def_input
             .symbols
             .get(def_off)
-            .is_some_and(|s| s.kind == WasmSymbolKind::Data && !s.is_undefined());
+            .is_some_and(|s| s.kind == WasmSymbolKind::Data);
         ensure!(
             def_ok,
-            "GOT.mem for `{}` requires a defined data symbol in the link",
+            "GOT.mem for `{}` requires a data symbol in the link",
             symbol_db.symbol_name_for_display(def_id)
         );
         return Ok(GotMemDef::Object {
@@ -4171,6 +4238,7 @@ fn resolve_got_mem_def(
         && matches!(
             known,
             WasmLinkerSymbol::DataEnd
+                | WasmLinkerSymbol::GlobalBase
                 | WasmLinkerSymbol::HeapBase
                 | WasmLinkerSymbol::HeapEnd
                 | WasmLinkerSymbol::WasmFirstPageEnd
@@ -4183,6 +4251,44 @@ fn resolve_got_mem_def(
         "GOT.mem for `{}` requires a defined data symbol in the link",
         symbol_db.symbol_name_for_display(def_id)
     )
+}
+
+fn note_undefined_data_from_reloc(
+    input: &WasmObjectLayoutInput<'_>,
+    symbol_db: &SymbolDb<'_, Wasm>,
+    reloc: &WasmRelocation,
+    seen: &mut HashSet<(String, String)>,
+    errors: &mut Vec<String>,
+) -> Result {
+    if symbol_db.args.allow_undefined || reloc.ty == RelocationType::TypeIndexLeb {
+        return Ok(());
+    }
+    let Some(sym) = input.symbols.get(reloc.index as usize) else {
+        return Ok(());
+    };
+    if sym.kind != WasmSymbolKind::Data
+        || !sym.is_undefined()
+        || sym.is_weak()
+        || sym.is_explicit_name()
+    {
+        return Ok(());
+    }
+    let symbol_id = input.symbol_id_range.offset_to_id(reloc.index as usize);
+    if !symbol_db.is_undefined(symbol_db.definition(symbol_id)) {
+        return Ok(());
+    }
+
+    let file_display = symbol_db.file(input.file_id).to_string();
+    let Some(name) = wasm_symbol_name_str(input.data, sym) else {
+        bail!(
+            "{file_display}: undefined symbol with no name (linking symbol index {})",
+            reloc.index
+        );
+    };
+    if seen.insert((file_display.clone(), name.to_owned())) {
+        errors.push(format!("{file_display}: undefined symbol: {name}"));
+    }
+    Ok(())
 }
 
 fn scan_layout_relocations(
@@ -4204,6 +4310,8 @@ fn scan_layout_relocations(
         .iter()
         .any(|input| !input.table_imports.is_empty());
     let mut table_index_symbol_indices = vec![Vec::new(); layout_inputs.len()];
+    let mut undefined_data_errors: Vec<String> = Vec::new();
+    let mut seen_undefined_data: HashSet<(String, String)> = HashSet::new();
 
     for (obj_idx, input) in layout_inputs.iter().enumerate() {
         let mut got_mem_hits: Vec<(usize, usize)> = Vec::new();
@@ -4216,6 +4324,13 @@ fn scan_layout_relocations(
             .iter()
             .chain(input.data_relocations.iter())
         {
+            note_undefined_data_from_reloc(
+                input,
+                symbol_db,
+                reloc,
+                &mut seen_undefined_data,
+                &mut undefined_data_errors,
+            )?;
             match reloc.ty {
                 RelocationType::MemoryAddrRelSleb => {
                     needs_memory_base = true;
@@ -4318,6 +4433,10 @@ fn scan_layout_relocations(
             per_object_got_func_slots[obj_idx] = obj_map;
         }
         table_index_symbol_indices[obj_idx] = table_syms;
+    }
+
+    if !undefined_data_errors.is_empty() {
+        bail!("{}", undefined_data_errors.join("\n"));
     }
 
     Ok(LayoutRelocScan {
@@ -4578,6 +4697,7 @@ fn fill_got_mem_inits(
     layout: &mut WasmLayout<'_>,
     indices: &LinkerDefinedIndices,
     got_mem: &GotMem,
+    data_start: u32,
     data_end: u32,
     stack_size: u32,
     heap_end: Option<u32>,
@@ -4599,7 +4719,7 @@ fn fill_got_mem_inits(
                 .copied()
                 .ok_or_else(|| crate::error!("GOT.mem missing data address for definition"))?,
             GotMemDef::LinkerDefined(known) => known
-                .data_address(data_end, stack_size, heap_end, stack_first)?
+                .data_address(data_start, data_end, stack_size, heap_end, stack_first)?
                 .ok_or_else(|| {
                     crate::error!(
                         "GOT.mem linker-defined symbol `{}` has no data address",
@@ -5538,11 +5658,12 @@ where
         },
         ..WasmLayout::default()
     };
-    let mut memory_cursor = if stack_first {
+    let data_start = if stack_first {
         stack_size
     } else {
         layout.memory_base
     };
+    let mut memory_cursor = data_start;
     {
         timing_phase!("Merge Wasm object layouts");
         let n_objects = object_layouts.len();
@@ -5672,6 +5793,7 @@ where
             &layout_inputs,
             symbol_db,
             &file_id_to_index,
+            data_start,
             data_end,
             stack_size,
             heap_end,
@@ -5681,6 +5803,7 @@ where
             &mut layout,
             &indices,
             got_mem,
+            data_start,
             data_end,
             stack_size,
             heap_end,
@@ -5905,6 +6028,8 @@ pub(crate) enum WasmLinkerSymbol {
     // Data
     #[strum(serialize = "__data_end")]
     DataEnd,
+    #[strum(serialize = "__global_base")]
+    GlobalBase,
     #[strum(serialize = "__heap_base")]
     HeapBase,
     #[strum(serialize = "__heap_end")]
@@ -5940,13 +6065,18 @@ impl WasmLinkerSymbol {
             Self::MemoryBase | Self::TableBase | Self::StackPointer | Self::TlsBase => {
                 kind == WasmSymbolKind::Global
             }
-            Self::DataEnd | Self::HeapBase | Self::HeapEnd | Self::WasmFirstPageEnd => false,
+            Self::DataEnd
+            | Self::GlobalBase
+            | Self::HeapBase
+            | Self::HeapEnd
+            | Self::WasmFirstPageEnd => false,
         }
     }
 
     /// Data-symbol address after memory layout. `None` for non-data variants or absent memory.
     fn data_address(
         self,
+        data_start: u32,
         data_end: u32,
         stack_size: u32,
         heap_end: Option<u32>,
@@ -5954,6 +6084,7 @@ impl WasmLinkerSymbol {
     ) -> Result<Option<u32>> {
         Ok(match self {
             Self::DataEnd => Some(data_end),
+            Self::GlobalBase => Some(data_start),
             Self::HeapBase => Some(heap_base_address(data_end, stack_size, stack_first)?),
             Self::WasmFirstPageEnd => Some(u32::try_from(wasm_page_size())?),
             Self::HeapEnd => heap_end,
@@ -5973,6 +6104,7 @@ fn compute_data_addresses(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
+    data_start: u32,
     data_end: u32,
     stack_size: u32,
     heap_end: Option<u32>,
@@ -6026,7 +6158,7 @@ fn compute_data_addresses(
                 && let crate::parsing::SymbolPlacement::PlatformSpecific(known) =
                     &def_info.placement
                 && let Some(address) =
-                    known.data_address(data_end, stack_size, heap_end, stack_first)?
+                    known.data_address(data_start, data_end, stack_size, heap_end, stack_first)?
             {
                 data_addresses[sym_idx] = address;
             }
@@ -7480,17 +7612,42 @@ mod tests {
 
     #[test]
     fn linker_defined_data_symbol_addresses() {
+        let data_start = 1024u32;
         let data_end = 1024u32;
         let page = wasm_page_size();
         let heap_end = heap_end_from_initial_pages(2).unwrap();
         let de = WasmLinkerSymbol::DataEnd
-            .data_address(data_end, DEFAULT_STACK_SIZE, Some(heap_end), false)
+            .data_address(
+                data_start,
+                data_end,
+                DEFAULT_STACK_SIZE,
+                Some(heap_end),
+                false,
+            )
             .unwrap()
             .expect("__data_end");
         assert_eq!(de, data_end);
 
+        let gb = WasmLinkerSymbol::GlobalBase
+            .data_address(
+                data_start,
+                data_end,
+                DEFAULT_STACK_SIZE,
+                Some(heap_end),
+                false,
+            )
+            .unwrap()
+            .expect("__global_base");
+        assert_eq!(gb, data_start);
+
         let hb = WasmLinkerSymbol::HeapBase
-            .data_address(data_end, DEFAULT_STACK_SIZE, Some(heap_end), false)
+            .data_address(
+                data_start,
+                data_end,
+                DEFAULT_STACK_SIZE,
+                Some(heap_end),
+                false,
+            )
             .unwrap()
             .expect("__heap_base");
         assert_eq!(
@@ -7499,13 +7656,25 @@ mod tests {
         );
 
         let page_end = WasmLinkerSymbol::WasmFirstPageEnd
-            .data_address(data_end, DEFAULT_STACK_SIZE, Some(heap_end), false)
+            .data_address(
+                data_start,
+                data_end,
+                DEFAULT_STACK_SIZE,
+                Some(heap_end),
+                false,
+            )
             .unwrap()
             .expect("__wasm_first_page_end");
         assert_eq!(u64::from(page_end), page);
 
         let he = WasmLinkerSymbol::HeapEnd
-            .data_address(data_end, DEFAULT_STACK_SIZE, Some(heap_end), false)
+            .data_address(
+                data_start,
+                data_end,
+                DEFAULT_STACK_SIZE,
+                Some(heap_end),
+                false,
+            )
             .unwrap()
             .expect("__heap_end");
         assert_eq!(he, heap_end);
@@ -7515,13 +7684,13 @@ mod tests {
         // If there is no output memory, `__heap_end` is not synthesised.
         assert!(
             WasmLinkerSymbol::HeapEnd
-                .data_address(data_end, DEFAULT_STACK_SIZE, None, false)
+                .data_address(data_start, data_end, DEFAULT_STACK_SIZE, None, false)
                 .unwrap()
                 .is_none()
         );
         assert!(
             WasmLinkerSymbol::WasmFirstPageEnd
-                .data_address(data_end, DEFAULT_STACK_SIZE, None, false)
+                .data_address(data_start, data_end, DEFAULT_STACK_SIZE, None, false)
                 .unwrap()
                 .is_some()
         );
@@ -7529,14 +7698,20 @@ mod tests {
 
     #[test]
     fn stack_first_heap_base_follows_data_not_stack() {
+        let data_start = 1_048_576u32;
         let data_end = 1_048_576 + 100;
         let stack_size = 1_048_576u32;
         let hb = WasmLinkerSymbol::HeapBase
-            .data_address(data_end, stack_size, Some(2 * 65_536), true)
+            .data_address(data_start, data_end, stack_size, Some(2 * 65_536), true)
             .unwrap()
             .expect("__heap_base");
         assert_eq!(hb, heap_base_after_data(data_end).unwrap());
         assert!(hb - data_end < 16);
+        let gb = WasmLinkerSymbol::GlobalBase
+            .data_address(data_start, data_end, stack_size, Some(2 * 65_536), true)
+            .unwrap()
+            .expect("__global_base");
+        assert_eq!(gb, data_start);
         // Without stack-first, heap would be roughly data_end + stack_size.
         let post_data = stack_high_after_data(data_end, stack_size).unwrap();
         assert!(post_data > hb + stack_size / 2);
