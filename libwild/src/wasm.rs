@@ -3518,11 +3518,6 @@ fn report_disallowed_unresolved_imports<'data>(
                             .get(idx)
                             .is_some_and(|r| matches!(r, ImportResolution::Unresolved))
                 }
-                WasmSymbolKind::Data => {
-                    let symbol_id = input.symbol_id_range.offset_to_id(sym_offset);
-                    symbol_db.definition(symbol_id) == symbol_id
-                        && live_relocs_reference_symbol(input, sym_offset)
-                }
                 _ => false,
             };
             if !is_unresolved {
@@ -3544,17 +3539,6 @@ fn report_disallowed_unresolved_imports<'data>(
         return Ok(());
     }
     bail!("{}", errors.join("\n"));
-}
-
-fn live_relocs_reference_symbol(input: &WasmObjectLayoutInput<'_>, sym_offset: usize) -> bool {
-    let Ok(idx) = u32::try_from(sym_offset) else {
-        return false;
-    };
-    input
-        .code_relocations
-        .iter()
-        .chain(input.data_relocations.iter())
-        .any(|reloc| reloc.index == idx)
 }
 
 fn collect_shared_unresolved_imports<'data>(
@@ -4269,6 +4253,44 @@ fn resolve_got_mem_def(
     )
 }
 
+fn note_undefined_data_from_reloc(
+    input: &WasmObjectLayoutInput<'_>,
+    symbol_db: &SymbolDb<'_, Wasm>,
+    reloc: &WasmRelocation,
+    seen: &mut HashSet<(String, String)>,
+    errors: &mut Vec<String>,
+) -> Result {
+    if symbol_db.args.allow_undefined || reloc.ty == RelocationType::TypeIndexLeb {
+        return Ok(());
+    }
+    let Some(sym) = input.symbols.get(reloc.index as usize) else {
+        return Ok(());
+    };
+    if sym.kind != WasmSymbolKind::Data
+        || !sym.is_undefined()
+        || sym.is_weak()
+        || sym.is_explicit_name()
+    {
+        return Ok(());
+    }
+    let symbol_id = input.symbol_id_range.offset_to_id(reloc.index as usize);
+    if !symbol_db.is_undefined(symbol_db.definition(symbol_id)) {
+        return Ok(());
+    }
+
+    let file_display = symbol_db.file(input.file_id).to_string();
+    let Some(name) = wasm_symbol_name_str(input.data, sym) else {
+        bail!(
+            "{file_display}: undefined symbol with no name (linking symbol index {})",
+            reloc.index
+        );
+    };
+    if seen.insert((file_display.clone(), name.to_owned())) {
+        errors.push(format!("{file_display}: undefined symbol: {name}"));
+    }
+    Ok(())
+}
+
 fn scan_layout_relocations(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
@@ -4288,6 +4310,8 @@ fn scan_layout_relocations(
         .iter()
         .any(|input| !input.table_imports.is_empty());
     let mut table_index_symbol_indices = vec![Vec::new(); layout_inputs.len()];
+    let mut undefined_data_errors: Vec<String> = Vec::new();
+    let mut seen_undefined_data: HashSet<(String, String)> = HashSet::new();
 
     for (obj_idx, input) in layout_inputs.iter().enumerate() {
         let mut got_mem_hits: Vec<(usize, usize)> = Vec::new();
@@ -4300,6 +4324,13 @@ fn scan_layout_relocations(
             .iter()
             .chain(input.data_relocations.iter())
         {
+            note_undefined_data_from_reloc(
+                input,
+                symbol_db,
+                reloc,
+                &mut seen_undefined_data,
+                &mut undefined_data_errors,
+            )?;
             match reloc.ty {
                 RelocationType::MemoryAddrRelSleb => {
                     needs_memory_base = true;
@@ -4402,6 +4433,10 @@ fn scan_layout_relocations(
             per_object_got_func_slots[obj_idx] = obj_map;
         }
         table_index_symbol_indices[obj_idx] = table_syms;
+    }
+
+    if !undefined_data_errors.is_empty() {
+        bail!("{}", undefined_data_errors.join("\n"));
     }
 
     Ok(LayoutRelocScan {
