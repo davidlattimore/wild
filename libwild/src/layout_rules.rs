@@ -388,6 +388,14 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     // On ELF it is a nop.
                                     // (https://sourceware.org/binutils/docs/ld/Output-Section-Keywords.html#index-CONSTRUCTORS)
                                     ContentsCommand::Constructors => (),
+                                    ContentsCommand::Assert(assert_cmd) => {
+                                        let placement = SymbolPlacement::Redirect(Redirect {
+                                            kind: RedirectKind::Script,
+                                            expression: Expression::Assert(assert_cmd.clone()),
+                                            loc: last_symbol_loc.clone(),
+                                        });
+                                        symbol_defs.push(InternalSymDefInfo::new(placement, b""));
+                                    }
                                 }
                             }
                             if inner_lc_idx > inner_lc_start_idx {

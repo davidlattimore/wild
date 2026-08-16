@@ -141,6 +141,7 @@ pub(crate) enum ContentsCommand<'a> {
     Provide(ProvideSymbolDefinition<'a>),
     SetLocation(Location<'a>),
     Constructors,
+    Assert(AssertCommand<'a>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1202,10 +1203,7 @@ fn parse_section_command<'input>(
     // Handle ASSERT command
     match name {
         b"ASSERT" => {
-            let assert = parse_assert(input)?;
-            opt(';').parse_next(input)?;
-            skip_comments_and_whitespace(input)?;
-            return Ok(SectionCommand::Assert(assert));
+            return Ok(SectionCommand::Assert(parse_assert(input)?));
         }
         b"PROVIDE" => {
             return Ok(SectionCommand::Provide(parse_provide(input, false)?));
@@ -1354,6 +1352,7 @@ fn parse_contents_command<'input>(
 ) -> winnow::Result<ContentsCommand<'input>> {
     alt((
         parse_contents_provide,
+        parse_contents_assert,
         parse_matcher,
         parse_assignment,
         parse_constructors,
@@ -1476,6 +1475,17 @@ fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<SectionPatt
     }
 
     Ok(SectionPattern { name, sorted })
+}
+
+fn parse_contents_assert<'input>(
+    input: &mut &'input BStr,
+) -> winnow::Result<ContentsCommand<'input>> {
+    "ASSERT".parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let assert = parse_assert(input)?;
+    opt(';').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    Ok(ContentsCommand::Assert(assert))
 }
 
 /// Call `cb` for each input file requested by `commands`.
@@ -2065,7 +2075,7 @@ mod tests {
             r#"
             SECTIONS {
                 .text : { *(.text) }
-                ASSERT(SIZEOF(.text) < 0x1000, "Text section too large");
+                ASSERT(SIZEOF(.text) < 0x1000, "Text section too large")
             }
             "#,
             &LinkerScript {

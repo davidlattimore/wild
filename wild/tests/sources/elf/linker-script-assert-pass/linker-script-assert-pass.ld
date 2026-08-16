@@ -9,7 +9,7 @@ SECTIONS {
     symbol11_assert = ASSERT(symbol11 == 0x100, "symbol11 must be 0x100");
     symbol11 -= 0x20;
     symbol11 &= 0x80;
-    symbol11_assert = ASSERT(symbol11 == 0x80, "symbol11 must be 0x80");
+    ASSERT(symbol11 == 0x80, "symbol11 must be 0x80")
     .data : {
         *(.data*)
         symbol10 = 0x100;
