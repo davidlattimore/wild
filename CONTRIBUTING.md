@@ -211,6 +211,10 @@ WILD_IGNORE_SKIP=mold cargo test --features mold_tests
 WILD_IGNORE_SKIP=all cargo test --features external_tests
 ```
 
+The LLD tests (`cargo test --features lld_tests`) require `llvm-mc` and `FileCheck` to be
+installed and available on your `PATH`. These are typically available via your distribution's
+LLVM package (e.g. `llvm` on Arch Linux), or by building LLVM from source.
+
 ### Running external tests with other linkers
 
 When debugging a failing test, it can be useful to see how other linkers (such as GNU ld or lld) behave on the same test. You can use the `WILD_EXTERNAL_LINKER` environment variable to run test scripts with a different linker:
