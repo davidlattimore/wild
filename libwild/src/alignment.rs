@@ -10,7 +10,7 @@ pub(crate) struct Alignment {
 }
 
 /// The maximum supported alignment exponent.
-const MAX_ALIGNMENT_EXPONENT: u8 = 16;
+const MAX_ALIGNMENT_EXPONENT: u8 = 21;
 
 pub(crate) const NUM_ALIGNMENTS: usize = MAX_ALIGNMENT_EXPONENT as usize + 1;
 

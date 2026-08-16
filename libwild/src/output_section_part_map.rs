@@ -225,7 +225,7 @@ fn test_merge_parts() {
     );
 
     let num_regular_sections = output_sections.num_regular_sections();
-    let mut num_sections_with_17 = 0;
+    let mut num_sections_with_all_alignments = 0;
 
     let mut sum_of_1s = output_sections.new_section_map::<u32>();
     sum_of_1s.for_each_mut(|section_id, sum| {
@@ -241,8 +241,8 @@ fn test_merge_parts() {
     let mut sum_of_sums = 0;
     sum_of_1s.for_each(|section_id, sum| {
         sum_of_sums += *sum;
-        if *sum == 17 {
-            num_sections_with_17 += 1;
+        if *sum == crate::alignment::NUM_ALIGNMENTS as u32 {
+            num_sections_with_all_alignments += 1;
         }
         let unsupported_single_part = !section_id.is_regular::<Elf64>()
             && <Elf64 as crate::platform::Platform>::single_part_id(section_id).is_none();
@@ -252,7 +252,7 @@ fn test_merge_parts() {
             assert!(*sum > 0, "Expected non-zero sum for section {section_id:?}");
         }
     });
-    assert_eq!(num_regular_sections, num_sections_with_17);
+    assert_eq!(num_regular_sections, num_sections_with_all_alignments);
     assert_eq!(sum_of_sums, expected_sum_of_sums);
 
     let mut headers_only = output_sections.new_part_map::<u32>();
