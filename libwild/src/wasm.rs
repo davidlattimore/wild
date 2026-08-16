@@ -5499,7 +5499,7 @@ fn ensure_entry_export<'data>(
     });
 }
 
-/// Export symbols requested via `--export`.
+/// Export symbols requested via `--export` and `--export-if-defined`.
 fn ensure_force_exports<'data>(
     exports: &mut Vec<OutputExport<'data>>,
     layout_inputs: &[WasmObjectLayoutInput<'data>],
@@ -5509,10 +5509,14 @@ fn ensure_force_exports<'data>(
     entry_wrapper_func: Option<u32>,
 ) -> Result<()> {
     for name in symbol_db.args.force_export_symbol_names() {
+        let required = symbol_db.args.required_export_symbols.contains(name);
         let Some(symbol_id) =
             symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()))
         else {
-            bail!("symbol exported via --export not found: {name}");
+            if required {
+                bail!("symbol exported via --export not found: {name}");
+            }
+            continue;
         };
         let def_id = symbol_db.definition(symbol_id);
         let def_file_id = symbol_db.file_id_for_symbol(def_id);
@@ -5521,12 +5525,18 @@ fn ensure_force_exports<'data>(
             .iter()
             .position(|input| input.file_id == def_file_id)
         else {
-            bail!("symbol exported via --export not found: {name}");
+            if required {
+                bail!("symbol exported via --export not found: {name}");
+            }
+            continue;
         };
         let def_input = &layout_inputs[def_obj_idx];
         let def_sym = &def_input.symbols[def_input.symbol_id_range.id_to_offset(def_id)];
         if def_sym.is_undefined() {
-            bail!("symbol exported via --export not found: {name}");
+            if required {
+                bail!("symbol exported via --export not found: {name}");
+            }
+            continue;
         }
 
         let index_map = object_index_maps
