@@ -35,6 +35,7 @@ pub struct WasmArgs {
     pub(crate) common: super::CommonArgs,
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) export_symbols: Vec<String>,
+    pub(crate) required_export_symbols: Vec<String>,
     pub(crate) export_memory: Option<String>,
     pub(crate) z_stack_size: u32,
     // Since LLVM 22, the default option is true.
@@ -70,6 +71,7 @@ impl Default for WasmArgs {
             common: CommonArgs::default(),
             lib_search_path: Vec::new(),
             export_symbols: Vec::new(),
+            required_export_symbols: Vec::new(),
             z_stack_size: DEFAULT_STACK_SIZE,
             stack_first: true,
             entry: Some(DEFAULT_ENTRY.to_owned()),
@@ -241,6 +243,17 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .declare_with_param()
         .long("export")
         .help("Force a symbol to be exported")
+        .execute(|args, _modifier_stack, value| {
+            let value = value.to_owned();
+            args.export_symbols.push(value.clone());
+            args.required_export_symbols.push(value);
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("export-if-defined")
+        .help("Export a symbol if it is defined")
         .execute(|args, _modifier_stack, value| {
             args.export_symbols.push(value.to_owned());
             Ok(())
@@ -444,5 +457,24 @@ mod tests {
         let args = parse_args(["--export", "__main_void", "-o", "out.wasm"]);
         assert_eq!(args.export_symbols, ["__main_void"]);
         assert_eq!(args.common.inputs, []);
+    }
+
+    #[test]
+    fn export_if_defined() {
+        let args = parse_args([
+            "--export-if-defined",
+            "foo",
+            "--export=bar",
+            "--export-if-defined=baz",
+            "-o",
+            "out.wasm",
+        ]);
+
+        assert_eq!(args.export_symbols, ["foo", "bar", "baz"]);
+        assert_eq!(args.required_export_symbols, ["bar"]);
+        assert_eq!(
+            Args::force_export_symbol_names(&args),
+            ["foo", "bar", "baz"]
+        );
     }
 }
