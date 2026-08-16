@@ -4242,6 +4242,7 @@ fn resolve_got_mem_def(
                 | WasmLinkerSymbol::HeapBase
                 | WasmLinkerSymbol::HeapEnd
                 | WasmLinkerSymbol::WasmFirstPageEnd
+                | WasmLinkerSymbol::DsoHandle
         )
     {
         return Ok(GotMemDef::LinkerDefined(known));
@@ -6036,6 +6037,8 @@ pub(crate) enum WasmLinkerSymbol {
     HeapEnd,
     #[strum(serialize = "__wasm_first_page_end")]
     WasmFirstPageEnd,
+    #[strum(serialize = "__dso_handle")]
+    DsoHandle,
     // Globals
     #[strum(serialize = "__memory_base")]
     MemoryBase,
@@ -6069,7 +6072,8 @@ impl WasmLinkerSymbol {
             | Self::GlobalBase
             | Self::HeapBase
             | Self::HeapEnd
-            | Self::WasmFirstPageEnd => false,
+            | Self::WasmFirstPageEnd
+            | Self::DsoHandle => false,
         }
     }
 
@@ -6084,7 +6088,7 @@ impl WasmLinkerSymbol {
     ) -> Result<Option<u32>> {
         Ok(match self {
             Self::DataEnd => Some(data_end),
-            Self::GlobalBase => Some(data_start),
+            Self::GlobalBase | Self::DsoHandle => Some(data_start),
             Self::HeapBase => Some(heap_base_address(data_end, stack_size, stack_first)?),
             Self::WasmFirstPageEnd => Some(u32::try_from(wasm_page_size())?),
             Self::HeapEnd => heap_end,
@@ -7640,6 +7644,18 @@ mod tests {
             .expect("__global_base");
         assert_eq!(gb, data_start);
 
+        let dso = WasmLinkerSymbol::DsoHandle
+            .data_address(
+                data_start,
+                data_end,
+                DEFAULT_STACK_SIZE,
+                Some(heap_end),
+                false,
+            )
+            .unwrap()
+            .expect("__dso_handle");
+        assert_eq!(dso, data_start);
+
         let hb = WasmLinkerSymbol::HeapBase
             .data_address(
                 data_start,
@@ -7712,6 +7728,11 @@ mod tests {
             .unwrap()
             .expect("__global_base");
         assert_eq!(gb, data_start);
+        let dso = WasmLinkerSymbol::DsoHandle
+            .data_address(data_start, data_end, stack_size, Some(2 * 65_536), true)
+            .unwrap()
+            .expect("__dso_handle");
+        assert_eq!(dso, data_start);
         // Without stack-first, heap would be roughly data_end + stack_size.
         let post_data = stack_high_after_data(data_end, stack_size).unwrap();
         assert!(post_data > hb + stack_size / 2);
