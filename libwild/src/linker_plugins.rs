@@ -14,6 +14,7 @@ use crate::args::Input;
 use crate::args::Modifiers;
 use crate::args::elf::ElfArgs;
 use crate::bail;
+use crate::elf;
 use crate::elf::Elf;
 use crate::elf::ElfClass;
 use crate::elf::RawSymbolName;
@@ -225,6 +226,8 @@ impl<'data> LinkerPlugin<'data> {
         // internalising/removing them.
         mark_wrap_symbols_as_non_ir_ref(symbol_db, per_symbol_flags);
 
+        mark_lto_symbols_for_dynamic_export(symbol_db, per_symbol_flags, &resolver.resolved_groups);
+
         let plugin_outputs = self.store.loaded()?.with_callbacks(|callbacks| {
             if let Some(cb) = callbacks.all_symbols_read {
                 let ctx = AllSymbolsReadContext {
@@ -344,6 +347,46 @@ impl<'data> LinkerPlugin<'data> {
 
     pub(crate) fn is_initialised(&self) -> bool {
         matches!(self.store, Store::Loaded(_))
+    }
+}
+
+fn mark_lto_symbols_for_dynamic_export<C: ElfClass>(
+    symbol_db: &SymbolDb<Elf<C>>,
+    per_symbol_flags: &mut PerSymbolFlags,
+    resolved_groups: &[ResolvedGroup<Elf<C>>],
+) {
+    use crate::grouping::Group;
+
+    for group in resolved_groups {
+        for file in &group.files {
+            if let ResolvedFile::LtoInput(lto_input) = file {
+                let Group::LtoInputs(files) = &symbol_db.groups[lto_input.file_id.group()] else {
+                    unreachable!();
+                };
+                let file = &files[lto_input.file_id.file()];
+
+                let Some(mode) = crate::layout::export_symbols_mode(symbol_db, &file.input_ref)
+                else {
+                    continue;
+                };
+
+                for (symbol_id, symbol) in file.symbols_iter() {
+                    if symbol.is_definition()
+                        && crate::layout::can_export_global_def(
+                            symbol_db,
+                            elf::convert_elf_visibility(object::elf::SymbolVisibility(
+                                symbol.visibility,
+                            )),
+                            symbol_id,
+                            per_symbol_flags.flags_for_symbol(symbol_id),
+                            mode,
+                        )
+                    {
+                        per_symbol_flags.set_flag(symbol_id, ValueFlags::EXPORT_DYNAMIC);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -990,14 +1033,11 @@ fn get_symbol_resolution<'data, C: ElfClass>(
             _ => PluginSymbolResolution::ResolvedExec,
         }
     } else if symbol_id_range.contains(symbol_id) {
-        if per_symbol_flags
-            .flags_for_symbol(symbol_id)
-            .contains(ValueFlags::HAS_NON_IR_REF)
-        {
+        let flags = per_symbol_flags.flags_for_symbol(symbol_id);
+
+        if flags.contains(ValueFlags::HAS_NON_IR_REF) {
             PluginSymbolResolution::PrevailingDef
-        } else if symbol_db.output_kind.is_shared_object() {
-            // TODO: Actually determine if the symbol is to be exported rather than just assuming
-            // everything is exported when output is a shared object.
+        } else if flags.contains(ValueFlags::EXPORT_DYNAMIC) {
             PluginSymbolResolution::PrevailingDefIronlyExp
         } else {
             PluginSymbolResolution::PrevailingDefIronly
