@@ -10,13 +10,16 @@ SECTIONS {
     symbol11 -= 0x20;
     symbol11 &= 0x80;
     ASSERT(symbol11 == 0x80, "symbol11 must be 0x80")
-    .data : {
+    .data : AT(ADDR(.data) + 0x10000) {
+        data_start = .;
         *(.data*)
         symbol10 = 0x100;
         symbol10_assert = ASSERT(symbol10 == 0x100, "symbol10 must be 0x100");
         symbol10 *= 0x100;
         symbol10 ^= 0x40;
         ASSERT(symbol10 == 0x10040, "symbol10 must be 0x10040");
+        ASSERT(data_start == ADDR(.data), "data_start must be ADDR(.data)");
+        ASSERT(data_start + 0x10000 == LOADADDR(.data), "data_start + 0x10000 must be LOADADDR(.data)");
     }
     .bss  : { *(.bss*)  }
 }
