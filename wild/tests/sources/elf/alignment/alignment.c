@@ -3,7 +3,7 @@
 
 #include "../common/runtime.h"
 
-#define ALIGNMENT 65536
+#define ALIGNMENT 0x200000
 
 struct __attribute__((aligned(ALIGNMENT))) S {
   short f[3];
