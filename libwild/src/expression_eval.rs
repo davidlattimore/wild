@@ -420,6 +420,7 @@ fn evaluate_expression_value<'data, P: Platform>(
             }
             Ok(result)
         }
+        Expression::Absolute(expression) => todo!(),
     }
 }
 

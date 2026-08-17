@@ -199,7 +199,7 @@ pub(crate) struct OutputFormat<'a> {
 /// - Logical: &&, ||
 /// - Unary: -, !, ~
 /// - Functions: SIZEOF, ALIGNOF, LENGTH, ORIGIN, ADDR, LOADADDR, ALIGN, MIN, MAX, SEGMENT_START,
-///   DEFINED
+///   DEFINED, ABSOLUTE
 /// - Numbers (hex/decimal), symbols, location counter (.)
 /// - Parentheses for grouping
 /// - Ternary operator (? :)
@@ -261,6 +261,7 @@ pub(crate) enum Expression<'a> {
     ),
     Defined(&'a [u8]),
     Assert(AssertCommand<'a>),
+    Absolute(Box<Expression<'a>>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -323,7 +324,8 @@ impl<'a> Expression<'a> {
             | Expression::LogicalNot(e)
             | Expression::BitwiseNot(e)
             | Expression::Negate(e)
-            | Expression::Assert(AssertCommand { expression: e, .. }) => e.visit_expressions(cb),
+            | Expression::Assert(AssertCommand { expression: e, .. })
+            | Expression::Absolute(e) => e.visit_expressions(cb),
             Expression::SegmentStart(_, default_expr) => default_expr.visit_expressions(cb),
             Expression::Ternary(expression, expression1, expression2) => {
                 expression.visit_expressions(cb);
@@ -1037,6 +1039,14 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
             b"ASSERT" => {
                 let assert = parse_assert.parse_next(input)?;
                 Ok(Expression::Assert(assert))
+            }
+            b"ABSOLUTE" => {
+                '('.parse_next(input)?;
+                skip_comments_and_whitespace(input)?;
+                let expr = parse_expression.parse_next(input)?;
+                skip_comments_and_whitespace(input)?;
+                ')'.parse_next(input)?;
+                Ok(Expression::Absolute(Box::new(expr)))
             }
             _ => Err(ContextError::default()),
         }
