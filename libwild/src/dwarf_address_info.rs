@@ -167,11 +167,7 @@ fn apply_section_relocations<
             continue;
         };
 
-        let rel_out = section_data
-            .get_mut(data_offset..data_offset + num_bytes)
-            .context("Invalid relocation offset")?;
-
-        match r_type.kind {
+        let new_value = match r_type.kind {
             RelocationKind::Absolute => {
                 let in_section_of_interest = symbol_section.sh_offset(LittleEndian).into()
                     == section_of_interest.sh_offset(LittleEndian).into();
@@ -180,13 +176,18 @@ fn apply_section_relocations<
                     value += SECTION_LOAD_ADDRESS;
                 }
 
-                r_type.write_to_buffer(value, rel_out)?;
+                value
             }
             RelocationKind::AbsoluteAddition | RelocationKind::AbsoluteSubtraction => {
-                r_type.write_to_buffer(value, rel_out)?;
+                r_type.adjust_value_based_on_content(value, section_data, data_offset)?
             }
-            _ => {}
-        }
+            _ => continue,
+        };
+
+        let rel_out = section_data
+            .get_mut(data_offset..data_offset + num_bytes)
+            .context("Invalid relocation offset")?;
+        r_type.write_to_buffer(new_value, rel_out)?;
     }
     Ok(())
 }
