@@ -8,6 +8,7 @@ SECTIONS {
     .data.flash : {
         KEEP(*(.data.flash))
     } > FLASH
+	ASSERT(ORIGIN(FLASH) == 0x40000000, "ROM region must start at 0x20000000")
 
     .data.ram1 : {
         KEEP(*(.data.ram1))
