@@ -2940,46 +2940,6 @@ fn write_got_plt_syms<C: ElfClass>(
     Ok(())
 }
 
-/// Adjust relocation value based on the actual value at the place of a relocation.
-fn adjust_relocation_based_on_value(
-    value: u64,
-    rel_info: &RelocationKindInfo,
-    out: &[u8],
-    offset_in_section: usize,
-) -> Result<u64> {
-    const LOW6_MASK: u64 = 0b0011_1111;
-
-    let mut read_data = [0u8; 8];
-    let RelocationSize::ByteSize(rel_size) = rel_info.size else {
-        bail!("Unexpected size for the addition/subtraction relocation");
-    };
-    // Read only N bytes from the current value based on the size of the relocation.
-    read_data[..rel_size].copy_from_slice(&out[offset_in_section..offset_in_section + rel_size]);
-    let current_value = u64::from_le_bytes(read_data);
-
-    // Handle addition and subtraction relocation kinds.
-    match rel_info.kind {
-        RelocationKind::AbsoluteSetWord6 => {
-            // Preserve the 2 most significant bits of u8.
-            let value = value & LOW6_MASK;
-            Ok(value | (current_value & !LOW6_MASK))
-        }
-        RelocationKind::AbsoluteAddition => Ok(current_value.wrapping_add(value)),
-        RelocationKind::AbsoluteAdditionWord6 => {
-            // Preserve the 2 most significant bits of u8.
-            let value = (current_value & LOW6_MASK).wrapping_add(value & LOW6_MASK) & LOW6_MASK;
-            Ok(value | (current_value & !LOW6_MASK))
-        }
-        RelocationKind::AbsoluteSubtraction => Ok(current_value.wrapping_sub(value)),
-        RelocationKind::AbsoluteSubtractionWord6 => {
-            // Preserve the 2 most significant bits of u8.
-            let value = (current_value & LOW6_MASK).wrapping_sub(value & LOW6_MASK) & LOW6_MASK;
-            Ok(value | (current_value & !LOW6_MASK))
-        }
-        _ => Err(error!("Unexpected relocation: {:?}", rel_info)),
-    }
-}
-
 #[inline(always)]
 fn get_pair_subtraction_relocation_value<
     'data,
@@ -3510,7 +3470,7 @@ fn apply_relocation<
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteSubtractionWord6
     ) {
-        value = adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?;
+        value = rel_info.adjust_value_based_on_content(value, out, offset_in_section)?;
     }
 
     if let Some(relaxation) = relaxation {
@@ -3713,9 +3673,8 @@ fn apply_debug_relocation<
                         | RelocationKind::AbsoluteSetWord6
                         | RelocationKind::AbsoluteSubtractionWord6
                 ) {
-                    value = adjust_relocation_based_on_value(
+                    value = rel_info.adjust_value_based_on_content(
                         value,
-                        &rel_info,
                         out,
                         offset_in_section as usize,
                     )?;

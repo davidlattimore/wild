@@ -1130,6 +1130,41 @@ impl RelocationKindInfo {
 
         Ok(())
     }
+
+    pub fn adjust_value_based_on_content(
+        self,
+        value: u64,
+        content: &[u8],
+        offset_in_section: usize,
+    ) -> Result<u64> {
+        const LOW6_MASK: u64 = 0b0011_1111;
+
+        let mut read_data = [0u8; 8];
+        let RelocationSize::ByteSize(rel_size) = self.size else {
+            anyhow::bail!("Unexpected size for the addition/subtraction relocation");
+        };
+        read_data[..rel_size]
+            .copy_from_slice(&content[offset_in_section..offset_in_section + rel_size]);
+        let current_value = u64::from_le_bytes(read_data);
+
+        match self.kind {
+            RelocationKind::AbsoluteSetWord6 => {
+                let value = value & LOW6_MASK;
+                Ok(value | (current_value & !LOW6_MASK))
+            }
+            RelocationKind::AbsoluteAddition => Ok(current_value.wrapping_add(value)),
+            RelocationKind::AbsoluteAdditionWord6 => {
+                let value = (current_value & LOW6_MASK).wrapping_add(value & LOW6_MASK) & LOW6_MASK;
+                Ok(value | (current_value & !LOW6_MASK))
+            }
+            RelocationKind::AbsoluteSubtraction => Ok(current_value.wrapping_sub(value)),
+            RelocationKind::AbsoluteSubtractionWord6 => {
+                let value = (current_value & LOW6_MASK).wrapping_sub(value & LOW6_MASK) & LOW6_MASK;
+                Ok(value | (current_value & !LOW6_MASK))
+            }
+            _ => anyhow::bail!("Unexpected relocation: {self:?}"),
+        }
+    }
 }
 
 impl BitMask {
