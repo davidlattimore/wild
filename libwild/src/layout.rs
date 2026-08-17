@@ -4094,24 +4094,40 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
     ) -> Result {
         P::activate_object_gc::<A>(self, common, resources, queue, scope)?;
 
-        let export_all_dynamic = resources.symbol_db.output_kind == OutputKind::SharedObject
-            && (!self.input.has_archive_semantics()
-                || resources
-                    .symbol_db
-                    .args
-                    .should_export_dynamic(self.input.lib_name()))
-            || resources.symbol_db.output_kind.needs_dynsym()
-                && resources.symbol_db.args.should_export_all_dynamic_symbols();
-
-        if export_all_dynamic
-            || resources.symbol_db.output_kind.needs_dynsym()
-                && resources.symbol_db.export_list.is_some()
-        {
-            self.load_non_hidden_symbols::<A>(common, resources, queue, export_all_dynamic, scope)?;
+        if let Some(mode) = export_symbols_mode(resources.symbol_db, &self.input) {
+            self.load_non_hidden_symbols::<A>(common, resources, queue, mode, scope)?;
         }
 
         Ok(())
     }
+}
+
+pub(crate) fn export_symbols_mode<P: Platform>(
+    symbol_db: &SymbolDb<P>,
+    input: &InputRef,
+) -> Option<ExportSymbolsMode> {
+    if symbol_db.output_kind == OutputKind::SharedObject
+        && (!input.has_archive_semantics()
+            || symbol_db.args.should_export_dynamic(input.lib_name()))
+    {
+        return Some(ExportSymbolsMode::All);
+    }
+
+    if symbol_db.output_kind.needs_dynsym() && symbol_db.args.should_export_all_dynamic_symbols() {
+        return Some(ExportSymbolsMode::All);
+    }
+
+    if symbol_db.output_kind.needs_dynsym() && symbol_db.export_list.is_some() {
+        return Some(ExportSymbolsMode::Selected);
+    }
+
+    None
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExportSymbolsMode {
+    Selected,
+    All,
 }
 
 impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
@@ -4614,7 +4630,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         common: &mut CommonGroupState<'data, P>,
         resources: &'scope GraphResources<'data, 'scope, P>,
         queue: &mut LocalWorkQueue<P>,
-        export_all_dynamic: bool,
+        mode: ExportSymbolsMode,
         scope: &Scope<'scope>,
     ) -> Result {
         for (sym_index, sym) in self.object.enumerate_symbols() {
@@ -4626,7 +4642,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                 continue;
             }
 
-            if !can_export_symbol(sym, symbol_id, resources, export_all_dynamic) {
+            if !can_export_symbol(sym, symbol_id, resources, mode) {
                 continue;
             }
 
@@ -4668,7 +4684,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         // regular object, then the shared object might send us a request to export the definition
         // provided by the regular object. This isn't always possible, since the symbol might be
         // hidden.
-        if !can_export_symbol(sym, symbol_id, resources, true) {
+        if !can_export_symbol(sym, symbol_id, resources, ExportSymbolsMode::All) {
             return Ok(());
         }
 
@@ -4752,36 +4768,49 @@ impl<'data> SymbolCopyInfo<'data> {
     }
 }
 
-/// Returns whether the supplied symbol can be exported when we're outputting a shared object.
-fn can_export_symbol<'data, P: Platform>(
+fn can_export_symbol<P: Platform>(
     sym: &P::SymtabEntry,
     symbol_id: SymbolId,
-    resources: &GraphResources<'data, '_, P>,
-    export_all_dynamic: bool,
+    resources: &GraphResources<P>,
+    mode: ExportSymbolsMode,
 ) -> bool {
     if sym.is_undefined() || sym.is_local() {
         return false;
     }
 
-    let visibility = sym.visibility();
+    let flags = resources.local_flags_for_symbol(symbol_id);
 
+    can_export_global_def(
+        resources.symbol_db,
+        sym.visibility(),
+        symbol_id,
+        flags,
+        mode,
+    )
+}
+
+pub(crate) fn can_export_global_def<P: Platform>(
+    symbol_db: &SymbolDb<P>,
+    visibility: Visibility,
+    symbol_id: SymbolId,
+    flags: ValueFlags,
+    mode: ExportSymbolsMode,
+) -> bool {
     if visibility == Visibility::Hidden {
         return false;
     }
 
-    if !resources.symbol_db.is_canonical(symbol_id) {
+    if !symbol_db.is_canonical(symbol_id) {
         return false;
     }
-
-    let flags = resources.local_flags_for_symbol(symbol_id);
 
     if flags.is_downgraded_to_local() {
         return false;
     }
 
-    if !export_all_dynamic
-        && let Some(export_list) = &resources.symbol_db.export_list
-        && let Ok(symbol_name) = resources.symbol_db.symbol_name(symbol_id)
+    if mode == ExportSymbolsMode::Selected
+        && let Some(export_list) = &symbol_db.export_list
+        && let Ok(symbol_name) = symbol_db.symbol_name(symbol_id)
         && !&export_list.contains(&UnversionedSymbolName::prehashed(symbol_name.bytes()))
     {
         return false;
