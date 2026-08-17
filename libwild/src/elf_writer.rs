@@ -5078,6 +5078,9 @@ fn write_internal_symbols<C: ElfClass>(
     symbol_writer: &mut SymbolTableWriter<'_, '_, C>,
 ) -> Result {
     for (local_index, def_info) in internal_symbols.symbol_definitions.iter().enumerate() {
+        if def_info.name.is_empty() {
+            continue;
+        }
         let symbol_id = internal_symbols.start_symbol_id.add_usize(local_index);
         if !layout.symbol_db.is_canonical(symbol_id) {
             continue;

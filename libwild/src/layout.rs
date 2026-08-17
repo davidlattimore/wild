@@ -431,22 +431,12 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         &mut symbol_resolutions.resolutions,
         &output_sections,
         &section_layouts,
+        &merged_section_layouts,
         sizeof_headers,
         &memory_regions,
         &resolved_location_counters,
     )?;
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, &symbol_db)?;
-
-    // Evaluate ASSERT commands from all linker scripts now that layout is complete.
-    crate::expression_eval::evaluate_assertions(
-        &symbol_db,
-        &merged_section_layouts,
-        &output_sections,
-        &symbol_resolutions.resolutions,
-        sizeof_headers,
-        &memory_regions,
-        &resolved_location_counters,
-    )?;
 
     let thunk_block_addresses = thunk_block_addresses_out
         .into_iter()
@@ -507,6 +497,7 @@ fn update_redirect_resolutions<'data, P: Platform>(
     resolutions: &mut [Option<Resolution<P>>],
     output_sections: &OutputSections<'data, P>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    merged_section_layouts: &OutputSectionMap<OutputRecordLayout>,
     sizeof_headers: u64,
     memory_regions: &HashMap<&[u8], MemoryRegion>,
     resolved_location_counters: &[ResolvedLocationCounter],
@@ -518,11 +509,12 @@ fn update_redirect_resolutions<'data, P: Platform>(
             Group::Prelude(prelude) => {
                 for def_info in &prelude.symbol_definitions {
                     update_defsym_symbol_resolution(
+                        None,
                         def_info,
                         symbol_db,
                         resolutions,
                         output_sections,
-                        section_layouts,
+                        merged_section_layouts,
                         memory_regions,
                         sizeof_headers,
                         &[],
@@ -532,7 +524,21 @@ fn update_redirect_resolutions<'data, P: Platform>(
             Group::LinkerScripts(scripts) => {
                 for script in scripts {
                     for def_info in &script.parsed.symbol_defs {
+                        let SymbolPlacement::Redirect(redirect) = &def_info.placement else {
+                            continue;
+                        };
+                        let section_layouts = if matches!(
+                            redirect.loc,
+                            SymbolLoc::SectionStartRelative(_)
+                                | SymbolLoc::SectionEndRelative(_)
+                                | SymbolLoc::LocationCounter(..)
+                        ) {
+                            section_layouts
+                        } else {
+                            merged_section_layouts
+                        };
                         update_defsym_symbol_resolution(
+                            Some(&script.parsed.input),
                             def_info,
                             symbol_db,
                             resolutions,
@@ -555,6 +561,7 @@ fn update_redirect_resolutions<'data, P: Platform>(
 }
 
 fn update_defsym_symbol_resolution<'data, P: Platform>(
+    input_ref: Option<&InputRef<'data>>,
     def_info: &InternalSymDefInfo<'data, P>,
     symbol_db: &SymbolDb<'data, P>,
     resolutions: &mut [Option<Resolution<P>>],
@@ -565,9 +572,20 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
     resolved_location_counters: &[ResolvedLocationCounter],
 ) -> Result {
     if let SymbolPlacement::Redirect(redirect) = &def_info.placement {
+        let current_section_base = match redirect.loc {
+            SymbolLoc::SectionStartRelative(id)
+            | SymbolLoc::SectionEndRelative(id)
+            | SymbolLoc::LocationCounter(_, Some(id)) => {
+                let primary_id = output_sections.primary_output_section(id);
+                Some(section_layouts.get(primary_id).mem_offset)
+            }
+            _ => None,
+        };
+
         let value = crate::expression_eval::evaluate_expression(
             &redirect.expression,
             &redirect.loc,
+            input_ref,
             section_layouts,
             output_sections,
             memory_regions,
@@ -587,9 +605,19 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
                     .as_ref()
                     .ok_or_else(|| redirect.missing_resolution(name))?;
 
+                if let Some(section_base) = current_section_base
+                    && resolution.raw_value >= section_base
+                {
+                    return Ok(resolution.raw_value - section_base);
+                }
+
                 Ok(resolution.raw_value)
             },
         )?;
+
+        if def_info.name.is_empty() {
+            return Ok(());
+        }
 
         let canonical_symbol_id = symbol_db
             .get_unversioned(&UnversionedSymbolName::prehashed(def_info.name))
@@ -3301,6 +3329,10 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             extra_sizes,
             symbol_db,
             |symbol_id, def_info| {
+                if def_info.name.is_empty() {
+                    return false;
+                }
+
                 let flags = per_symbol_flags.flags_for_symbol(symbol_id);
 
                 // If the symbol is referenced, then we keep it.
@@ -3644,6 +3676,10 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
                 _ => {}
             }
 
+            if def_info.name.is_empty() {
+                continue;
+            }
+
             resources
                 .per_symbol_flags
                 .get_atomic(symbol_id)
@@ -3665,6 +3701,9 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
     ) -> Result {
         // Allocate space in the symbol table for the symbols that we define.
         for (index, def_info) in self.symbol_definitions.iter().enumerate() {
+            if def_info.name.is_empty() {
+                continue;
+            }
             let symbol_id = self.start_symbol_id.add_usize(index);
             if !symbol_db.is_canonical(symbol_id) || symbol_id.is_undefined() {
                 continue;
@@ -3708,7 +3747,7 @@ fn create_internal_symbol_resolution<'data, P: Platform>(
     def_info: &InternalSymDefInfo<P>,
     symbol_id: SymbolId,
 ) -> Option<Resolution<P>> {
-    if !resources.symbol_db.is_canonical(symbol_id) {
+    if def_info.name.is_empty() || !resources.symbol_db.is_canonical(symbol_id) {
         return None;
     }
 
@@ -5288,6 +5327,7 @@ fn compute_layout_sections<'data, P: Platform>(
         crate::expression_eval::evaluate_expression(
             expr,
             loc,
+            None,
             section_layouts,
             output_sections,
             memory_regions,

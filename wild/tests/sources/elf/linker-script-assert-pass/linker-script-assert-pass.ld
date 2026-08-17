@@ -6,11 +6,14 @@ SECTIONS {
         symbol3 = 0x3000;
     }
     symbol11 = 0x100;
+    symbol11_assert = ASSERT(symbol11 == 0x100, "symbol11 must be 0x100");
     symbol11 -= 0x20;
     symbol11 &= 0x80;
+    ASSERT(symbol11 == 0x80, "symbol11 must be 0x80")
     .data : {
         *(.data*)
         symbol10 = 0x100;
+        symbol10_assert = ASSERT(symbol10 == 0x100, "symbol10 must be 0x100");
         symbol10 *= 0x100;
         symbol10 ^= 0x40;
         ASSERT(symbol10 == 0x10040, "symbol10 must be 0x10040");
@@ -57,7 +60,11 @@ ASSERT(!DEFINED(symbol8), "symbol8 should not be defined");
 
 symbol9 = 0x8;
 symbol9 += 0x10;
+ASSERT(symbol9 == 0x18, "symbol9 must be 0x18");
 symbol9 /= 0x2;
 symbol9 <<= 0x3;
 symbol9 |= 0x100;
 ASSERT(symbol9 == 0x160, "symbol9 must be 0x160");
+
+symbol12 = ASSERT(ASSERT(0x5000 < 0x10000, "0x5000 < 0x10000 must be true") == 1, "ASSERT must return 1");
+. = ASSERT(symbol12 == 1, "must be 1");

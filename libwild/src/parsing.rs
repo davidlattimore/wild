@@ -52,10 +52,6 @@ pub(crate) struct ParsedInputObject<'data, P: Platform> {
 pub(crate) struct ProcessedLinkerScript<'data, P: Platform> {
     pub(crate) input: InputRef<'data>,
     pub(crate) symbol_defs: Vec<InternalSymDefInfo<'data, P>>,
-    pub(crate) assertions: Vec<crate::linker_script::AssertCommand<'data>>,
-    /// Raw bytes of the linker script file. Used to compute line numbers from
-    /// `AssertCommand::remainder` when reporting errors.
-    pub(crate) file_bytes: &'data [u8],
     pub(crate) memory_regions: Vec<crate::linker_script::MemoryRegion<'data>>,
     pub(crate) program_headers: Vec<crate::linker_script::Phdr<'data>>,
     pub(crate) location_counters: Vec<LocationCounter<'data>>,

@@ -15,6 +15,7 @@ use crate::input_data::InputLinkerScript;
 use crate::input_data::InputRef;
 use crate::linker_script;
 use crate::linker_script::ContentsCommand;
+use crate::linker_script::Expression;
 use crate::linker_script::SectionCommand;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionIdentity;
@@ -188,7 +189,6 @@ impl<'data> LayoutRulesBuilder<'data> {
         args: &P::Args,
     ) -> Result<ProcessedLinkerScript<'data, P>> {
         let mut symbol_defs = Vec::new();
-        let mut assertions = Vec::new();
         let mut memory_regions = Vec::new();
         let mut program_headers = Vec::new();
         let mut location_counters = Vec::new();
@@ -216,6 +216,13 @@ impl<'data> LayoutRulesBuilder<'data> {
                     loc: loc_for_global_expr(value, current_section_id),
                 });
                 symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
+            } else if let linker_script::Command::SetLocation(loc) = cmd {
+                let placement = SymbolPlacement::Redirect(Redirect {
+                    kind: RedirectKind::Script,
+                    expression: loc.address.clone(),
+                    loc: loc_for_global_expr(&loc.address, current_section_id),
+                });
+                symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, b""));
             } else if let linker_script::Command::Sections(sections) = cmd {
                 let mut section_start_lc_idx = last_lc_idx;
                 let mut prev_phdrs = Vec::new();
@@ -381,6 +388,14 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     // On ELF it is a nop.
                                     // (https://sourceware.org/binutils/docs/ld/Output-Section-Keywords.html#index-CONSTRUCTORS)
                                     ContentsCommand::Constructors => (),
+                                    ContentsCommand::Assert(assert_cmd) => {
+                                        let placement = SymbolPlacement::Redirect(Redirect {
+                                            kind: RedirectKind::Script,
+                                            expression: Expression::Assert(assert_cmd.clone()),
+                                            loc: last_symbol_loc.clone(),
+                                        });
+                                        symbol_defs.push(InternalSymDefInfo::new(placement, b""));
+                                    }
                                 }
                             }
                             if inner_lc_idx > inner_lc_start_idx {
@@ -411,7 +426,12 @@ impl<'data> LayoutRulesBuilder<'data> {
                             last_lc_idx += 1;
                         }
                         SectionCommand::Assert(assert_cmd) => {
-                            assertions.push(assert_cmd.clone());
+                            let placement = SymbolPlacement::Redirect(Redirect {
+                                kind: RedirectKind::Script,
+                                expression: Expression::Assert(assert_cmd.clone()),
+                                loc: loc.clone(),
+                            });
+                            symbol_defs.push(InternalSymDefInfo::new(placement, b""));
                         }
                         SectionCommand::Provide(provide) => {
                             let placement = SymbolPlacement::Redirect(Redirect {
@@ -435,7 +455,12 @@ impl<'data> LayoutRulesBuilder<'data> {
                     }
                 }
             } else if let linker_script::Command::Assert(assert_cmd) = cmd {
-                assertions.push(assert_cmd.clone());
+                let placement = SymbolPlacement::Redirect(Redirect {
+                    kind: RedirectKind::Script,
+                    expression: Expression::Assert(assert_cmd.clone()),
+                    loc: loc_for_global_expr(&assert_cmd.expression, None),
+                });
+                symbol_defs.push(InternalSymDefInfo::new(placement, b""));
             } else if let linker_script::Command::Memory(regions) = cmd {
                 memory_regions = regions.clone();
             } else if let linker_script::Command::Phdrs(phdrs) = cmd {
@@ -469,13 +494,11 @@ impl<'data> LayoutRulesBuilder<'data> {
 
         Ok(ProcessedLinkerScript {
             symbol_defs,
-            assertions,
             input: InputRef {
                 file: input.input_file,
                 data: input.script_bytes,
                 entry: None,
             },
-            file_bytes: input.script_bytes,
             memory_regions,
             program_headers,
             location_counters,

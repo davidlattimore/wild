@@ -72,6 +72,7 @@ pub(crate) enum Command<'a> {
         name: &'a [u8],
         value: Expression<'a>,
     },
+    SetLocation(Location<'a>),
     Provide(ProvideSymbolDefinition<'a>),
     Assert(AssertCommand<'a>),
     Memory(Vec<MemoryRegion<'a>>),
@@ -140,6 +141,7 @@ pub(crate) enum ContentsCommand<'a> {
     Provide(ProvideSymbolDefinition<'a>),
     SetLocation(Location<'a>),
     Constructors,
+    Assert(AssertCommand<'a>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -157,7 +159,7 @@ pub(crate) struct ProvideSymbolDefinition<'a> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct AssertCommand<'a> {
-    pub(crate) expression: Expression<'a>,
+    pub(crate) expression: Box<Expression<'a>>,
     pub(crate) message: &'a [u8],
     /// Remaining input at the point this ASSERT was parsed. Used to lazily compute
     /// the line number only when an error occurs.
@@ -258,6 +260,7 @@ pub(crate) enum Expression<'a> {
         Box<Expression<'a>>,
     ),
     Defined(&'a [u8]),
+    Assert(AssertCommand<'a>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -318,7 +321,8 @@ impl<'a> Expression<'a> {
             Expression::Align(e)
             | Expression::LogicalNot(e)
             | Expression::BitwiseNot(e)
-            | Expression::Negate(e) => e.visit_expressions(cb),
+            | Expression::Negate(e)
+            | Expression::Assert(AssertCommand { expression: e, .. }) => e.visit_expressions(cb),
             Expression::SegmentStart(_, default_expr) => default_expr.visit_expressions(cb),
             Expression::Ternary(expression, expression1, expression2) => {
                 expression.visit_expressions(cb);
@@ -414,7 +418,12 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
         b"VERSION" => Command::Version(parse_version(input)?),
         b"PROVIDE" => Command::Provide(parse_provide(input, false)?),
         b"PROVIDE_HIDDEN" => Command::Provide(parse_provide(input, true)?),
-        b"ASSERT" => Command::Assert(parse_assert(input)?),
+        b"ASSERT" => {
+            let assert = parse_assert(input)?;
+            opt(';').parse_next(input)?;
+            skip_comments_and_whitespace(input)?;
+            Command::Assert(assert)
+        }
         b"MEMORY" => Command::Memory(parse_memory(input)?),
         b"PHDRS" => Command::Phdrs(parse_phdrs(input)?),
         other => {
@@ -424,9 +433,14 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
                 let value = parse_expression.parse_next(input)?;
                 skip_comments_and_whitespace(input)?;
                 opt(';').parse_next(input)?;
-                Command::SymbolDefinition {
-                    name: other,
-                    value: op.expand(other, value),
+                let expanded = op.expand(other, value);
+                if other == b"." {
+                    Command::SetLocation(Location { address: expanded })
+                } else {
+                    Command::SymbolDefinition {
+                        name: other,
+                        value: expanded,
+                    }
                 }
             } else {
                 Command::Arg(other)
@@ -481,11 +495,9 @@ fn parse_assert<'input>(input: &mut &'input BStr) -> winnow::Result<AssertComman
     skip_comments_and_whitespace(input)?;
     ')'.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
-    opt(';').parse_next(input)?;
-    skip_comments_and_whitespace(input)?;
 
     Ok(AssertCommand {
-        expression,
+        expression: Box::new(expression),
         message,
         remainder,
     })
@@ -926,7 +938,7 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
     multispace0.parse_next(input)?;
 
     // Check if it's a function call
-    if opt('(').parse_next(input)?.is_some() {
+    if input.starts_with(b"(") {
         multispace0.parse_next(input)?;
 
         match ident {
@@ -955,6 +967,7 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
                 Ok(Expression::Loadaddr(arg))
             }
             b"ALIGN" => {
+                '('.parse_next(input)?;
                 let arg_expr = parse_expression.parse_next(input)?;
                 multispace0.parse_next(input)?;
                 ')'.parse_next(input)?;
@@ -962,6 +975,7 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
             }
             b"MIN" => {
                 // MIN takes two expressions separated by comma
+                '('.parse_next(input)?;
                 let first = parse_expression.parse_next(input)?;
                 multispace0.parse_next(input)?;
                 ','.parse_next(input)?;
@@ -973,6 +987,7 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
             }
             b"MAX" => {
                 // MAX takes two expressions separated by comma
+                '('.parse_next(input)?;
                 let first = parse_expression.parse_next(input)?;
                 multispace0.parse_next(input)?;
                 ','.parse_next(input)?;
@@ -983,6 +998,7 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
                 Ok(Expression::Max(Box::new(first), Box::new(second)))
             }
             b"SEGMENT_START" => {
+                '('.parse_next(input)?;
                 multispace0.parse_next(input)?;
                 '"'.parse_next(input)?;
                 let name = take_while(1.., |b: u8| b != b'"')
@@ -1005,6 +1021,10 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
                 let symbol = parse_function_arg.parse_next(input)?;
                 Ok(Expression::Defined(symbol))
             }
+            b"ASSERT" => {
+                let assert = parse_assert.parse_next(input)?;
+                Ok(Expression::Assert(assert))
+            }
             _ => Err(ContextError::default()),
         }
     } else if ident == b"SIZEOF_HEADERS" {
@@ -1017,6 +1037,7 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
 
 /// Parse a function argument (section name for SIZEOF/ADDR)
 fn parse_function_arg<'a>(input: &mut &'a BStr) -> winnow::Result<&'a [u8]> {
+    '('.parse_next(input)?;
     multispace0.parse_next(input)?;
 
     // Section names: start with '.', letter, or underscore
@@ -1331,6 +1352,7 @@ fn parse_contents_command<'input>(
 ) -> winnow::Result<ContentsCommand<'input>> {
     alt((
         parse_contents_provide,
+        parse_contents_assert,
         parse_matcher,
         parse_assignment,
         parse_constructors,
@@ -1453,6 +1475,17 @@ fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<SectionPatt
     }
 
     Ok(SectionPattern { name, sorted })
+}
+
+fn parse_contents_assert<'input>(
+    input: &mut &'input BStr,
+) -> winnow::Result<ContentsCommand<'input>> {
+    "ASSERT".parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let assert = parse_assert(input)?;
+    opt(';').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    Ok(ContentsCommand::Assert(assert))
 }
 
 /// Call `cb` for each input file requested by `commands`.
@@ -2024,10 +2057,10 @@ mod tests {
                         })],
                     }),
                     Command::Assert(AssertCommand {
-                        expression: Expression::LessThan(
+                        expression: Box::new(Expression::LessThan(
                             Box::new(Expression::LocationCounter),
                             Box::new(Expression::Number(0x10000)),
-                        ),
+                        )),
                         message: b"Output too large",
                         remainder: b"",
                     }),
@@ -2042,7 +2075,7 @@ mod tests {
             r#"
             SECTIONS {
                 .text : { *(.text) }
-                ASSERT(SIZEOF(.text) < 0x1000, "Text section too large");
+                ASSERT(SIZEOF(.text) < 0x1000, "Text section too large")
             }
             "#,
             &LinkerScript {
@@ -2067,10 +2100,10 @@ mod tests {
                             attributes: None,
                         }),
                         SectionCommand::Assert(AssertCommand {
-                            expression: Expression::LessThan(
+                            expression: Box::new(Expression::LessThan(
                                 Box::new(Expression::Sizeof(b".text")),
                                 Box::new(Expression::Number(0x1000)),
-                            ),
+                            )),
                             message: b"Text section too large",
                             remainder: b"",
                         }),
@@ -2089,7 +2122,7 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
-                    assert_cmd.expression,
+                    *assert_cmd.expression,
                     Expression::LessEqual(
                         Box::new(Expression::Subtract(
                             Box::new(Expression::Symbol(b"__bss_end")),
@@ -2112,7 +2145,7 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
-                    assert_cmd.expression,
+                    *assert_cmd.expression,
                     Expression::Equal(
                         Box::new(Expression::Add(
                             Box::new(Expression::Number(1)),
@@ -2142,8 +2175,8 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 // Verify it parsed as LessThan with MIN function
-                assert_matches!(assert_cmd.expression, Expression::LessThan(_, _));
-                if let Expression::LessThan(left, _) = &assert_cmd.expression {
+                assert_matches!(*assert_cmd.expression, Expression::LessThan(_, _));
+                if let Expression::LessThan(left, _) = &*assert_cmd.expression {
                     // The left side should be a MIN expression with two SIZEOF calls
                     assert_matches!(**left, Expression::Min(_, _));
                 }
@@ -2160,7 +2193,7 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
-                    assert_cmd.expression,
+                    *assert_cmd.expression,
                     Expression::Equal(
                         Box::new(Expression::BitwiseAnd(
                             Box::new(Expression::Number(0xFF)),
@@ -2179,8 +2212,8 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 // The == binds loosest, so the top level is Equal
-                assert_matches!(assert_cmd.expression, Expression::Equal(_, _));
-                if let Expression::Equal(left, _) = &assert_cmd.expression {
+                assert_matches!(*assert_cmd.expression, Expression::Equal(_, _));
+                if let Expression::Equal(left, _) = &*assert_cmd.expression {
                     // Left side should be BitwiseOr(1, BitwiseXor(2, 3))
                     assert_matches!(**left, Expression::BitwiseOr(_, _));
                     if let Expression::BitwiseOr(or_left, or_right) = &**left {
@@ -2201,7 +2234,7 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
-                    assert_cmd.expression,
+                    *assert_cmd.expression,
                     Expression::Equal(
                         Box::new(Expression::LeftShift(
                             Box::new(Expression::Number(1)),
@@ -2224,7 +2257,7 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
-                    assert_cmd.expression,
+                    *assert_cmd.expression,
                     Expression::LogicalOr(
                         Box::new(Expression::LogicalAnd(
                             Box::new(Expression::Number(1)),
@@ -2245,7 +2278,7 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
-                    assert_cmd.expression,
+                    *assert_cmd.expression,
                     Expression::LogicalNot(Box::new(Expression::Number(0)))
                 );
             }
@@ -2257,7 +2290,7 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
-                    assert_cmd.expression,
+                    *assert_cmd.expression,
                     Expression::Equal(
                         Box::new(Expression::BitwiseNot(Box::new(Expression::Number(0xFF)))),
                         Box::new(Expression::Number(0)),
@@ -2272,7 +2305,7 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
-                    assert_cmd.expression,
+                    *assert_cmd.expression,
                     Expression::Equal(
                         Box::new(Expression::Negate(Box::new(Expression::Number(1)))),
                         Box::new(Expression::Number(0)),
@@ -2290,7 +2323,7 @@ mod tests {
         let script = parse_script(r#"ASSERT(~0xFF & 0xFF == 0, "unary precedence");"#).unwrap();
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
-                if let Expression::Equal(left, _) = &assert_cmd.expression {
+                if let Expression::Equal(left, _) = &*assert_cmd.expression {
                     assert_eq!(
                         **left,
                         Expression::BitwiseAnd(
@@ -2312,7 +2345,7 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
-                    assert_cmd.expression,
+                    *assert_cmd.expression,
                     Expression::Equal(
                         Box::new(Expression::Alignof(b".text")),
                         Box::new(Expression::Number(8)),
@@ -2329,7 +2362,7 @@ mod tests {
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
-                    assert_cmd.expression,
+                    *assert_cmd.expression,
                     Expression::Equal(
                         Box::new(Expression::Loadaddr(b".text")),
                         Box::new(Expression::Number(8)),
@@ -2392,7 +2425,7 @@ mod tests {
                 panic!()
             };
             assert_eq!(
-                cmd.expression,
+                *cmd.expression,
                 Expression::Equal(
                     Box::new(expected_fn),
                     Box::new(Expression::Number(expected_val))
