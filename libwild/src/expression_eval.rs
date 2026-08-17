@@ -147,6 +147,23 @@ fn evaluate_expression_value<'data, P: Platform>(
         };
     }
 
+    macro_rules! eval_abs {
+        ($e:expr) => {
+            evaluate_expression(
+                $e,
+                expr_loc,
+                input_ref,
+                section_layouts,
+                output_sections,
+                memory_regions,
+                symbol_db,
+                sizeof_headers,
+                resolved_location_counters,
+                symbol_resolution_callback,
+            )
+        };
+    }
+
     match expr {
         Expression::Number(n) => Ok(*n),
 
@@ -178,20 +195,24 @@ fn evaluate_expression_value<'data, P: Platform>(
         }
 
         // Comparisons return 1 (true) or 0 (false)
-        Expression::LessThan(l, r) => Ok(u64::from(eval!(l)? < eval!(r)?)),
-        Expression::GreaterThan(l, r) => Ok(u64::from(eval!(l)? > eval!(r)?)),
-        Expression::LessEqual(l, r) => Ok(u64::from(eval!(l)? <= eval!(r)?)),
-        Expression::GreaterEqual(l, r) => Ok(u64::from(eval!(l)? >= eval!(r)?)),
-        Expression::Equal(l, r) => Ok(u64::from(eval!(l)? == eval!(r)?)),
-        Expression::NotEqual(l, r) => Ok(u64::from(eval!(l)? != eval!(r)?)),
+        Expression::LessThan(l, r) => Ok(u64::from(eval_abs!(l)? < eval_abs!(r)?)),
+        Expression::GreaterThan(l, r) => Ok(u64::from(eval_abs!(l)? > eval_abs!(r)?)),
+        Expression::LessEqual(l, r) => Ok(u64::from(eval_abs!(l)? <= eval_abs!(r)?)),
+        Expression::GreaterEqual(l, r) => Ok(u64::from(eval_abs!(l)? >= eval_abs!(r)?)),
+        Expression::Equal(l, r) => Ok(u64::from(eval_abs!(l)? == eval_abs!(r)?)),
+        Expression::NotEqual(l, r) => Ok(u64::from(eval_abs!(l)? != eval_abs!(r)?)),
 
         Expression::Sizeof(name) => Ok(section_size(name, section_layouts, output_sections)),
         Expression::Alignof(name) => Ok(section_align(name, section_layouts, output_sections)),
-        Expression::Addr(name) => section_address(name, section_layouts, output_sections),
+        Expression::Addr(name) => {
+            *has_section_relative_offset = false;
+            section_address(name, section_layouts, output_sections)
+        }
 
-        // TODO: This is a temporary alias for ADDR.
-        // Needs to be updated when AT(expr) and disjoint LMA/VMA tracking are implemented.
-        Expression::Loadaddr(name) => section_load_address(name, section_layouts, output_sections),
+        Expression::Loadaddr(name) => {
+            *has_section_relative_offset = false;
+            section_load_address(name, section_layouts, output_sections)
+        }
 
         Expression::Align(expr) => {
             let align = eval!(expr)?;
@@ -221,6 +242,7 @@ fn evaluate_expression_value<'data, P: Platform>(
         Expression::Negate(e) => Ok(eval!(e)?.wrapping_neg()),
 
         Expression::Origin(name) => {
+            *has_section_relative_offset = false;
             let region = memory_regions.get(name).ok_or_else(|| {
                 crate::error!(
                     "ORIGIN: memory region '{}' not found",
