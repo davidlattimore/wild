@@ -1297,6 +1297,10 @@ impl platform::SectionAttributes for SectionAttributes {
         false
     }
 
+    fn occupies_only_tls_address_space(&self) -> bool {
+        false
+    }
+
     fn is_writable(&self) -> bool {
         false
     }
