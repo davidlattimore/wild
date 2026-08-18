@@ -205,6 +205,15 @@ const UNREACHABLE_FUNCTION_BODY: &[u8] = &[0x00, 0x00, 0x0b];
 /// `i32.const` body for `LINKER_MEMORY_BASE`.
 const LINKER_MEMORY_BASE_INIT_EXPR: &[u8] = &[0x41, 0x80, 0x08];
 
+const fn memory_base_init_expr(is_pic: bool) -> &'static [u8] {
+    if is_pic {
+        LINKER_MEMORY_BASE_INIT_EXPR
+    } else {
+        // Optional non-PIC `__memory_base` is 0.
+        ZERO_I32_INIT_EXPR
+    }
+}
+
 /// `i32.const 0`. Used for immutable `__tls_base` when no TLS segment is laid out.
 const ZERO_I32_INIT_EXPR: &[u8] = &[0x41, 0x00];
 
@@ -3956,6 +3965,9 @@ struct LinkerDefinedIndices {
     data_address_globals: Vec<(WasmLinkerSymbol, u32)>,
     // Linker symbols named by `--export` / `--export-if-defined`.
     requested_exports: Vec<WasmLinkerSymbol>,
+    // True when `__memory_base` is the PIC value (`LINKER_MEMORY_BASE`). False when it exists
+    // only because of `--export`.
+    memory_base_is_pic: bool,
 }
 
 /// Where a GOT.mem slot's final linear-memory address comes from.
@@ -4907,9 +4919,9 @@ impl LinkerDefinedIndices {
             }
         }
         needs_ctors |= export_needs.needs_ctors;
-        needs_memory_base |= export_needs.needs_memory_base;
         needs_table_base |= export_needs.needs_table_base;
         needs_stack_pointer |= export_needs.needs_stack_pointer;
+        let export_memory_base = export_needs.needs_memory_base;
 
         for (input, resolutions) in layout_inputs.iter().zip(import_resolutions.iter()) {
             let absorption = LinkerImportAbsorption::from_resolutions(
@@ -4923,6 +4935,8 @@ impl LinkerDefinedIndices {
             needs_stack_pointer |= absorption.needs_stack_pointer;
             needs_tls_base |= absorption.needs_tls_base;
         }
+        let memory_base_is_pic = needs_memory_base;
+        needs_memory_base |= export_memory_base;
 
         let mut next_global = global_import_count;
         // Defined-global slot before `__stack_pointer` (used for its init expression).
@@ -5012,6 +5026,7 @@ impl LinkerDefinedIndices {
             got_func_count: request.got_func_count,
             data_address_globals,
             requested_exports: request.export_symbols.clone(),
+            memory_base_is_pic,
         })
     }
 
@@ -5236,14 +5251,16 @@ fn emit_reserved_linker_definitions(
 ) {
     let mut linker_globals = Vec::with_capacity(indices.num_defined_globals as usize);
     if indices.memory_base_global.is_some() {
-        layout.memory_base = LINKER_MEMORY_BASE;
+        if indices.memory_base_is_pic {
+            layout.memory_base = LINKER_MEMORY_BASE;
+        }
         linker_globals.push(OutputGlobal {
             ty: GlobalType {
                 content_type: wasmparser::ValType::I32,
                 mutable: false,
                 shared: false,
             },
-            init_expr_body: Cow::Borrowed(LINKER_MEMORY_BASE_INIT_EXPR),
+            init_expr_body: Cow::Borrowed(memory_base_init_expr(indices.memory_base_is_pic)),
         });
     }
     if indices.table_base_global.is_some() {
@@ -5803,7 +5820,7 @@ where
         ensure_stack_size_aligned(stack_size)?;
     }
     let mut layout = WasmLayout {
-        memory_base: if linker_memory || indices.memory_base_global.is_some() {
+        memory_base: if linker_memory || indices.memory_base_is_pic {
             LINKER_MEMORY_BASE
         } else {
             0
@@ -7789,6 +7806,12 @@ mod tests {
         assert_eq!(features[0].name, "bulk-memory");
         assert_eq!(features[1].prefix, TARGET_FEATURE_PREFIX_DISALLOWED);
         assert_eq!(features[1].name, "atomics");
+    }
+
+    #[test]
+    fn memory_base_export_only_is_zero() {
+        assert_eq!(memory_base_init_expr(false), ZERO_I32_INIT_EXPR);
+        assert_eq!(memory_base_init_expr(true), LINKER_MEMORY_BASE_INIT_EXPR);
     }
 
     #[test]
