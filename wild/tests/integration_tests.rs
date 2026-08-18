@@ -4304,6 +4304,9 @@ impl LinkCommand {
                             }
                         }
                         PlatformKind::MachO => {
+                            let (_, sdk) = macos_toolchain()
+                                .map_err(|err| error!("Unable to locate macOS toolchain: {err}"))?;
+                            command.arg("-syslibroot").arg(sdk).arg("-lSystem");
                             if linker.is_lld() {
                                 let arch = cross_arch.unwrap_or(arch);
                                 command.arg("-arch").arg(arch.darwin_arch_name());
@@ -7043,7 +7046,7 @@ fn available_linkers_for_linux() -> Result<Vec<Linker>> {
 
 fn available_linkers_for_mac() -> Result<LinkerCatalog> {
     let mut linkers = Vec::new();
-    let (path, sdk_path) = macos_toolchain()
+    let (path, _) = macos_toolchain()
         .map_err(|reason| error!("Apple linker `ld` is required for Mach-O tests: {reason}"))?;
 
     linkers.push(Linker::ThirdParty(ThirdPartyLinker {
@@ -7051,11 +7054,7 @@ fn available_linkers_for_mac() -> Result<LinkerCatalog> {
         gcc_name: "ld",
         path: path.clone(),
         cross_paths: HashMap::new(),
-        direct_args: vec![
-            OsString::from("-syslibroot"),
-            sdk_path.as_os_str().to_owned(),
-            OsString::from("-lSystem"),
-        ],
+        direct_args: Vec::new(),
         enabled_by_default: true,
     }));
 

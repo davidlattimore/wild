@@ -1,4 +1,3 @@
-//#LinkerDriver:clang
 // TODO: We don't emit fixups for `__tlv_bootstrap` yet, so we need to disable `RunEnabled` and
 // `DiffEnabled` for now.
 //#RunEnabled:false
