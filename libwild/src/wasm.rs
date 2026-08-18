@@ -1672,6 +1672,9 @@ fn build_name_section<'data>(
     if let Some(idx) = indices.tls_base_global {
         set_name_first_wins(&mut global_names, idx, "__tls_base");
     }
+    for &(known, idx) in &indices.data_address_globals {
+        set_name_first_wins(&mut global_names, idx, <&str>::from(known));
+    }
     if let Some(got_base) = indices.got_mem_global_base {
         got_mem_names.reserve(got_mem.entries.len());
         for (i, entry) in got_mem.entries.iter().enumerate() {
@@ -3945,6 +3948,7 @@ struct LinkerDefinedIndices {
     /// First module global index for GOT.func entries.
     got_func_global_base: Option<u32>,
     got_func_count: u32,
+    data_address_globals: Vec<(WasmLinkerSymbol, u32)>,
 }
 
 /// Where a GOT.mem slot's final linear-memory address comes from.
@@ -4061,8 +4065,10 @@ fn setup_got_mem_and_indices<'data>(
             shared_imports.function_count(),
             shared_imports.global_count(),
             weak_undef_stubs,
-            LinkerDefinedIndexRequest {
+            &LinkerDefinedIndexRequest {
                 has_init_funcs,
+                export_symbols: requested_linker_export_symbols(symbol_db.args),
+                has_memory: any_object_needs_linker_memory(layout_inputs),
                 wrap_entry,
                 got_mem_count: scan.got_mem.len(),
                 got_func_count: scan.got_func.len(),
@@ -4740,6 +4746,39 @@ fn fill_got_mem_inits(
     Ok(())
 }
 
+fn fill_exported_data_global_inits(
+    layout: &mut WasmLayout<'_>,
+    indices: &LinkerDefinedIndices,
+    data_start: u32,
+    data_end: u32,
+    stack_size: u32,
+    heap_end: Option<u32>,
+    stack_first: bool,
+) -> Result {
+    for &(known, global_index) in &indices.data_address_globals {
+        let addr = known
+            .data_address(data_start, data_end, stack_size, heap_end, stack_first)?
+            .ok_or_else(|| {
+                crate::error!(
+                    "linker-defined symbol `{}` has no address to export",
+                    std::str::from_utf8(known.name()).unwrap_or("?")
+                )
+            })?;
+        let defined_slot = (global_index - indices.global_import_count) as usize;
+        let global = layout.globals.get_mut(defined_slot).ok_or_else(|| {
+            crate::error!("exported data global slot {defined_slot} out of range")
+        })?;
+        let addr_i32 = i32::try_from(addr).map_err(|_| {
+            crate::error!(
+                "exported data address for `{}` out of i32 range",
+                std::str::from_utf8(known.name()).unwrap_or("?")
+            )
+        })?;
+        global.init_expr_body = Cow::Owned(encode_i32_const_body(addr_i32));
+    }
+    Ok(())
+}
+
 /// Fill GOT.func globals with table indices. Requires the indirect function table first. Undefined
 /// weak targets resolve through `function_indices` to unreachable stubs.
 fn fill_got_func_inits(
@@ -4828,9 +4867,11 @@ fn entry_is_defined_function(
     !sym.is_undefined() && sym.kind == WasmSymbolKind::Func
 }
 
-#[derive(Clone, Copy)]
 struct LinkerDefinedIndexRequest {
     has_init_funcs: bool,
+    // Linker symbols named by `--export` / `--export-if-defined`.
+    export_symbols: Vec<WasmLinkerSymbol>,
+    has_memory: bool,
     wrap_entry: bool,
     got_mem_count: u32,
     got_func_count: u32,
@@ -4845,13 +4886,37 @@ impl LinkerDefinedIndices {
         function_import_count: u32,
         global_import_count: u32,
         mut weak_undef_stubs: Vec<WeakUndefFunctionStub>,
-        request: LinkerDefinedIndexRequest,
+        request: &LinkerDefinedIndexRequest,
     ) -> Result<Self> {
         let mut needs_memory_base = request.needs_memory_base;
         let mut needs_table_base = request.needs_table_base;
         let mut needs_stack_pointer = false;
         let mut needs_tls_base = false;
         let mut needs_ctors = request.has_init_funcs;
+        let mut export_data = Vec::new();
+        for &sym in &request.export_symbols {
+            if !sym.materialize_on_export() {
+                continue;
+            }
+            match sym {
+                WasmLinkerSymbol::CallCtors => needs_ctors = true,
+                WasmLinkerSymbol::MemoryBase => needs_memory_base = true,
+                WasmLinkerSymbol::TableBase => needs_table_base = true,
+                WasmLinkerSymbol::StackPointer => needs_stack_pointer = true,
+                WasmLinkerSymbol::TlsBase => {}
+                WasmLinkerSymbol::HeapEnd if !request.has_memory => {}
+                WasmLinkerSymbol::DataEnd
+                | WasmLinkerSymbol::GlobalBase
+                | WasmLinkerSymbol::HeapBase
+                | WasmLinkerSymbol::HeapEnd
+                | WasmLinkerSymbol::WasmFirstPageEnd
+                | WasmLinkerSymbol::DsoHandle => {
+                    if !export_data.contains(&sym) {
+                        export_data.push(sym);
+                    }
+                }
+            }
+        }
 
         for (input, resolutions) in layout_inputs.iter().zip(import_resolutions.iter()) {
             let absorption = LinkerImportAbsorption::from_resolutions(
@@ -4890,6 +4955,13 @@ impl LinkerDefinedIndices {
             next_global += 1;
             idx
         });
+        let mut data_address_globals = Vec::with_capacity(export_data.len());
+        for known in export_data {
+            data_address_globals.push((known, next_global));
+            next_global = next_global
+                .checked_add(1)
+                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+        }
         let got_mem_global_base = if request.got_mem_count > 0 {
             let base = next_global;
             next_global = next_global
@@ -4945,6 +5017,7 @@ impl LinkerDefinedIndices {
             got_mem_count: request.got_mem_count,
             got_func_global_base,
             got_func_count: request.got_func_count,
+            data_address_globals,
         })
     }
 
@@ -4954,7 +5027,11 @@ impl LinkerDefinedIndices {
             WasmLinkerSymbol::TableBase => self.table_base_global,
             WasmLinkerSymbol::StackPointer => self.stack_pointer_global,
             WasmLinkerSymbol::TlsBase => self.tls_base_global,
-            _ => None,
+            other => self
+                .data_address_globals
+                .iter()
+                .find(|(sym, _)| *sym == other)
+                .map(|(_, idx)| *idx),
         }
     }
 
@@ -5191,6 +5268,16 @@ fn emit_reserved_linker_definitions(
         });
     }
     if indices.tls_base_global.is_some() {
+        linker_globals.push(OutputGlobal {
+            ty: GlobalType {
+                content_type: wasmparser::ValType::I32,
+                mutable: false,
+                shared: false,
+            },
+            init_expr_body: Cow::Borrowed(ZERO_I32_INIT_EXPR),
+        });
+    }
+    for _ in &indices.data_address_globals {
         linker_globals.push(OutputGlobal {
             ty: GlobalType {
                 content_type: wasmparser::ValType::I32,
@@ -5499,6 +5586,36 @@ fn ensure_entry_export<'data>(
     });
 }
 
+fn requested_linker_export_symbols(args: &WasmArgs) -> Vec<WasmLinkerSymbol> {
+    let mut symbols = Vec::new();
+    for name in args.force_export_symbol_names() {
+        let Some(sym) = WasmLinkerSymbol::parse(name) else {
+            continue;
+        };
+        if !symbols.contains(&sym) {
+            symbols.push(sym);
+        }
+    }
+    symbols
+}
+
+fn try_export_linker_defined(
+    exports: &mut Vec<OutputExport<'_>>,
+    known: WasmLinkerSymbol,
+    indices: &LinkerDefinedIndices,
+) -> bool {
+    let name = <&str>::from(known);
+    if let Some(index) = indices.function_index(known) {
+        push_function_export(exports, name, index);
+        return true;
+    }
+    if let Some(index) = indices.global_index(known) {
+        push_global_export(exports, name, index);
+        return true;
+    }
+    false
+}
+
 /// Export symbols requested via `--export` and `--export-if-defined`.
 fn ensure_force_exports<'data>(
     exports: &mut Vec<OutputExport<'data>>,
@@ -5506,10 +5623,15 @@ fn ensure_force_exports<'data>(
     object_index_maps: &[WasmObjectIndexMap],
     symbol_db: &SymbolDb<'data, Wasm>,
     entry: Option<&ResolvedEntry<'data>>,
-    entry_wrapper_func: Option<u32>,
+    indices: &LinkerDefinedIndices,
 ) -> Result<()> {
     for name in symbol_db.args.force_export_symbol_names() {
         let required = symbol_db.args.required_export_symbols.contains(name);
+        if let Some(known) = WasmLinkerSymbol::parse(name)
+            && try_export_linker_defined(exports, known, indices)
+        {
+            continue;
+        }
         let Some(symbol_id) =
             symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()))
         else {
@@ -5550,7 +5672,7 @@ fn ensure_force_exports<'data>(
                 let mut index =
                     remap_wasm_index(&index_map.function_indices, def_sym.index, "function")?;
                 // If this is the entry and we wrap it, export the wrapper.
-                if let (Some(entry), Some(wrapper)) = (entry, entry_wrapper_func)
+                if let (Some(entry), Some(wrapper)) = (entry, indices.entry_wrapper_func)
                     && export_name == entry.export_name
                 {
                     index = wrapper;
@@ -5820,6 +5942,15 @@ where
             heap_end,
             stack_first,
         )?;
+        fill_exported_data_global_inits(
+            &mut layout,
+            &indices,
+            data_start,
+            data_end,
+            stack_size,
+            heap_end,
+            stack_first,
+        )?;
         fill_stack_pointer_init(&mut layout, &indices, stack_size, stack_first)?;
         ensure_entry_export(
             &mut layout.exports,
@@ -5832,7 +5963,7 @@ where
             &layout.object_index_maps,
             symbol_db,
             entry.as_ref(),
-            indices.entry_wrapper_func,
+            &indices,
         )?;
     }
     {
@@ -6070,6 +6201,11 @@ impl WasmLinkerSymbol {
 
     fn parse(name: &str) -> Option<Self> {
         name.parse().ok()
+    }
+
+    fn materialize_on_export(self) -> bool {
+        // `--export` materializes every linker symbol except `__tls_base`.
+        !matches!(self, Self::TlsBase)
     }
 
     fn matches_import_kind(self, kind: WasmSymbolKind) -> bool {
