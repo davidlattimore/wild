@@ -348,6 +348,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+          submodules: recursive
 
       - name: REUSE Compliance Check
         uses: fsfe/reuse-action@v6
