@@ -85,6 +85,8 @@
 //!
 //! ExpectFuncImportCount:{count} (Wasm) Asserts the total number of function imports.
 //!
+//! ExpectFuncTypeCount:{count} (Wasm) Asserts the type section has exactly {count} function types.
+//!
 //! ExpectSection:{section_name} [properties] Checks that the specified section exists in the
 //! output binary. Optional properties:
 //!   max_entries=N: Asserts the section has at most N entries (uses the section's sh_entsize,
@@ -794,6 +796,25 @@ impl WasmModuleInfo {
                 found()
             );
         }
+        Ok(())
+    }
+
+    fn ensure_func_type_count(&self, expected: Option<usize>, linker_name: &str) -> Result {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        ensure!(
+            self.func_types.len() == expected,
+            "Expected {expected} function type(s) in {linker_name} output ({}), found {}: [{}]",
+            self.path.display(),
+            self.func_types.len(),
+            self.func_types
+                .iter()
+                .enumerate()
+                .map(|(i, t)| format!("{i}:{t}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         Ok(())
     }
 
@@ -1878,6 +1899,8 @@ struct Assertions {
     expected_func_imports: Vec<(String, String, usize)>,
     /// Wasm: total number of function imports in the import section.
     expected_func_import_count: Option<usize>,
+    /// Wasm: total number of function types in the type section.
+    expected_func_type_count: Option<usize>,
     relr_count: Option<u64>,
     expected_gdb_index_cu_count: Option<usize>,
     expected_gdb_index_symbols: Vec<String>,
@@ -2429,6 +2452,13 @@ fn process_directive(
                 arg.trim()
                     .parse()
                     .with_context(|| format!("Invalid ExpectFuncImportCount: `{arg}`"))?,
+            );
+        }
+        "ExpectFuncTypeCount" => {
+            config.assertions.expected_func_type_count = Some(
+                arg.trim()
+                    .parse()
+                    .with_context(|| format!("Invalid ExpectFuncTypeCount: `{arg}`"))?,
             );
         }
         "ExpectSection" => {
@@ -4952,6 +4982,7 @@ impl Assertions {
             no_sym: self.no_sym.clone(),
             expected_func_imports: self.expected_func_imports.clone(),
             expected_func_import_count: self.expected_func_import_count,
+            expected_func_type_count: self.expected_func_type_count,
             ..Default::default()
         };
         ensure!(
@@ -4981,6 +5012,7 @@ impl Assertions {
             self.expected_func_import_count,
             linker_name,
         )?;
+        info.ensure_func_type_count(self.expected_func_type_count, linker_name)?;
         info.ensure_func_types_unique(linker_name)?;
         info.ensure_exports(&self.expected_symtab_entries, &self.no_sym, linker_name)?;
         self.verify_strings(&info.bytes)?;

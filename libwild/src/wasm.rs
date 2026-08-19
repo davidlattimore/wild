@@ -5042,26 +5042,34 @@ fn ensure_func_type(types: &mut Vec<wasmparser::FuncType>, ty: &wasmparser::Func
     (types.len() - 1) as u32
 }
 
-/// Collapse identical function types in the output type section and rewrite every type index that
-/// refers into it.
-fn deduplicate_output_types(layout: &mut WasmLayout<'_>) {
+/// Emit the live, uniqued type set and rewrite every type index that refers into it.
+fn compact_output_types(layout: &mut WasmLayout<'_>) -> Result {
     if layout.output_types.is_empty() {
-        return;
+        return Ok(());
     }
+
+    let mut used = vec![false; layout.output_types.len()];
+    mark_live_output_types(layout, &mut used)?;
 
     let mut unique_types = Vec::with_capacity(layout.output_types.len());
     let mut type_to_new_index: HashMap<FuncType, u32> = HashMap::new();
-    let mut old_to_new = Vec::with_capacity(layout.output_types.len());
+    let mut old_to_new = vec![WASM_DEAD_INDEX; layout.output_types.len()];
 
-    for ty in std::mem::take(&mut layout.output_types) {
-        if let Some(&new_index) = type_to_new_index.get(&ty) {
-            old_to_new.push(new_index);
+    for (old, ty) in std::mem::take(&mut layout.output_types)
+        .into_iter()
+        .enumerate()
+    {
+        if !used[old] {
             continue;
         }
-        let new_index = u32::try_from(unique_types.len()).expect("too many Wasm types");
+        if let Some(&new_index) = type_to_new_index.get(&ty) {
+            old_to_new[old] = new_index;
+            continue;
+        }
+        let new_index = u32::try_from(unique_types.len()).context("too many Wasm types")?;
         type_to_new_index.insert(ty.clone(), new_index);
         unique_types.push(ty);
-        old_to_new.push(new_index);
+        old_to_new[old] = new_index;
     }
 
     layout.output_types = unique_types;
@@ -5071,32 +5079,103 @@ fn deduplicate_output_types(layout: &mut WasmLayout<'_>) {
         .enumerate()
         .all(|(old, &new)| old as u32 == new)
     {
-        // No remapping required.
-        return;
+        return Ok(());
     }
 
-    let remap = |index: u32| -> u32 {
+    remap_output_type_indices(layout, &old_to_new)
+}
+
+fn mark_live_output_types(layout: &WasmLayout<'_>, used: &mut [bool]) -> Result {
+    for &index in &layout.function_type_indices {
+        mark_output_type_used(used, index)?;
+    }
+    for import in &layout.imports {
+        if let OutputImportEntity::Function { type_index } = import.entity {
+            mark_output_type_used(used, type_index)?;
+        }
+    }
+    for body in &layout.function_bodies {
+        mark_type_index_relocs(
+            used,
+            &layout.object_index_maps,
+            body.object_index,
+            &body.relocations,
+        )?;
+    }
+    for (object_index, segments) in layout.object_data_layouts.iter().enumerate() {
+        for segment in segments {
+            mark_type_index_relocs(
+                used,
+                &layout.object_index_maps,
+                object_index,
+                &segment.relocations,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn mark_type_index_relocs(
+    used: &mut [bool],
+    index_maps: &[WasmObjectIndexMap],
+    object_index: usize,
+    relocs: &[WasmRelocation],
+) -> Result {
+    for reloc in relocs {
+        if reloc.ty != RelocationType::TypeIndexLeb {
+            continue;
+        }
+        let index_map = index_maps.get(object_index).ok_or_else(|| {
+            crate::error!("Wasm type relocation object index {object_index} out of range")
+        })?;
+        let output_index = remap_wasm_index(&index_map.type_indices, reloc.index, "type")?;
+        mark_output_type_used(used, output_index)?;
+    }
+    Ok(())
+}
+
+fn mark_output_type_used(used: &mut [bool], index: u32) -> Result {
+    let slot = used.get_mut(index as usize).ok_or_else(|| {
+        crate::error!("Wasm type index {index} out of range while marking live types")
+    })?;
+    *slot = true;
+    Ok(())
+}
+
+fn remap_output_type_indices(layout: &mut WasmLayout<'_>, old_to_new: &[u32]) -> Result {
+    let remap = |index: u32| -> Result<u32> {
         old_to_new
             .get(index as usize)
             .copied()
-            .expect("type index out of range during dedup")
+            .ok_or_else(|| crate::error!("Wasm type index {index} out of range during type GC"))
     };
 
     for type_index in &mut layout.function_type_indices {
-        *type_index = remap(*type_index);
+        let new = remap(*type_index)?;
+        ensure!(
+            new != WASM_DEAD_INDEX,
+            "live Wasm function type index {type_index} was removed by type GC"
+        );
+        *type_index = new;
     }
 
     for import in &mut layout.imports {
         if let OutputImportEntity::Function { type_index } = &mut import.entity {
-            *type_index = remap(*type_index);
+            let new = remap(*type_index)?;
+            ensure!(
+                new != WASM_DEAD_INDEX,
+                "live Wasm import type index {type_index} was removed by type GC"
+            );
+            *type_index = new;
         }
     }
 
     for index_map in &mut layout.object_index_maps {
         for type_index in &mut index_map.type_indices {
-            *type_index = remap(*type_index);
+            *type_index = remap(*type_index)?;
         }
     }
+    Ok(())
 }
 
 fn borrowed_linker_function_body(bytes: &'static [u8]) -> WasmFunctionBody<'static> {
@@ -5890,7 +5969,7 @@ where
             call_ctors_body,
             entry_wrapper_body,
         );
-        deduplicate_output_types(&mut layout);
+        compact_output_types(&mut layout)?;
 
         if linker_memory && layout.memories.is_empty() {
             layout
