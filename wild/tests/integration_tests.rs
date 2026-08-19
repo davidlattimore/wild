@@ -40,8 +40,9 @@
 //!
 //! ExpectSym:symbol-name [Symbol properties...] Checks that the specified symbol is defined in the
 //! output file. Can also assert some properties of that symbol. See Symbol properties below.
-//! For Wasm modules, this checks that the name is present in the export section. Symbol properties
-//! are not yet supported for Wasm.
+//! For Wasm modules, this checks that the name is present in the export section. The `address`
+//! property, if set, is the `i32.const` initializer of a global export. Other properties are not
+//! supported for Wasm.
 //!
 //! ExpectDynSym:symbol-name As for ExpectSym, but for dynamic symbols. For Mach-O, checks the
 //! exports trie.
@@ -302,6 +303,7 @@
 //! alignment=N: Type: Integer. Asserts that the symbol's address is a multiple of N.
 //!
 //! address=N: Type: Integer. Asserts the absolute address of the symbol in the binary.
+//! For Wasm global exports, asserts the `i32.const` initializer.
 //!
 //! size=N: Type: Integer. Asserts the st_size of the symbol. Useful for verifying that
 //! size-changing relaxations (e.g. RISC-V call relaxation) were applied.
@@ -540,6 +542,17 @@ struct WasmModuleInfo {
     export_names: HashSet<String>,
     function_imports: Vec<(String, String)>,
     func_types: Vec<wasmparser::FuncType>,
+    imported_global_count: u32,
+    defined_global_i32: Vec<Option<i32>>,
+    export_global_indices: HashMap<String, u32>,
+}
+
+fn i32_const_from_expr(expr: wasmparser::ConstExpr<'_>) -> Option<i32> {
+    let mut reader = expr.get_operators_reader();
+    match reader.read().ok()? {
+        wasmparser::Operator::I32Const { value } => Some(value),
+        _ => None,
+    }
 }
 
 impl WasmModuleInfo {
@@ -554,6 +567,9 @@ impl WasmModuleInfo {
         let mut export_names = HashSet::new();
         let mut function_imports = Vec::new();
         let mut func_types = Vec::new();
+        let mut imported_global_count = 0u32;
+        let mut defined_global_i32 = Vec::new();
+        let mut export_global_indices = HashMap::new();
 
         for payload in Parser::new(0).parse_all(&bytes) {
             match payload? {
@@ -587,6 +603,9 @@ impl WasmModuleInfo {
                             function_imports
                                 .push((import.module.to_owned(), import.name.to_owned()));
                         }
+                        if matches!(import.ty, wasmparser::TypeRef::Global(_)) {
+                            imported_global_count += 1;
+                        }
                     }
                 }
                 Payload::FunctionSection(_) => {
@@ -598,8 +617,14 @@ impl WasmModuleInfo {
                 Payload::MemorySection(_) => {
                     section_names.insert("Memory".to_owned());
                 }
-                Payload::GlobalSection(_) => {
+                Payload::GlobalSection(section) => {
                     section_names.insert("Global".to_owned());
+                    for global in section {
+                        let global = global.with_context(|| {
+                            format!("Invalid global entry in {}", path.display())
+                        })?;
+                        defined_global_i32.push(i32_const_from_expr(global.init_expr));
+                    }
                 }
                 Payload::ExportSection(section) => {
                     section_names.insert("Export".to_owned());
@@ -608,6 +633,9 @@ impl WasmModuleInfo {
                             format!("Invalid export entry in {}", path.display())
                         })?;
                         export_names.insert(export.name.to_owned());
+                        if matches!(export.kind, wasmparser::ExternalKind::Global) {
+                            export_global_indices.insert(export.name.to_owned(), export.index);
+                        }
                     }
                 }
                 Payload::StartSection { .. } => {
@@ -639,7 +667,16 @@ impl WasmModuleInfo {
             export_names,
             function_imports,
             func_types,
+            imported_global_count,
+            defined_global_i32,
+            export_global_indices,
         })
+    }
+
+    fn exported_global_i32(&self, name: &str) -> Option<i32> {
+        let index = *self.export_global_indices.get(name)?;
+        let defined = index.checked_sub(self.imported_global_count)?;
+        self.defined_global_i32.get(defined as usize).copied()?
     }
 
     fn format_sorted(names: &HashSet<String>) -> String {
@@ -710,9 +747,13 @@ impl WasmModuleInfo {
         linker_name: &str,
     ) -> Result {
         for exp in expected {
+            let wasm_supported = SymtabAssertions {
+                absolute_address: exp.assertions.absolute_address,
+                ..Default::default()
+            };
             ensure!(
-                exp.assertions == SymtabAssertions::default(),
-                "Symbol property assertions are not supported for Wasm (on `{}`)",
+                exp.assertions == wasm_supported,
+                "Symbol property assertions other than `address` are not supported for Wasm (on `{}`)",
                 exp.name
             );
         }
@@ -726,6 +767,24 @@ impl WasmModuleInfo {
                 self.path.display(),
                 found()
             );
+            if let Some(expected_init) = exp.assertions.absolute_address {
+                let Some(actual) = self.exported_global_i32(&exp.name) else {
+                    bail!(
+                        "Expected global export `{}` with i32.const {expected_init} in {linker_name} \
+                         output ({}), but it is not an i32 global",
+                        exp.name,
+                        self.path.display()
+                    );
+                };
+                let actual_u64 = u64::from(actual as u32);
+                ensure!(
+                    actual_u64 == expected_init,
+                    "Expected global `{}` i32.const {expected_init} in {linker_name} output ({}), \
+                     found {actual}",
+                    exp.name,
+                    self.path.display()
+                );
+            }
         }
         for name in absent {
             ensure!(
