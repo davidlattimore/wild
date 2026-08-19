@@ -4,7 +4,7 @@
 //#LinkArgs: --export=__wasm_call_ctors --export=__stack_pointer --export=__memory_base --export=__table_base --export=__heap_base --export=__data_end --export=__global_base --export=__dso_handle --export=__heap_end --export=__wasm_first_page_end
 //#ExpectSym: __wasm_call_ctors
 //#ExpectSym: __stack_pointer
-//#ExpectSym: __memory_base
+//#ExpectSym: __memory_base address=0
 //#ExpectSym: __table_base
 //#ExpectSym: __heap_base
 //#ExpectSym: __data_end
