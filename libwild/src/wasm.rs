@@ -5754,19 +5754,24 @@ where
     let object_index_maps = {
         timing_phase!("Build per-object Wasm index maps");
         layout_inputs
-            .par_iter()
+            .par_iter_mut()
             .zip(import_resolutions.par_iter())
             .enumerate()
             .map(|(obj_idx, (input, resolutions))| {
                 verbose_timing_phase!("Build Wasm object index map");
-                input.build_object_index_map(
+                let index_map = input.build_object_index_map(
                     obj_idx,
                     index_bases[obj_idx],
                     resolutions,
                     &index_bases,
                     &indices,
                     &shared_imports,
-                )
+                )?;
+                classify_code_relocations(&mut input.function_bodies, &input.code_relocations);
+                for body in &mut input.function_bodies {
+                    body.object_index = obj_idx;
+                }
+                Ok(index_map)
             })
             .collect::<Result<Vec<_>>>()?
     };
@@ -5825,13 +5830,13 @@ where
         }
         {
             timing_phase!("Merge Wasm function bodies");
-            for (obj_idx, input) in layout_inputs.iter_mut().enumerate() {
-                let mut bodies = std::mem::take(&mut input.function_bodies);
-                classify_code_relocations(&mut bodies, &input.code_relocations);
-                for body in &mut bodies {
-                    body.object_index = obj_idx;
-                }
-                layout.function_bodies.extend(bodies);
+            let n_bodies = layout_inputs
+                .iter()
+                .map(|input| input.function_bodies.len())
+                .sum();
+            layout.function_bodies.reserve(n_bodies);
+            for input in &mut layout_inputs {
+                layout.function_bodies.append(&mut input.function_bodies);
             }
         }
         {
