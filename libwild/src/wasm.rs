@@ -2826,7 +2826,6 @@ struct WasmObjectLayoutInput<'data> {
 
 #[derive(Debug, Clone, Copy)]
 struct WasmObjectIndexBases {
-    type_index_base: u32,
     defined_function_base: u32,
     defined_global_base: u32,
 }
@@ -3126,6 +3125,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
         all_index_bases: &[WasmObjectIndexBases],
         indices: &LinkerDefinedIndices,
         shared_imports: &SharedUnresolvedImports<'data>,
+        type_indices: &[u32],
     ) -> Result<WasmObjectIndexMap> {
         ensure!(
             resolutions.function_resolutions.len() == self.function_imports.len(),
@@ -3135,18 +3135,15 @@ impl<'data> WasmObjectLayoutInput<'data> {
             resolutions.global_resolutions.len() == self.global_imports.len(),
             "Wasm global import resolution count mismatch"
         );
-
-        let mut type_indices = Vec::with_capacity(self.types.len());
-        for local_ty in 0..self.types.len() {
-            let output_type_index = index_bases
-                .type_index_base
-                .checked_add(u32::try_from(local_ty).context("too many Wasm types")?)
-                .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
-            type_indices.push(output_type_index);
-        }
+        ensure!(
+            type_indices.len() == self.types.len(),
+            "Wasm type index map length {} does not match type section length {}",
+            type_indices.len(),
+            self.types.len()
+        );
 
         let mut index_map = WasmObjectIndexMap {
-            type_indices,
+            type_indices: type_indices.to_vec(),
             function_indices: Vec::with_capacity(
                 self.function_imports.len() + self.defined_function_live_ordinal.len(),
             ),
@@ -3423,16 +3420,14 @@ impl<'data> SharedUnresolvedImports<'data> {
 
     fn to_output_imports(
         &self,
-        index_bases: &[WasmObjectIndexBases],
+        object_type_indices: &[Vec<u32>],
     ) -> Result<Vec<OutputImport<'data>>> {
         let mut imports = Vec::with_capacity(self.functions.len() + self.globals.len());
         for imp in &self.functions {
-            let type_index = index_bases
+            let type_indices = object_type_indices
                 .get(imp.first_object)
-                .ok_or_else(|| crate::error!("Wasm shared import object index out of range"))?
-                .type_index_base
-                .checked_add(imp.local_type_index)
-                .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
+                .ok_or_else(|| crate::error!("Wasm shared import object index out of range"))?;
+            let type_index = remap_wasm_index(type_indices, imp.local_type_index, "type")?;
             imports.push(OutputImport {
                 module: imp.module,
                 name: imp.name,
@@ -5026,156 +5021,113 @@ fn encode_i32_const_u32(value: u32) -> Vec<u8> {
     encode_i32_const_body(value as i32)
 }
 
-fn ensure_void_void_type(types: &mut Vec<wasmparser::FuncType>) -> u32 {
-    ensure_func_type(types, &wasmparser::FuncType::new([], []))
+#[derive(Default)]
+struct TypeMerger {
+    types: Vec<FuncType>,
+    index_by_type: HashMap<FuncType, u32>,
 }
 
-fn ensure_func_type(types: &mut Vec<wasmparser::FuncType>, ty: &wasmparser::FuncType) -> u32 {
-    if let Some((idx, _)) = types
+impl TypeMerger {
+    /// Adds `ty`, reusing the existing output index if an identical type is already present.
+    fn add(&mut self, ty: &FuncType) -> Result<u32> {
+        if let Some(&idx) = self.index_by_type.get(ty) {
+            return Ok(idx);
+        }
+        let idx = u32::try_from(self.types.len()).context("too many Wasm types")?;
+        self.index_by_type.insert(ty.clone(), idx);
+        self.types.push(ty.clone());
+        Ok(idx)
+    }
+}
+
+struct MergedOutputTypes {
+    types: Vec<FuncType>,
+    object_type_indices: Vec<Vec<u32>>,
+}
+
+fn merge_live_output_types(
+    layout_inputs: &[WasmObjectLayoutInput<'_>],
+    resolutions: &[ObjectImportResolutions],
+    indices: &LinkerDefinedIndices,
+) -> Result<MergedOutputTypes> {
+    timing_phase!("Merge live Wasm types");
+
+    let mut merger = TypeMerger::default();
+    let mut object_type_indices = Vec::with_capacity(layout_inputs.len());
+
+    for (input, res) in layout_inputs.iter().zip(resolutions.iter()) {
+        let live = live_local_types(input, res)?;
+        let mut type_indices = vec![WASM_DEAD_INDEX; input.types.len()];
+        for (local, ty) in input.types.iter().enumerate() {
+            if live.get(local).copied().unwrap_or(false) {
+                type_indices[local] = merger.add(ty)?;
+            }
+        }
+        object_type_indices.push(type_indices);
+    }
+
+    if indices.call_ctors_func.is_some() || indices.entry_wrapper_func.is_some() {
+        merger.add(&FuncType::new([], []))?;
+    }
+    for stub in &indices.weak_undef_stubs {
+        merger.add(&stub.ty)?;
+    }
+
+    Ok(MergedOutputTypes {
+        types: merger.types,
+        object_type_indices,
+    })
+}
+
+fn live_local_types(
+    input: &WasmObjectLayoutInput<'_>,
+    resolutions: &ObjectImportResolutions,
+) -> Result<Vec<bool>> {
+    let mut live = vec![false; input.types.len()];
+    for &type_index in &input.module_functions {
+        mark_local_type_live(&mut live, type_index)?;
+    }
+    for (i, import) in input.function_imports.iter().enumerate() {
+        if !input.live_function_imports.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        match resolutions.function_resolutions.get(i) {
+            Some(
+                ImportResolution::Unresolved
+                | ImportResolution::WeakUndefStub { .. }
+                | ImportResolution::LinkerDefined(_),
+            ) => mark_local_type_live(&mut live, import.type_index)?,
+            _ => {}
+        }
+    }
+    for reloc in input
+        .code_relocations
         .iter()
-        .enumerate()
-        .find(|(_, existing)| *existing == ty)
+        .chain(input.data_relocations.iter())
     {
-        return idx as u32;
+        if reloc.ty == RelocationType::TypeIndexLeb {
+            mark_local_type_live(&mut live, reloc.index)?;
+        }
     }
-    types.push(ty.clone());
-    (types.len() - 1) as u32
+    Ok(live)
 }
 
-/// Emit the live, uniqued type set and rewrite every type index that refers into it.
-fn compact_output_types(layout: &mut WasmLayout<'_>) -> Result {
-    if layout.output_types.is_empty() {
-        return Ok(());
-    }
-
-    let mut used = vec![false; layout.output_types.len()];
-    mark_live_output_types(layout, &mut used)?;
-
-    let mut unique_types = Vec::with_capacity(layout.output_types.len());
-    let mut type_to_new_index: HashMap<FuncType, u32> = HashMap::new();
-    let mut old_to_new = vec![WASM_DEAD_INDEX; layout.output_types.len()];
-
-    for (old, ty) in std::mem::take(&mut layout.output_types)
-        .into_iter()
-        .enumerate()
-    {
-        if !used[old] {
-            continue;
-        }
-        if let Some(&new_index) = type_to_new_index.get(&ty) {
-            old_to_new[old] = new_index;
-            continue;
-        }
-        let new_index = u32::try_from(unique_types.len()).context("too many Wasm types")?;
-        type_to_new_index.insert(ty.clone(), new_index);
-        unique_types.push(ty);
-        old_to_new[old] = new_index;
-    }
-
-    layout.output_types = unique_types;
-
-    if old_to_new
-        .iter()
-        .enumerate()
-        .all(|(old, &new)| old as u32 == new)
-    {
-        return Ok(());
-    }
-
-    remap_output_type_indices(layout, &old_to_new)
-}
-
-fn mark_live_output_types(layout: &WasmLayout<'_>, used: &mut [bool]) -> Result {
-    for &index in &layout.function_type_indices {
-        mark_output_type_used(used, index)?;
-    }
-    for import in &layout.imports {
-        if let OutputImportEntity::Function { type_index } = import.entity {
-            mark_output_type_used(used, type_index)?;
-        }
-    }
-    for body in &layout.function_bodies {
-        mark_type_index_relocs(
-            used,
-            &layout.object_index_maps,
-            body.object_index,
-            &body.relocations,
-        )?;
-    }
-    for (object_index, segments) in layout.object_data_layouts.iter().enumerate() {
-        for segment in segments {
-            mark_type_index_relocs(
-                used,
-                &layout.object_index_maps,
-                object_index,
-                &segment.relocations,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn mark_type_index_relocs(
-    used: &mut [bool],
-    index_maps: &[WasmObjectIndexMap],
-    object_index: usize,
-    relocs: &[WasmRelocation],
-) -> Result {
-    for reloc in relocs {
-        if reloc.ty != RelocationType::TypeIndexLeb {
-            continue;
-        }
-        let index_map = index_maps.get(object_index).ok_or_else(|| {
-            crate::error!("Wasm type relocation object index {object_index} out of range")
-        })?;
-        let output_index = remap_wasm_index(&index_map.type_indices, reloc.index, "type")?;
-        mark_output_type_used(used, output_index)?;
-    }
-    Ok(())
-}
-
-fn mark_output_type_used(used: &mut [bool], index: u32) -> Result {
-    let slot = used.get_mut(index as usize).ok_or_else(|| {
+fn mark_local_type_live(live: &mut [bool], index: u32) -> Result {
+    let slot = live.get_mut(index as usize).ok_or_else(|| {
         crate::error!("Wasm type index {index} out of range while marking live types")
     })?;
     *slot = true;
     Ok(())
 }
 
-fn remap_output_type_indices(layout: &mut WasmLayout<'_>, old_to_new: &[u32]) -> Result {
-    let remap = |index: u32| -> Result<u32> {
-        old_to_new
-            .get(index as usize)
-            .copied()
-            .ok_or_else(|| crate::error!("Wasm type index {index} out of range during type GC"))
-    };
-
-    for type_index in &mut layout.function_type_indices {
-        let new = remap(*type_index)?;
-        ensure!(
-            new != WASM_DEAD_INDEX,
-            "live Wasm function type index {type_index} was removed by type GC"
-        );
-        *type_index = new;
-    }
-
-    for import in &mut layout.imports {
-        if let OutputImportEntity::Function { type_index } = &mut import.entity {
-            let new = remap(*type_index)?;
-            ensure!(
-                new != WASM_DEAD_INDEX,
-                "live Wasm import type index {type_index} was removed by type GC"
-            );
-            *type_index = new;
-        }
-    }
-
-    for index_map in &mut layout.object_index_maps {
-        for type_index in &mut index_map.type_indices {
-            *type_index = remap(*type_index)?;
-        }
-    }
-    Ok(())
+fn merged_type_index(types: &[FuncType], ty: &FuncType) -> Result<u32> {
+    types
+        .iter()
+        .position(|existing| existing == ty)
+        .map(|idx| idx as u32)
+        .ok_or_else(|| {
+            crate::error!("live Wasm linker type is missing from the merged type section")
+        })
 }
 
 fn borrowed_linker_function_body(bytes: &'static [u8]) -> WasmFunctionBody<'static> {
@@ -5290,7 +5242,7 @@ fn emit_reserved_linker_definitions(
     indices: &LinkerDefinedIndices,
     call_ctors_body: Option<Vec<u8>>,
     entry_wrapper_body: Option<Vec<u8>>,
-) {
+) -> Result {
     let mut linker_globals = Vec::with_capacity(indices.num_defined_globals as usize);
     if indices.memory_base_global.is_some() {
         linker_globals.push(OutputGlobal {
@@ -5372,25 +5324,25 @@ fn emit_reserved_linker_definitions(
     }
 
     if indices.num_defined_functions > 0 {
-        let void_ty = ensure_void_void_type(&mut layout.output_types);
+        let void_void = FuncType::new([], []);
         let mut type_indices = Vec::with_capacity(indices.num_defined_functions as usize);
         let mut bodies = Vec::with_capacity(indices.num_defined_functions as usize);
         if indices.call_ctors_func.is_some() {
-            type_indices.push(void_ty);
+            type_indices.push(merged_type_index(&layout.output_types, &void_void)?);
             bodies.push(match call_ctors_body {
                 Some(bytes) => owned_linker_function_body(bytes),
                 None => empty_linker_function_body(),
             });
         }
         if indices.entry_wrapper_func.is_some() {
-            type_indices.push(void_ty);
+            type_indices.push(merged_type_index(&layout.output_types, &void_void)?);
             bodies.push(match entry_wrapper_body {
                 Some(bytes) => owned_linker_function_body(bytes),
                 None => empty_linker_function_body(),
             });
         }
         for stub in &indices.weak_undef_stubs {
-            type_indices.push(ensure_func_type(&mut layout.output_types, &stub.ty));
+            type_indices.push(merged_type_index(&layout.output_types, &stub.ty)?);
             bodies.push(unreachable_linker_function_body());
         }
         type_indices.append(&mut layout.function_type_indices);
@@ -5400,6 +5352,7 @@ fn emit_reserved_linker_definitions(
         layout.function_type_indices = type_indices;
         layout.function_bodies = bodies;
     }
+    Ok(())
 }
 
 const fn wasm_page_size() -> u64 {
@@ -5829,6 +5782,7 @@ where
     )?;
     let got_mem = &reloc_scan.got_mem;
     let got_func = &reloc_scan.got_func;
+    let merged = merge_live_output_types(&layout_inputs, &import_resolutions, &indices)?;
     let index_bases = allocate_wasm_object_index_bases(&layout_inputs, &shared_imports, &indices)?;
     let object_index_maps = {
         timing_phase!("Build per-object Wasm index maps");
@@ -5845,6 +5799,7 @@ where
                     &index_bases,
                     &indices,
                     &shared_imports,
+                    &merged.object_type_indices[obj_idx],
                 )?;
                 classify_code_relocations(&mut input.function_bodies, &input.code_relocations);
                 for body in &mut input.function_bodies {
@@ -5886,12 +5841,12 @@ where
 
         {
             timing_phase!("Merge Wasm section lists");
-            layout.imports = shared_imports.to_output_imports(&index_bases)?;
+            layout.output_types = merged.types;
+            layout.imports = shared_imports.to_output_imports(&merged.object_type_indices)?;
             for (input, index_map) in layout_inputs
                 .iter_mut()
                 .zip(layout.object_index_maps.iter())
             {
-                layout.output_types.extend(input.types.iter().cloned());
                 for &local_type_index in &input.module_functions {
                     layout.function_type_indices.push(remap_wasm_index(
                         &index_map.type_indices,
@@ -5968,8 +5923,7 @@ where
             &indices,
             call_ctors_body,
             entry_wrapper_body,
-        );
-        compact_output_types(&mut layout)?;
+        )?;
 
         if linker_memory && layout.memories.is_empty() {
             layout
@@ -6414,30 +6368,19 @@ fn allocate_wasm_object_index_bases(
     timing_phase!("Allocate Wasm object index bases");
 
     let mut index_bases = Vec::with_capacity(layout_inputs.len());
-    let mut next_type_index = 0u32;
     let function_import_count = shared_imports.function_count();
     let global_import_count = shared_imports.global_count();
-
-    for input in layout_inputs {
-        index_bases.push(WasmObjectIndexBases {
-            type_index_base: next_type_index,
-            defined_function_base: 0,
-            defined_global_base: 0,
-        });
-        next_type_index = next_type_index
-            .checked_add(u32::try_from(input.types.len()).context("too many Wasm types")?)
-            .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
-    }
-
     let mut next_defined_function_index = function_import_count
         .checked_add(indices.num_defined_functions)
         .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
     let mut next_defined_global_index = global_import_count
         .checked_add(indices.num_defined_globals)
         .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-    for (input, index_base) in layout_inputs.iter().zip(index_bases.iter_mut()) {
-        index_base.defined_function_base = next_defined_function_index;
-        index_base.defined_global_base = next_defined_global_index;
+    for input in layout_inputs {
+        index_bases.push(WasmObjectIndexBases {
+            defined_function_base: next_defined_function_index,
+            defined_global_base: next_defined_global_index,
+        });
         next_defined_function_index = next_defined_function_index
             .checked_add(
                 u32::try_from(input.module_functions.len()).context("too many Wasm functions")?,
