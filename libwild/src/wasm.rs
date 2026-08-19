@@ -2831,18 +2831,6 @@ struct WasmObjectIndexBases {
     defined_global_base: u32,
 }
 
-#[derive(Debug)]
-struct WasmObjectOutputLayout<'data> {
-    types: Vec<wasmparser::FuncType>,
-    function_type_indices: Vec<u32>,
-    globals: Vec<OutputGlobal<'data>>,
-    exports: Vec<OutputExport<'data>>,
-    function_bodies: Vec<WasmFunctionBody<'data>>,
-    memories: Vec<MemoryType>,
-    unsupported_output: Vec<&'static str>,
-    index_map: WasmObjectIndexMap,
-}
-
 impl<'data> WasmObjectLayoutInput<'data> {
     fn from_file(
         file: &'data File<'data>,
@@ -3130,7 +3118,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
         })
     }
 
-    fn build_object_output_layout(
+    fn build_object_index_map(
         &self,
         object_index: usize,
         index_bases: WasmObjectIndexBases,
@@ -3138,7 +3126,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
         all_index_bases: &[WasmObjectIndexBases],
         indices: &LinkerDefinedIndices,
         shared_imports: &SharedUnresolvedImports<'data>,
-    ) -> Result<WasmObjectOutputLayout<'data>> {
+    ) -> Result<WasmObjectIndexMap> {
         ensure!(
             resolutions.function_resolutions.len() == self.function_imports.len(),
             "Wasm function import resolution count mismatch"
@@ -3294,14 +3282,6 @@ impl<'data> WasmObjectLayoutInput<'data> {
             }
         }
 
-        let mut function_type_indices = Vec::with_capacity(self.module_functions.len());
-        for &local_type_index in &self.module_functions {
-            let output_type_index = index_bases
-                .type_index_base
-                .checked_add(local_type_index)
-                .ok_or_else(|| crate::error!("Wasm type index overflow"))?;
-            function_type_indices.push(output_type_index);
-        }
         // Full function index space: imports (above) + original defined ordinals.
         for &dense_or_dead in &self.defined_function_live_ordinal {
             if dense_or_dead == WASM_DEAD_INDEX {
@@ -3331,8 +3311,11 @@ impl<'data> WasmObjectLayoutInput<'data> {
         let memory_slot_count = self.memory_imports.len() + self.memories.len();
         index_map.memory_indices = vec![0; memory_slot_count];
 
-        let exports = self
-            .exports
+        Ok(index_map)
+    }
+
+    fn remapped_exports(&self, index_map: &WasmObjectIndexMap) -> Result<Vec<OutputExport<'data>>> {
+        self.exports
             .iter()
             .map(|export| {
                 let index = match export.kind {
@@ -3350,21 +3333,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
                 };
                 Ok(OutputExport { index, ..*export })
             })
-            .collect::<Result<Vec<_>>>()?;
-
-        let mut function_bodies = self.function_bodies.clone();
-        classify_code_relocations(&mut function_bodies, &self.code_relocations);
-
-        Ok(WasmObjectOutputLayout {
-            types: self.types.clone(),
-            function_type_indices,
-            globals: self.globals.clone(),
-            exports,
-            function_bodies,
-            memories: self.memories.clone(),
-            unsupported_output: self.unsupported_output.clone(),
-            index_map,
-        })
+            .collect()
     }
 }
 
@@ -5729,7 +5698,7 @@ where
 {
     timing_phase!("Build Wasm module layout");
 
-    let layout_inputs = {
+    let mut layout_inputs = {
         timing_phase!("Collect Wasm object layout inputs");
         let handed_off_relocs: Vec<_> = groups
             .iter_mut()
@@ -5782,22 +5751,27 @@ where
     let got_mem = &reloc_scan.got_mem;
     let got_func = &reloc_scan.got_func;
     let index_bases = allocate_wasm_object_index_bases(&layout_inputs, &shared_imports, &indices)?;
-    let mut object_layouts = {
-        timing_phase!("Build per-object Wasm layouts");
+    let object_index_maps = {
+        timing_phase!("Build per-object Wasm index maps");
         layout_inputs
-            .par_iter()
+            .par_iter_mut()
             .zip(import_resolutions.par_iter())
             .enumerate()
             .map(|(obj_idx, (input, resolutions))| {
-                verbose_timing_phase!("Build Wasm object output layout");
-                input.build_object_output_layout(
+                verbose_timing_phase!("Build Wasm object index map");
+                let index_map = input.build_object_index_map(
                     obj_idx,
                     index_bases[obj_idx],
                     resolutions,
                     &index_bases,
                     &indices,
                     &shared_imports,
-                )
+                )?;
+                classify_code_relocations(&mut input.function_bodies, &input.code_relocations);
+                for body in &mut input.function_bodies {
+                    body.object_index = obj_idx;
+                }
+                Ok(index_map)
             })
             .collect::<Result<Vec<_>>>()?
     };
@@ -5826,52 +5800,47 @@ where
     let mut memory_cursor = data_start;
     {
         timing_phase!("Merge Wasm object layouts");
-        let n_objects = object_layouts.len();
-        layout.object_index_maps.reserve(n_objects);
+        let n_objects = object_index_maps.len();
+        layout.object_index_maps = object_index_maps;
         layout.per_object_symbols.reserve(n_objects);
         layout.object_data_layouts.reserve(n_objects);
 
         {
             timing_phase!("Merge Wasm section lists");
             layout.imports = shared_imports.to_output_imports(&index_bases)?;
-            for object_layout in &mut object_layouts {
-                layout
-                    .output_types
-                    .extend(std::mem::take(&mut object_layout.types));
-                layout
-                    .function_type_indices
-                    .extend(std::mem::take(&mut object_layout.function_type_indices));
-                layout
-                    .globals
-                    .extend(std::mem::take(&mut object_layout.globals));
-                layout
-                    .exports
-                    .extend(std::mem::take(&mut object_layout.exports));
-                layout
-                    .memories
-                    .extend(std::mem::take(&mut object_layout.memories));
+            for (input, index_map) in layout_inputs
+                .iter_mut()
+                .zip(layout.object_index_maps.iter())
+            {
+                layout.output_types.extend(input.types.iter().cloned());
+                for &local_type_index in &input.module_functions {
+                    layout.function_type_indices.push(remap_wasm_index(
+                        &index_map.type_indices,
+                        local_type_index,
+                        "type",
+                    )?);
+                }
+                layout.globals.append(&mut input.globals);
+                layout.exports.extend(input.remapped_exports(index_map)?);
+                layout.memories.extend(input.memories.iter().copied());
                 layout
                     .unsupported_output
-                    .extend(std::mem::take(&mut object_layout.unsupported_output));
+                    .append(&mut input.unsupported_output);
             }
         }
         {
             timing_phase!("Merge Wasm function bodies");
-            for (obj_idx, object_layout) in object_layouts.iter_mut().enumerate() {
-                let mut bodies = std::mem::take(&mut object_layout.function_bodies);
-                for body in &mut bodies {
-                    body.object_index = obj_idx;
-                }
-                layout.function_bodies.extend(bodies);
+            let n_bodies = layout_inputs
+                .iter()
+                .map(|input| input.function_bodies.len())
+                .sum();
+            layout.function_bodies.reserve(n_bodies);
+            for input in &mut layout_inputs {
+                layout.function_bodies.append(&mut input.function_bodies);
             }
         }
         {
-            timing_phase!("Merge Wasm index maps");
-            for object_layout in &mut object_layouts {
-                layout
-                    .object_index_maps
-                    .push(std::mem::take(&mut object_layout.index_map));
-            }
+            timing_phase!("Apply Wasm GOT index maps");
             apply_got_mem_to_index_maps(&mut layout.object_index_maps, got_mem);
             apply_got_func_to_index_maps(&mut layout.object_index_maps, got_func);
             fill_function_symbol_redirects(
