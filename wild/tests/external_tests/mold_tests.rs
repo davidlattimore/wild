@@ -4,6 +4,7 @@ use crate::TestConfig;
 use crate::external_tests::external_linker_name;
 use crate::external_tests::run_external_test;
 use crate::external_tests::should_not_ignore_tests;
+use crate::external_tests::should_skip_by_local_config;
 use crate::external_tests::using_third_party_linker;
 use crate::get_host_architecture;
 use crate::get_wild_test_cross;
@@ -195,14 +196,6 @@ fn should_skip_mold_test_by_toml(path: &Path) -> bool {
     }
 
     false
-}
-
-/// Returns whether the user's test-config.toml says to skip a particular test. If this returns
-/// true, then we skip both the positive and negative versions of the test.
-fn should_skip_by_local_config(path: &Path, config: &TestConfig) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| config.ignore_external_tests.iter().any(|n| n == name))
 }
 
 // Some mold tests have names starting with `arch-`, indicating the target architecture they run on.
