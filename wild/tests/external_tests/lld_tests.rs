@@ -6,6 +6,7 @@
 
 use crate::Result;
 use crate::TestConfig;
+use crate::external_tests::should_skip_by_local_config;
 use libtest_mimic::Failed;
 use libtest_mimic::Trial;
 use libwild::ensure;
@@ -73,8 +74,11 @@ pub(crate) fn collect_tests(
             }
 
             let name = format!("{PREFIX}/test/ELF/{file_name}");
-
             let test_config = test_config.clone();
+
+            if should_skip_by_local_config(&path, &test_config) {
+                continue;
+            }
 
             if !should_skip_lld_test(&path) {
                 tests.push(Trial::test(name, move || {

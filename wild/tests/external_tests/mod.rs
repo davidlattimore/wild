@@ -29,6 +29,14 @@ pub(super) fn collect_tests(
     Ok(())
 }
 
+/// Returns whether the user's test-config.toml says to skip a particular test. If this returns
+/// true, then we skip both the positive and negative versions of the test.
+pub(super) fn should_skip_by_local_config(path: &Path, config: &TestConfig) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| config.ignore_external_tests.iter().any(|n| n == name))
+}
+
 #[derive(Clone, Debug)]
 enum ExternalLinker {
     Wild,
