@@ -4833,6 +4833,7 @@ fn call_ctors_used_in_objects(inputs: &[WasmObjectLayoutInput<'_>]) -> bool {
 fn entry_is_defined_function(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
+    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
 ) -> bool {
     let Some(entry_name) = symbol_db.entry_symbol_name() else {
         return false;
@@ -4843,9 +4844,10 @@ fn entry_is_defined_function(
     };
     let def_id = symbol_db.definition(symbol_id);
     let def_file_id = symbol_db.file_id_for_symbol(def_id);
-    let Some(input) = layout_inputs.iter().find(|i| i.file_id == def_file_id) else {
+    let Some(&obj_idx) = file_id_to_index.get(&def_file_id) else {
         return false;
     };
+    let input = &layout_inputs[obj_idx];
     let sym = &input.symbols[input.symbol_id_range.id_to_offset(def_id)];
     !sym.is_undefined() && sym.kind == WasmSymbolKind::Func
 }
@@ -5508,6 +5510,7 @@ fn resolve_entry_function<'data>(
     layout_inputs: &[WasmObjectLayoutInput<'data>],
     object_index_maps: &[WasmObjectIndexMap],
     symbol_db: &SymbolDb<'data, Wasm>,
+    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
 ) -> Result<Option<ResolvedEntry<'data>>> {
     let Some(entry_name_bytes) = symbol_db.entry_symbol_name() else {
         return Ok(None);
@@ -5524,10 +5527,7 @@ fn resolve_entry_function<'data>(
     let def_id = symbol_db.definition(symbol_id);
     let def_file_id = symbol_db.file_id_for_symbol(def_id);
 
-    let Some(def_obj_idx) = layout_inputs
-        .iter()
-        .position(|input| input.file_id == def_file_id)
-    else {
+    let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) else {
         return Err(not_defined());
     };
     let def_input = &layout_inputs[def_obj_idx];
@@ -5620,6 +5620,7 @@ fn ensure_force_exports<'data>(
     symbol_db: &SymbolDb<'data, Wasm>,
     entry: Option<&ResolvedEntry<'data>>,
     indices: &LinkerDefinedIndices,
+    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
 ) -> Result<()> {
     for &known in &indices.requested_exports {
         if try_export_linker_defined(exports, known, indices) {
@@ -5652,10 +5653,7 @@ fn ensure_force_exports<'data>(
         let def_id = symbol_db.definition(symbol_id);
         let def_file_id = symbol_db.file_id_for_symbol(def_id);
 
-        let Some(def_obj_idx) = layout_inputs
-            .iter()
-            .position(|input| input.file_id == def_file_id)
-        else {
+        let Some(&def_obj_idx) = file_id_to_index.get(&def_file_id) else {
             if required {
                 bail!("symbol exported via --export not found: {name}");
             }
@@ -5751,7 +5749,7 @@ where
     // `__wasm_call_ctors`.
     let wrap_entry = has_init_funcs
         && !call_ctors_used_in_objects(&layout_inputs)
-        && entry_is_defined_function(&layout_inputs, symbol_db);
+        && entry_is_defined_function(&layout_inputs, symbol_db, &file_id_to_index);
 
     let (indices, reloc_scan, shared_imports) = setup_got_mem_and_indices(
         &layout_inputs,
@@ -5886,7 +5884,12 @@ where
         .call_ctors_func
         .map(|_| encode_call_sequence_body(&init_function_calls));
 
-    let entry = resolve_entry_function(&layout_inputs, &layout.object_index_maps, symbol_db)?;
+    let entry = resolve_entry_function(
+        &layout_inputs,
+        &layout.object_index_maps,
+        symbol_db,
+        &file_id_to_index,
+    )?;
     let entry_wrapper_body = match (indices.entry_wrapper_func, indices.call_ctors_func, &entry) {
         (Some(_), Some(ctors), Some(entry)) => Some(encode_call_sequence_body(&[
             (ctors, 0),
@@ -5973,6 +5976,7 @@ where
             symbol_db,
             entry.as_ref(),
             &indices,
+            &file_id_to_index,
         )?;
     }
     {
