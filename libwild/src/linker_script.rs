@@ -231,7 +231,7 @@ pub(crate) enum Expression<'a> {
     Length(&'a [u8]),
     Addr(&'a [u8]),
     Loadaddr(&'a [u8]),
-    Align(Box<Expression<'a>>),
+    Align(Box<Expression<'a>>, Option<Box<Expression<'a>>>),
     /// MIN and MAX functions (take two expressions)
     Min(Box<Expression<'a>>, Box<Expression<'a>>),
     Max(Box<Expression<'a>>, Box<Expression<'a>>),
@@ -314,11 +314,12 @@ impl<'a> Expression<'a> {
             | Expression::LeftShift(l, r)
             | Expression::RightShift(l, r)
             | Expression::LogicalAnd(l, r)
-            | Expression::LogicalOr(l, r) => {
+            | Expression::LogicalOr(l, r)
+            | Expression::Align(l, Some(r)) => {
                 l.visit_expressions(cb);
                 r.visit_expressions(cb);
             }
-            Expression::Align(e)
+            Expression::Align(e, None)
             | Expression::LogicalNot(e)
             | Expression::BitwiseNot(e)
             | Expression::Negate(e)
@@ -968,10 +969,22 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
             }
             b"ALIGN" => {
                 '('.parse_next(input)?;
-                let arg_expr = parse_expression.parse_next(input)?;
+                let arg_0 = parse_expression.parse_next(input)?;
                 multispace0.parse_next(input)?;
+                let arg_1 = if opt(',').parse_next(input)?.is_some() {
+                    multispace0.parse_next(input)?;
+                    let arg_1 = parse_expression.parse_next(input)?;
+                    multispace0.parse_next(input)?;
+                    Some(arg_1)
+                } else {
+                    None
+                };
                 ')'.parse_next(input)?;
-                Ok(Expression::Align(Box::new(arg_expr)))
+                if let Some(arg_1) = arg_1 {
+                    Ok(Expression::Align(Box::new(arg_1), Some(Box::new(arg_0))))
+                } else {
+                    Ok(Expression::Align(Box::new(arg_0), None))
+                }
             }
             b"MIN" => {
                 // MIN takes two expressions separated by comma
@@ -1784,7 +1797,7 @@ mod tests {
                                 address: Expression::Number(0x1000000),
                             }),
                             SectionCommand::SetLocation(Location {
-                                address: Expression::Align(Box::new(Expression::Number(16))),
+                                address: Expression::Align(Box::new(Expression::Number(16)), None),
                             }),
                             SectionCommand::Section(Section {
                                 output_section_name: b".foo",
@@ -1802,9 +1815,10 @@ mod tests {
                                         }],
                                     }),
                                     ContentsCommand::SetLocation(Location {
-                                        address: Expression::Align(Box::new(Expression::Number(
-                                            32,
-                                        ))),
+                                        address: Expression::Align(
+                                            Box::new(Expression::Number(32)),
+                                            None,
+                                        ),
                                     }),
                                     ContentsCommand::SymbolAssignment(SymbolAssignment {
                                         name: b"end_foo",

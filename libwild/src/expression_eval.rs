@@ -214,18 +214,23 @@ fn evaluate_expression_value<'data, P: Platform>(
             section_load_address(name, section_layouts, output_sections)
         }
 
-        Expression::Align(expr) => {
-            let align = eval!(expr)?;
+        Expression::Align(exponent, expr) => {
+            let align = eval!(exponent)?;
             if align == 0 {
                 bail!("ALIGN(0) is invalid");
             }
-            let location = evaluate_location(
-                expr_loc,
-                section_layouts,
-                output_sections,
-                resolved_location_counters,
+            let expr = expr.as_ref().map_or_else(
+                || {
+                    evaluate_location(
+                        expr_loc,
+                        section_layouts,
+                        output_sections,
+                        resolved_location_counters,
+                    )
+                },
+                |e| eval!(e),
             )?;
-            Ok(location.wrapping_add(align - 1) & !(align - 1))
+            Ok(expr.wrapping_add(align - 1) & !(align - 1))
         }
 
         Expression::Min(l, r) => Ok(eval!(l)?.min(eval!(r)?)),
@@ -727,19 +732,19 @@ mod tests {
     fn test_align() {
         // ALIGN(8) with location counter 0 → 0
         assert_eq!(
-            eval_const(&Expression::Align(Box::new(Expression::Number(8)))).unwrap(),
+            eval_const(&Expression::Align(Box::new(Expression::Number(8)), None)).unwrap(),
             0
         );
         // ALIGN(1) → 0
         assert_eq!(
-            eval_const(&Expression::Align(Box::new(Expression::Number(1)))).unwrap(),
+            eval_const(&Expression::Align(Box::new(Expression::Number(1)), None)).unwrap(),
             0
         );
     }
 
     #[test]
     fn test_align_zero_is_error() {
-        assert!(eval_const(&Expression::Align(Box::new(Expression::Number(0)))).is_err());
+        assert!(eval_const(&Expression::Align(Box::new(Expression::Number(0)), None)).is_err());
     }
 
     #[test]
