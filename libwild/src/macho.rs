@@ -2182,7 +2182,7 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
             // TODO: classify symbols more reliably, likely by checking whether their section is
             // __text.
             if rel_info.r_type == object::macho::ARM64_RELOC_BRANCH26 {
-                flags_to_add |= ValueFlags::FUNCTION | ValueFlags::PLT;
+                flags_to_add |= ValueFlags::DYNAMIC_FUNCTION | ValueFlags::PLT;
             }
         }
 

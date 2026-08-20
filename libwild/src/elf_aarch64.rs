@@ -319,7 +319,7 @@ impl crate::platform::Arch for ElfAArch64 {
             // Relax ADRP+ADD to NOP+ADR. Applied at ADD position when previous relocation
             // was ADRP for the same symbol at the consecutive offset.
             object::elf::R_AARCH64_ADD_ABS_LO12_NC
-                if !interposable && flags.is_address() && sym_addr != 0 =>
+                if !interposable && flags.has_link_time_address() && sym_addr != 0 =>
             {
                 if let Some(prev) = previous_relocation
                     && prev.kind == object::elf::R_AARCH64_ADR_PREL_PG_HI21

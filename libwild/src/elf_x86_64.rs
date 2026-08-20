@@ -159,7 +159,7 @@ impl crate::platform::Arch for ElfX86_64 {
         _rel_addend: i64,
         _previous_relocation: Option<PreviousRelocationInfo<object::elf::RelocationType>>,
     ) -> Option<Self::Relaxation> {
-        let is_known_address = flags.is_address();
+        let is_known_address = flags.has_link_time_address();
         let is_absolute = flags.is_absolute() && !flags.is_dynamic();
         let non_relocatable = !output_kind.is_relocatable();
         let is_absolute_address = is_known_address && non_relocatable;
