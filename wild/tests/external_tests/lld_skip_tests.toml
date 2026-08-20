@@ -1,0 +1,101 @@
+[skipped_groups.design_differences]
+reason = "Wild uses immediate binding; PLT/GOT layout differs from lld"
+tests = [
+  "x86-64-tlsdesc-ld.s",
+  "x86-64-tlsdesc-gd-mixed.s",
+  "x86-64-reloc-gotoff64.s",
+  "x86-64-reloc-gotpc64.s",
+  "x86-64-reloc-pltoff64.s",
+  "x86-64-static-tls-model.s",
+  "x86-64-combined-dynrel.s",
+  "x86-64-got-plt-header.s",
+  "x86-64-plt.s",
+  "x86-64-rela.s",
+  "x86-64-tls-gd-local.s",
+  "x86-64-tls-ld-local.s",
+  "x86-64-zrel-zrela.s",
+  "x86-64-gotpc-relax-nopic.s",
+  "x86-64-tlsdesc-gd.s",
+  "x86-64-tls-ie-local.s",
+  "x86-64-tls-ie.s",
+  "x86-64-tls-gdie.s",
+  "x86-64-tls-dynamic.s",
+]
+
+[skipped_groups.error_message_wording]
+reason = "Wild errors correctly but message text differs from lld"
+tests = [
+  "x86-64-reloc-tpoff32-error.s",
+  "x86-64-pc32-overflow-large.s",
+  "x86-64-reloc-error2.s",
+  "x86-64-reloc-debug-overflow.s",
+  "x86-64-reloc-range-debug-loc.s",
+]
+
+[skipped_groups.noinhibit_exec_unsupported]
+reason = "Needs --noinhibit-exec, unsupported by Wild"
+tests = ["x86-64-tls-le-undef.s"]
+
+[skipped_groups.unsupported_features]
+reason = "Feature not yet implemented in Wild"
+tests = [
+  "x86-64-feature-cet.s",
+  "x86-64-reloc-size.s",
+  "x86-64-reloc-size-shared.s",
+  "x86-64-split-stack-prologue-adjust-shared.s",
+  "x86-64-split-stack-prologue-adjust-silent.s",
+  "x86-64-tls-opt-noplt.s",
+  "x86-64-tls-pie.s",
+]
+
+[skipped_groups.missing_flag_support]
+reason = "Wild doesn't recognize a flag this test uses"
+tests = [
+  "x86-64-reloc-32.s",
+  "x86-64-branch-to-branch.s",
+  "x86-64-gotpc-relax.s",
+  "x86-64-plt-high-addr.s",
+  "x86-64-relax-jump-tables.s",
+]
+
+[skipped_groups.missing_validation]
+reason = "Wild doesn't error where lld does; validation gap"
+tests = [
+  "x86-64-dyn-rel-error3.s",
+  "x86-64-dyn-rel-error.s",
+  "x86-64-dyn-rel-error5.s",
+  "x86-64-reloc-error.s",
+  "x86-64-reloc-pc32.s",
+  "x86-64-reloc-range.s",
+  "x86-64-reloc-8-16.s",
+  "x86-64-tls-ie-err.s",
+  "x86-64-split-stack-prologue-adjust-fail.s",
+  "x86-64-gotpc-no-relax-err.s",
+]
+
+[skipped_groups.relocation_bugs]
+reason = "Wild fails to correctly apply a valid relocation"
+tests = ["x86-64-gotpc-relax-too-far-relr.s", "x86-64-gotpc-relax-too-far.s"]
+
+[skipped_groups.objdump_missing_x86_target]
+reason = "Requires an llvm-objdump build with x86_64 target support"
+tests = [
+  "x86-64-tls-ie-opt-local.s",
+  "x86-64-relax-got-abs.s",
+  "x86-64-retpoline.s",
+  "x86-64-retpoline-linkerscript.s",
+  "x86-64-retpoline-znow.s",
+  "x86-64-retpoline-znow-linkerscript.s",
+  "x86-64-retpoline-znow-static-iplt.s",
+  "x86-64-tls-gd-got.s",
+  "x86-64-gotpc-offset.s",
+  "x86-64-tls-le-align.s",
+  "x86-64-tls-ld-preemptable.s",
+  "x86-64-relax-offset.s",
+  "x86-64-gotpc-relax-und-dso.s",
+  "x86-64-split-stack-prologue-adjust-success.s",
+]
+
+[skipped_groups.split_file_unsupported]
+reason = "Uses split-file, not yet supported by this harness (TODO: follow-up PR)"
+tests = ["x86-64-section-layout.s"]
