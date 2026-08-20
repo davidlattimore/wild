@@ -4,3 +4,4 @@ qemu_arch = []                 # `["X86_64"]`, `["AArch64"]`, `["RiscV64"]`, `["
 allow_rust_musl_target = false # `true` or `false`
 diff_ignore = []               # ["rule1, "rule2"]
 run_all_diffs = true           # Enables diffing binaries against other linkers. Disabled by default.
+llvm_tools_dir = "/usr/bin"    # e.g. "/usr/lib/llvm-21/bin"

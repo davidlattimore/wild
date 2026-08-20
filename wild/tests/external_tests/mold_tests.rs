@@ -1,5 +1,6 @@
 use crate::Architecture;
 use crate::Result;
+use crate::TestConfig;
 use crate::external_tests::external_linker_name;
 use crate::external_tests::run_external_test;
 use crate::external_tests::should_not_ignore_tests;
@@ -58,7 +59,11 @@ fn run_mold_test(mold_test: &Path) -> Result<Output> {
     run_external_test(mold_test, &env_vars)
 }
 
-pub(crate) fn collect_tests(tests: &mut Vec<Trial>, filter: &crate::Filter) -> Result {
+pub(crate) fn collect_tests(
+    tests: &mut Vec<Trial>,
+    filter: &crate::Filter,
+    test_config: &TestConfig,
+) -> Result {
     if filter.excludes(PREFIX) {
         return Ok(());
     }
@@ -83,13 +88,13 @@ pub(crate) fn collect_tests(tests: &mut Vec<Trial>, filter: &crate::Filter) -> R
                 format!("{PREFIX}/test/{file_name}")
             };
 
-            if !should_skip_mold_test(&path) && !should_skip_by_local_config(&path) {
+            if !should_skip_mold_test(&path) && !should_skip_by_local_config(&path, test_config) {
                 tests.push(Trial::test(name, move || {
                     check_mold_tests_regression(path).map_err(|e| Failed::from(e.to_string()))
                 }));
             } else if should_skip_mold_test_by_toml(&path)
                 && !should_skip_mold_test_by_arch(&path)
-                && !should_skip_by_local_config(&path)
+                && !should_skip_by_local_config(&path, test_config)
             {
                 tests.push(Trial::test(format!("{name}/expect_failure"), move || {
                     verify_skipped_mold_tests_still_fail(path)
@@ -194,15 +199,10 @@ fn should_skip_mold_test_by_toml(path: &Path) -> bool {
 
 /// Returns whether the user's test-config.toml says to skip a particular test. If this returns
 /// true, then we skip both the positive and negative versions of the test.
-fn should_skip_by_local_config(path: &Path) -> bool {
-    if let Ok(config) = crate::read_test_config()
-        && let Some(name) = path.file_name().and_then(|name| name.to_str())
-        && config.ignore_external_tests.iter().any(|n| n == name)
-    {
-        true
-    } else {
-        false
-    }
+fn should_skip_by_local_config(path: &Path, config: &TestConfig) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| config.ignore_external_tests.iter().any(|n| n == name))
 }
 
 // Some mold tests have names starting with `arch-`, indicating the target architecture they run on.

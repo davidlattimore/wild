@@ -26,7 +26,8 @@ RUN pacman --noconfirm -Syu \
     capnproto \
     cmake \
     gdb \
-    ninja
+    ninja \
+    llvm
 
 # Install rr
 RUN useradd --no-create-home --shell=/bin/false build && usermod -L build && \
