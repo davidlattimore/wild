@@ -1031,6 +1031,12 @@ pub(crate) trait Platform:
     ) -> Self::SectionAttributes {
         output_attributes
     }
+
+    fn finalise_output_section_alignments(
+        _sizes: &OutputSectionPartMap<u64>,
+        _output_sections: &mut OutputSections<'_, Self>,
+    ) {
+    }
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.

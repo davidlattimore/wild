@@ -5990,20 +5990,38 @@ fn verify_macho_tlv_template_layout(obj: &object::File) -> Result {
             bail!("Expected Mach-O section flags");
         };
 
-        sections.push((section.name()?, flags.typ()));
+        sections.push((
+            section.name()?,
+            flags.typ(),
+            section.align(),
+            section.address(),
+        ));
     }
 
     let is_tlv_template = |ty| matches!(ty, S_THREAD_LOCAL_REGULAR | S_THREAD_LOCAL_ZEROFILL);
 
     let (Some(start), Some(end)) = (
-        sections.iter().position(|&(_, ty)| is_tlv_template(ty)),
-        sections.iter().rposition(|&(_, ty)| is_tlv_template(ty)),
+        sections
+            .iter()
+            .position(|&(_, ty, _, _)| is_tlv_template(ty)),
+        sections
+            .iter()
+            .rposition(|&(_, ty, _, _)| is_tlv_template(ty)),
     ) else {
         return Ok(());
     };
 
     let template = &sections[start..=end];
-    let types = template.iter().map(|&(_, ty)| ty).dedup().collect_vec();
+    let types = template
+        .iter()
+        .map(|&(_, ty, _, _)| ty)
+        .dedup()
+        .collect_vec();
+    let max_align = template
+        .iter()
+        .map(|(_, _, align, _)| *align)
+        .max()
+        .expect("Mach-O TLV template sections should have a maximum alignment");
 
     ensure!(
         matches!(
@@ -6015,7 +6033,27 @@ fn verify_macho_tlv_template_layout(obj: &object::File) -> Result {
         "Mach-O TLV template sections must be contiguous: {}",
         template
             .iter()
-            .map(|(name, ty)| format!("{name} ({ty:?})"))
+            .map(|(name, ty, _, _)| format!("{name} ({ty:?})"))
+            .join(", ")
+    );
+
+    ensure!(
+        template.iter().all(|(_, _, align, _)| *align == max_align),
+        "Mach-O TLV template sections must use maximum alignment {max_align}: {}",
+        template
+            .iter()
+            .map(|(name, _, align, _)| { format!("{name} alignment: {align}") })
+            .join(", ")
+    );
+
+    ensure!(
+        template
+            .iter()
+            .all(|(_, _, align, address)| address.is_multiple_of(*align)),
+        "Mach-O TLV template section addresses must satisfy their maximum alignment: {}",
+        template
+            .iter()
+            .map(|(name, _, align, address)| { format!("{name} {address:#x} alignment: {align}") })
             .join(", ")
     );
 

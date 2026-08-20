@@ -291,6 +291,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         unreachable!();
     };
 
+    P::finalise_output_section_alignments(&section_part_sizes, &mut output_sections);
+
     let (mut section_part_layouts, mut section_layouts, mut resolved_location_counters) =
         compute_layout_sections::<A::Platform>(
             &section_part_sizes,
@@ -5539,7 +5541,11 @@ fn compute_layout_sections<'data, P: Platform>(
 
                 for (part_id, part_size) in part_sizes.chain(empty_part) {
                     let part_layout = records_out.get_mut(part_id);
-                    let alignment = part_id.alignment(output_sections).min(max_alignment);
+                    let alignment = if is_first_part {
+                        max_alignment
+                    } else {
+                        part_id.alignment(output_sections).min(max_alignment)
+                    };
                     let mem_size = if Some(section_id) == P::RELRO_PADDING_SECTION_ID {
                         let page_alignment = args.loadable_segment_alignment();
                         let aligned_offset = page_alignment.align_up(mem_offset);
