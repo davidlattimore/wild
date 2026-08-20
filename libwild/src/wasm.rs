@@ -2505,11 +2505,20 @@ pub(crate) struct WasmObjectLayout<'data> {
     relocs_ready: bool,
     code_relocations: Vec<WasmRelocation>,
     data_relocations: Vec<WasmRelocation>,
+    function_bodies: Vec<WasmFunctionBody<'data>>,
+    data_segments: Vec<WasmDataSegment<'data>>,
     function_body_spans: Vec<(u32, u32)>,
     data_segment_spans: Vec<(u32, u32)>,
     defined_function_live_ordinal: Vec<u32>,
     defined_global_live_ordinal: Vec<u32>,
-    _phantom: std::marker::PhantomData<&'data ()>,
+}
+
+struct DecodedCodeData<'data> {
+    ready: bool,
+    code_relocations: Vec<WasmRelocation>,
+    data_relocations: Vec<WasmRelocation>,
+    function_bodies: Vec<WasmFunctionBody<'data>>,
+    data_segments: Vec<WasmDataSegment<'data>>,
 }
 
 impl<'data> WasmObjectLayout<'data> {
@@ -2584,8 +2593,8 @@ impl<'data> WasmObjectLayout<'data> {
         }
     }
 
-    /// Decode code/data reloc sections and body/segment spans once per object.
-    fn ensure_relocs_decoded(&mut self, file: &File<'_>) -> Result {
+    /// Decode code/data reloc sections and keep borrowed bodies/segments once per object.
+    fn ensure_relocs_decoded(&mut self, file: &File<'data>) -> Result {
         if self.relocs_ready {
             return Ok(());
         }
@@ -2614,8 +2623,15 @@ impl<'data> WasmObjectLayout<'data> {
             .unwrap_or_default();
         sort_relocations_by_offset(&mut data_relocations);
 
-        self.function_body_spans = compute_function_body_spans(file)?;
-        self.data_segment_spans = compute_data_segment_spans(file)?;
+        let function_bodies = file.function_bodies()?;
+        let function_body_spans = function_body_spans_from_bodies(&function_bodies)?;
+        let data_segments = file.data_segments()?;
+        let data_segment_spans = data_segment_spans_from_segments(&data_segments)?;
+
+        self.function_bodies = function_bodies;
+        self.data_segments = data_segments;
+        self.function_body_spans = function_body_spans;
+        self.data_segment_spans = data_segment_spans;
         self.code_relocations = code_relocations;
         self.data_relocations = data_relocations;
         self.relocs_ready = true;
@@ -2628,14 +2644,18 @@ impl<'data> WasmObjectLayout<'data> {
         self.defined_global_live_ordinal = pack_live_ordinals(&self.gc_defined_globals);
     }
 
-    fn take_decoded_relocs(&mut self) -> (bool, Vec<WasmRelocation>, Vec<WasmRelocation>) {
+    fn take_decoded_code_data(&mut self) -> DecodedCodeData<'data> {
         let ready = self.relocs_ready;
         self.relocs_ready = false;
-        (
+        self.function_body_spans.clear();
+        self.data_segment_spans.clear();
+        DecodedCodeData {
             ready,
-            std::mem::take(&mut self.code_relocations),
-            std::mem::take(&mut self.data_relocations),
-        )
+            code_relocations: std::mem::take(&mut self.code_relocations),
+            data_relocations: std::mem::take(&mut self.data_relocations),
+            function_bodies: std::mem::take(&mut self.function_bodies),
+            data_segments: std::mem::take(&mut self.data_segments),
+        }
     }
 
     fn is_data_segment_live(&self, index: usize) -> bool {
@@ -2734,39 +2754,30 @@ fn relocs_in_offset_range(relocs: &[WasmRelocation], start: u32, end: u32) -> &[
     &relocs[reloc_index_range(relocs, start, end)]
 }
 
-fn compute_function_body_spans(file: &File<'_>) -> Result<Vec<(u32, u32)>> {
-    let Some(reader) = file.code_section_reader()? else {
-        return Ok(Vec::new());
-    };
-    let code_payload_start = file.standard_section_index[section_id::CODE as usize]
-        .and_then(|i| file.sections.get(i as usize))
-        .map_or(0, |h| h.payload_range.start as usize);
-    reader
-        .into_iter()
-        .map(|res| {
-            let body = res?;
-            let range = body.range();
-            let start = u32::try_from(range.start - code_payload_start)
-                .context("Wasm function body offset overflow")?;
-            let end = u32::try_from(range.end - code_payload_start)
-                .context("Wasm function body end overflow")?;
-            Ok((start, end))
-        })
-        .collect()
+fn function_body_spans_from_bodies(bodies: &[WasmFunctionBody<'_>]) -> Result<Vec<(u32, u32)>> {
+    bodies.iter().map(function_body_span).collect()
 }
 
-fn compute_data_segment_spans(file: &File<'_>) -> Result<Vec<(u32, u32)>> {
-    let segments = file.data_segments()?;
-    let mut spans = Vec::with_capacity(segments.len());
-    for segment in &segments {
-        let encoded = wasm_data_segment_encoded_size(&segment.kind, segment.data.len())?;
-        let start = segment.section_offset;
-        let end = start
-            .checked_add(encoded)
-            .ok_or_else(|| crate::error!("Wasm data segment span overflow"))?;
-        spans.push((start, end));
-    }
-    Ok(spans)
+fn function_body_span(body: &WasmFunctionBody<'_>) -> Result<(u32, u32)> {
+    let start = body.code_offset;
+    let len = u32::try_from(body.bytes.len()).context("Wasm function body too large")?;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| crate::error!("Wasm function body span overflow"))?;
+    Ok((start, end))
+}
+
+fn data_segment_spans_from_segments(segments: &[WasmDataSegment<'_>]) -> Result<Vec<(u32, u32)>> {
+    segments.iter().map(data_segment_span).collect()
+}
+
+fn data_segment_span(segment: &WasmDataSegment<'_>) -> Result<(u32, u32)> {
+    let encoded = wasm_data_segment_encoded_size(&segment.kind, segment.data.len())?;
+    let start = segment.section_offset;
+    let end = start
+        .checked_add(encoded)
+        .ok_or_else(|| crate::error!("Wasm data segment span overflow"))?;
+    Ok((start, end))
 }
 
 /// Map a linking symbol to its file-local GC unit, if any.
@@ -2835,7 +2846,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
     fn from_file(
         file: &'data File<'data>,
         layout: &WasmObjectLayout<'data>,
-        handed_off_relocs: (bool, Vec<WasmRelocation>, Vec<WasmRelocation>),
+        decoded: DecodedCodeData<'data>,
     ) -> Result<Self> {
         let symbol_id_range = layout.symbol_id_range;
         let file_id = layout.file_id;
@@ -2904,9 +2915,8 @@ impl<'data> WasmObjectLayoutInput<'data> {
         let code_section_index = file.standard_section_index[section_id::CODE as usize];
         let data_section_index = file.standard_section_index[section_id::DATA as usize];
 
-        let (relocs_were_ready, taken_code, taken_data) = handed_off_relocs;
-        let (code_relocations_all, data_relocations_all) = if relocs_were_ready {
-            (taken_code, taken_data)
+        let (code_relocations_all, data_relocations_all) = if decoded.ready {
+            (decoded.code_relocations, decoded.data_relocations)
         } else {
             let mut code_relocations: Vec<WasmRelocation> = code_section_index
                 .and_then(|code_idx| {
@@ -2955,7 +2965,11 @@ impl<'data> WasmObjectLayoutInput<'data> {
         if file.standard_section_index[section_id::START as usize].is_some() {
             unsupported_output.push("start");
         }
-        let all_data_segments = file.data_segments()?;
+        let all_data_segments = if decoded.ready {
+            decoded.data_segments
+        } else {
+            file.data_segments()?
+        };
         for segment in &all_data_segments {
             if let DataKind::Passive = segment.kind {
                 unsupported_output.push("passive data segment");
@@ -2964,7 +2978,11 @@ impl<'data> WasmObjectLayoutInput<'data> {
         }
 
         let all_module_functions = file.module_functions()?;
-        let all_function_bodies = file.function_bodies()?;
+        let all_function_bodies = if decoded.ready {
+            decoded.function_bodies
+        } else {
+            file.function_bodies()?
+        };
         ensure!(
             all_module_functions.len() == all_function_bodies.len(),
             "Wasm function and code section counts differ"
@@ -3053,12 +3071,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
                     if !layout.is_data_segment_live(i) {
                         continue;
                     }
-                    let encoded =
-                        wasm_data_segment_encoded_size(&segment.kind, segment.data.len())?;
-                    let start = segment.section_offset;
-                    let end = start
-                        .checked_add(encoded)
-                        .ok_or_else(|| crate::error!("Wasm data segment span overflow"))?;
+                    let (start, end) = data_segment_span(&segment)?;
                     data_relocations.extend_from_slice(relocs_in_offset_range(
                         &data_relocations_all,
                         start,
@@ -5700,12 +5713,12 @@ where
 
     let mut layout_inputs = {
         timing_phase!("Collect Wasm object layout inputs");
-        let handed_off_relocs: Vec<_> = groups
+        let handed_off: Vec<_> = groups
             .iter_mut()
             .flat_map(|group| group.files.iter_mut())
             .filter_map(|file| match file {
                 layout::FileLayoutState::Object(object) => {
-                    Some(object.format_specific.take_decoded_relocs())
+                    Some(object.format_specific.take_decoded_code_data())
                 }
                 _ => None,
             })
@@ -5715,15 +5728,15 @@ where
             .map(|state| (&state.object, &state.format_specific))
             .collect();
         ensure!(
-            objects_and_states.len() == handed_off_relocs.len(),
-            "Wasm layout input count does not match taken reloc count"
+            objects_and_states.len() == handed_off.len(),
+            "Wasm layout input count does not match taken code/data count"
         );
         objects_and_states
             .par_iter()
-            .zip(handed_off_relocs.into_par_iter())
-            .map(|((object, state), relocs)| {
+            .zip(handed_off.into_par_iter())
+            .map(|((object, state), decoded)| {
                 verbose_timing_phase!("Collect Wasm object layout input");
-                WasmObjectLayoutInput::from_file(object, state, relocs)
+                WasmObjectLayoutInput::from_file(object, state, decoded)
             })
             .collect::<Result<Vec<_>>>()?
     };
@@ -6752,11 +6765,12 @@ impl platform::Platform for Wasm {
             relocs_ready: false,
             code_relocations: Vec::new(),
             data_relocations: Vec::new(),
+            function_bodies: Vec::new(),
+            data_segments: Vec::new(),
             function_body_spans: Vec::new(),
             data_segment_spans: Vec::new(),
             defined_function_live_ordinal: Vec::new(),
             defined_global_live_ordinal: Vec::new(),
-            _phantom: std::marker::PhantomData,
         }
     }
 
