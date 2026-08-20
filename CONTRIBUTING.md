@@ -211,9 +211,13 @@ WILD_IGNORE_SKIP=mold cargo test --features mold_tests
 WILD_IGNORE_SKIP=all cargo test --features external_tests
 ```
 
-The LLD tests (`cargo test --features lld_tests`) require `llvm-mc` and `FileCheck` to be
-installed and available on your `PATH`. These are typically available via your distribution's
-LLVM package (e.g. `llvm` on Arch Linux), or by building LLVM from source.
+The LLD tests (`cargo test --features lld_tests`) require llvm-tools. e.g. `llvm-21-tools` and
+`llvm-21` on Ubuntu or `llvm` on Arch Linux. The location of these tools must be specified by
+`llvm_tools_dir` in your `test-config.toml`. e.g.:
+
+```toml
+llvm_tools_dir = "/usr/lib/llvm-21/bin"
+```
 
 ### Running external tests with other linkers
 

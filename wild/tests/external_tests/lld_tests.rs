@@ -5,13 +5,17 @@
 //! These are available on distributions like Arch Linux.
 
 use crate::Result;
+use crate::TestConfig;
 use libtest_mimic::Failed;
 use libtest_mimic::Trial;
+use libwild::ensure;
+use libwild::error::Context as _;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 #[derive(Deserialize)]
@@ -32,7 +36,11 @@ const PREFIX: &str = "external_test_suites/lld";
 /// (e.g. `x86-64-pcrel.s`, `aarch64-abs16.s`).
 const SUPPORTED_ARCHS: &[&str] = &["x86-64"];
 
-pub(crate) fn collect_tests(tests: &mut Vec<Trial>, filter: &crate::Filter) -> Result {
+pub(crate) fn collect_tests(
+    tests: &mut Vec<Trial>,
+    filter: &crate::Filter,
+    test_config: &TestConfig,
+) -> Result {
     if filter.excludes(PREFIX) {
         return Ok(());
     }
@@ -41,7 +49,13 @@ pub(crate) fn collect_tests(tests: &mut Vec<Trial>, filter: &crate::Filter) -> R
     if !test_dir.exists() {
         return Ok(());
     }
+
+    verify_system_requirements(test_config)?;
+
+    let test_config = Arc::new(test_config.clone());
+
     let dir = std::fs::read_dir(&test_dir)?;
+
     for ent in dir {
         let ent = ent?;
         let path = ent.path();
@@ -60,13 +74,15 @@ pub(crate) fn collect_tests(tests: &mut Vec<Trial>, filter: &crate::Filter) -> R
 
             let name = format!("{PREFIX}/test/ELF/{file_name}");
 
+            let test_config = test_config.clone();
+
             if !should_skip_lld_test(&path) {
                 tests.push(Trial::test(name, move || {
-                    run_lld_test(&path).map_err(|e| Failed::from(e.to_string()))
+                    run_lld_test(&path, &test_config).map_err(|e| Failed::from(e.to_string()))
                 }));
             } else {
                 tests.push(Trial::test(format!("{name}/expect_failure"), move || {
-                    verify_skipped_lld_test_still_fails(&path)
+                    verify_skipped_lld_test_still_fails(&path, &test_config)
                         .map_err(|e| Failed::from(e.to_string()))
                 }));
             }
@@ -75,8 +91,24 @@ pub(crate) fn collect_tests(tests: &mut Vec<Trial>, filter: &crate::Filter) -> R
     Ok(())
 }
 
-fn verify_skipped_lld_test_still_fails(test_file: &Path) -> Result {
-    if run_lld_test(test_file).is_ok() {
+fn verify_system_requirements(test_config: &TestConfig) -> Result {
+    // We don't check for all tools that the tests require, just ones that are known to sometimes be
+    // in different distro packages.
+    for tool in ["llvm-mc", "FileCheck"] {
+        let path = test_config.llvm_tools_dir.join(tool);
+        ensure!(
+            path.exists(),
+            "`{}` doesn't exist. Please install appropriate package or \
+            update llvm_tools_dir in test-config.toml",
+            path.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn verify_skipped_lld_test_still_fails(test_file: &Path, test_config: &TestConfig) -> Result {
+    if run_lld_test(test_file, test_config).is_ok() {
         return Err(format!(
             "Test `{}` is in the skip list but now passes. Should be removed from skip list.",
             test_file.display()
@@ -86,16 +118,14 @@ fn verify_skipped_lld_test_still_fails(test_file: &Path) -> Result {
     Ok(())
 }
 
-fn run_lld_test(test_file: &Path) -> Result {
-    let llvm_mc = find_tool("llvm-mc")?;
-    let filecheck = find_tool("FileCheck")?;
+fn run_lld_test(test_file: &Path, test_config: &TestConfig) -> Result {
     let content = std::fs::read_to_string(test_file)?;
     let tmpdir = tempfile::tempdir()?;
 
     for cmd in extract_run_lines(&content) {
         let cmd = substitute_vars(&cmd, test_file, tmpdir.path());
-        let cmd = substitute_tools(&cmd, &llvm_mc, &filecheck);
-        execute_command(&cmd)?;
+        let cmd = substitute_tools(&cmd);
+        execute_command(&cmd, test_config)?;
     }
     Ok(())
 }
@@ -144,26 +174,23 @@ fn extract_run_lines(content: &str) -> Vec<String> {
     commands
 }
 
+fn path_to_str(path: &Path) -> &str {
+    path.to_str()
+        .with_context(|| format!("Non-UTF-8 path `{}`", path.display()))
+        .unwrap()
+}
+
 fn substitute_vars(cmd: &str, test_file: &Path, tmpdir: &Path) -> String {
-    let dir = test_file.parent().unwrap().display().to_string();
-    cmd.replace("%s", &test_file.display().to_string())
-        .replace("%t", &tmpdir.join("test").display().to_string())
-        .replace("%S", &dir)
-        .replace("%p", &dir)
+    let dir = test_file.parent().unwrap();
+    cmd.replace("%s", path_to_str(test_file))
+        .replace("%t", path_to_str(&tmpdir.join("test")))
+        .replace("%S", path_to_str(dir))
+        .replace("%p", path_to_str(dir))
 }
 
-fn substitute_tools(cmd: &str, llvm_mc: &str, filecheck: &str) -> String {
+fn substitute_tools(cmd: &str) -> String {
     const WILD: &str = env!("CARGO_BIN_EXE_wild");
-    cmd.replace("llvm-mc", llvm_mc)
-        .replace("FileCheck", filecheck)
-        .replace("ld.lld", &format!("{WILD} -m elf_x86_64"))
-}
-
-fn find_tool(name: &str) -> Result<String> {
-    if let Ok(path) = which::which(name) {
-        return Ok(path.display().to_string());
-    }
-    Err(format!("Required tool '{name}' not found. Install LLVM tools.").into())
+    cmd.replace("ld.lld", &format!("{WILD} -m elf_x86_64"))
 }
 
 // TODO: This harness doesn't support the `split-file` tool or `cd %t`
@@ -174,8 +201,19 @@ fn find_tool(name: &str) -> Result<String> {
 // (currently each command runs independently via `sh -c` with no
 // persisted cwd). Tracked as follow-up work; affected tests are
 // skip-listed under `split_file_unsupported` in lld_skip_tests.toml.
-fn execute_command(cmd: &str) -> Result {
-    let output = Command::new("sh").arg("-c").arg(cmd).output()?;
+fn execute_command(cmd: &str, test_config: &TestConfig) -> Result {
+    let mut command = Command::new("sh");
+
+    command.env(
+        "PATH",
+        format!(
+            "{}:{}",
+            path_to_str(&test_config.llvm_tools_dir),
+            std::env::var("PATH").expect("PATH required")
+        ),
+    );
+
+    let output = command.arg("-c").arg(cmd).output()?;
     if !output.status.success() {
         return Err(format!(
             "Command failed: {cmd}\nstdout: {}\nstderr: {}",

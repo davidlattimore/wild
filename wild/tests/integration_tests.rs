@@ -404,15 +404,14 @@ fn main() -> Result<std::process::ExitCode> {
         args.color = Some(libtest_mimic::ColorSetting::Always);
     }
     let filter = Filter::new(&args);
+    let test_config = read_test_config()?;
     let mut tests = Vec::new();
-    collect_tests(&mut tests, &filter)?;
-    external_tests::collect_tests(&mut tests, &filter)?;
+    collect_tests(&mut tests, &filter, &test_config)?;
+    external_tests::collect_tests(&mut tests, &filter, &test_config)?;
     Ok(libtest_mimic::run(&args, tests).exit_code())
 }
 
-fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
-    let test_config = read_test_config()?;
-
+fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter, test_config: &TestConfig) -> Result {
     let host_arch = get_host_architecture();
 
     for platform in [PlatformKind::Elf, PlatformKind::MachO, PlatformKind::Wasm] {
@@ -459,7 +458,7 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
                         platform,
                         arch,
                         path.clone(),
-                        &test_config,
+                        test_config,
                         &linker_catalog,
                     ),
                 )?;
@@ -1372,6 +1371,9 @@ struct TestConfig {
     /// A list of external tests to ignore. Expected values are filenames not full paths.
     #[serde(default)]
     ignore_external_tests: Vec<String>,
+
+    #[serde(default = "default_llvm_tools_dir")]
+    llvm_tools_dir: PathBuf,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug, Default)]
@@ -7794,4 +7796,8 @@ impl FatArch for object::read::macho::FatArch64 {
 
         Ok(())
     }
+}
+
+fn default_llvm_tools_dir() -> PathBuf {
+    PathBuf::from("/usr/bin")
 }

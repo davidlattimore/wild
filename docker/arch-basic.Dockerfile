@@ -12,6 +12,7 @@ RUN pacman --noconfirm -Syu \
     gcc \
     clang \
     lld \
+    llvm \
     rust
 
 RUN wget -qO- https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.71/cargo-chef-x86_64-unknown-linux-musl.tar.gz | tar -xzf- && \

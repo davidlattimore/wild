@@ -87,7 +87,6 @@ tests = [
   "x86-64-retpoline-znow.s",
   "x86-64-retpoline-znow-linkerscript.s",
   "x86-64-retpoline-znow-static-iplt.s",
-  "x86-64-tls-gd-got.s",
   "x86-64-gotpc-offset.s",
   "x86-64-tls-le-align.s",
   "x86-64-tls-ld-preemptable.s",
