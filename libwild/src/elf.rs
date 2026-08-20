@@ -4792,6 +4792,10 @@ impl<C: ElfClass> platform::SectionAttributes for SectionAttributes<C> {
         self.flags.contains(shf::TLS)
     }
 
+    fn occupies_only_tls_address_space(&self) -> bool {
+        self.is_tls() && self.is_no_bits()
+    }
+
     fn is_writable(&self) -> bool {
         self.flags.contains(shf::WRITE)
     }

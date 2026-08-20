@@ -1,0 +1,15 @@
+//#LinkerDriver:clang
+// TODO: We don't emit fixups for `__tlv_bootstrap` yet, so we need to disable `RunEnabled` and
+// `DiffEnabled` for now.
+//#RunEnabled:false
+//#DiffEnabled:false
+//#Object:runtime.c
+//#ExpectSection:__thread_data
+//#ExpectSection:__thread_bss
+
+#include "../common/runtime.h"
+
+_Thread_local int initialized = 1;
+_Thread_local int uninitialized;
+
+void main(void) { exit_syscall(42); }

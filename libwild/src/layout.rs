@@ -1987,10 +1987,11 @@ fn compute_segment_layout<'data, P: Platform>(
                             continue;
                         };
 
-                        // No-bits TLS sections neither exist in the file nor in the normal address
-                        // space. They shouldn't affect the extent of LOAD or RELRO segments.
-                        if section_info.section_attributes.is_tls()
-                            && section_info.section_attributes.is_no_bits()
+                        // Sections that occupy only TLS address space should not contribute to the
+                        // extent of non-TLS LOAD or RELRO segments.
+                        if section_info
+                            .section_attributes
+                            .occupies_only_tls_address_space()
                             && !program_segments.is_tls_segment(rec.segment_id)
                         {
                             continue;
@@ -5468,9 +5469,10 @@ fn compute_layout_sections<'data, P: Platform>(
                 let section_info = output_sections.output_info(section_id);
                 let section_offset = pending_location.take();
 
-                let is_tls_nobits = section_info.section_attributes.is_tls()
-                    && section_info.section_attributes.is_no_bits();
-                if is_tls_nobits {
+                if section_info
+                    .section_attributes
+                    .occupies_only_tls_address_space()
+                {
                     // Save our current mem_offset as we enter our first nobits TLS section
                     if tls_memsave.is_none() {
                         tls_memsave = Some(mem_offset);

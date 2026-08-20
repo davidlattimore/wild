@@ -1383,6 +1383,8 @@ pub(crate) trait SectionAttributes:
 
     fn is_tls(&self) -> bool;
 
+    fn occupies_only_tls_address_space(&self) -> bool;
+
     fn is_writable(&self) -> bool;
 
     fn is_no_bits(&self) -> bool;

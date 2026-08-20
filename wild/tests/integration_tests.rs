@@ -354,6 +354,8 @@ use object::ObjectSymbol as _;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
 use object::macho::LC_DYLD_EXPORTS_TRIE;
+use object::macho::S_THREAD_LOCAL_REGULAR;
+use object::macho::S_THREAD_LOCAL_ZEROFILL;
 use object::macho::SEG_LINKEDIT;
 use object::macho::SEG_TEXT;
 use object::read::elf::ProgramHeader;
@@ -4935,6 +4937,7 @@ impl Assertions {
         verify_no_overlapping_sections(obj)?;
         verify_no_overlapping_segments(obj)?;
         verify_chained_fixups_segment_offsets(obj, bytes)?;
+        verify_macho_tlv_template_layout(obj)?;
 
         if linker_used.is_wild() {
             verify_uuid(obj, bytes)?;
@@ -5971,6 +5974,49 @@ fn verify_macho_exports(obj: &object::File, bytes: &[u8]) -> Result<HashMap<Vec<
     }
 
     Ok(exports)
+}
+
+fn verify_macho_tlv_template_layout(obj: &object::File) -> Result {
+    let object::File::MachO64(_) = obj else {
+        return Ok(());
+    };
+
+    let mut sections = Vec::new();
+    for section in obj.sections() {
+        let object::SectionFlags::MachO { flags, .. } = section.flags() else {
+            bail!("Expected Mach-O section flags");
+        };
+
+        sections.push((section.name()?, flags.typ()));
+    }
+
+    let is_tlv_template = |ty| matches!(ty, S_THREAD_LOCAL_REGULAR | S_THREAD_LOCAL_ZEROFILL);
+
+    let (Some(start), Some(end)) = (
+        sections.iter().position(|&(_, ty)| is_tlv_template(ty)),
+        sections.iter().rposition(|&(_, ty)| is_tlv_template(ty)),
+    ) else {
+        return Ok(());
+    };
+
+    let template = &sections[start..=end];
+    let types = template.iter().map(|&(_, ty)| ty).dedup().collect_vec();
+
+    ensure!(
+        matches!(
+            types.as_slice(),
+            [S_THREAD_LOCAL_REGULAR]
+                | [S_THREAD_LOCAL_ZEROFILL]
+                | [S_THREAD_LOCAL_REGULAR, S_THREAD_LOCAL_ZEROFILL]
+        ),
+        "Mach-O TLV template sections must be contiguous: {}",
+        template
+            .iter()
+            .map(|(name, ty)| format!("{name} ({ty:?})"))
+            .join(", ")
+    );
+
+    Ok(())
 }
 
 fn verify_chained_fixups_segment_offsets(obj: &object::File, bytes: &[u8]) -> Result {

@@ -63,6 +63,7 @@ use object::macho::S_ATTR_LOC_RELOC;
 use object::macho::S_ATTR_PURE_INSTRUCTIONS;
 use object::macho::S_ATTR_SOME_INSTRUCTIONS;
 use object::macho::S_GB_ZEROFILL;
+use object::macho::S_THREAD_LOCAL_REGULAR;
 use object::macho::S_THREAD_LOCAL_ZEROFILL;
 use object::macho::S_ZEROFILL;
 use object::macho::SECTION_ATTRIBUTES;
@@ -812,6 +813,10 @@ impl platform::SectionAttributes for SectionAttributes {
     }
 
     fn is_tls(&self) -> bool {
+        matches!(self.ty, S_THREAD_LOCAL_REGULAR | S_THREAD_LOCAL_ZEROFILL)
+    }
+
+    fn occupies_only_tls_address_space(&self) -> bool {
         false
     }
 
@@ -1843,6 +1848,10 @@ impl platform::Platform for MachO {
             add_sections_in_segment(&mut builder, output_sections, &custom.exec, segment);
             add_sections_in_segment(&mut builder, output_sections, &custom.ro, segment);
             add_sections_in_segment(&mut builder, output_sections, &custom.data, segment);
+            if segment == SegmentName::DATA {
+                add_sections_in_segment(&mut builder, output_sections, &custom.tdata, segment);
+                add_sections_in_segment(&mut builder, output_sections, &custom.tbss, segment);
+            }
             add_sections_in_segment(&mut builder, output_sections, &custom.bss, segment);
         }
 
