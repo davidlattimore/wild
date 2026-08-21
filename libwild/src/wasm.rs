@@ -1009,13 +1009,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         _relocations: &<Self::Platform as platform::Platform>::RelocationSections,
     ) -> crate::error::Result<<Self::Platform as platform::Platform>::RelocationList<'data>> {
         let target = u32::try_from(index.0).unwrap_or(u32::MAX);
-        let entries = self
-            .reloc_sections
-            .iter()
-            .find(|s| s.target_section_index == target)
-            .map(|s| s.decode_entries(self.data))
-            .transpose()?
-            .unwrap_or_default();
+        let entries = decode_relocs_for(self, Some(target))?;
         Ok(RelocationList {
             entries,
             _phantom: std::marker::PhantomData,
@@ -2591,29 +2585,10 @@ impl<'data> WasmObjectLayout<'data> {
             return Ok(());
         }
 
-        let code_section_index = file.standard_section_index[section_id::CODE as usize];
-        let mut code_relocations: Vec<WasmRelocation> = code_section_index
-            .and_then(|code_idx| {
-                file.reloc_sections
-                    .iter()
-                    .find(|s| s.target_section_index == code_idx)
-            })
-            .map(|s| s.decode_entries(file.data))
-            .transpose()?
-            .unwrap_or_default();
-        sort_relocations_by_offset(&mut code_relocations);
-
-        let data_section_index = file.standard_section_index[section_id::DATA as usize];
-        let mut data_relocations: Vec<WasmRelocation> = data_section_index
-            .and_then(|data_idx| {
-                file.reloc_sections
-                    .iter()
-                    .find(|s| s.target_section_index == data_idx)
-            })
-            .map(|s| s.decode_entries(file.data))
-            .transpose()?
-            .unwrap_or_default();
-        sort_relocations_by_offset(&mut data_relocations);
+        let code_relocations =
+            decode_sorted_relocs_for(file, file.standard_section_index[section_id::CODE as usize])?;
+        let data_relocations =
+            decode_sorted_relocs_for(file, file.standard_section_index[section_id::DATA as usize])?;
 
         let function_bodies = file.function_bodies()?;
         let function_body_spans = function_body_spans_from_bodies(&function_bodies)?;
@@ -2734,6 +2709,30 @@ fn sort_relocations_by_offset(relocs: &mut [WasmRelocation]) {
     if relocs.windows(2).any(|w| w[0].offset > w[1].offset) {
         relocs.sort_unstable_by_key(|r| r.offset);
     }
+}
+
+fn decode_relocs_for(
+    file: &File<'_>,
+    target_section_index: Option<u32>,
+) -> Result<Vec<WasmRelocation>> {
+    let Some(target) = target_section_index else {
+        return Ok(Vec::new());
+    };
+    file.reloc_sections
+        .iter()
+        .find(|s| s.target_section_index == target)
+        .map(|s| s.decode_entries(file.data))
+        .transpose()
+        .map(|opt| opt.unwrap_or_default())
+}
+
+fn decode_sorted_relocs_for(
+    file: &File<'_>,
+    target_section_index: Option<u32>,
+) -> Result<Vec<WasmRelocation>> {
+    let mut relocs = decode_relocs_for(file, target_section_index)?;
+    sort_relocations_by_offset(&mut relocs);
+    Ok(relocs)
 }
 
 fn reloc_index_range(relocs: &[WasmRelocation], start: u32, end: u32) -> Range<usize> {
@@ -2909,27 +2908,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
         let (code_relocations_all, data_relocations_all) = if decoded.ready {
             (decoded.code_relocations, decoded.data_relocations)
         } else {
-            let mut code_relocations: Vec<WasmRelocation> = code_section_index
-                .and_then(|code_idx| {
-                    file.reloc_sections
-                        .iter()
-                        .find(|s| s.target_section_index == code_idx)
-                })
-                .map(|s| s.decode_entries(file.data))
-                .transpose()?
-                .unwrap_or_default();
-            sort_relocations_by_offset(&mut code_relocations);
-            let mut data_relocations: Vec<WasmRelocation> = data_section_index
-                .and_then(|data_idx| {
-                    file.reloc_sections
-                        .iter()
-                        .find(|s| s.target_section_index == data_idx)
-                })
-                .map(|s| s.decode_entries(file.data))
-                .transpose()?
-                .unwrap_or_default();
-            sort_relocations_by_offset(&mut data_relocations);
-            (code_relocations, data_relocations)
+            (
+                decode_sorted_relocs_for(file, code_section_index)?,
+                decode_sorted_relocs_for(file, data_section_index)?,
+            )
         };
 
         // TODO(wasm): Currently relocs targeting `.debug*` are ignored (not applied, not emitted).
