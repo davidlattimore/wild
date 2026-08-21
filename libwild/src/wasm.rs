@@ -3942,22 +3942,6 @@ struct GotMemEntry {
     def: GotMemDef,
 }
 
-#[derive(Debug, Default)]
-struct GotMem {
-    entries: Vec<GotMemEntry>,
-    per_object_global_indices: Vec<Vec<Option<u32>>>,
-}
-
-impl GotMem {
-    fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    fn len(&self) -> u32 {
-        self.entries.len() as u32
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct GotFuncEntry {
     def_symbol_id: SymbolId,
@@ -3966,12 +3950,12 @@ struct GotFuncEntry {
 }
 
 #[derive(Debug, Default)]
-struct GotFunc {
-    entries: Vec<GotFuncEntry>,
+struct GotSlots<E> {
+    entries: Vec<E>,
     per_object_global_indices: Vec<Vec<Option<u32>>>,
 }
 
-impl GotFunc {
+impl<E> GotSlots<E> {
     fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -3980,6 +3964,9 @@ impl GotFunc {
         self.entries.len() as u32
     }
 }
+
+type GotMem = GotSlots<GotMemEntry>;
+type GotFunc = GotSlots<GotFuncEntry>;
 
 fn layout_file_id_to_index(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
@@ -4024,54 +4011,81 @@ fn setup_got_mem_and_indices<'data>(
 
     let weak_undef_stubs = {
         timing_phase!("Absorb Wasm GOT and weak-undef imports");
-        absorb_got_mem_imports(&scan.got_mem, layout_inputs, resolutions, symbol_db)?;
+        absorb_got_imports(
+            &scan.got_mem,
+            "GOT.mem",
+            |e| e.def_symbol_id,
+            ImportResolution::GotMemSlot,
+            layout_inputs,
+            resolutions,
+            symbol_db,
+        )?;
         let weak_undef_stubs = absorb_weak_undef_function_imports(layout_inputs, resolutions)?;
-        absorb_got_func_imports(&scan.got_func, layout_inputs, resolutions, symbol_db)?;
+        absorb_got_imports(
+            &scan.got_func,
+            "GOT.func",
+            |e| e.def_symbol_id,
+            ImportResolution::GotFuncSlot,
+            layout_inputs,
+            resolutions,
+            symbol_db,
+        )?;
         weak_undef_stubs
     };
     report_disallowed_unresolved_imports(layout_inputs, resolutions, symbol_db)?;
     let shared_imports = collect_shared_unresolved_imports(layout_inputs, resolutions)?;
 
-    let indices = {
-        timing_phase!("Reserve linker-defined Wasm indices");
-        let indices = LinkerDefinedIndices::compute(
-            layout_inputs,
-            resolutions,
-            shared_imports.function_count(),
-            shared_imports.global_count(),
-            weak_undef_stubs,
-            &LinkerDefinedIndexRequest {
-                has_init_funcs,
-                export_symbols: requested_linker_export_symbols(symbol_db.args),
-                has_memory: any_object_needs_linker_memory(layout_inputs),
-                wrap_entry,
-                got_mem_count: scan.got_mem.len(),
-                got_func_count: scan.got_func.len(),
-                needs_memory_base: scan.needs_memory_base,
-                needs_table_base: scan.needs_table_base,
-            },
-        )?;
+    let indices =
+        {
+            timing_phase!("Reserve linker-defined Wasm indices");
+            let indices = LinkerDefinedIndices::compute(
+                layout_inputs,
+                resolutions,
+                shared_imports.function_count(),
+                shared_imports.global_count(),
+                weak_undef_stubs,
+                &LinkerDefinedIndexRequest {
+                    has_init_funcs,
+                    export_symbols: requested_linker_export_symbols(symbol_db.args),
+                    has_memory: any_object_needs_linker_memory(layout_inputs),
+                    wrap_entry,
+                    got_mem_count: scan.got_mem.len(),
+                    got_func_count: scan.got_func.len(),
+                    needs_memory_base: scan.needs_memory_base,
+                    needs_table_base: scan.needs_table_base,
+                },
+            )?;
 
-        if !scan.got_mem.is_empty() {
-            let first_got = indices.got_mem_global_base.ok_or_else(|| {
-                crate::error!("GOT.mem entries present but no global base reserved")
-            })?;
-            scan.got_mem.per_object_global_indices =
-                assign_got_slot_global_indices(&scan.per_object_got_mem_slots, first_got)?;
-            finalize_got_mem_import_resolutions(resolutions, first_got)?;
-        }
+            if !scan.got_mem.is_empty() {
+                let first_got = indices.got_mem_global_base.ok_or_else(|| {
+                    crate::error!("GOT.mem entries present but no global base reserved")
+                })?;
+                scan.got_mem.per_object_global_indices =
+                    assign_got_slot_global_indices(&scan.per_object_got_mem_slots, first_got)?;
+                finalize_got_import_resolutions(resolutions, first_got, |resolution| {
+                    match resolution {
+                        ImportResolution::GotMemSlot(slot) => Some(slot),
+                        _ => None,
+                    }
+                })?;
+            }
 
-        if !scan.got_func.is_empty() {
-            let first_got = indices.got_func_global_base.ok_or_else(|| {
-                crate::error!("GOT.func entries present but no global base reserved")
-            })?;
-            scan.got_func.per_object_global_indices =
-                assign_got_slot_global_indices(&scan.per_object_got_func_slots, first_got)?;
-            finalize_got_func_import_resolutions(resolutions, first_got)?;
-        }
+            if !scan.got_func.is_empty() {
+                let first_got = indices.got_func_global_base.ok_or_else(|| {
+                    crate::error!("GOT.func entries present but no global base reserved")
+                })?;
+                scan.got_func.per_object_global_indices =
+                    assign_got_slot_global_indices(&scan.per_object_got_func_slots, first_got)?;
+                finalize_got_import_resolutions(resolutions, first_got, |resolution| {
+                    match resolution {
+                        ImportResolution::GotFuncSlot(slot) => Some(slot),
+                        _ => None,
+                    }
+                })?;
+            }
 
-        indices
-    };
+            indices
+        };
 
     Ok((indices, scan, shared_imports))
 }
@@ -4400,20 +4414,18 @@ fn scan_layout_relocations(
             }
         }
 
-        if !got_mem_hits.is_empty() {
-            let mut obj_map = vec![None; input.symbols.len()];
-            for (sym_idx, slot) in got_mem_hits {
-                obj_map[sym_idx] = Some(slot);
-            }
-            per_object_got_mem_slots[obj_idx] = obj_map;
-        }
-        if !got_func_hits.is_empty() {
-            let mut obj_map = vec![None; input.symbols.len()];
-            for (sym_idx, slot) in got_func_hits {
-                obj_map[sym_idx] = Some(slot);
-            }
-            per_object_got_func_slots[obj_idx] = obj_map;
-        }
+        assign_got_hits(
+            &mut per_object_got_mem_slots,
+            obj_idx,
+            input.symbols.len(),
+            got_mem_hits,
+        );
+        assign_got_hits(
+            &mut per_object_got_func_slots,
+            obj_idx,
+            input.symbols.len(),
+            got_func_hits,
+        );
         table_index_symbol_indices[obj_idx] = table_syms;
     }
 
@@ -4465,30 +4477,32 @@ fn assign_got_slot_global_indices(
     Ok(per_object)
 }
 
-fn apply_got_mem_to_index_maps(object_index_maps: &mut [WasmObjectIndexMap], got_mem: &GotMem) {
-    if got_mem.is_empty() {
+fn assign_got_hits(
+    dst: &mut [Vec<Option<usize>>],
+    obj_idx: usize,
+    symbol_count: usize,
+    hits: Vec<(usize, usize)>,
+) {
+    if hits.is_empty() {
         return;
     }
-    for (map, got) in object_index_maps
-        .iter_mut()
-        .zip(got_mem.per_object_global_indices.iter())
-    {
-        if !got.is_empty() {
-            map.got_mem_globals = got.clone();
-        }
+    let mut obj_map = vec![None; symbol_count];
+    for (sym_idx, slot) in hits {
+        obj_map[sym_idx] = Some(slot);
     }
+    dst[obj_idx] = obj_map;
 }
 
-fn apply_got_func_to_index_maps(object_index_maps: &mut [WasmObjectIndexMap], got_func: &GotFunc) {
-    if got_func.is_empty() {
+fn apply_got_to_index_maps<'a, E>(
+    dsts: impl Iterator<Item = &'a mut Vec<Option<u32>>>,
+    got: &GotSlots<E>,
+) {
+    if got.is_empty() {
         return;
     }
-    for (map, got) in object_index_maps
-        .iter_mut()
-        .zip(got_func.per_object_global_indices.iter())
-    {
-        if !got.is_empty() {
-            map.got_func_globals = got.clone();
+    for (dst, src) in dsts.zip(got.per_object_global_indices.iter()) {
+        if !src.is_empty() {
+            *dst = src.clone();
         }
     }
 }
@@ -4551,24 +4565,28 @@ fn got_func_debug_name(
     }
 }
 
-fn absorb_got_mem_imports(
-    got_mem: &GotMem,
+fn absorb_got_imports<E>(
+    got: &GotSlots<E>,
+    module: &str,
+    def_symbol_id: impl Fn(&E) -> SymbolId,
+    to_resolution: impl Fn(usize) -> ImportResolution,
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     resolutions: &mut [ObjectImportResolutions],
     symbol_db: &SymbolDb<'_, Wasm>,
 ) -> Result {
-    if got_mem.is_empty() {
+    if got.is_empty() {
         return Ok(());
     }
 
-    let names: Vec<UnversionedSymbolName<'_>> = got_mem
+    let names: Vec<UnversionedSymbolName<'_>> = got
         .entries
         .iter()
         .map(|entry| {
-            symbol_db.symbol_name(entry.def_symbol_id).with_context(|| {
+            let id = def_symbol_id(entry);
+            symbol_db.symbol_name(id).with_context(|| {
                 format!(
-                    "GOT.mem entry missing symbol name for `{}`",
-                    symbol_db.symbol_name_for_display(entry.def_symbol_id)
+                    "{module} entry missing symbol name for `{}`",
+                    symbol_db.symbol_name_for_display(id)
                 )
             })
         })
@@ -4581,7 +4599,7 @@ fn absorb_got_mem_imports(
 
     for (input, res) in layout_inputs.iter().zip(resolutions.iter_mut()) {
         for (i, import) in input.global_imports.iter().enumerate() {
-            if import.module != "GOT.mem" {
+            if import.module != module {
                 continue;
             }
             if !matches!(res.global_resolutions[i], ImportResolution::Unresolved) {
@@ -4590,86 +4608,26 @@ fn absorb_got_mem_imports(
             let Some(&slot) = name_to_slot.get(import.name.as_bytes()) else {
                 continue;
             };
-            res.global_resolutions[i] = ImportResolution::GotMemSlot(slot);
+            res.global_resolutions[i] = to_resolution(slot);
         }
     }
     Ok(())
 }
 
-fn finalize_got_mem_import_resolutions(
+fn finalize_got_import_resolutions(
     resolutions: &mut [ObjectImportResolutions],
     first_got: u32,
+    take_slot: impl Fn(ImportResolution) -> Option<usize>,
 ) -> Result {
     for res in resolutions.iter_mut() {
         for resolution in &mut res.global_resolutions {
-            if let ImportResolution::GotMemSlot(slot) = *resolution {
-                let output_index = first_got
-                    .checked_add(slot as u32)
-                    .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-                *resolution = ImportResolution::DirectGlobal { output_index };
-            }
-        }
-    }
-    Ok(())
-}
-
-fn absorb_got_func_imports(
-    got_func: &GotFunc,
-    layout_inputs: &[WasmObjectLayoutInput<'_>],
-    resolutions: &mut [ObjectImportResolutions],
-    symbol_db: &SymbolDb<'_, Wasm>,
-) -> Result {
-    if got_func.is_empty() {
-        return Ok(());
-    }
-
-    let names: Vec<UnversionedSymbolName<'_>> = got_func
-        .entries
-        .iter()
-        .map(|entry| {
-            symbol_db.symbol_name(entry.def_symbol_id).with_context(|| {
-                format!(
-                    "GOT.func entry missing symbol name for `{}`",
-                    symbol_db.symbol_name_for_display(entry.def_symbol_id)
-                )
-            })
-        })
-        .collect::<Result<_>>()?;
-
-    let mut name_to_slot: HashMap<&[u8], usize> = HashMap::new();
-    for (slot, name) in names.iter().enumerate() {
-        name_to_slot.entry(name.bytes()).or_insert(slot);
-    }
-
-    for (input, res) in layout_inputs.iter().zip(resolutions.iter_mut()) {
-        for (i, import) in input.global_imports.iter().enumerate() {
-            if import.module != "GOT.func" {
-                continue;
-            }
-            if !matches!(res.global_resolutions[i], ImportResolution::Unresolved) {
-                continue;
-            }
-            let Some(&slot) = name_to_slot.get(import.name.as_bytes()) else {
+            let Some(slot) = take_slot(*resolution) else {
                 continue;
             };
-            res.global_resolutions[i] = ImportResolution::GotFuncSlot(slot);
-        }
-    }
-    Ok(())
-}
-
-fn finalize_got_func_import_resolutions(
-    resolutions: &mut [ObjectImportResolutions],
-    first_got: u32,
-) -> Result {
-    for res in resolutions.iter_mut() {
-        for resolution in &mut res.global_resolutions {
-            if let ImportResolution::GotFuncSlot(slot) = *resolution {
-                let output_index = first_got
-                    .checked_add(slot as u32)
-                    .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-                *resolution = ImportResolution::DirectGlobal { output_index };
-            }
+            let output_index = first_got
+                .checked_add(slot as u32)
+                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+            *resolution = ImportResolution::DirectGlobal { output_index };
         }
     }
     Ok(())
@@ -5821,8 +5779,20 @@ where
         }
         {
             timing_phase!("Apply Wasm GOT index maps");
-            apply_got_mem_to_index_maps(&mut layout.object_index_maps, got_mem);
-            apply_got_func_to_index_maps(&mut layout.object_index_maps, got_func);
+            apply_got_to_index_maps(
+                layout
+                    .object_index_maps
+                    .iter_mut()
+                    .map(|map| &mut map.got_mem_globals),
+                got_mem,
+            );
+            apply_got_to_index_maps(
+                layout
+                    .object_index_maps
+                    .iter_mut()
+                    .map(|map| &mut map.got_func_globals),
+                got_func,
+            );
             fill_function_symbol_redirects(
                 &mut layout.object_index_maps,
                 &layout_inputs,
