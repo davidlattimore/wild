@@ -588,6 +588,8 @@ pub(crate) struct WasmDataSegment<'data> {
     pub(crate) data: &'data [u8],
     /// Byte offset of this segment's encoding within the input data section payload.
     pub(crate) section_offset: u32,
+    /// Encoded size of this segment within the input data section payload.
+    pub(crate) encoded_size: u32,
 }
 
 /// Layout for one data segment within an input object.
@@ -774,13 +776,15 @@ impl<'data> File<'data> {
             .context("Wasm data count LEB")?;
         for res in reader {
             let d = res?;
+            let encoded_size = wasm_data_segment_encoded_size(&d.kind, d.data.len())?;
             segments.push(WasmDataSegment {
                 kind: d.kind.clone(),
                 data: d.data,
                 section_offset,
+                encoded_size,
             });
             section_offset = section_offset
-                .checked_add(wasm_data_segment_encoded_size(&d.kind, d.data.len())?)
+                .checked_add(encoded_size)
                 .ok_or_else(|| crate::error!("Wasm data section offset overflow"))?;
         }
         Ok(segments)
@@ -2094,14 +2098,6 @@ fn output_data_segment_encoded_size(
     }
 }
 
-fn data_segment_payload_offset_in_section(kind: &DataKind<'_>, data_len: usize) -> Result<u32> {
-    let encoded = wasm_data_segment_encoded_size(kind, data_len)?;
-    let data_len = u32::try_from(data_len).context("Wasm data segment too large")?;
-    encoded
-        .checked_sub(data_len)
-        .ok_or_else(|| crate::error!("Wasm data segment payload offset underflow"))
-}
-
 /// Precomputed span of one input data segment within the data section payload.
 struct DataSegmentSpan {
     /// Inclusive start of the encoded segment in the section payload.
@@ -2123,25 +2119,17 @@ fn classify_data_relocations(
 
     let mut spans = Vec::with_capacity(segments.len());
     for segment in segments {
-        let Ok(encoded) = wasm_data_segment_encoded_size(&segment.kind, segment.data.len()) else {
-            spans.push(DataSegmentSpan {
-                start: 0,
-                end: 0,
-                payload_start: 0,
-            });
-            continue;
-        };
-        let Ok(payload_rel) =
-            data_segment_payload_offset_in_section(&segment.kind, segment.data.len())
-        else {
-            spans.push(DataSegmentSpan {
-                start: 0,
-                end: 0,
-                payload_start: 0,
-            });
-            continue;
-        };
         let start = segment.section_offset;
+        let encoded = segment.encoded_size;
+        let data_len = u32::try_from(segment.data.len()).unwrap_or(u32::MAX);
+        let Some(payload_rel) = encoded.checked_sub(data_len) else {
+            spans.push(DataSegmentSpan {
+                start: 0,
+                end: 0,
+                payload_start: 0,
+            });
+            continue;
+        };
         let end = start.saturating_add(encoded);
         let payload_start = start.saturating_add(payload_rel);
         spans.push(DataSegmentSpan {
@@ -2776,10 +2764,9 @@ fn data_segment_spans_from_segments(segments: &[WasmDataSegment<'_>]) -> Result<
 }
 
 fn data_segment_span(segment: &WasmDataSegment<'_>) -> Result<(u32, u32)> {
-    let encoded = wasm_data_segment_encoded_size(&segment.kind, segment.data.len())?;
     let start = segment.section_offset;
     let end = start
-        .checked_add(encoded)
+        .checked_add(segment.encoded_size)
         .ok_or_else(|| crate::error!("Wasm data segment span overflow"))?;
     Ok((start, end))
 }
