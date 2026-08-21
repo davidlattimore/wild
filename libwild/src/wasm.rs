@@ -5194,6 +5194,21 @@ fn collect_sorted_init_function_calls(
         .collect())
 }
 
+fn push_i32_global<'data>(
+    dst: &mut Vec<OutputGlobal<'data>>,
+    mutable: bool,
+    init_expr_body: Cow<'data, [u8]>,
+) {
+    dst.push(OutputGlobal {
+        ty: GlobalType {
+            content_type: wasmparser::ValType::I32,
+            mutable,
+            shared: false,
+        },
+        init_expr_body,
+    });
+}
+
 fn emit_reserved_linker_definitions(
     layout: &mut WasmLayout<'_>,
     indices: &LinkerDefinedIndices,
@@ -5202,77 +5217,56 @@ fn emit_reserved_linker_definitions(
 ) {
     let mut linker_globals = Vec::with_capacity(indices.num_defined_globals as usize);
     if indices.memory_base_global.is_some() {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            init_expr_body: Cow::Owned(encode_i32_const_u32(indices.memory_base_init)),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            false,
+            Cow::Owned(encode_i32_const_u32(indices.memory_base_init)),
+        );
     }
     if indices.table_base_global.is_some() {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            init_expr_body: Cow::Borrowed(DEFAULT_TABLE_BASE_INIT_EXPR),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            false,
+            Cow::Borrowed(DEFAULT_TABLE_BASE_INIT_EXPR),
+        );
     }
     if indices.stack_pointer_global.is_some() {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: true,
-                shared: false,
-            },
-            init_expr_body: Cow::Borrowed(LINKER_MEMORY_BASE_INIT_EXPR),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            true,
+            Cow::Borrowed(LINKER_MEMORY_BASE_INIT_EXPR),
+        );
     }
     if indices.tls_base_global.is_some() {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            init_expr_body: Cow::Borrowed(ZERO_I32_INIT_EXPR),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            false,
+            Cow::Borrowed(ZERO_I32_INIT_EXPR),
+        );
     }
     for _ in &indices.data_address_globals {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            init_expr_body: Cow::Borrowed(ZERO_I32_INIT_EXPR),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            false,
+            Cow::Borrowed(ZERO_I32_INIT_EXPR),
+        );
     }
     // GOT.mem placeholders. wasm-ld emits static GOT.data.internal.* as immutable i32 for
     // freestanding executables.
     for _ in 0..indices.got_mem_count {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            init_expr_body: Cow::Borrowed(ZERO_I32_INIT_EXPR),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            false,
+            Cow::Borrowed(ZERO_I32_INIT_EXPR),
+        );
     }
     // GOT.func placeholders. Filled with table indices after the indirect table is finalized.
     for _ in 0..indices.got_func_count {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            init_expr_body: Cow::Borrowed(ZERO_I32_INIT_EXPR),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            false,
+            Cow::Borrowed(ZERO_I32_INIT_EXPR),
+        );
     }
     if !linker_globals.is_empty() {
         let mut rest = std::mem::take(&mut layout.globals);
