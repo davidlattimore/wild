@@ -1009,13 +1009,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         _relocations: &<Self::Platform as platform::Platform>::RelocationSections,
     ) -> crate::error::Result<<Self::Platform as platform::Platform>::RelocationList<'data>> {
         let target = u32::try_from(index.0).unwrap_or(u32::MAX);
-        let entries = self
-            .reloc_sections
-            .iter()
-            .find(|s| s.target_section_index == target)
-            .map(|s| s.decode_entries(self.data))
-            .transpose()?
-            .unwrap_or_default();
+        let entries = decode_relocs_for(self, Some(target))?;
         Ok(RelocationList {
             entries,
             _phantom: std::marker::PhantomData,
@@ -2591,29 +2585,10 @@ impl<'data> WasmObjectLayout<'data> {
             return Ok(());
         }
 
-        let code_section_index = file.standard_section_index[section_id::CODE as usize];
-        let mut code_relocations: Vec<WasmRelocation> = code_section_index
-            .and_then(|code_idx| {
-                file.reloc_sections
-                    .iter()
-                    .find(|s| s.target_section_index == code_idx)
-            })
-            .map(|s| s.decode_entries(file.data))
-            .transpose()?
-            .unwrap_or_default();
-        sort_relocations_by_offset(&mut code_relocations);
-
-        let data_section_index = file.standard_section_index[section_id::DATA as usize];
-        let mut data_relocations: Vec<WasmRelocation> = data_section_index
-            .and_then(|data_idx| {
-                file.reloc_sections
-                    .iter()
-                    .find(|s| s.target_section_index == data_idx)
-            })
-            .map(|s| s.decode_entries(file.data))
-            .transpose()?
-            .unwrap_or_default();
-        sort_relocations_by_offset(&mut data_relocations);
+        let code_relocations =
+            decode_sorted_relocs_for(file, file.standard_section_index[section_id::CODE as usize])?;
+        let data_relocations =
+            decode_sorted_relocs_for(file, file.standard_section_index[section_id::DATA as usize])?;
 
         let function_bodies = file.function_bodies()?;
         let function_body_spans = function_body_spans_from_bodies(&function_bodies)?;
@@ -2651,63 +2626,74 @@ impl<'data> WasmObjectLayout<'data> {
     }
 
     fn is_data_segment_live(&self, index: usize) -> bool {
-        self.gc_data_segments
-            .get(index)
-            .is_some_and(|s| s.is_live())
+        gc_index_is_live(&self.gc_data_segments, index)
     }
 
     fn is_defined_function_live(&self, index: usize) -> bool {
-        self.gc_defined_functions
-            .get(index)
-            .is_some_and(|s| s.is_live())
+        gc_index_is_live(&self.gc_defined_functions, index)
     }
 
     fn is_defined_global_live(&self, index: usize) -> bool {
-        self.gc_defined_globals
-            .get(index)
-            .is_some_and(|s| s.is_live())
+        gc_index_is_live(&self.gc_defined_globals, index)
     }
 
     fn live_function_import_bits(&self) -> Vec<bool> {
-        self.gc_function_imports
-            .iter()
-            .map(|s| s.is_live())
-            .collect()
+        gc_live_bits(&self.gc_function_imports)
     }
 
     fn live_global_import_bits(&self) -> Vec<bool> {
-        self.gc_global_imports.iter().map(|s| s.is_live()).collect()
+        gc_live_bits(&self.gc_global_imports)
     }
 
     /// True when GC state was never allocated (object not activated) or every unit is live.
     fn all_units_live(&self) -> bool {
         !self.gc_states_ready
-            || (self.gc_defined_functions.iter().all(|s| s.is_live())
-                && self.gc_defined_globals.iter().all(|s| s.is_live())
-                && self.gc_data_segments.iter().all(|s| s.is_live())
-                && self.gc_function_imports.iter().all(|s| s.is_live())
-                && self.gc_global_imports.iter().all(|s| s.is_live()))
+            || [
+                self.gc_defined_functions.as_slice(),
+                self.gc_defined_globals.as_slice(),
+                self.gc_data_segments.as_slice(),
+                self.gc_function_imports.as_slice(),
+                self.gc_global_imports.as_slice(),
+            ]
+            .into_iter()
+            .all(gc_all_live)
     }
 
     fn all_defined_functions_live(&self) -> bool {
-        !self.gc_states_ready || self.gc_defined_functions.iter().all(|s| s.is_live())
+        !self.gc_states_ready || gc_all_live(&self.gc_defined_functions)
     }
 
     fn all_defined_globals_live(&self) -> bool {
-        !self.gc_states_ready || self.gc_defined_globals.iter().all(|s| s.is_live())
+        !self.gc_states_ready || gc_all_live(&self.gc_defined_globals)
     }
 
     fn all_data_segments_live(&self) -> bool {
-        !self.gc_states_ready || self.gc_data_segments.iter().all(|s| s.is_live())
+        !self.gc_states_ready || gc_all_live(&self.gc_data_segments)
     }
 
     fn mark_all_units_live(&mut self) {
-        self.gc_defined_functions.fill(WasmGcUnitState::Live);
-        self.gc_defined_globals.fill(WasmGcUnitState::Live);
-        self.gc_data_segments.fill(WasmGcUnitState::Live);
-        self.gc_function_imports.fill(WasmGcUnitState::Live);
-        self.gc_global_imports.fill(WasmGcUnitState::Live);
+        for states in [
+            &mut self.gc_defined_functions,
+            &mut self.gc_defined_globals,
+            &mut self.gc_data_segments,
+            &mut self.gc_function_imports,
+            &mut self.gc_global_imports,
+        ] {
+            states.fill(WasmGcUnitState::Live);
+        }
     }
+}
+
+fn gc_index_is_live(states: &[WasmGcUnitState], index: usize) -> bool {
+    states.get(index).is_some_and(|s| s.is_live())
+}
+
+fn gc_all_live(states: &[WasmGcUnitState]) -> bool {
+    states.iter().copied().all(WasmGcUnitState::is_live)
+}
+
+fn gc_live_bits(states: &[WasmGcUnitState]) -> Vec<bool> {
+    states.iter().map(|s| s.is_live()).collect()
 }
 
 fn pack_live_ordinals(states: &[WasmGcUnitState]) -> Vec<u32> {
@@ -2734,6 +2720,30 @@ fn sort_relocations_by_offset(relocs: &mut [WasmRelocation]) {
     if relocs.windows(2).any(|w| w[0].offset > w[1].offset) {
         relocs.sort_unstable_by_key(|r| r.offset);
     }
+}
+
+fn decode_relocs_for(
+    file: &File<'_>,
+    target_section_index: Option<u32>,
+) -> Result<Vec<WasmRelocation>> {
+    let Some(target) = target_section_index else {
+        return Ok(Vec::new());
+    };
+    file.reloc_sections
+        .iter()
+        .find(|s| s.target_section_index == target)
+        .map(|s| s.decode_entries(file.data))
+        .transpose()
+        .map(|opt| opt.unwrap_or_default())
+}
+
+fn decode_sorted_relocs_for(
+    file: &File<'_>,
+    target_section_index: Option<u32>,
+) -> Result<Vec<WasmRelocation>> {
+    let mut relocs = decode_relocs_for(file, target_section_index)?;
+    sort_relocations_by_offset(&mut relocs);
+    Ok(relocs)
 }
 
 fn reloc_index_range(relocs: &[WasmRelocation], start: u32, end: u32) -> Range<usize> {
@@ -2909,27 +2919,10 @@ impl<'data> WasmObjectLayoutInput<'data> {
         let (code_relocations_all, data_relocations_all) = if decoded.ready {
             (decoded.code_relocations, decoded.data_relocations)
         } else {
-            let mut code_relocations: Vec<WasmRelocation> = code_section_index
-                .and_then(|code_idx| {
-                    file.reloc_sections
-                        .iter()
-                        .find(|s| s.target_section_index == code_idx)
-                })
-                .map(|s| s.decode_entries(file.data))
-                .transpose()?
-                .unwrap_or_default();
-            sort_relocations_by_offset(&mut code_relocations);
-            let mut data_relocations: Vec<WasmRelocation> = data_section_index
-                .and_then(|data_idx| {
-                    file.reloc_sections
-                        .iter()
-                        .find(|s| s.target_section_index == data_idx)
-                })
-                .map(|s| s.decode_entries(file.data))
-                .transpose()?
-                .unwrap_or_default();
-            sort_relocations_by_offset(&mut data_relocations);
-            (code_relocations, data_relocations)
+            (
+                decode_sorted_relocs_for(file, code_section_index)?,
+                decode_sorted_relocs_for(file, data_section_index)?,
+            )
         };
 
         // TODO(wasm): Currently relocs targeting `.debug*` are ignored (not applied, not emitted).
@@ -3949,22 +3942,6 @@ struct GotMemEntry {
     def: GotMemDef,
 }
 
-#[derive(Debug, Default)]
-struct GotMem {
-    entries: Vec<GotMemEntry>,
-    per_object_global_indices: Vec<Vec<Option<u32>>>,
-}
-
-impl GotMem {
-    fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    fn len(&self) -> u32 {
-        self.entries.len() as u32
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct GotFuncEntry {
     def_symbol_id: SymbolId,
@@ -3973,12 +3950,12 @@ struct GotFuncEntry {
 }
 
 #[derive(Debug, Default)]
-struct GotFunc {
-    entries: Vec<GotFuncEntry>,
+struct GotSlots<E> {
+    entries: Vec<E>,
     per_object_global_indices: Vec<Vec<Option<u32>>>,
 }
 
-impl GotFunc {
+impl<E> GotSlots<E> {
     fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -3987,6 +3964,9 @@ impl GotFunc {
         self.entries.len() as u32
     }
 }
+
+type GotMem = GotSlots<GotMemEntry>;
+type GotFunc = GotSlots<GotFuncEntry>;
 
 fn layout_file_id_to_index(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
@@ -4031,54 +4011,81 @@ fn setup_got_mem_and_indices<'data>(
 
     let weak_undef_stubs = {
         timing_phase!("Absorb Wasm GOT and weak-undef imports");
-        absorb_got_mem_imports(&scan.got_mem, layout_inputs, resolutions, symbol_db)?;
+        absorb_got_imports(
+            &scan.got_mem,
+            "GOT.mem",
+            |e| e.def_symbol_id,
+            ImportResolution::GotMemSlot,
+            layout_inputs,
+            resolutions,
+            symbol_db,
+        )?;
         let weak_undef_stubs = absorb_weak_undef_function_imports(layout_inputs, resolutions)?;
-        absorb_got_func_imports(&scan.got_func, layout_inputs, resolutions, symbol_db)?;
+        absorb_got_imports(
+            &scan.got_func,
+            "GOT.func",
+            |e| e.def_symbol_id,
+            ImportResolution::GotFuncSlot,
+            layout_inputs,
+            resolutions,
+            symbol_db,
+        )?;
         weak_undef_stubs
     };
     report_disallowed_unresolved_imports(layout_inputs, resolutions, symbol_db)?;
     let shared_imports = collect_shared_unresolved_imports(layout_inputs, resolutions)?;
 
-    let indices = {
-        timing_phase!("Reserve linker-defined Wasm indices");
-        let indices = LinkerDefinedIndices::compute(
-            layout_inputs,
-            resolutions,
-            shared_imports.function_count(),
-            shared_imports.global_count(),
-            weak_undef_stubs,
-            &LinkerDefinedIndexRequest {
-                has_init_funcs,
-                export_symbols: requested_linker_export_symbols(symbol_db.args),
-                has_memory: any_object_needs_linker_memory(layout_inputs),
-                wrap_entry,
-                got_mem_count: scan.got_mem.len(),
-                got_func_count: scan.got_func.len(),
-                needs_memory_base: scan.needs_memory_base,
-                needs_table_base: scan.needs_table_base,
-            },
-        )?;
+    let indices =
+        {
+            timing_phase!("Reserve linker-defined Wasm indices");
+            let indices = LinkerDefinedIndices::compute(
+                layout_inputs,
+                resolutions,
+                shared_imports.function_count(),
+                shared_imports.global_count(),
+                weak_undef_stubs,
+                &LinkerDefinedIndexRequest {
+                    has_init_funcs,
+                    export_symbols: requested_linker_export_symbols(symbol_db.args),
+                    has_memory: any_object_needs_linker_memory(layout_inputs),
+                    wrap_entry,
+                    got_mem_count: scan.got_mem.len(),
+                    got_func_count: scan.got_func.len(),
+                    needs_memory_base: scan.needs_memory_base,
+                    needs_table_base: scan.needs_table_base,
+                },
+            )?;
 
-        if !scan.got_mem.is_empty() {
-            let first_got = indices.got_mem_global_base.ok_or_else(|| {
-                crate::error!("GOT.mem entries present but no global base reserved")
-            })?;
-            scan.got_mem.per_object_global_indices =
-                assign_got_slot_global_indices(&scan.per_object_got_mem_slots, first_got)?;
-            finalize_got_mem_import_resolutions(resolutions, first_got)?;
-        }
+            if !scan.got_mem.is_empty() {
+                let first_got = indices.got_mem_global_base.ok_or_else(|| {
+                    crate::error!("GOT.mem entries present but no global base reserved")
+                })?;
+                scan.got_mem.per_object_global_indices =
+                    assign_got_slot_global_indices(&scan.per_object_got_mem_slots, first_got)?;
+                finalize_got_import_resolutions(resolutions, first_got, |resolution| {
+                    match resolution {
+                        ImportResolution::GotMemSlot(slot) => Some(slot),
+                        _ => None,
+                    }
+                })?;
+            }
 
-        if !scan.got_func.is_empty() {
-            let first_got = indices.got_func_global_base.ok_or_else(|| {
-                crate::error!("GOT.func entries present but no global base reserved")
-            })?;
-            scan.got_func.per_object_global_indices =
-                assign_got_slot_global_indices(&scan.per_object_got_func_slots, first_got)?;
-            finalize_got_func_import_resolutions(resolutions, first_got)?;
-        }
+            if !scan.got_func.is_empty() {
+                let first_got = indices.got_func_global_base.ok_or_else(|| {
+                    crate::error!("GOT.func entries present but no global base reserved")
+                })?;
+                scan.got_func.per_object_global_indices =
+                    assign_got_slot_global_indices(&scan.per_object_got_func_slots, first_got)?;
+                finalize_got_import_resolutions(resolutions, first_got, |resolution| {
+                    match resolution {
+                        ImportResolution::GotFuncSlot(slot) => Some(slot),
+                        _ => None,
+                    }
+                })?;
+            }
 
-        indices
-    };
+            indices
+        };
 
     Ok((indices, scan, shared_imports))
 }
@@ -4407,20 +4414,18 @@ fn scan_layout_relocations(
             }
         }
 
-        if !got_mem_hits.is_empty() {
-            let mut obj_map = vec![None; input.symbols.len()];
-            for (sym_idx, slot) in got_mem_hits {
-                obj_map[sym_idx] = Some(slot);
-            }
-            per_object_got_mem_slots[obj_idx] = obj_map;
-        }
-        if !got_func_hits.is_empty() {
-            let mut obj_map = vec![None; input.symbols.len()];
-            for (sym_idx, slot) in got_func_hits {
-                obj_map[sym_idx] = Some(slot);
-            }
-            per_object_got_func_slots[obj_idx] = obj_map;
-        }
+        assign_got_hits(
+            &mut per_object_got_mem_slots,
+            obj_idx,
+            input.symbols.len(),
+            got_mem_hits,
+        );
+        assign_got_hits(
+            &mut per_object_got_func_slots,
+            obj_idx,
+            input.symbols.len(),
+            got_func_hits,
+        );
         table_index_symbol_indices[obj_idx] = table_syms;
     }
 
@@ -4472,30 +4477,32 @@ fn assign_got_slot_global_indices(
     Ok(per_object)
 }
 
-fn apply_got_mem_to_index_maps(object_index_maps: &mut [WasmObjectIndexMap], got_mem: &GotMem) {
-    if got_mem.is_empty() {
+fn assign_got_hits(
+    dst: &mut [Vec<Option<usize>>],
+    obj_idx: usize,
+    symbol_count: usize,
+    hits: Vec<(usize, usize)>,
+) {
+    if hits.is_empty() {
         return;
     }
-    for (map, got) in object_index_maps
-        .iter_mut()
-        .zip(got_mem.per_object_global_indices.iter())
-    {
-        if !got.is_empty() {
-            map.got_mem_globals = got.clone();
-        }
+    let mut obj_map = vec![None; symbol_count];
+    for (sym_idx, slot) in hits {
+        obj_map[sym_idx] = Some(slot);
     }
+    dst[obj_idx] = obj_map;
 }
 
-fn apply_got_func_to_index_maps(object_index_maps: &mut [WasmObjectIndexMap], got_func: &GotFunc) {
-    if got_func.is_empty() {
+fn apply_got_to_index_maps<'a, E>(
+    dsts: impl Iterator<Item = &'a mut Vec<Option<u32>>>,
+    got: &GotSlots<E>,
+) {
+    if got.is_empty() {
         return;
     }
-    for (map, got) in object_index_maps
-        .iter_mut()
-        .zip(got_func.per_object_global_indices.iter())
-    {
-        if !got.is_empty() {
-            map.got_func_globals = got.clone();
+    for (dst, src) in dsts.zip(got.per_object_global_indices.iter()) {
+        if !src.is_empty() {
+            *dst = src.clone();
         }
     }
 }
@@ -4558,24 +4565,28 @@ fn got_func_debug_name(
     }
 }
 
-fn absorb_got_mem_imports(
-    got_mem: &GotMem,
+fn absorb_got_imports<E>(
+    got: &GotSlots<E>,
+    module: &str,
+    def_symbol_id: impl Fn(&E) -> SymbolId,
+    to_resolution: impl Fn(usize) -> ImportResolution,
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     resolutions: &mut [ObjectImportResolutions],
     symbol_db: &SymbolDb<'_, Wasm>,
 ) -> Result {
-    if got_mem.is_empty() {
+    if got.is_empty() {
         return Ok(());
     }
 
-    let names: Vec<UnversionedSymbolName<'_>> = got_mem
+    let names: Vec<UnversionedSymbolName<'_>> = got
         .entries
         .iter()
         .map(|entry| {
-            symbol_db.symbol_name(entry.def_symbol_id).with_context(|| {
+            let id = def_symbol_id(entry);
+            symbol_db.symbol_name(id).with_context(|| {
                 format!(
-                    "GOT.mem entry missing symbol name for `{}`",
-                    symbol_db.symbol_name_for_display(entry.def_symbol_id)
+                    "{module} entry missing symbol name for `{}`",
+                    symbol_db.symbol_name_for_display(id)
                 )
             })
         })
@@ -4588,7 +4599,7 @@ fn absorb_got_mem_imports(
 
     for (input, res) in layout_inputs.iter().zip(resolutions.iter_mut()) {
         for (i, import) in input.global_imports.iter().enumerate() {
-            if import.module != "GOT.mem" {
+            if import.module != module {
                 continue;
             }
             if !matches!(res.global_resolutions[i], ImportResolution::Unresolved) {
@@ -4597,86 +4608,26 @@ fn absorb_got_mem_imports(
             let Some(&slot) = name_to_slot.get(import.name.as_bytes()) else {
                 continue;
             };
-            res.global_resolutions[i] = ImportResolution::GotMemSlot(slot);
+            res.global_resolutions[i] = to_resolution(slot);
         }
     }
     Ok(())
 }
 
-fn finalize_got_mem_import_resolutions(
+fn finalize_got_import_resolutions(
     resolutions: &mut [ObjectImportResolutions],
     first_got: u32,
+    take_slot: impl Fn(ImportResolution) -> Option<usize>,
 ) -> Result {
     for res in resolutions.iter_mut() {
         for resolution in &mut res.global_resolutions {
-            if let ImportResolution::GotMemSlot(slot) = *resolution {
-                let output_index = first_got
-                    .checked_add(slot as u32)
-                    .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-                *resolution = ImportResolution::DirectGlobal { output_index };
-            }
-        }
-    }
-    Ok(())
-}
-
-fn absorb_got_func_imports(
-    got_func: &GotFunc,
-    layout_inputs: &[WasmObjectLayoutInput<'_>],
-    resolutions: &mut [ObjectImportResolutions],
-    symbol_db: &SymbolDb<'_, Wasm>,
-) -> Result {
-    if got_func.is_empty() {
-        return Ok(());
-    }
-
-    let names: Vec<UnversionedSymbolName<'_>> = got_func
-        .entries
-        .iter()
-        .map(|entry| {
-            symbol_db.symbol_name(entry.def_symbol_id).with_context(|| {
-                format!(
-                    "GOT.func entry missing symbol name for `{}`",
-                    symbol_db.symbol_name_for_display(entry.def_symbol_id)
-                )
-            })
-        })
-        .collect::<Result<_>>()?;
-
-    let mut name_to_slot: HashMap<&[u8], usize> = HashMap::new();
-    for (slot, name) in names.iter().enumerate() {
-        name_to_slot.entry(name.bytes()).or_insert(slot);
-    }
-
-    for (input, res) in layout_inputs.iter().zip(resolutions.iter_mut()) {
-        for (i, import) in input.global_imports.iter().enumerate() {
-            if import.module != "GOT.func" {
-                continue;
-            }
-            if !matches!(res.global_resolutions[i], ImportResolution::Unresolved) {
-                continue;
-            }
-            let Some(&slot) = name_to_slot.get(import.name.as_bytes()) else {
+            let Some(slot) = take_slot(*resolution) else {
                 continue;
             };
-            res.global_resolutions[i] = ImportResolution::GotFuncSlot(slot);
-        }
-    }
-    Ok(())
-}
-
-fn finalize_got_func_import_resolutions(
-    resolutions: &mut [ObjectImportResolutions],
-    first_got: u32,
-) -> Result {
-    for res in resolutions.iter_mut() {
-        for resolution in &mut res.global_resolutions {
-            if let ImportResolution::GotFuncSlot(slot) = *resolution {
-                let output_index = first_got
-                    .checked_add(slot as u32)
-                    .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
-                *resolution = ImportResolution::DirectGlobal { output_index };
-            }
+            let output_index = first_got
+                .checked_add(slot as u32)
+                .ok_or_else(|| crate::error!("Wasm global index overflow"))?;
+            *resolution = ImportResolution::DirectGlobal { output_index };
         }
     }
     Ok(())
@@ -5212,6 +5163,21 @@ fn collect_sorted_init_function_calls(
         .collect())
 }
 
+fn push_i32_global<'data>(
+    dst: &mut Vec<OutputGlobal<'data>>,
+    mutable: bool,
+    init_expr_body: Cow<'data, [u8]>,
+) {
+    dst.push(OutputGlobal {
+        ty: GlobalType {
+            content_type: wasmparser::ValType::I32,
+            mutable,
+            shared: false,
+        },
+        init_expr_body,
+    });
+}
+
 fn emit_reserved_linker_definitions(
     layout: &mut WasmLayout<'_>,
     indices: &LinkerDefinedIndices,
@@ -5220,77 +5186,56 @@ fn emit_reserved_linker_definitions(
 ) {
     let mut linker_globals = Vec::with_capacity(indices.num_defined_globals as usize);
     if indices.memory_base_global.is_some() {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            init_expr_body: Cow::Owned(encode_i32_const_u32(indices.memory_base_init)),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            false,
+            Cow::Owned(encode_i32_const_u32(indices.memory_base_init)),
+        );
     }
     if indices.table_base_global.is_some() {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            init_expr_body: Cow::Borrowed(DEFAULT_TABLE_BASE_INIT_EXPR),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            false,
+            Cow::Borrowed(DEFAULT_TABLE_BASE_INIT_EXPR),
+        );
     }
     if indices.stack_pointer_global.is_some() {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: true,
-                shared: false,
-            },
-            init_expr_body: Cow::Borrowed(LINKER_MEMORY_BASE_INIT_EXPR),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            true,
+            Cow::Borrowed(LINKER_MEMORY_BASE_INIT_EXPR),
+        );
     }
     if indices.tls_base_global.is_some() {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            init_expr_body: Cow::Borrowed(ZERO_I32_INIT_EXPR),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            false,
+            Cow::Borrowed(ZERO_I32_INIT_EXPR),
+        );
     }
     for _ in &indices.data_address_globals {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            init_expr_body: Cow::Borrowed(ZERO_I32_INIT_EXPR),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            false,
+            Cow::Borrowed(ZERO_I32_INIT_EXPR),
+        );
     }
     // GOT.mem placeholders. wasm-ld emits static GOT.data.internal.* as immutable i32 for
     // freestanding executables.
     for _ in 0..indices.got_mem_count {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            init_expr_body: Cow::Borrowed(ZERO_I32_INIT_EXPR),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            false,
+            Cow::Borrowed(ZERO_I32_INIT_EXPR),
+        );
     }
     // GOT.func placeholders. Filled with table indices after the indirect table is finalized.
     for _ in 0..indices.got_func_count {
-        linker_globals.push(OutputGlobal {
-            ty: GlobalType {
-                content_type: wasmparser::ValType::I32,
-                mutable: false,
-                shared: false,
-            },
-            init_expr_body: Cow::Borrowed(ZERO_I32_INIT_EXPR),
-        });
+        push_i32_global(
+            &mut linker_globals,
+            false,
+            Cow::Borrowed(ZERO_I32_INIT_EXPR),
+        );
     }
     if !linker_globals.is_empty() {
         let mut rest = std::mem::take(&mut layout.globals);
@@ -5464,30 +5409,16 @@ fn export_name_exists(exports: &[OutputExport<'_>], name: &str) -> bool {
     exports.iter().any(|export| export.name == name)
 }
 
-fn push_function_export<'data>(
+fn push_export<'data>(
     exports: &mut Vec<OutputExport<'data>>,
     name: &'data str,
+    kind: wasmparser::ExternalKind,
     index: u32,
 ) {
     if export_name_exists(exports, name) {
         return;
     }
-    exports.push(OutputExport {
-        name,
-        kind: wasmparser::ExternalKind::Func,
-        index,
-    });
-}
-
-fn push_global_export<'data>(exports: &mut Vec<OutputExport<'data>>, name: &'data str, index: u32) {
-    if export_name_exists(exports, name) {
-        return;
-    }
-    exports.push(OutputExport {
-        name,
-        kind: wasmparser::ExternalKind::Global,
-        index,
-    });
+    exports.push(OutputExport { name, kind, index });
 }
 
 /// Resolved user entry function, if present among the linked objects.
@@ -5586,11 +5517,11 @@ fn try_export_linker_defined(
 ) -> bool {
     let name = <&str>::from(known);
     if let Some(index) = indices.function_index(known) {
-        push_function_export(exports, name, index);
+        push_export(exports, name, wasmparser::ExternalKind::Func, index);
         return true;
     }
     if let Some(index) = indices.global_index(known) {
-        push_global_export(exports, name, index);
+        push_export(exports, name, wasmparser::ExternalKind::Global, index);
         return true;
     }
     false
@@ -5675,11 +5606,16 @@ fn ensure_force_exports<'data>(
                 {
                     index = wrapper;
                 }
-                push_function_export(exports, export_name, index);
+                push_export(exports, export_name, wasmparser::ExternalKind::Func, index);
             }
             WasmSymbolKind::Global => {
                 let index = remap_wasm_index(&index_map.global_indices, def_sym.index, "global")?;
-                push_global_export(exports, export_name, index);
+                push_export(
+                    exports,
+                    export_name,
+                    wasmparser::ExternalKind::Global,
+                    index,
+                );
             }
             _ => {
                 bail!(
@@ -5843,8 +5779,20 @@ where
         }
         {
             timing_phase!("Apply Wasm GOT index maps");
-            apply_got_mem_to_index_maps(&mut layout.object_index_maps, got_mem);
-            apply_got_func_to_index_maps(&mut layout.object_index_maps, got_func);
+            apply_got_to_index_maps(
+                layout
+                    .object_index_maps
+                    .iter_mut()
+                    .map(|map| &mut map.got_mem_globals),
+                got_mem,
+            );
+            apply_got_to_index_maps(
+                layout
+                    .object_index_maps
+                    .iter_mut()
+                    .map(|map| &mut map.got_func_globals),
+                got_func,
+            );
             fill_function_symbol_redirects(
                 &mut layout.object_index_maps,
                 &layout_inputs,
