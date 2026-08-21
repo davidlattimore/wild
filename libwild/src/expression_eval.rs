@@ -230,7 +230,7 @@ fn evaluate_expression_value<'data, P: Platform>(
                 },
                 |e| eval!(e),
             )?;
-            Ok(expr.wrapping_add(align - 1) & !(align - 1))
+            Ok(expr.next_multiple_of(align))
         }
 
         Expression::Min(l, r) => Ok(eval!(l)?.min(eval!(r)?)),

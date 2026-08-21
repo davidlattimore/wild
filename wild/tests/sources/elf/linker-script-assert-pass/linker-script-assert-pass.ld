@@ -72,3 +72,4 @@ ASSERT(symbol9 == 0x160, "symbol9 must be 0x160");
 symbol12 = ASSERT(ASSERT(0x5000 < 0x10000, "0x5000 < 0x10000 must be true") == 1, "ASSERT must return 1");
 . = ASSERT(symbol12 == 1, "must be 1");
 ASSERT(ALIGN(0x38, 16) == 0x40, "ALIGN value is incorrect");
+ASSERT(ALIGN(0x38, 18) == 0x48, "ALIGN value is incorrect");
