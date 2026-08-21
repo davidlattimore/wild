@@ -5446,30 +5446,16 @@ fn export_name_exists(exports: &[OutputExport<'_>], name: &str) -> bool {
     exports.iter().any(|export| export.name == name)
 }
 
-fn push_function_export<'data>(
+fn push_export<'data>(
     exports: &mut Vec<OutputExport<'data>>,
     name: &'data str,
+    kind: wasmparser::ExternalKind,
     index: u32,
 ) {
     if export_name_exists(exports, name) {
         return;
     }
-    exports.push(OutputExport {
-        name,
-        kind: wasmparser::ExternalKind::Func,
-        index,
-    });
-}
-
-fn push_global_export<'data>(exports: &mut Vec<OutputExport<'data>>, name: &'data str, index: u32) {
-    if export_name_exists(exports, name) {
-        return;
-    }
-    exports.push(OutputExport {
-        name,
-        kind: wasmparser::ExternalKind::Global,
-        index,
-    });
+    exports.push(OutputExport { name, kind, index });
 }
 
 /// Resolved user entry function, if present among the linked objects.
@@ -5568,11 +5554,11 @@ fn try_export_linker_defined(
 ) -> bool {
     let name = <&str>::from(known);
     if let Some(index) = indices.function_index(known) {
-        push_function_export(exports, name, index);
+        push_export(exports, name, wasmparser::ExternalKind::Func, index);
         return true;
     }
     if let Some(index) = indices.global_index(known) {
-        push_global_export(exports, name, index);
+        push_export(exports, name, wasmparser::ExternalKind::Global, index);
         return true;
     }
     false
@@ -5657,11 +5643,16 @@ fn ensure_force_exports<'data>(
                 {
                     index = wrapper;
                 }
-                push_function_export(exports, export_name, index);
+                push_export(exports, export_name, wasmparser::ExternalKind::Func, index);
             }
             WasmSymbolKind::Global => {
                 let index = remap_wasm_index(&index_map.global_indices, def_sym.index, "global")?;
-                push_global_export(exports, export_name, index);
+                push_export(
+                    exports,
+                    export_name,
+                    wasmparser::ExternalKind::Global,
+                    index,
+                );
             }
             _ => {
                 bail!(
