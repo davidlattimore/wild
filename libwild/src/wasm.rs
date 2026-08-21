@@ -2626,63 +2626,74 @@ impl<'data> WasmObjectLayout<'data> {
     }
 
     fn is_data_segment_live(&self, index: usize) -> bool {
-        self.gc_data_segments
-            .get(index)
-            .is_some_and(|s| s.is_live())
+        gc_index_is_live(&self.gc_data_segments, index)
     }
 
     fn is_defined_function_live(&self, index: usize) -> bool {
-        self.gc_defined_functions
-            .get(index)
-            .is_some_and(|s| s.is_live())
+        gc_index_is_live(&self.gc_defined_functions, index)
     }
 
     fn is_defined_global_live(&self, index: usize) -> bool {
-        self.gc_defined_globals
-            .get(index)
-            .is_some_and(|s| s.is_live())
+        gc_index_is_live(&self.gc_defined_globals, index)
     }
 
     fn live_function_import_bits(&self) -> Vec<bool> {
-        self.gc_function_imports
-            .iter()
-            .map(|s| s.is_live())
-            .collect()
+        gc_live_bits(&self.gc_function_imports)
     }
 
     fn live_global_import_bits(&self) -> Vec<bool> {
-        self.gc_global_imports.iter().map(|s| s.is_live()).collect()
+        gc_live_bits(&self.gc_global_imports)
     }
 
     /// True when GC state was never allocated (object not activated) or every unit is live.
     fn all_units_live(&self) -> bool {
         !self.gc_states_ready
-            || (self.gc_defined_functions.iter().all(|s| s.is_live())
-                && self.gc_defined_globals.iter().all(|s| s.is_live())
-                && self.gc_data_segments.iter().all(|s| s.is_live())
-                && self.gc_function_imports.iter().all(|s| s.is_live())
-                && self.gc_global_imports.iter().all(|s| s.is_live()))
+            || [
+                self.gc_defined_functions.as_slice(),
+                self.gc_defined_globals.as_slice(),
+                self.gc_data_segments.as_slice(),
+                self.gc_function_imports.as_slice(),
+                self.gc_global_imports.as_slice(),
+            ]
+            .into_iter()
+            .all(gc_all_live)
     }
 
     fn all_defined_functions_live(&self) -> bool {
-        !self.gc_states_ready || self.gc_defined_functions.iter().all(|s| s.is_live())
+        !self.gc_states_ready || gc_all_live(&self.gc_defined_functions)
     }
 
     fn all_defined_globals_live(&self) -> bool {
-        !self.gc_states_ready || self.gc_defined_globals.iter().all(|s| s.is_live())
+        !self.gc_states_ready || gc_all_live(&self.gc_defined_globals)
     }
 
     fn all_data_segments_live(&self) -> bool {
-        !self.gc_states_ready || self.gc_data_segments.iter().all(|s| s.is_live())
+        !self.gc_states_ready || gc_all_live(&self.gc_data_segments)
     }
 
     fn mark_all_units_live(&mut self) {
-        self.gc_defined_functions.fill(WasmGcUnitState::Live);
-        self.gc_defined_globals.fill(WasmGcUnitState::Live);
-        self.gc_data_segments.fill(WasmGcUnitState::Live);
-        self.gc_function_imports.fill(WasmGcUnitState::Live);
-        self.gc_global_imports.fill(WasmGcUnitState::Live);
+        for states in [
+            &mut self.gc_defined_functions,
+            &mut self.gc_defined_globals,
+            &mut self.gc_data_segments,
+            &mut self.gc_function_imports,
+            &mut self.gc_global_imports,
+        ] {
+            states.fill(WasmGcUnitState::Live);
+        }
     }
+}
+
+fn gc_index_is_live(states: &[WasmGcUnitState], index: usize) -> bool {
+    states.get(index).is_some_and(|s| s.is_live())
+}
+
+fn gc_all_live(states: &[WasmGcUnitState]) -> bool {
+    states.iter().copied().all(WasmGcUnitState::is_live)
+}
+
+fn gc_live_bits(states: &[WasmGcUnitState]) -> Vec<bool> {
+    states.iter().map(|s| s.is_live()).collect()
 }
 
 fn pack_live_ordinals(states: &[WasmGcUnitState]) -> Vec<u32> {
