@@ -5404,7 +5404,14 @@ fn compute_layout_sections<'data, P: Platform>(
 
     for event in output_order {
         match event {
-            OrderEvent::SetLocation(expr, loc, idx) => {
+            OrderEvent::SetLocation(expr, mut loc, idx) => {
+                if matches!(loc, SymbolLoc::SectionEnd(_)) {
+                    resolved_lc[idx] = ResolvedLocationCounter {
+                        value: mem_offset,
+                        section_offset: None,
+                    };
+                    loc = SymbolLoc::LocationCounter(idx, None);
+                }
                 let value =
                     expression_eval(&expr, &loc, memory_regions, &section_layouts, &resolved_lc)?;
                 pending_location = Some(value);
