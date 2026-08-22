@@ -32,6 +32,14 @@
 //#LinkerScript:linker-script-location-counter-underflow.ld
 //#ExpectError:(?i-u)cannot move location counter backwards
 
+//#Config:lc_after_section
+//#LinkerScript:linker-script-lc-after-section.ld
+//#Object:runtime.c
+// RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
+//#SkipArch:riscv64,ppc64le
+//#DiffIgnore:segment.LOAD.RX.alignment
+//#DiffIgnore:segment.LOAD.RWX.alignment
+
 #include <stddef.h>
 
 #include "../common/runtime.h"
