@@ -27,6 +27,7 @@ use crate::wasm::write_uleb128;
 use leb128::write::unsigned_len as uleb128_size;
 use rayon::prelude::*;
 use std::borrow::Cow;
+use std::ops::Range;
 use wasm_encoder::ConstExpr;
 use wasm_encoder::ElementSection;
 use wasm_encoder::Elements;
@@ -48,6 +49,35 @@ fn apply_resolved_reloc(
 ) -> Result<()> {
     let base = index_map.resolve_reloc(reloc, symbols, function_table_slots, memory_base)?;
     apply_relocation(buf, reloc, finalize_reloc_value(reloc, base)?)
+}
+
+fn relocs_in_index_range(relocs: &[WasmRelocation], range: Range<u32>) -> &[WasmRelocation] {
+    let start = range.start as usize;
+    let end = range.end as usize;
+    relocs.get(start..end).unwrap_or(&[])
+}
+
+fn apply_section_reloc(
+    index_map: &WasmObjectIndexMap,
+    reloc: &WasmRelocation,
+    local_base: u32,
+    symbols: &[WasmSymbol],
+    function_table_slots: &[u32],
+    memory_base: u32,
+    buf: &mut [u8],
+) -> Result<()> {
+    let mut reloc = *reloc;
+    reloc.offset = reloc.offset.checked_sub(local_base).ok_or_else(|| {
+        crate::error!("Wasm relocation offset is before the body or payload start")
+    })?;
+    apply_resolved_reloc(
+        index_map,
+        &reloc,
+        symbols,
+        function_table_slots,
+        memory_base,
+        buf,
+    )
 }
 
 pub(crate) fn write<'data, A: Arch<Platform = Wasm>>(
@@ -166,6 +196,7 @@ fn copy_encoded_section(encoded: Option<&Vec<u8>>, out: &mut [u8]) -> Result<()>
 fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()> {
     let bodies = &wasm_layout.function_bodies;
     let object_index_maps = &wasm_layout.object_index_maps;
+    let object_code_relocations = &wasm_layout.object_code_relocations;
     let per_object_symbols = &wasm_layout.per_object_symbols;
     let function_table_slots = &wasm_layout.function_table_slots;
     let memory_base = wasm_layout.memory_base;
@@ -237,10 +268,14 @@ fn write_code_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
                 let body_bytes = &mut slot[pos..pos + len];
                 let index_map = &object_index_maps[body.object_index];
                 let symbols = &per_object_symbols[body.object_index];
-                for reloc in &body.relocations {
-                    apply_resolved_reloc(
+                let object_relocs = object_code_relocations
+                    .get(body.object_index)
+                    .map_or(&[][..], Vec::as_slice);
+                for reloc in relocs_in_index_range(object_relocs, body.reloc_range.clone()) {
+                    apply_section_reloc(
                         index_map,
                         reloc,
+                        body.code_offset,
                         symbols,
                         function_table_slots,
                         memory_base,
@@ -295,6 +330,7 @@ fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
     let segments_region_start = pos;
 
     let object_index_maps = &wasm_layout.object_index_maps;
+    let object_data_relocations = &wasm_layout.object_data_relocations;
     let per_object_symbols = &wasm_layout.per_object_symbols;
     let function_table_slots = &wasm_layout.function_table_slots;
     let memory_base = wasm_layout.memory_base;
@@ -332,6 +368,9 @@ fn write_data_section(wasm_layout: &WasmLayout<'_>, out: &mut [u8]) -> Result<()
                     slot,
                     segment,
                     &object_index_maps[obj_idx],
+                    object_data_relocations
+                        .get(obj_idx)
+                        .map_or(&[][..], Vec::as_slice),
                     per_object_symbols[obj_idx],
                     function_table_slots,
                     memory_base,
@@ -346,6 +385,7 @@ fn write_active_data_segment(
     out: &mut [u8],
     segment: &WasmDataSegmentLayout<'_>,
     index_map: &WasmObjectIndexMap,
+    object_relocs: &[WasmRelocation],
     symbols: &[WasmSymbol],
     function_table_slots: &[u32],
     memory_base: u32,
@@ -384,10 +424,11 @@ fn write_active_data_segment(
     pos += write_uleb128(&mut out[pos..], data_len);
     let payload = &mut out[pos..pos + segment.data.len()];
     payload.copy_from_slice(segment.data);
-    for reloc in &segment.relocations {
-        apply_resolved_reloc(
+    for reloc in relocs_in_index_range(object_relocs, segment.reloc_range.clone()) {
+        apply_section_reloc(
             index_map,
             reloc,
+            segment.payload_start,
             symbols,
             function_table_slots,
             memory_base,

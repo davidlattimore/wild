@@ -598,8 +598,10 @@ pub(crate) struct WasmDataSegmentLayout<'data> {
     /// Index of this segment within the object's data section.
     pub(crate) segment_index: u32,
     pub(crate) data: &'data [u8],
-    /// Relocations targeting this segment's payload bytes (segment-local offsets).
-    pub(crate) relocations: Vec<WasmRelocation>,
+    /// Range into the owning object's data-relocation list.
+    pub(crate) reloc_range: Range<u32>,
+    /// Section-payload offset of the first data byte.
+    pub(crate) payload_start: u32,
     /// Output memory index after index remapping.
     pub(crate) output_memory_index: u32,
     /// Byte offset within the output module's linear memory where the payload is placed.
@@ -614,8 +616,8 @@ pub(crate) struct WasmFunctionBody<'data> {
     pub(crate) bytes: Cow<'data, [u8]>,
     /// Byte offset of this body (starting at its size prefix) within the code section payload.
     pub(crate) code_offset: u32,
-    /// Relocations targeting this body, with offsets relative to the body start.
-    pub(crate) relocations: Vec<WasmRelocation>,
+    /// Range into the owning object's code-relocation list.
+    pub(crate) reloc_range: Range<u32>,
     /// Index of the object this body belongs to.
     pub(crate) object_index: usize,
 }
@@ -756,7 +758,7 @@ impl<'data> File<'data> {
                     WasmFunctionBody {
                         bytes: Cow::Borrowed(&self.data[range.clone()]),
                         code_offset: range.start as u32 - code_payload_start,
-                        relocations: Vec::new(),
+                        reloc_range: 0..0,
                         object_index: 0,
                     }
                 })
@@ -1566,6 +1568,8 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) unsupported_output: Vec<&'static str>,
     pub(crate) object_index_maps: Vec<WasmObjectIndexMap>,
     pub(crate) object_data_layouts: Vec<Vec<WasmDataSegmentLayout<'data>>>,
+    pub(crate) object_code_relocations: Vec<Vec<WasmRelocation>>,
+    pub(crate) object_data_relocations: Vec<Vec<WasmRelocation>>,
     pub(crate) per_object_symbols: Vec<&'data [WasmSymbol]>,
     pub(crate) encoded_sections: WasmEncodedSections,
     pub(crate) code_section_size: u64,
@@ -2092,73 +2096,43 @@ fn output_data_segment_encoded_size(
     }
 }
 
-/// Precomputed span of one input data segment within the data section payload.
-struct DataSegmentSpan {
-    /// Inclusive start of the encoded segment in the section payload.
-    start: u32,
-    /// Exclusive end of the encoded segment.
-    end: u32,
-    /// Absolute section offset of the first payload byte (after segment header / init expr).
-    payload_start: u32,
-}
-
-/// Map data-section relocations onto their owning segment with payload-local offsets.
-fn classify_data_relocations(
+/// Map data-section relocations onto owning segments as ranges into `relocs`.
+fn classify_data_reloc_ranges(
     segments: &[WasmDataSegment<'_>],
     relocs: &[WasmRelocation],
-) -> Vec<Vec<WasmRelocation>> {
-    if segments.is_empty() || relocs.is_empty() {
-        return vec![Vec::new(); segments.len()];
-    }
-
-    let mut spans = Vec::with_capacity(segments.len());
-    for segment in segments {
-        let start = segment.section_offset;
-        let encoded = segment.encoded_size;
+) -> Vec<(Range<u32>, u32)> {
+    let payload_start_of = |segment: &WasmDataSegment<'_>| -> u32 {
         let data_len = u32::try_from(segment.data.len()).unwrap_or(u32::MAX);
-        let Some(payload_rel) = encoded.checked_sub(data_len) else {
-            spans.push(DataSegmentSpan {
-                start: 0,
-                end: 0,
-                payload_start: 0,
-            });
-            continue;
-        };
-        let end = start.saturating_add(encoded);
-        let payload_start = start.saturating_add(payload_rel);
-        spans.push(DataSegmentSpan {
-            start,
-            end,
+        segment
+            .section_offset
+            .saturating_add(segment.encoded_size.saturating_sub(data_len))
+    };
+
+    if relocs.is_empty() {
+        return segments
+            .iter()
+            .map(|segment| (0..0, payload_start_of(segment)))
+            .collect();
+    }
+
+    let mut out = Vec::with_capacity(segments.len());
+    let mut i = 0usize;
+    for segment in segments {
+        let payload_start = payload_start_of(segment);
+        let end = segment.section_offset.saturating_add(segment.encoded_size);
+        while i < relocs.len() && relocs[i].offset < payload_start {
+            i += 1;
+        }
+        let lo = i;
+        while i < relocs.len() && relocs[i].offset < end {
+            i += 1;
+        }
+        out.push((
+            u32::try_from(lo).unwrap_or(u32::MAX)..u32::try_from(i).unwrap_or(u32::MAX),
             payload_start,
-        });
+        ));
     }
-
-    debug_assert!(
-        spans.windows(2).all(|w| w[0].start <= w[1].start),
-        "data segments must be ordered by section_offset for binary search"
-    );
-
-    let mut per_segment = vec![Vec::new(); segments.len()];
-    for &reloc in relocs {
-        // Last span with start <= reloc.offset.
-        let idx = spans
-            .partition_point(|span| span.start <= reloc.offset)
-            .saturating_sub(1);
-        let Some(span) = spans.get(idx) else {
-            continue;
-        };
-        if reloc.offset < span.start || reloc.offset >= span.end {
-            continue;
-        }
-        if reloc.offset < span.payload_start {
-            continue;
-        }
-        per_segment[idx].push(WasmRelocation {
-            offset: reloc.offset - span.payload_start,
-            ..reloc
-        });
-    }
-    per_segment
+    out
 }
 
 /// Align `data_end` to [`STACK_ALIGNMENT`], then add the stack size.
@@ -2208,8 +2182,8 @@ fn layout_object_data<'data>(
     index_map: &WasmObjectIndexMap,
     memory_cursor: &mut u32,
 ) -> Result<Vec<WasmDataSegmentLayout<'data>>> {
-    let mut segment_relocations =
-        classify_data_relocations(&input.data_segments, &input.data_relocations);
+    let segment_reloc_ranges =
+        classify_data_reloc_ranges(&input.data_segments, &input.data_relocations);
     let mut segments = Vec::with_capacity(input.data_segments.len());
     for (filtered_idx, segment) in input.data_segments.iter().enumerate() {
         let DataKind::Active { memory_index, .. } = segment.kind else {
@@ -2240,10 +2214,15 @@ fn layout_object_data<'data>(
         *memory_cursor = memory_cursor
             .checked_add(u32::try_from(segment.data.len()).context("Wasm data segment too large")?)
             .ok_or_else(|| crate::error!("Wasm output memory offset overflow"))?;
+        let (reloc_range, payload_start) = segment_reloc_ranges
+            .get(filtered_idx)
+            .cloned()
+            .unwrap_or((0..0, 0));
         segments.push(WasmDataSegmentLayout {
             segment_index: original_index,
             data: segment.data,
-            relocations: std::mem::take(&mut segment_relocations[filtered_idx]),
+            reloc_range,
+            payload_start,
             output_memory_index,
             output_memory_offset,
             encoded_output_size,
@@ -5128,7 +5107,7 @@ fn borrowed_linker_function_body(bytes: &'static [u8]) -> WasmFunctionBody<'stat
     WasmFunctionBody {
         bytes: Cow::Borrowed(bytes),
         code_offset: 0,
-        relocations: Vec::new(),
+        reloc_range: 0..0,
         object_index: 0,
     }
 }
@@ -5145,7 +5124,7 @@ fn owned_linker_function_body(bytes: Vec<u8>) -> WasmFunctionBody<'static> {
     WasmFunctionBody {
         bytes: Cow::Owned(bytes),
         code_offset: 0,
-        relocations: Vec::new(),
+        reloc_range: 0..0,
         object_index: 0,
     }
 }
@@ -5810,6 +5789,8 @@ where
         layout.object_index_maps = object_index_maps;
         layout.per_object_symbols.reserve(n_objects);
         layout.object_data_layouts.reserve(n_objects);
+        layout.object_code_relocations.reserve(n_objects);
+        layout.object_data_relocations.reserve(n_objects);
 
         {
             timing_phase!("Merge Wasm section lists");
@@ -5881,6 +5862,14 @@ where
                     &layout.object_index_maps[obj_idx],
                     &mut memory_cursor,
                 )?);
+            }
+            for input in &mut layout_inputs {
+                layout
+                    .object_code_relocations
+                    .push(std::mem::take(&mut input.code_relocations));
+                layout
+                    .object_data_relocations
+                    .push(std::mem::take(&mut input.data_relocations));
             }
         }
     }
@@ -6396,32 +6385,25 @@ fn allocate_wasm_object_index_bases(
     Ok(index_bases)
 }
 
-/// Classify code relocations into per-body groups with body-local offsets.
-fn classify_code_relocations<'data>(
-    bodies: &mut [WasmFunctionBody<'data>],
-    relocs: &[WasmRelocation],
-) {
+/// Assign each body a range into the object's sorted code-relocation list.
+fn classify_code_relocations(bodies: &mut [WasmFunctionBody<'_>], relocs: &[WasmRelocation]) {
     if relocs.is_empty() {
         return;
     }
 
-    let mut reloc_iter = relocs.iter().peekable();
+    let mut i = 0usize;
     for body in bodies.iter_mut() {
         let body_start = body.code_offset;
         let body_end = body_start + body.bytes.len() as u32;
-
-        while let Some(reloc) = reloc_iter.peek().copied() {
-            if reloc.offset >= body_end {
-                break;
-            }
-            reloc_iter.next();
-            if reloc.offset >= body_start {
-                body.relocations.push(WasmRelocation {
-                    offset: reloc.offset - body_start,
-                    ..*reloc
-                });
-            }
+        while i < relocs.len() && relocs[i].offset < body_start {
+            i += 1;
         }
+        let lo = i;
+        while i < relocs.len() && relocs[i].offset < body_end {
+            i += 1;
+        }
+        body.reloc_range =
+            u32::try_from(lo).unwrap_or(u32::MAX)..u32::try_from(i).unwrap_or(u32::MAX);
     }
 }
 
