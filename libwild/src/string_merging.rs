@@ -1115,7 +1115,7 @@ impl MergedStringStartAddresses {
             // We already have the offsets of each bucket relative to the start of the section. So
             // now we just need to add the section's start address to all of these.
             let base =
-                *internal_start_offsets.get(section_id.part_id_with_alignment::<P>(alignment::MIN));
+                internal_start_offsets.get(section_id.part_id_with_alignment::<P>(alignment::MIN));
             let bucket_offsets_out = addresses.get_mut(section_id);
             *bucket_offsets_out = sec.bucket_offsets;
             for offset in bucket_offsets_out {

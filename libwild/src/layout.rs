@@ -193,7 +193,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
 
     finalise_all_sizes::<P, A>(
         &mut group_states,
-        &output_sections,
         &atomic_per_symbol_flags,
         &finalise_sizes_resources,
     )?;
@@ -242,7 +241,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
 
     let got_relr_n = A::Platform::GOT_RELR_SECTION_ID
         .and_then(A::Platform::single_part_id)
-        .map_or(0, |part_id| *section_part_sizes.get(part_id) / 8);
+        .map_or(0, |part_id| section_part_sizes.get(part_id) / 8);
 
     let thunk_blocks = thunk_layout_builder
         .map(|builder| {
@@ -326,10 +325,12 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
     {
         let last_part_id =
             PartId::from_usize(last_section_id.part_id_range::<P>().end.as_usize() - 1);
+
         let extra_file_size = A::Platform::last_part_size_to_extend(
-            section_part_layouts.get(last_part_id),
+            &section_part_layouts.get(last_part_id),
             last_part_id,
         )?;
+
         if extra_file_size > 0 {
             section_part_sizes.increment(last_part_id, extra_file_size as u64);
 
@@ -661,7 +662,6 @@ fn update_dynamic_symbol_resolutions<'data, P: Platform>(
 
 fn finalise_all_sizes<'data, P: Platform, A: Arch<Platform = P>>(
     group_states: &mut [GroupState<'data, P>],
-    output_sections: &OutputSections<P>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     resources: &FinaliseSizesResources<'data, '_, P>,
 ) -> Result {
@@ -669,7 +669,7 @@ fn finalise_all_sizes<'data, P: Platform, A: Arch<Platform = P>>(
 
     group_states.par_iter_mut().try_for_each(|state| {
         verbose_timing_phase!("Finalise sizes for group");
-        state.finalise_sizes::<A>(output_sections, per_symbol_flags, resources)
+        state.finalise_sizes::<A>(per_symbol_flags, resources)
     })
 }
 
@@ -1065,7 +1065,7 @@ pub(crate) fn compute_allocations<P: Platform>(
     args: &P::Args,
 ) -> OutputSectionPartMap<u64> {
     let mut sizes =
-        OutputSectionPartMap::with_size(crate::part_id::regular_part_base::<P>().as_usize());
+        OutputSectionPartMap::with_dense_size(crate::part_id::regular_part_base::<P>().as_usize());
     P::allocate_resolution(resolution.flags, &mut sizes, output_kind, args);
     sizes
 }
@@ -1315,7 +1315,7 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
         .flatten()
         {
             if let Some(part_id) = P::single_part_id(section_id) {
-                memory_offsets.increment(part_id, *self.mem_sizes.get(part_id));
+                memory_offsets.increment(part_id, self.mem_sizes.get(part_id));
             }
         }
 
@@ -2164,8 +2164,7 @@ fn allocate_thunk_block_space<P: Platform>(
     let emit_symbols = !symbol_db.args.should_strip_all();
 
     for group_state in group_states.iter_mut() {
-        let mut extra_thunk_sizes: OutputSectionPartMap<u64> =
-            OutputSectionPartMap::with_size(total_sizes.num_parts());
+        let mut extra_thunk_sizes: OutputSectionPartMap<u64> = total_sizes.new_empty_like();
         for file in &group_state.files {
             if let FileLayoutState::Object(obj) = file
                 && let Some(config) = P::file_thunk_config(obj.object)
@@ -2488,17 +2487,11 @@ impl<'data, P: Platform> GroupState<'data, P> {
 
     fn finalise_sizes<A: Arch<Platform = P>>(
         &mut self,
-        output_sections: &OutputSections<P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
         for file_state in &mut self.files {
-            file_state.finalise_sizes::<A>(
-                &mut self.common,
-                output_sections,
-                per_symbol_flags,
-                resources,
-            )?;
+            file_state.finalise_sizes::<A>(&mut self.common, per_symbol_flags, resources)?;
         }
 
         self.common.validate_sizes()?;
@@ -2549,7 +2542,7 @@ impl<'data, P: Platform> GroupState<'data, P> {
                 let start = (memory_offsets.get(part_id)
                     - resources.section_layouts.get(section_id).mem_offset)
                     as u32;
-                memory_offsets.increment(part_id, *self.common.mem_sizes.get(part_id));
+                memory_offsets.increment(part_id, self.common.mem_sizes.get(part_id));
                 start
             });
 
@@ -2713,13 +2706,12 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
     fn finalise_sizes<A: Arch<Platform = P>>(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        output_sections: &OutputSections<P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
         match self {
             FileLayoutState::Object(s) => {
-                s.finalise_sizes(common, output_sections, per_symbol_flags, resources)?;
+                s.finalise_sizes(common, per_symbol_flags, resources)?;
                 s.finalise_symbol_sizes::<A>(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Dynamic(s) => {
@@ -3261,7 +3253,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         // Total section  sizes have already been computed. So any allocations we do need to update
         // both `total_sizes` and the size records in `common`. We track the extra sizes in
         // `extra_sizes` which we can then later add to both.
-        let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
+        let mut extra_sizes = common.mem_sizes.new_empty_like();
 
         self.determine_header_sizes(
             total_sizes,
@@ -3963,7 +3955,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
         total_sizes: &mut OutputSectionPartMap<u64>,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
-        let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
+        let mut extra_sizes = common.mem_sizes.new_empty_like();
         for sec in resources.script_sorted_sections {
             extra_sizes.increment(sec.part_id, sec.size);
         }
@@ -4372,11 +4364,9 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
     fn finalise_sizes(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        output_sections: &OutputSections<P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
-        common.mem_sizes.resize(output_sections.num_parts());
         if !resources.symbol_db.args.should_strip_all() {
             self.allocate_symtab_space(common, resources.symbol_db, per_symbol_flags)?;
         }
@@ -4432,7 +4422,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         for (slot, &part_id) in self.sections.iter_mut().zip(object_part_ids) {
             let resolution = match slot {
                 SectionSlot::Loaded(sec) => {
-                    let address = *memory_offsets.get(part_id);
+                    let address = memory_offsets.get(part_id);
 
                     // TODO: We probably need to be able to handle sections that are ifuncs and
                     // sections that need a TLS GOT struct.
@@ -4454,7 +4444,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                 },
 
                 &mut SectionSlot::LoadedDebugInfo(sec) => {
-                    let address = *memory_offsets.get(part_id);
+                    let address = memory_offsets.get(part_id);
                     *memory_offsets.get_mut(part_id) +=
                         sec.capacity(part_id, resources.output_sections);
                     SectionResolution { address }
@@ -5011,7 +5001,7 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
                                         object::SectionIndex(sec_idx),
                                         &symbol_db.section_part_ids,
                                     );
-                                    addresses[sec_idx] = *offsets.get(part_id);
+                                    addresses[sec_idx] = offsets.get(part_id);
                                     *offsets.get_mut(part_id) +=
                                         sec.capacity(part_id, output_sections);
                                 }
@@ -5114,8 +5104,7 @@ fn relaxation_scan_pass<'data, A: Arch>(
             .par_iter_mut()
             .enumerate()
             .map(|(group_idx, group)| {
-                let mut reductions =
-                    OutputSectionPartMap::with_size(section_part_sizes.num_parts());
+                let mut reductions = section_part_sizes.new_empty_like();
                 let mut file_rescans: Vec<SmallVec<[(usize, u64); 16]>> =
                     Vec::with_capacity(group.files.len());
 
@@ -5233,9 +5222,8 @@ fn relaxation_scan_pass<'data, A: Arch>(
     let mut total_deleted = 0u64;
     let mut next_rescan_candidates: RescanCandidates = Vec::with_capacity(group_results.len());
     for (reduction, file_rescans) in group_results {
-        for (idx, &amount) in reduction.parts.iter().enumerate() {
+        for (part_id, &amount) in reduction.iter() {
             if amount > 0 {
-                let part_id = PartId::from_usize(idx);
                 section_part_sizes.decrement(part_id, amount);
                 total_deleted += amount;
             }
@@ -5528,119 +5516,131 @@ fn compute_layout_sections<'data, P: Platform>(
                 }
                 lma_offset = mem_offset;
 
-                records_out[part_id_range.clone()]
-                    .iter_mut()
-                    .zip(&sizes[part_id_range.clone()])
-                    .enumerate()
-                    .try_for_each(|(offset, (part_layout, &part_size))| -> Result {
-                        let part_id = part_id_range.start.offset(offset);
-                        let alignment = part_id.alignment(output_sections).min(max_alignment);
-                        let merge_target = output_sections.primary_output_section(section_id);
-                        let section_flags = output_sections.section_flags(merge_target);
-                        let mem_size = if Some(section_id) == P::RELRO_PADDING_SECTION_ID {
-                            let page_alignment = args.loadable_segment_alignment();
-                            let aligned_offset = page_alignment.align_up(mem_offset);
-                            aligned_offset - mem_offset
-                        } else {
-                            part_size
-                        };
+                let mut is_first_part = true;
 
-                        // Note, we align up even if our size is zero, otherwise our section will
-                        // start at an unaligned address. We don't however align up for NOBITS
-                        // sections.
-                        if output_sections.has_data_in_file(merge_target) {
-                            file_offset = alignment.align_up_usize(file_offset);
-                        }
+                let merge_target = output_sections.primary_output_section(section_id);
+                let section_flags = output_sections.section_flags(merge_target);
 
-                        if section_flags.is_alloc() {
-                            if args.should_output_partial_object() {
-                                let file_size = if output_sections.has_data_in_file(merge_target) {
-                                    mem_size as usize
-                                } else {
-                                    0
-                                };
+                let mut part_sizes = sizes
+                    .in_range(part_id_range.clone())
+                    .map(|(id, &size)| (id, size))
+                    .peekable();
 
-                                let section_id = part_id.output_section_id::<P>();
-                                let part_mem_offset =
-                                    alignment.align_up(*reloc_alloc_mem_offsets.get(section_id));
-                                *reloc_alloc_mem_offsets.get_mut(section_id) =
-                                    part_mem_offset + mem_size;
+                // For sections with only empty parts, make sure we run the loop below at least once
+                // so as to properly initialise the section's layout.
+                let empty_part = part_sizes
+                    .peek()
+                    .is_none()
+                    .then_some((part_id_range.start, 0));
 
-                                *part_layout = OutputRecordLayout {
-                                    file_size,
-                                    mem_size,
-                                    alignment,
-                                    file_offset,
-                                    mem_offset: part_mem_offset,
-                                    lma_offset: part_mem_offset,
-                                };
+                for (part_id, part_size) in part_sizes.chain(empty_part) {
+                    let part_layout = records_out.get_mut(part_id);
+                    let alignment = part_id.alignment(output_sections).min(max_alignment);
+                    let mem_size = if Some(section_id) == P::RELRO_PADDING_SECTION_ID {
+                        let page_alignment = args.loadable_segment_alignment();
+                        let aligned_offset = page_alignment.align_up(mem_offset);
+                        aligned_offset - mem_offset
+                    } else {
+                        part_size
+                    };
 
-                                file_offset += file_size;
+                    // Note, we align up even if our size is zero, otherwise our section will
+                    // start at an unaligned address. We don't however align up for NOBITS
+                    // sections.
+                    if output_sections.has_data_in_file(merge_target) {
+                        file_offset = alignment.align_up_usize(file_offset);
+                    }
+
+                    if section_flags.is_alloc() {
+                        if args.should_output_partial_object() {
+                            let file_size = if output_sections.has_data_in_file(merge_target) {
+                                mem_size as usize
                             } else {
-                                mem_offset = alignment.align_up(mem_offset);
-                                lma_offset = alignment.align_up(lma_offset);
+                                0
+                            };
 
-                                let file_size = if output_sections.has_data_in_file(merge_target) {
-                                    mem_size as usize
-                                } else {
-                                    0
-                                };
-
-                                *part_layout = OutputRecordLayout {
-                                    file_size,
-                                    mem_size,
-                                    alignment,
-                                    file_offset,
-                                    mem_offset,
-                                    lma_offset,
-                                };
-
-                                file_offset += file_size;
-                                mem_offset += mem_size;
-                                lma_offset += mem_size;
-                            }
-                        } else {
                             let section_id = part_id.output_section_id::<P>();
-                            let mem_offset =
-                                alignment.align_up(*nonalloc_mem_offsets.get(section_id));
-
-                            *nonalloc_mem_offsets.get_mut(section_id) += mem_size;
+                            let part_mem_offset =
+                                alignment.align_up(*reloc_alloc_mem_offsets.get(section_id));
+                            *reloc_alloc_mem_offsets.get_mut(section_id) =
+                                part_mem_offset + mem_size;
 
                             *part_layout = OutputRecordLayout {
-                                file_size: mem_size as usize,
+                                file_size,
+                                mem_size,
+                                alignment,
+                                file_offset,
+                                mem_offset: part_mem_offset,
+                                lma_offset: part_mem_offset,
+                            };
+
+                            file_offset += file_size;
+                        } else {
+                            mem_offset = alignment.align_up(mem_offset);
+                            lma_offset = alignment.align_up(lma_offset);
+
+                            let file_size = if output_sections.has_data_in_file(merge_target) {
+                                mem_size as usize
+                            } else {
+                                0
+                            };
+
+                            *part_layout = OutputRecordLayout {
+                                file_size,
                                 mem_size,
                                 alignment,
                                 file_offset,
                                 mem_offset,
-                                lma_offset: mem_offset,
+                                lma_offset,
                             };
-                            file_offset += mem_size as usize;
-                        }
-                        layout_section_from_part_layouts(
-                            part_layout,
-                            section_layouts.get_mut(section_id),
-                            section_info,
-                            offset == 0,
-                        );
 
-                        if let Some(expr) = section_info
-                            .location_info
-                            .as_ref()
-                            .and_then(|info| info.at_location.as_ref())
-                        {
-                            lma_offset = expression_eval(
-                                expr,
-                                &SymbolLoc::None,
-                                memory_regions,
-                                &section_layouts,
-                                &resolved_lc,
-                            )?;
-                            part_layout.lma_offset = lma_offset;
-                            let section_layout = section_layouts.get_mut(section_id);
-                            section_layout.lma_offset = lma_offset;
+                            file_offset += file_size;
+                            mem_offset += mem_size;
+                            lma_offset += mem_size;
                         }
-                        Ok(())
-                    })?;
+                    } else {
+                        let section_id = part_id.output_section_id::<P>();
+                        let mem_offset = alignment.align_up(*nonalloc_mem_offsets.get(section_id));
+
+                        *nonalloc_mem_offsets.get_mut(section_id) += mem_size;
+
+                        *part_layout = OutputRecordLayout {
+                            file_size: mem_size as usize,
+                            mem_size,
+                            alignment,
+                            file_offset,
+                            mem_offset,
+                            lma_offset: mem_offset,
+                        };
+                        file_offset += mem_size as usize;
+                    }
+
+                    layout_section_from_part_layouts(
+                        part_layout,
+                        section_layouts.get_mut(section_id),
+                        section_info,
+                        is_first_part,
+                    );
+
+                    if let Some(expr) = section_info
+                        .location_info
+                        .as_ref()
+                        .and_then(|info| info.at_location.as_ref())
+                    {
+                        lma_offset = expression_eval(
+                            expr,
+                            &SymbolLoc::None,
+                            memory_regions,
+                            &section_layouts,
+                            &resolved_lc,
+                        )?;
+                        part_layout.lma_offset = lma_offset;
+                        let section_layout = section_layouts.get_mut(section_id);
+                        section_layout.lma_offset = lma_offset;
+                    }
+
+                    is_first_part = false;
+                }
 
                 if let Some(region_name) = section_info.region_name
                     && let Some(region) = memory_regions.get_mut(region_name)

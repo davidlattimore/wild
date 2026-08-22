@@ -5,10 +5,9 @@ use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSections;
 use crate::part_id::PartId;
 use crate::platform::Platform;
+use std::collections::BTreeMap;
 use std::mem::take;
 use std::ops::AddAssign;
-use std::ops::Index;
-use std::ops::IndexMut;
 use std::ops::Range;
 
 /// A map from each part of each output section to some value. Different sections are split into
@@ -22,42 +21,93 @@ pub(crate) struct OutputSectionPartMap<T> {
     // This may be due to an extra pointer indirection and/or bounds checking. Experiment with
     // storing all our built-in parts in an array.
     #[debug(skip)]
-    pub(crate) parts: Vec<T>,
+    parts: Vec<T>,
+
+    #[debug(skip)]
+    sparse: Option<Box<SparsePartMap<T>>>,
+}
+
+#[derive(Clone, PartialEq, Eq, Default)]
+struct SparsePartMap<T> {
+    contents: BTreeMap<PartId, T>,
 }
 
 impl<T: Default> OutputSectionPartMap<T> {
-    pub(crate) fn with_size(size: usize) -> Self {
+    pub(crate) fn with_dense_size(size: usize) -> Self {
         let mut parts = Vec::new();
         parts.resize_with(size, Default::default);
-        Self { parts }
+        Self {
+            parts,
+            sparse: None,
+        }
     }
 }
 
-impl<T> Index<Range<PartId>> for OutputSectionPartMap<T> {
-    type Output = [T];
+pub(crate) enum RangeIterator<'a, T> {
+    Dense(PartId, &'a [T]),
+    Sparse(std::collections::btree_map::Range<'a, PartId, T>),
+}
 
-    fn index(&self, index: Range<PartId>) -> &Self::Output {
-        &self.parts[index.start.as_usize()..index.end.as_usize()]
+impl<'a, T> Iterator for RangeIterator<'a, T> {
+    type Item = (PartId, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            RangeIterator::Dense(part_id, items) => {
+                let item = items.split_off_first()?;
+                let id = *part_id;
+                *part_id = part_id.offset(1);
+                Some((id, item))
+            }
+            RangeIterator::Sparse(range) => range.next().map(|(&id, item)| (id, item)),
+        }
     }
 }
 
-impl<T> IndexMut<Range<PartId>> for OutputSectionPartMap<T> {
-    fn index_mut(&mut self, index: Range<PartId>) -> &mut Self::Output {
-        &mut self.parts[index.start.as_usize()..index.end.as_usize()]
-    }
-}
-
-impl<T> OutputSectionPartMap<T> {
-    pub(crate) fn num_parts(&self) -> usize {
-        self.parts.len()
+impl<T: Default> OutputSectionPartMap<T> {
+    pub(crate) fn new_empty_like<U: Default>(&self) -> OutputSectionPartMap<U> {
+        OutputSectionPartMap::with_dense_size(self.parts.len())
     }
 
     pub(crate) fn get_mut(&mut self, part_id: PartId) -> &mut T {
-        &mut self.parts[part_id.as_usize()]
+        self.parts.get_mut(part_id.as_usize()).unwrap_or_else(|| {
+            self.sparse
+                .get_or_insert_default()
+                .contents
+                .entry(part_id)
+                .or_default()
+        })
     }
 
-    pub(crate) fn get(&self, part_id: PartId) -> &T {
-        &self.parts[part_id.as_usize()]
+    /// Note, range must be either entirely dense or entirely sparse. Itended use-case is to get all
+    /// parts for a single section.
+    pub(crate) fn in_range(&self, range: Range<PartId>) -> RangeIterator<'_, T> {
+        if let Some(values) = self.parts.get(range.start.as_usize()..range.end.as_usize()) {
+            RangeIterator::Dense(range.start, values)
+        } else if let Some(sparse) = self.sparse.as_ref() {
+            RangeIterator::Sparse(sparse.contents.range(range))
+        } else {
+            RangeIterator::Sparse(Default::default())
+        }
+    }
+
+    pub(crate) fn values_in_range(&self, range: Range<PartId>) -> impl Iterator<Item = &T> {
+        self.in_range(range).map(|(_, v)| v)
+    }
+}
+
+impl<T: Default + Copy> OutputSectionPartMap<T> {
+    pub(crate) fn get(&self, part_id: PartId) -> T {
+        self.parts
+            .get(part_id.as_usize())
+            .copied()
+            .unwrap_or_else(|| {
+                self.sparse
+                    .as_ref()
+                    .and_then(|sparse| sparse.contents.get(&part_id))
+                    .copied()
+                    .unwrap_or_default()
+            })
     }
 }
 
@@ -96,6 +146,15 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
                 .enumerate()
                 .map(|(i, value)| cb(PartId::from_usize(i), value))
                 .collect(),
+            sparse: self.sparse.as_ref().map(|sparse| {
+                Box::new(SparsePartMap {
+                    contents: sparse
+                        .contents
+                        .iter()
+                        .map(|(id, value)| (*id, cb(*id, value)))
+                        .collect(),
+                })
+            }),
         }
     }
 
@@ -110,7 +169,10 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
     ) -> OutputSectionPartMap<U> {
         let mut parts_out = Vec::new();
         parts_out.resize_with(self.parts.len(), U::default);
-        let mut output = OutputSectionPartMap { parts: parts_out };
+        let mut output = OutputSectionPartMap {
+            parts: parts_out,
+            sparse: None,
+        };
 
         for event in output_order {
             let OrderEvent::Section(section_id) = event else {
@@ -119,15 +181,11 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
 
             let part_id_range = section_id.part_id_range::<P>();
             let max_alignment = self.max_alignment(part_id_range.clone(), output_sections);
-            output[part_id_range.clone()]
-                .iter_mut()
-                .zip(&self[part_id_range.clone()])
-                .enumerate()
-                .for_each(|(offset, (out, input))| {
-                    let part_id = part_id_range.start.offset(offset);
-                    let alignment = part_id.alignment(output_sections).min(max_alignment);
-                    *out = cb(part_id, alignment, input);
-                });
+
+            for (part_id, input) in self.in_range(part_id_range.clone()) {
+                let alignment = part_id.alignment(output_sections).min(max_alignment);
+                *output.get_mut(part_id) = cb(part_id, alignment, input);
+            }
         }
 
         output
@@ -141,11 +199,10 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
         range: Range<PartId>,
         output_sections: &OutputSections<P>,
     ) -> Alignment {
-        self[range.clone()]
-            .iter()
-            .position(|p| *p != T::default())
-            .map_or(alignment::MIN, |o| {
-                range.start.offset(o).alignment(output_sections)
+        self.in_range(range.clone())
+            .find(|(_, value)| **value != T::default())
+            .map_or(alignment::MIN, |(part_id, _)| {
+                part_id.alignment(output_sections)
             })
             .max(
                 range
@@ -158,7 +215,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
     /// Zip mutable references to values in `self` with shared references from `other` producing a
     /// new map with the returned values. For custom sections, `other` must be a subset of `self`.
     /// Values not in `other` will not be in the returned map.
-    fn mut_with_map<U, V: Default>(
+    fn mut_with_map<U: Default, V: Default>(
         &mut self,
         other: &OutputSectionPartMap<U>,
         mut cb: impl FnMut(&mut T, &U) -> V,
@@ -170,23 +227,60 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             .map(|(t, u)| cb(t, u))
             .collect();
 
-        OutputSectionPartMap { parts }
-    }
-}
+        let Some(other_sparse) = other.sparse.as_ref() else {
+            return OutputSectionPartMap {
+                parts,
+                sparse: None,
+            };
+        };
 
-impl<T: Default> OutputSectionPartMap<T> {
-    pub(crate) fn resize(&mut self, num_parts: usize) {
-        self.parts.resize_with(num_parts, Default::default);
+        let self_sparse = self.sparse.get_or_insert_with(|| {
+            Box::new(SparsePartMap {
+                contents: BTreeMap::new(),
+            })
+        });
+
+        let contents = other_sparse
+            .contents
+            .iter()
+            .map(|(part_id, right_value)| {
+                let left_value = self_sparse.contents.entry(*part_id).or_default();
+                (*part_id, cb(left_value, right_value))
+            })
+            .collect();
+
+        OutputSectionPartMap {
+            parts,
+            sparse: Some(Box::new(SparsePartMap { contents })),
+        }
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (PartId, &T)> {
+        self.parts
+            .iter()
+            .enumerate()
+            .map(|(i, value)| (PartId::from_usize(i), value))
+            .chain(
+                self.sparse
+                    .as_ref()
+                    .map(|sparse| sparse.contents.iter())
+                    .unwrap_or_default()
+                    .map(|(part_id, value)| (*part_id, value)),
+            )
     }
 }
 
 impl<T: AddAssign + Copy + Default> OutputSectionPartMap<T> {
     pub(crate) fn merge(&mut self, rhs: &Self) {
-        if self.num_parts() < rhs.num_parts() {
-            self.resize(rhs.num_parts());
-        }
         for (left, right) in self.parts.iter_mut().zip(rhs.parts.iter()) {
             *left += *right;
+        }
+
+        if let Some(rhs_sparse) = rhs.sparse.as_ref() {
+            let lhs_sparse = self.sparse.get_or_insert_default();
+            for (part_id, right) in &rhs_sparse.contents {
+                *lhs_sparse.contents.entry(*part_id).or_default() += *right;
+            }
         }
     }
 }
@@ -214,17 +308,21 @@ fn test_merge_parts() {
             &[],
         )
         .unwrap();
-    let mut expected_sum_of_sums = 0;
-    let all_1 = output_sections.new_part_map::<u32>().output_order_map(
-        &output_order,
-        &output_sections,
-        |_, _, _| {
-            expected_sum_of_sums += 1;
-            1
-        },
-    );
 
-    let num_regular_sections = output_sections.num_regular_sections();
+    let mut part_map = output_sections.new_part_map::<u32>();
+    for (section_id, _) in output_sections.ids_with_info() {
+        if section_id.is_custom::<Elf64>() {
+            let _ =
+                part_map.get_mut(section_id.part_id_with_alignment::<Elf64>(crate::alignment::MIN));
+        }
+    }
+
+    let mut expected_sum_of_sums = 0;
+    let all_1 = part_map.output_order_map(&output_order, &output_sections, |_, _, _| {
+        expected_sum_of_sums += 1;
+        1
+    });
+
     let mut num_sections_with_all_alignments = 0;
 
     let mut sum_of_1s = output_sections.new_section_map::<u32>();
@@ -235,7 +333,7 @@ fn test_merge_parts() {
             return;
         }
         let range = section_id.part_id_range::<Elf64>();
-        *sum = all_1[range].iter().sum();
+        *sum = all_1.values_in_range(range).sum();
     });
 
     let mut sum_of_sums = 0;
@@ -244,15 +342,27 @@ fn test_merge_parts() {
         if *sum == crate::alignment::NUM_ALIGNMENTS as u32 {
             num_sections_with_all_alignments += 1;
         }
+
         let unsupported_single_part = !section_id.is_regular::<Elf64>()
             && <Elf64 as crate::platform::Platform>::single_part_id(section_id).is_none();
-        if section_id == crate::output_section_id::UNMAPPED || unsupported_single_part {
-            assert!(*sum == 0, "Expected zero sum for section {section_id:?}");
-        } else {
-            assert!(*sum > 0, "Expected non-zero sum for section {section_id:?}");
-        }
+
+        let expected =
+            if section_id == crate::output_section_id::UNMAPPED || unsupported_single_part {
+                0
+            } else if section_id.is_custom::<Elf64>() {
+                1
+            } else if section_id.is_regular::<Elf64>() {
+                crate::alignment::NUM_ALIGNMENTS as u32
+            } else {
+                1
+            };
+
+        assert_eq!(*sum, expected, "Unexpected sum for section {section_id:?}");
     });
-    assert_eq!(num_regular_sections, num_sections_with_all_alignments);
+    assert_eq!(
+        <Elf64 as Platform>::NUM_BUILT_IN_REGULAR_SECTIONS,
+        num_sections_with_all_alignments
+    );
     assert_eq!(sum_of_sums, expected_sum_of_sums);
 
     let mut headers_only = output_sections.new_part_map::<u32>();
@@ -266,7 +376,7 @@ fn test_merge_parts() {
             return;
         }
         let range = section_id.part_id_range::<Elf64>();
-        *sum = headers_only[range].iter().sum();
+        *sum = headers_only.values_in_range(range).sum();
     });
 
     assert_eq!(*merged.get(crate::output_section_id::FILE_HEADER), 42);
@@ -296,18 +406,6 @@ fn test_merge() {
     assert_eq!(input1, expected);
 }
 
-#[test]
-fn test_merge_with_custom_sections() {
-    let output_sections =
-        crate::output_section_id::OutputSections::<crate::elf::Elf64>::for_testing();
-    let mut m1 = output_sections.new_part_map::<u32>();
-    let mut m2 = output_sections.new_part_map::<u32>();
-    assert_eq!(m2.num_parts(), output_sections.num_parts());
-    m2.resize(output_sections.num_parts() + 2);
-    m1.merge(&m2);
-    assert_eq!(m1.num_parts(), output_sections.num_parts() + 2);
-}
-
 /// output_order_map and `OutputSections::sections_and_segments_events` used to each independently
 /// define the output order. This test made sure that they were consistent. Now the former uses the
 /// latter, so this test is less important. It's kept for the time being anyway.
@@ -327,7 +425,17 @@ fn test_output_order_map_consistent() {
             &[],
         )
         .unwrap();
-    let part_map = output_sections.new_part_map::<u32>();
+    let mut part_map = output_sections.new_part_map::<u32>();
+
+    let custom_sections = output_sections
+        .ids_with_info()
+        .map(|(section_id, _)| section_id)
+        .filter(|section_id| section_id.is_custom::<Elf64>())
+        .collect_vec();
+
+    for section_id in custom_sections.into_iter().rev() {
+        let _ = part_map.get_mut(section_id.part_id_with_alignment::<Elf64>(crate::alignment::MIN));
+    }
 
     // First, make sure that all our built-in part-ids are here. If they're not, we'd fail anyway,
     // but we can give a much better failure message if we check first.

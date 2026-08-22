@@ -360,7 +360,7 @@ fn build_regular_debug_section<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         .group_layouts
         .iter()
         .map(|group| {
-            let size: usize = group.file_sizes[part_range.clone()].iter().sum();
+            let size: usize = group.file_sizes.values_in_range(part_range.clone()).sum();
             let group_buf = remaining.split_off_mut(..size).unwrap();
             (group, group_buf)
         })

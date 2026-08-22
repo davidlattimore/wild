@@ -185,7 +185,7 @@ impl ThunkLayoutBuilder {
                 (0..section_id.num_parts::<P>()).map(move |i| base.offset(i))
             })
             .filter(|&part_id| part_id != self.primary_function_part_id)
-            .map(|part_id| *section_part_sizes.get(part_id))
+            .map(|part_id| section_part_sizes.get(part_id))
             .sum();
         non_primary_text_bytes
     }
