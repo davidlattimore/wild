@@ -4254,7 +4254,7 @@ fn note_undefined_data_from_reloc(
     symbol_db: &SymbolDb<'_, Wasm>,
     reloc: &WasmRelocation,
     seen: &mut HashSet<(String, String)>,
-    errors: &mut Vec<String>,
+    errors: &mut Vec<(String, String)>,
 ) -> Result {
     if reloc.ty == RelocationType::TypeIndexLeb {
         return Ok(());
@@ -4282,7 +4282,7 @@ fn note_undefined_data_from_reloc(
         );
     };
     if seen.insert((file_display.clone(), name.to_owned())) {
-        errors.push(format!("{file_display}: undefined symbol: {name}"));
+        errors.push((file_display, name.to_owned()));
     }
     Ok(())
 }
@@ -4297,7 +4297,7 @@ struct ObjectRelocScan {
     needs_memory_base: bool,
     needs_table_base: bool,
     needs_table: bool,
-    undefined_data_errors: Vec<String>,
+    undefined_data_errors: Vec<(String, String)>,
 }
 
 fn scan_object_layout_relocations(
@@ -4436,13 +4436,18 @@ fn scan_layout_relocations(
     let mut needs_table = false;
     let mut table_index_symbol_indices = vec![Vec::new(); layout_inputs.len()];
     let mut undefined_data_errors: Vec<String> = Vec::new();
+    let mut seen_undefined_data: HashSet<(String, String)> = HashSet::new();
 
     for (obj_idx, scan) in object_scans.into_iter().enumerate() {
         let scan = scan?;
         needs_memory_base |= scan.needs_memory_base;
         needs_table_base |= scan.needs_table_base;
         needs_table |= scan.needs_table;
-        undefined_data_errors.extend(scan.undefined_data_errors);
+        for key in scan.undefined_data_errors {
+            if seen_undefined_data.insert(key.clone()) {
+                undefined_data_errors.push(format!("{}: undefined symbol: {}", key.0, key.1));
+            }
+        }
         table_index_symbol_indices[obj_idx] = scan.table_syms;
 
         for def_id in scan.got_mem_first {
