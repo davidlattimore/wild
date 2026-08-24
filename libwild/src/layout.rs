@@ -1261,7 +1261,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for SyntheticSymbolsLayo
 pub(crate) struct CommonGroupState<'data, P: Platform> {
     mem_sizes: OutputSectionPartMap<u64>,
 
-    section_attributes: OutputSectionMap<Option<P::SectionAttributes>>,
+    section_attributes: HashMap<OutputSectionId, P::SectionAttributes>,
 
     /// Dynamic symbols that need to be defined. Because of the ordering requirements for symbol
     /// hashes, these get defined by the epilogue. The object on which a particular dynamic symbol
@@ -1276,7 +1276,7 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
     fn new(output_sections: &OutputSections<P>) -> Self {
         Self {
             mem_sizes: output_sections.new_part_map(),
-            section_attributes: output_sections.new_section_map(),
+            section_attributes: Default::default(),
             dynamic_symbol_definitions: Default::default(),
             format_specific: Default::default(),
         }
@@ -1327,16 +1327,18 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
     }
 
     fn store_section_attributes(&mut self, part_id: PartId, header: &P::SectionHeader) {
-        let existing_attributes = self
-            .section_attributes
-            .get_mut(part_id.output_section_id::<P>());
-
         let new_attributes = P::section_attributes(header);
 
-        if let Some(existing) = existing_attributes {
-            existing.merge(new_attributes);
-        } else {
-            *existing_attributes = Some(new_attributes);
+        match self
+            .section_attributes
+            .entry(part_id.output_section_id::<P>())
+        {
+            hashbrown::hash_map::Entry::Occupied(occupied_entry) => {
+                occupied_entry.into_mut().merge(new_attributes);
+            }
+            hashbrown::hash_map::Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert(new_attributes);
+            }
         }
     }
 }
@@ -2199,10 +2201,9 @@ fn propagate_section_attributes<'data, P: Platform>(
         group_state
             .common
             .section_attributes
-            .for_each(|section_id, attributes| {
-                if let Some(attributes) = attributes {
-                    attributes.apply(output_sections, section_id);
-                }
+            .iter()
+            .for_each(|(&section_id, attributes)| {
+                attributes.apply(output_sections, section_id);
             });
     }
 }
