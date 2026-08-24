@@ -75,6 +75,7 @@ jobs:
           persist-credentials: false
           submodules: recursive
       - uses: Swatinem/rust-cache@v2
+      - run: echo "WILD_TEST_CONFIG=test-config-ci.toml" >> $GITHUB_ENV
       - name: Check regressions
         run: WILD_TEST_CROSS=all cargo test --features external_tests external_test_suites -- --skip expect_failure
       - name: Check tests that should fail still fail
