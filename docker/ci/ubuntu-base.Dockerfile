@@ -23,6 +23,7 @@ RUN apt-get update \
         git \
         lld \
         llvm \
+        llvm-tools \
         perl \
         wget \
         xz-utils \
