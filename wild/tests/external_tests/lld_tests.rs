@@ -127,12 +127,6 @@ fn run_lld_test(test_file: &Path, test_config: &TestConfig) -> Result {
     let tmpdir = tempfile::tempdir()?;
 
     for cmd in extract_run_lines(&content) {
-        // Ubuntu's LLVM packages don't provide an unversioned `not` executable, so use
-        // the shell's negation operator instead.
-        let cmd = match cmd.strip_prefix("not ") {
-            Some(cmd) => format!("! {cmd}"),
-            None => cmd,
-        };
         let cmd = substitute_vars(&cmd, test_file, tmpdir.path());
         let cmd = substitute_tools(&cmd);
         execute_command(&cmd, test_config)?;
