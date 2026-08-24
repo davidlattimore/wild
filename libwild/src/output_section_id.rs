@@ -456,13 +456,14 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         self.section_infos.iter()
     }
 
-    pub(crate) fn num_parts(&self) -> usize {
-        crate::part_id::regular_part_base::<P>().as_usize()
-            + (self.num_sections() - regular_section_base::<P>().as_usize()) * NUM_ALIGNMENTS
-    }
-
+    // TODO: Experiment with adjusting the balance between dense and sparse sections. If we decide
+    // not to make it dynamic, then remove this method and construct part maps more directly.
+    #[allow(clippy::unused_self)]
     pub(crate) fn new_part_map<T: Default>(&self) -> OutputSectionPartMap<T> {
-        OutputSectionPartMap::with_size(self.num_parts())
+        OutputSectionPartMap::with_dense_size(
+            P::NUM_SINGLE_PART_SECTIONS as usize
+                + P::NUM_BUILT_IN_REGULAR_SECTIONS * NUM_ALIGNMENTS,
+        )
     }
 
     pub(crate) fn new_section_map<T: Default>(&self) -> OutputSectionMap<T> {

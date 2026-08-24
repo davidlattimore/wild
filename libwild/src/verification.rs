@@ -77,8 +77,7 @@ impl OffsetVerifier {
     }
 
     fn alignments_ok<P: Platform>(&self, output_sections: &OutputSections<P>) -> bool {
-        self.sizes.parts.iter().enumerate().all(|(i, size)| {
-            let part_id = PartId::from_usize(i);
+        self.sizes.iter().all(|(part_id, size)| {
             size.is_multiple_of(part_id.alignment(output_sections).value())
                 || should_ignore_alignment::<P>(part_id)
         })

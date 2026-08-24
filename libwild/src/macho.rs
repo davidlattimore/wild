@@ -2059,13 +2059,13 @@ pub(crate) struct ResolutionExt {
 }
 
 fn allocate_got(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
-    let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT)).unwrap();
+    let got_address = NonZeroU64::new(memory_offsets.get(part_id::GOT)).unwrap();
     memory_offsets.increment(part_id::GOT, GOT_ENTRY_SIZE);
     got_address
 }
 
 fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
-    let plt_address = NonZeroU64::new(*memory_offsets.get(part_id::PLT_GOT)).unwrap();
+    let plt_address = NonZeroU64::new(memory_offsets.get(part_id::PLT_GOT)).unwrap();
     memory_offsets.increment(part_id::PLT_GOT, PLT_ENTRY_SIZE);
     plt_address
 }
