@@ -63,7 +63,7 @@ jobs:
       - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
 
   external-tests:
-    name: Test Linux (mold tests)
+    name: Test Linux (external tests)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
@@ -76,9 +76,9 @@ jobs:
           submodules: recursive
       - uses: Swatinem/rust-cache@v2
       - name: Check regressions
-        run: WILD_TEST_CROSS=all cargo test --features mold_tests external_test_suites/mold -- --skip expect_failure
+        run: WILD_TEST_CROSS=all cargo test --features external_tests external_test_suites -- --skip expect_failure
       - name: Check tests that should fail still fail
-        run: WILD_TEST_CROSS=all cargo test --features mold_tests expect_failure
+        run: WILD_TEST_CROSS=all cargo test --features external_tests expect_failure
 
   linux-cross-build:
     name: Build Linux (${{ matrix.arch }})
