@@ -377,12 +377,13 @@ pub(crate) struct WasmRelocSection {
 
 impl WasmRelocSection {
     pub(crate) fn decode_entries(&self, data: &[u8]) -> Result<Vec<WasmRelocation>> {
-        let start = self.payload_range.start as usize;
-        let end = self.payload_range.end as usize;
         let payload = data
-            .get(start..end)
+            .get(self.payload_range.start as usize..self.payload_range.end as usize)
             .ok_or_else(|| crate::error!("Wasm reloc section payload range out of bounds"))?;
-        let reader = wasmparser::RelocSectionReader::new(BinaryReader::new(payload, start))?;
+        let reader = wasmparser::RelocSectionReader::new(BinaryReader::new(
+            payload,
+            u64::from(self.payload_range.start),
+        ))?;
         reader
             .entries()
             .into_iter()
@@ -649,7 +650,7 @@ impl<'data> File<'data> {
         let payload = self.data.get(header.payload_range_usize())?;
         Some(BinaryReader::new(
             payload,
-            header.payload_range.start as usize,
+            u64::from(header.payload_range.start),
         ))
     }
 
@@ -755,6 +756,7 @@ impl<'data> File<'data> {
             .map(|res| {
                 res.map(|body| {
                     let range = body.range();
+                    let range = range.start as usize..range.end as usize;
                     WasmFunctionBody {
                         bytes: Cow::Borrowed(&self.data[range.clone()]),
                         code_offset: range.start as u32 - code_payload_start,
@@ -7076,7 +7078,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         if let Payload::CustomSection(reader) = &payload {
             let section_name = reader.name();
             let name_end = reader.data_offset();
-            let name_start = name_end - section_name.len();
+            let name_start = name_end as usize - section_name.len();
             name_range = Some(name_start as u32..name_end as u32);
 
             if section_name == LINKING_SECTION_NAME {
@@ -7165,7 +7167,7 @@ fn count_function_and_global_imports(
         .ok_or_else(|| crate::error!("Wasm import section payload out of bounds"))?;
     let reader = ImportSectionReader::new(BinaryReader::new(
         payload,
-        header.payload_range.start as usize,
+        u64::from(header.payload_range.start),
     ))?;
     let mut num_function_imports = 0u32;
     let mut num_global_imports = 0u32;
@@ -7202,7 +7204,7 @@ fn section_entry_count(
     let payload = data
         .get(header.payload_range_usize())
         .ok_or_else(|| crate::error!("Wasm section payload out of bounds"))?;
-    let mut reader = BinaryReader::new(payload, header.payload_range.start as usize);
+    let mut reader = BinaryReader::new(payload, u64::from(header.payload_range.start));
     Ok(reader.read_var_u32()?)
 }
 
