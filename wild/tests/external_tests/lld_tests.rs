@@ -71,7 +71,7 @@ pub(crate) fn collect_tests(
             // follow-up PR.
             if !SUPPORTED_ARCHS
                 .iter()
-                .any(|(prefix, _)| file_name.starts_with(&format!("{prefix}-")))
+                .any(|(prefix, _)| file_name.starts_with(prefix))
             {
                 continue;
             }
@@ -202,7 +202,7 @@ fn substitute_vars(cmd: &str, test_file: &Path, tmpdir: &Path) -> String {
 fn architecture_for_test_file(file_name: &str) -> Option<crate::Architecture> {
     SUPPORTED_ARCHS
         .iter()
-        .find(|(prefix, _)| file_name.starts_with(&format!("{prefix}-")))
+        .find(|(prefix, _)| file_name.starts_with(prefix))
         .map(|(_, arch)| *arch)
 }
 

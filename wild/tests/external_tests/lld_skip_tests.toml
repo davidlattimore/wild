@@ -100,7 +100,7 @@ reason = "Uses split-file, not yet supported by this harness (TODO: follow-up PR
 tests = ["x86-64-section-layout.s"]
 
 [skipped_groups.aarch64_untriaged]
-reason = "aarch64 support newly activated in this PR; failures below haven't been triaged into individual root-cause categories yet. Each will be split into a proper category (or fixed) in a follow-up PR."
+reason = "aarch64 support newly activated; failures not yet triaged into individual root-cause categories"
 tests = [
   "aarch64-abs16.s",
   "aarch64-abs32-dyn.s",
