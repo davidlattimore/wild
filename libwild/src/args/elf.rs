@@ -234,6 +234,7 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "undefined-version",
     "sort-common",
     "stats",
+    "verbose",
 ];
 const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
     "(",

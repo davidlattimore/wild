@@ -126,7 +126,6 @@ tests = [
   "aarch64-cortex-a53-843419-address.s",
   "aarch64-cortex-a53-843419-large2.s",
   "aarch64-cortex-a53-843419-large.s",
-  "aarch64-cortex-a53-843419-nopatch.s",
   "aarch64-cortex-a53-843419-recognize.s",
   "aarch64-cortex-a53-843419-thunk-align.s",
   "aarch64-cortex-a53-843419-thunk-range.s",
