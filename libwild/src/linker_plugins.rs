@@ -1156,7 +1156,7 @@ unsafe extern "C" {
         str: *mut std::ffi::c_char,
         n: usize,
         format: *const std::ffi::c_char,
-        ap: core::ffi::VaList<'_>,
+        ...
     ) -> std::ffi::c_int;
 }
 
