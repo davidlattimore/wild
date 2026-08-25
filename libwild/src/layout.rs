@@ -344,8 +344,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         }
     }
 
-    let mut merged_section_layouts = section_layouts.clone();
-    merge_secondary_parts(&output_sections, &mut merged_section_layouts);
+    let merged_section_layouts = merge_secondary_parts(&output_sections, &section_layouts);
 
     let Some(FileLayoutState::Prelude(internal)) =
         &group_states.first().and_then(|g| g.files.first())
@@ -1795,12 +1794,16 @@ fn layout_section_from_part_layouts<'data, P: Platform>(
 
 pub(crate) fn merge_secondary_parts<P: Platform>(
     output_sections: &OutputSections<P>,
-    section_layouts: &mut OutputSectionMap<OutputRecordLayout>,
-) {
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+) -> OutputSectionMap<OutputRecordLayout> {
+    verbose_timing_phase!("Merge secondary parts");
+
+    let mut merged = section_layouts.clone();
+
     for (id, info) in output_sections.ids_with_info() {
         if let SectionKind::Secondary(primary_id) = info.kind {
-            let secondary_layout = take(section_layouts.get_mut(id));
-            let primary = section_layouts.get_mut(primary_id);
+            let secondary_layout = take(merged.get_mut(id));
+            let primary = merged.get_mut(primary_id);
             let has_location_counters = info
                 .location_info
                 .as_ref()
@@ -1822,6 +1825,8 @@ pub(crate) fn merge_secondary_parts<P: Platform>(
             }
         }
     }
+
+    merged
 }
 
 fn compute_start_offsets_by_group<P: Platform>(
@@ -5331,6 +5336,8 @@ fn compute_layout_sections<'data, P: Platform>(
         args,
         output_sections,
     );
+
+    timing_phase!("Layout sections");
 
     let mut section_layouts = OutputSectionMap::with_size(output_sections.num_sections());
 
