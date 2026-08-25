@@ -33,9 +33,12 @@ static SKIP_TESTS_NAME: OnceLock<Option<Vec<String>>> = OnceLock::new();
 
 const PREFIX: &str = "external_test_suites/lld";
 
-/// Architecture prefixes used by LLD's test file naming convention
-/// (e.g. `x86-64-pcrel.s`, `aarch64-abs16.s`).
-const SUPPORTED_ARCHS: &[&str] = &["x86-64", "aarch64"];
+/// Maps LLD test filename prefixes (e.g. `x86-64-pcrel.s`, `aarch64-abs16.s`)
+/// to their corresponding architecture and Wild `-m` emulation value.
+const SUPPORTED_ARCHS: &[(&str, crate::Architecture)] = &[
+    ("x86-64", crate::Architecture::X86_64),
+    ("aarch64", crate::Architecture::AArch64),
+];
 
 pub(crate) fn collect_tests(
     tests: &mut Vec<Trial>,
@@ -68,7 +71,7 @@ pub(crate) fn collect_tests(
             // follow-up PR.
             if !SUPPORTED_ARCHS
                 .iter()
-                .any(|arch| file_name.starts_with(&format!("{arch}-")))
+                .any(|(prefix, _)| file_name.starts_with(&format!("{prefix}-")))
             {
                 continue;
             }
@@ -197,13 +200,10 @@ fn substitute_vars(cmd: &str, test_file: &Path, tmpdir: &Path) -> String {
 }
 
 fn architecture_for_test_file(file_name: &str) -> Option<crate::Architecture> {
-    if file_name.starts_with("x86-64-") {
-        Some(crate::Architecture::X86_64)
-    } else if file_name.starts_with("aarch64-") {
-        Some(crate::Architecture::AArch64)
-    } else {
-        None
-    }
+    SUPPORTED_ARCHS
+        .iter()
+        .find(|(prefix, _)| file_name.starts_with(&format!("{prefix}-")))
+        .map(|(_, arch)| *arch)
 }
 
 fn substitute_tools(cmd: &str, emulation: &str) -> String {
