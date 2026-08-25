@@ -191,7 +191,6 @@ tests = [
   "undefined.sh",                   # Passes when `--no-gc-sections` is passed.
   "undefined2.sh",                  # Passes when `--no-gc-sections` is passed.
   "unresolved-symbols.sh",          # Different message formats
-  "verbose.sh",
   "version.sh",                     # The message of `--version` is different from mold's one.
   "warn-unresolved-symbols.sh",     # Different message formats
   "whole-archive.sh",               # Passes when `--no-gc-sections` is passed.
