@@ -33,9 +33,12 @@ static SKIP_TESTS_NAME: OnceLock<Option<Vec<String>>> = OnceLock::new();
 
 const PREFIX: &str = "external_test_suites/lld";
 
-/// Architecture prefixes used by LLD's test file naming convention
-/// (e.g. `x86-64-pcrel.s`, `aarch64-abs16.s`).
-const SUPPORTED_ARCHS: &[&str] = &["x86-64"];
+/// Maps LLD test filename prefixes (e.g. `x86-64-pcrel.s`, `aarch64-abs16.s`)
+/// to their corresponding architecture and Wild `-m` emulation value.
+const SUPPORTED_ARCHS: &[(&str, crate::Architecture)] = &[
+    ("x86-64", crate::Architecture::X86_64),
+    ("aarch64", crate::Architecture::AArch64),
+];
 
 pub(crate) fn collect_tests(
     tests: &mut Vec<Trial>,
@@ -68,7 +71,7 @@ pub(crate) fn collect_tests(
             // follow-up PR.
             if !SUPPORTED_ARCHS
                 .iter()
-                .any(|arch| file_name.starts_with(&format!("{arch}-")))
+                .any(|(prefix, _)| file_name.starts_with(prefix))
             {
                 continue;
             }
@@ -125,10 +128,14 @@ fn verify_skipped_lld_test_still_fails(test_file: &Path, test_config: &TestConfi
 fn run_lld_test(test_file: &Path, test_config: &TestConfig) -> Result {
     let content = std::fs::read_to_string(test_file)?;
     let tmpdir = tempfile::tempdir()?;
-
+    let file_name =
+        String::from_utf8_lossy(test_file.file_name().unwrap().as_encoded_bytes()).to_string();
+    let emulation = architecture_for_test_file(&file_name)
+        .expect("test file should match a supported architecture")
+        .emulation_name();
     for cmd in extract_run_lines(&content) {
         let cmd = substitute_vars(&cmd, test_file, tmpdir.path());
-        let cmd = substitute_tools(&cmd);
+        let cmd = substitute_tools(&cmd, emulation);
         execute_command(&cmd, test_config)?;
     }
     Ok(())
@@ -192,9 +199,16 @@ fn substitute_vars(cmd: &str, test_file: &Path, tmpdir: &Path) -> String {
         .replace("%p", path_to_str(dir))
 }
 
-fn substitute_tools(cmd: &str) -> String {
+fn architecture_for_test_file(file_name: &str) -> Option<crate::Architecture> {
+    SUPPORTED_ARCHS
+        .iter()
+        .find(|(prefix, _)| file_name.starts_with(prefix))
+        .map(|(_, arch)| *arch)
+}
+
+fn substitute_tools(cmd: &str, emulation: &str) -> String {
     const WILD: &str = env!("CARGO_BIN_EXE_wild");
-    cmd.replace("ld.lld", &format!("{WILD} -m elf_x86_64"))
+    cmd.replace("ld.lld", &format!("{WILD} -m {emulation}"))
 }
 
 // TODO: This harness doesn't support the `split-file` tool or `cd %t`

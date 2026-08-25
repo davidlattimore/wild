@@ -1108,7 +1108,7 @@ const ALL_ARCHITECTURES: &[Architecture] = &[
 impl Architecture {
     fn emulation_name(&self) -> &'static str {
         match self {
-            Architecture::X86_64 => "x86_64",
+            Architecture::X86_64 => "elf_x86_64",
             Architecture::AArch64 => "aarch64elf",
             Architecture::RiscV64 => "elf64lriscv",
             Architecture::LoongArch64 => "elf64loongarch",
