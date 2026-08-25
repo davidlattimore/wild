@@ -54,6 +54,8 @@ impl FileKind {
                 object::elf::ET_REL => {
                     if is_gcc_bitcode(bytes, header).unwrap_or(false) {
                         Ok(FileKind::GccIr)
+                    } else if is_llvm_bitcode(bytes, header).unwrap_or(false) {
+                        Ok(FileKind::LlvmIr)
                     } else {
                         Ok(FileKind::ElfObject)
                     }
@@ -136,6 +138,25 @@ fn is_gcc_bitcode(data: &[u8], header: &crate::elf::FileHeader64) -> Option<bool
     const MAX_SCAN: usize = 200;
     let strings = data.get(start_offset + START..start_offset + (START + MAX_SCAN).min(len))?;
     Some(memchr::memmem::find(strings, b"\0.gnu.lto_.").is_some())
+}
+
+fn is_llvm_bitcode(data: &[u8], header: &crate::elf::FileHeader64) -> Option<bool> {
+    // If we don't have plugin support, then we skip checking if the file contains LLVM IR. If it
+    // is, then we'll figure that out later on and report an error. We do this because this code
+    // has a measurable performance impact.
+    if !cfg!(all(feature = "plugins", unix)) {
+        return Some(false);
+    }
+    let e = LittleEndian;
+    let section_headers = header.section_headers(e, data).ok()?;
+    let sh_str_index = header.shstrndx(e, data).ok()?;
+    let strings_section_header = section_headers.get(sh_str_index as usize)?;
+    let start_offset = strings_section_header.sh_offset(e) as usize;
+    let len = strings_section_header.sh_size(e) as usize;
+    const START: usize = 0;
+    const MAX_SCAN: usize = 100;
+    let strings = data.get(start_offset + START..start_offset + (START + MAX_SCAN).min(len))?;
+    Some(memchr::memmem::find(strings, b"\0.llvm.lto").is_some())
 }
 
 impl std::fmt::Display for FileKind {
