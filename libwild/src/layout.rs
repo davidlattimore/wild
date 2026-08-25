@@ -1832,11 +1832,7 @@ fn compute_start_offsets_by_group<P: Platform>(
 
     group_states
         .iter()
-        .map(|group| {
-            let group_mem_starts = mem_offsets.clone();
-            mem_offsets.merge(&group.common.mem_sizes);
-            group_mem_starts
-        })
+        .map(|group| mem_offsets.merge_and_return_start_offsets(&group.common.mem_sizes))
         .collect_vec()
 }
 

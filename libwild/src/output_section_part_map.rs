@@ -130,6 +130,16 @@ impl OutputSectionPartMap<u64> {
         );
         *v -= size;
     }
+
+    /// Increment `self` by `sizes`. Returns the pre-increment values, but only for entries actually
+    /// present in `sizes`.
+    pub(crate) fn merge_and_return_start_offsets(&mut self, sizes: &Self) -> Self {
+        self.mut_with_map(sizes, |offset, size| {
+            let start = *offset;
+            *offset += *size;
+            start
+        })
+    }
 }
 
 impl<T: Default + PartialEq> OutputSectionPartMap<T> {
