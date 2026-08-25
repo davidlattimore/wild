@@ -15,6 +15,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -133,10 +134,23 @@ fn run_lld_test(test_file: &Path, test_config: &TestConfig) -> Result {
     let emulation = architecture_for_test_file(&file_name)
         .expect("test file should match a supported architecture")
         .emulation_name();
+    let mut cwd: Option<PathBuf> = None;
     for cmd in extract_run_lines(&content) {
         let cmd = substitute_vars(&cmd, test_file, tmpdir.path());
         let cmd = substitute_tools(&cmd, emulation);
-        execute_command(&cmd, test_config)?;
+        if let Some(dir) = cmd.trim().strip_prefix("cd ") {
+            cwd = Some(PathBuf::from(dir.trim()));
+            continue;
+        }
+        // Detect split-file chains: `rm -rf %t && split-file %s %t && cd %t`
+        // Run the whole chain via sh -c (split-file is found via llvm_tools_dir
+        // in PATH), then persist the trailing `cd` directory for subsequent cmds.
+        if let Some(cd_dir) = extract_trailing_cd(&cmd) {
+            execute_command(&cmd, cwd.as_deref(), test_config)?;
+            cwd = Some(PathBuf::from(cd_dir));
+            continue;
+        }
+        execute_command(&cmd, cwd.as_deref(), test_config)?;
     }
     Ok(())
 }
@@ -211,16 +225,18 @@ fn substitute_tools(cmd: &str, emulation: &str) -> String {
     cmd.replace("ld.lld", &format!("{WILD} -m {emulation}"))
 }
 
-// TODO: This harness doesn't support the `split-file` tool or `cd %t`
-// used by some LLVM tests to split one source file into several named
-// sub-files in a temp directory. Supporting this would mean detecting
-// `split-file %s %t` in a RUN line, invoking the real `split-file` tool,
-// and tracking a working directory across subsequent RUN line executions
-// (currently each command runs independently via `sh -c` with no
-// persisted cwd). Tracked as follow-up work; affected tests are
-// skip-listed under `split_file_unsupported` in lld_skip_tests.toml.
-fn execute_command(cmd: &str, test_config: &TestConfig) -> Result {
+fn extract_trailing_cd(cmd: &str) -> Option<&str> {
+    let parts: Vec<&str> = cmd.split("&&").collect();
+    let last = parts.last()?.trim();
+    last.strip_prefix("cd ")
+}
+
+fn execute_command(cmd: &str, cwd: Option<&Path>, test_config: &TestConfig) -> Result {
     let mut command = Command::new("sh");
+
+    if let Some(dir) = cwd {
+        command.current_dir(dir);
+    }
 
     command.env(
         "PATH",

@@ -20,6 +20,7 @@ tests = [
   "x86-64-tls-ie.s",
   "x86-64-tls-gdie.s",
   "x86-64-tls-dynamic.s",
+  "x86-64-section-layout.s",
 ]
 
 [skipped_groups.error_message_wording]
@@ -94,10 +95,6 @@ tests = [
   "x86-64-gotpc-relax-und-dso.s",
   "x86-64-split-stack-prologue-adjust-success.s",
 ]
-
-[skipped_groups.split_file_unsupported]
-reason = "Uses split-file, not yet supported by this harness (TODO: follow-up PR)"
-tests = ["x86-64-section-layout.s"]
 
 [skipped_groups.aarch64_untriaged]
 reason = "aarch64 support newly activated; failures not yet triaged into individual root-cause categories"
