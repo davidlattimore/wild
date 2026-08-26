@@ -40,6 +40,24 @@
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
 
+//#Config:symbols
+//#LinkerScript:linker-script-location-counter-symbols.ld
+//#Object:runtime.c
+// RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
+//#SkipArch:riscv64,ppc64le
+//#DiffIgnore:segment.LOAD.RX.alignment
+//#DiffIgnore:segment.LOAD.RWX.alignment
+
+//#Config:object_symbol_offset
+//#LinkerScript:linker-script-object-symbol-offset.ld
+//#Object:runtime.c
+//#Object:object-symbol-prefix.c
+//#Object:object-symbol-target.c
+// RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
+//#SkipArch:riscv64,ppc64le
+//#DiffIgnore:segment.LOAD.RX.alignment
+//#DiffIgnore:segment.LOAD.RWX.alignment
+
 #include <stddef.h>
 
 #include "../common/runtime.h"
@@ -51,7 +69,17 @@ __attribute__((section(".foo.second"), aligned(8))) int data_second = 2;
 
 __attribute__((section(".text.foo"))) void foo(void) {}
 
+__attribute__((section(".text.1"))) void text_one(void) {}
+__attribute__((section(".text.2"))) void text_two(void) {}
+__attribute__((section(".text.3"))) void text_three(void) {}
+
+__asm__(".global abs_symbol\n.set abs_symbol, 0x1000000\n");
+__asm__(".global abs_between\n.set abs_between, 0x650000\n");
+
 void begin_here(void) {
   foo();
+  text_one();
+  text_two();
+  text_three();
   exit_syscall(ret);
 }
