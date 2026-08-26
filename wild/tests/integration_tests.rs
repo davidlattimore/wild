@@ -5800,18 +5800,21 @@ fn gdb_index_section_data(obj: &object::File, directive: &str) -> Result<Vec<u8>
 }
 
 fn verify_no_overlapping_sections(obj: &object::File) -> Result {
-    let mut previous_range = None;
+    let mut ranges = Vec::new();
     for section in obj.sections() {
-        if let Some((_, prev_end)) = previous_range
-            && let Some((start, _)) = section.file_range()
-            && start < prev_end
+        if let Some((start, size)) = section.file_range()
+            && size != 0
         {
-            bail!("Section {} overlaps with previous section", section.name()?);
+            ranges.push((start, start + size, section.name()?.to_owned()));
         }
-
-        previous_range = section.file_range();
-
         section.data()?;
+    }
+
+    ranges.sort_unstable_by_key(|range| range.0);
+    for ((_, previous_end, previous_name), (start, _, name)) in ranges.iter().tuple_windows() {
+        if start < previous_end {
+            bail!("Section {name} overlaps with section {previous_name}");
+        }
     }
 
     Ok(())
