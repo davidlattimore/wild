@@ -140,6 +140,9 @@ fn is_gcc_bitcode(data: &[u8], header: &crate::elf::FileHeader64) -> Option<bool
     Some(memchr::memmem::find(strings, b"\0.gnu.lto_.").is_some())
 }
 
+// FIXME: Add to object crate.
+const SHT_LLVM_LTO: object::elf::SectionType = object::elf::SectionType(0x6fff4c0c);
+
 fn is_llvm_bitcode(data: &[u8], header: &crate::elf::FileHeader64) -> Option<bool> {
     // If we don't have plugin support, then we skip checking if the file contains LLVM IR. If it
     // is, then we'll figure that out later on and report an error. We do this because this code
@@ -149,14 +152,7 @@ fn is_llvm_bitcode(data: &[u8], header: &crate::elf::FileHeader64) -> Option<boo
     }
     let e = LittleEndian;
     let section_headers = header.section_headers(e, data).ok()?;
-    let sh_str_index = header.shstrndx(e, data).ok()?;
-    let strings_section_header = section_headers.get(sh_str_index as usize)?;
-    let start_offset = strings_section_header.sh_offset(e) as usize;
-    let len = strings_section_header.sh_size(e) as usize;
-    const START: usize = 0;
-    const MAX_SCAN: usize = 100;
-    let strings = data.get(start_offset + START..start_offset + (START + MAX_SCAN).min(len))?;
-    Some(memchr::memmem::find(strings, b"\0.llvm.lto").is_some())
+    Some(section_headers.iter().any(|s| s.sh_type(e) == SHT_LLVM_LTO))
 }
 
 impl std::fmt::Display for FileKind {
