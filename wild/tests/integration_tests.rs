@@ -85,6 +85,9 @@
 //!
 //! ExpectFuncImportCount:{count} (Wasm) Asserts the total number of function imports.
 //!
+//! ExpectSharedMemory:{bool} (Wasm) When true, asserts that the output module defines a shared
+//! linear memory with a maximum.
+//!
 //! ExpectSection:{section_name} [properties] Checks that the specified section exists in the
 //! output binary. Optional properties:
 //!   max_entries=N: Asserts the section has at most N entries (uses the section's sh_entsize,
@@ -546,6 +549,7 @@ struct WasmModuleInfo {
     imported_global_count: u32,
     defined_global_i32: Vec<Option<i32>>,
     export_global_indices: HashMap<String, u32>,
+    memories: Vec<wasmparser::MemoryType>,
 }
 
 fn i32_const_from_expr(expr: wasmparser::ConstExpr<'_>) -> Option<i32> {
@@ -571,6 +575,7 @@ impl WasmModuleInfo {
         let mut imported_global_count = 0u32;
         let mut defined_global_i32 = Vec::new();
         let mut export_global_indices = HashMap::new();
+        let mut memories = Vec::new();
 
         for payload in Parser::new(0).parse_all(&bytes) {
             match payload? {
@@ -615,8 +620,13 @@ impl WasmModuleInfo {
                 Payload::TableSection(_) => {
                     section_names.insert("Table".to_owned());
                 }
-                Payload::MemorySection(_) => {
+                Payload::MemorySection(section) => {
                     section_names.insert("Memory".to_owned());
+                    for memory in section {
+                        memories.push(memory.with_context(|| {
+                            format!("Invalid memory entry in {}", path.display())
+                        })?);
+                    }
                 }
                 Payload::GlobalSection(section) => {
                     section_names.insert("Global".to_owned());
@@ -671,6 +681,7 @@ impl WasmModuleInfo {
             imported_global_count,
             defined_global_i32,
             export_global_indices,
+            memories,
         })
     }
 
@@ -817,6 +828,30 @@ impl WasmModuleInfo {
         }
         Ok(())
     }
+
+    fn ensure_shared_memory(&self, expected: bool, linker_name: &str) -> Result {
+        if !expected {
+            return Ok(());
+        }
+        ensure!(
+            !self.memories.is_empty(),
+            "Expected a shared memory in {linker_name} output ({}), but the module has no memory",
+            self.path.display()
+        );
+        for (index, memory) in self.memories.iter().enumerate() {
+            ensure!(
+                memory.shared,
+                "Expected memory {index} to be shared in {linker_name} output ({})",
+                self.path.display()
+            );
+            ensure!(
+                memory.maximum.is_some(),
+                "Expected shared memory {index} to have a maximum in {linker_name} output ({})",
+                self.path.display()
+            );
+        }
+        Ok(())
+    }
 }
 
 fn validate_wasm(wasm_file: &Path, linker_name: &str) -> Result {
@@ -838,6 +873,7 @@ fn validate_wasm(wasm_file: &Path, linker_name: &str) -> Result {
 fn run_wasm_with_wasmtime(wasm_file: &Path, linker_name: &str) -> Result {
     let output = Command::new("wasmtime")
         .arg("run")
+        .args(["-W", "threads,shared-memory"])
         .arg(wasm_file)
         .output()
         .context("Failed to run wasmtime")?;
@@ -1882,6 +1918,8 @@ struct Assertions {
     expected_func_imports: Vec<(String, String, usize)>,
     /// Wasm: total number of function imports in the import section.
     expected_func_import_count: Option<usize>,
+    /// Wasm: require a shared linear memory with a maximum.
+    expect_shared_memory: bool,
     relr_count: Option<u64>,
     expected_gdb_index_cu_count: Option<usize>,
     expected_gdb_index_symbols: Vec<String>,
@@ -2434,6 +2472,10 @@ fn process_directive(
                     .parse()
                     .with_context(|| format!("Invalid ExpectFuncImportCount: `{arg}`"))?,
             );
+        }
+        "ExpectSharedMemory" => {
+            config.assertions.expect_shared_memory =
+                arg.parse().context("Invalid bool for ExpectSharedMemory")?;
         }
         "ExpectSection" => {
             let arg = arg.trim();
@@ -4960,6 +5002,7 @@ impl Assertions {
             no_sym: self.no_sym.clone(),
             expected_func_imports: self.expected_func_imports.clone(),
             expected_func_import_count: self.expected_func_import_count,
+            expect_shared_memory: self.expect_shared_memory,
             ..Default::default()
         };
         ensure!(
@@ -4991,6 +5034,7 @@ impl Assertions {
         )?;
         info.ensure_func_types_unique(linker_name)?;
         info.ensure_exports(&self.expected_symtab_entries, &self.no_sym, linker_name)?;
+        info.ensure_shared_memory(self.expect_shared_memory, linker_name)?;
         self.verify_strings(&info.bytes)?;
         Ok(())
     }
