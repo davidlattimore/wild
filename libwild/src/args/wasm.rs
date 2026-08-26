@@ -48,6 +48,7 @@ pub struct WasmArgs {
     pub(crate) max_memory: Option<u64>,
     pub(crate) gc_sections: bool,
     pub(crate) allow_undefined: bool,
+    pub(crate) allow_multiple_definition: bool,
 }
 
 impl WasmArgs {
@@ -80,6 +81,7 @@ impl Default for WasmArgs {
             export_memory: None,
             gc_sections: true,
             allow_undefined: false,
+            allow_multiple_definition: false,
         }
     }
 }
@@ -156,6 +158,10 @@ impl platform::Args for WasmArgs {
 
     fn is_ignored_flag(&self, _flag: &str) -> bool {
         false
+    }
+
+    fn allow_multiple_definitions(&self) -> bool {
+        self.allow_multiple_definition
     }
 }
 
@@ -306,6 +312,10 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .declare_with_param()
         .prefix("z")
         .help("Linker options")
+        .sub_option("muldefs", "Allow multiple definitions", |args, _| {
+            args.allow_multiple_definition = true;
+            Ok(())
+        })
         .sub_option_with_value(
             "stack-size=",
             "Set the main stack size in linear memory",
@@ -354,6 +364,24 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Allow undefined symbols in the output")
         .execute(|args, _modifier_stack| {
             args.allow_undefined = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("allow-multiple-definition")
+        .help("Allow multiple definitions of symbols in the output")
+        .execute(|args, _modifier_stack| {
+            args.allow_multiple_definition = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-allow-multiple-definition")
+        .help("Disallow multiple definitions of symbols in the output (default)")
+        .execute(|args, _modifier_stack| {
+            args.allow_multiple_definition = false;
             Ok(())
         });
 
