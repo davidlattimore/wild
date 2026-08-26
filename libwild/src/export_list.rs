@@ -41,11 +41,7 @@ impl<'data> ExportList<'data> {
             }
         }
 
-        if self.0.general.matches_all() || self.0.cxx.matches_all() {
-            return true;
-        }
-
-        false
+        self.0.general.matches_all() || self.0.cxx.matches_all()
     }
 
     pub(crate) fn add_symbol(&mut self, symbol: &'data str, without_semicolon: bool) -> Result<()> {
