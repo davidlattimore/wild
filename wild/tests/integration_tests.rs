@@ -2337,10 +2337,7 @@ fn process_directive(
             if config.variant_num.is_some() {
                 bail!("Variant can only be specified once per config");
             }
-            config.variant_num = Some(
-                arg.parse()
-                    .with_context(|| format!("Failed to parse '{arg}'"))?,
-            )
+            config.variant_num = Some(arg.parse()?)
         }
         "LinkArgs" => {
             if is_rust {
@@ -2396,10 +2393,11 @@ fn process_directive(
         "ExpectSym" => config
             .assertions
             .expected_symtab_entries
-            .push(ExpectedSymtabEntry::parse(arg).context("Failed to parse ExpectSym arguments")?),
-        "ExpectDynSym" => config.assertions.expected_dynsym_entries.push(
-            ExpectedSymtabEntry::parse(arg).context("Failed to parse ExpectDynSym arguments")?,
-        ),
+            .push(ExpectedSymtabEntry::parse(arg)?),
+        "ExpectDynSym" => config
+            .assertions
+            .expected_dynsym_entries
+            .push(ExpectedSymtabEntry::parse(arg)?),
         "ExpectEntry" => config.assertions.expected_entry = Some(arg.to_owned()),
         "ExpectComment" => config.assertions.expected_comments.push(arg.to_owned()),
         "NoSym" => {
@@ -2429,11 +2427,7 @@ fn process_directive(
             ));
         }
         "ExpectFuncImportCount" => {
-            config.assertions.expected_func_import_count = Some(
-                arg.trim()
-                    .parse()
-                    .with_context(|| format!("Invalid ExpectFuncImportCount: `{arg}`"))?,
-            );
+            config.assertions.expected_func_import_count = Some(arg.trim().parse()?);
         }
         "ExpectSection" => {
             let arg = arg.trim();
@@ -2448,33 +2442,22 @@ fn process_directive(
             });
         }
         "RelrCount" => {
-            config.assertions.relr_count = Some(
-                arg.trim()
-                    .parse::<u64>()
-                    .with_context(|| format!("Invalid RelrCount: {arg}"))?,
-            );
+            config.assertions.relr_count = Some(arg.trim().parse::<u64>()?);
         }
         "NoSection" => config
             .assertions
             .absent_sections
             .push(arg.trim().to_owned()),
         "ExpectGdbIndexCuCount" => {
-            config.assertions.expected_gdb_index_cu_count = Some(
-                arg.trim()
-                    .parse::<usize>()
-                    .with_context(|| format!("Invalid CU count: {arg}"))?,
-            );
+            config.assertions.expected_gdb_index_cu_count = Some(arg.trim().parse::<usize>()?);
         }
         "ExpectGdbIndexSymbol" => config
             .assertions
             .expected_gdb_index_symbols
             .push(arg.trim().to_owned()),
         "ExpectGdbIndexDistinctAddrCus" => {
-            config.assertions.expected_gdb_index_distinct_addr_cus = Some(
-                arg.trim()
-                    .parse::<usize>()
-                    .with_context(|| format!("Invalid distinct addr CU count: {arg}"))?,
-            );
+            config.assertions.expected_gdb_index_distinct_addr_cus =
+                Some(arg.trim().parse::<usize>()?);
         }
         "ExpectSectionBytes" => {
             let (section_name, hex_str) = arg.split_once('=').with_context(|| {
@@ -2520,8 +2503,7 @@ fn process_directive(
             .push(arg.to_owned()),
         "ExpectLoadAlignment" => {
             let alignment_strs = arg.split(" ").map(str::trim);
-            let alignments = alignment_strs
-                .map(|alignment_str| parse_number(alignment_str).context("Invalid alignment"));
+            let alignments = alignment_strs.map(parse_number);
             config.assertions.expected_load_alignments =
                 alignments.collect::<Result<Vec<u64>>>()?;
         }
@@ -2532,31 +2514,21 @@ fn process_directive(
                 .push(ExpectedProgramHeaders::parse(arg)?);
         }
         "NoProgramHeader" => {
-            let header_type: ProgramHeaderType = arg
-                .parse()
-                .with_context(|| format!("Invalid program header type `{arg}`"))?;
+            let header_type: ProgramHeaderType = arg.parse()?;
             config.assertions.absent_program_headers.push(header_type);
         }
         "Mode" => {
-            let mode: Mode = arg
-                .parse()
-                .with_context(|| format!("Invalid Mode `{arg}`"))?;
+            let mode: Mode = arg.parse()?;
             if mode == Mode::Dynamic {
                 config.assertions.expect_dynamic = true;
             }
             config.linker_driver.direct_mut()?.mode = mode;
         }
         "DiffIgnore" => config.diff_ignore.push(arg.to_owned()),
-        "DiffEnabled" => {
-            config.should_diff = arg.parse().context("Invalid bool for DiffEnabled")?
-        }
-        "DiffMatchAny" => {
-            config.diff_match_any = arg.parse().context("Invalid bool for DiffMatchAny")?
-        }
-        "RunEnabled" => config.should_run = arg.parse().context("Invalid bool for RunEnabled")?,
-        "RunDynSym" => {
-            config.run_dyn_sym = Some(arg.parse().context("Invalid string for RunDynSym")?)
-        }
+        "DiffEnabled" => config.should_diff = arg.parse()?,
+        "DiffMatchAny" => config.diff_match_any = arg.parse()?,
+        "RunEnabled" => config.should_run = arg.parse()?,
+        "RunDynSym" => config.run_dyn_sym = Some(arg.to_string()),
         "ReferenceLinkers" => {
             if !config.skip_linkers.is_empty() || !config.enabled_linkers.is_empty() {
                 bail!("ReferenceLinkers cannot be used together with SkipLinker/EnableLinker");
@@ -2761,7 +2733,7 @@ fn process_directive(
             })?);
         }
         "MaxThunks" => {
-            config.assertions.max_thunks = arg.parse().context("Invalid MaxThunks value")?;
+            config.assertions.max_thunks = arg.parse()?;
         }
         other => bail!("Unknown directive '{other}'"),
     }
