@@ -1,6 +1,9 @@
 //#Config:no-option
+//#ExpectSection: Memory
+//#ExpectSection: Global
 //#ExpectSym: memory
 //#ExpectSym: _start
+//#Contains: __stack_pointer
 
 //#Config:default-value
 //#LinkArgs: --export-memory
