@@ -109,6 +109,26 @@
 //#LinkArgs:--plugin=/does/not/exist
 //#ExpectError:No such file or directory
 
+//#Config:gcc-fat-objects:default
+//#Compiler:gcc
+//#CompArgs:-flto -ffat-lto-objects -O1
+//#LinkerDriver:gcc
+//#LinkArgs:-Wl,-znow -flto -ffat-lto-objects -nostdlib
+//#Object:runtime.c
+//#Object:linker-plugin-lto-2.c
+//#DiffIgnore:section-diff-failed..text
+//#DoesNotContain: foo
+
+//#Config:clang-fat-objects:default
+//#Compiler:clang
+//#CompArgs:-flto -ffat-lto-objects -O1
+//#LinkerDriver:clang
+//#LinkArgs:-Wl,-znow -flto -ffat-lto-objects -nostdlib
+//#Object:runtime.c
+//#Object:linker-plugin-lto-2.c
+//#DiffIgnore:section-diff-failed..text
+//#DoesNotContain: foo
+
 #include "../common/runtime.h"
 
 int foo();
