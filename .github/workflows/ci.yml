@@ -79,7 +79,7 @@ jobs:
       - name: Check regressions
         run: WILD_TEST_CROSS=all cargo test --features external_tests external_test_suites -- --skip expect_failure
       - name: Build Wild for lit tests
-        run: cargo build -p wild
+        run: cargo build -p wild-linker
       - name: Check regressions (LLD tests via lit)
         env:
           WILD_BIN: target/debug/wild
