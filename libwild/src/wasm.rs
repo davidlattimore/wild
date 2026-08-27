@@ -1837,10 +1837,13 @@ fn wasm_symbol_name_str<'data>(data: &'data [u8], sym: &WasmSymbol) -> Option<&'
     core::str::from_utf8(bytes).ok()
 }
 
-/// Merge `target_features` from linked objects and encode the output custom section.
-fn build_target_features_section<'data>(
+/// Collect used / disallowed `target_features` entries from all objects.
+fn collect_target_feature_sets<'data>(
     layout_inputs: &[WasmObjectLayoutInput<'data>],
-) -> Result<Option<wasm_encoder::CustomSection<'static>>> {
+) -> Result<(
+    HashSet<&'data str>,
+    HashMap<&'data str, crate::input_data::FileId>,
+)> {
     let mut used: HashSet<&'data str> = HashSet::new();
     // First file that disallowed each feature.
     let mut disallowed: HashMap<&'data str, crate::input_data::FileId> = HashMap::new();
@@ -1863,6 +1866,35 @@ fn build_target_features_section<'data>(
             }
         }
     }
+
+    Ok((used, disallowed))
+}
+
+/// Shared memory requires `atomics` and `bulk-memory`.
+fn validate_shared_memory_features(
+    layout_inputs: &[WasmObjectLayoutInput<'_>],
+    symbol_db: &SymbolDb<'_, Wasm>,
+) -> Result {
+    let (used, disallowed) = collect_target_feature_sets(layout_inputs)?;
+    if let Some(&file_id) = disallowed.get("shared-mem") {
+        bail!(
+            "--shared-memory is disallowed by {} because it was not compiled with 'atomics' or 'bulk-memory' features.",
+            symbol_db.file(file_id)
+        );
+    }
+    for feature in ["atomics", "bulk-memory"] {
+        if !used.contains(feature) {
+            bail!("'{feature}' feature must be used in order to use shared memory");
+        }
+    }
+    Ok(())
+}
+
+/// Merge `target_features` from linked objects and encode the output custom section.
+fn build_target_features_section<'data>(
+    layout_inputs: &[WasmObjectLayoutInput<'data>],
+) -> Result<Option<wasm_encoder::CustomSection<'static>>> {
+    let (used, disallowed) = collect_target_feature_sets(layout_inputs)?;
 
     for name in &used {
         if let Some(&file_id) = disallowed.get(name) {
@@ -5341,6 +5373,7 @@ fn ensure_memory_covers(
     stack_first: bool,
     initial_memory: Option<u64>,
     max_memory: Option<u64>,
+    shared_memory: bool,
 ) -> Result<u64> {
     let page = wasm_page_size();
     let mut bytes_needed = u64::from(layout.data_end.max(layout.memory_base));
@@ -5396,6 +5429,15 @@ fn ensure_memory_covers(
         }
     }
 
+    if shared_memory {
+        for memory in &mut layout.memories {
+            memory.shared = true;
+            // Shared memories must declare a maximum. Default to the final initial size.
+            let max = memory.maximum.unwrap_or(memory.initial).max(memory.initial);
+            memory.maximum = Some(max);
+        }
+    }
+
     Ok(initial_pages)
 }
 
@@ -5428,7 +5470,7 @@ fn fill_stack_pointer_init(
     Ok(())
 }
 
-fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>]) -> MemoryType {
+fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>], shared: bool) -> MemoryType {
     let mut initial = 2u64;
     for input in inputs {
         for import in &input.memory_imports {
@@ -5440,7 +5482,7 @@ fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>]) -> MemoryType
     }
     MemoryType {
         memory64: false,
-        shared: false,
+        shared,
         initial,
         maximum: None,
         page_size_log2: None,
@@ -5717,6 +5759,10 @@ where
             .collect::<Result<Vec<_>>>()?
     };
 
+    if symbol_db.args.shared_memory {
+        validate_shared_memory_features(&layout_inputs, symbol_db)?;
+    }
+
     let file_id_to_index = layout_file_id_to_index(&layout_inputs);
     let mut import_resolutions =
         resolve_cross_object_imports(&layout_inputs, symbol_db, &file_id_to_index)?;
@@ -5770,6 +5816,7 @@ where
     let stack_first = symbol_db.args.stack_first;
     let initial_memory = symbol_db.args.initial_memory;
     let max_memory = symbol_db.args.max_memory;
+    let shared_memory = symbol_db.args.shared_memory;
     if stack_size > 0 {
         ensure_stack_size_aligned(stack_size)?;
     }
@@ -5912,7 +5959,7 @@ where
         if layout.memories.is_empty() {
             layout
                 .memories
-                .push(linker_output_memory_type(&layout_inputs));
+                .push(linker_output_memory_type(&layout_inputs, shared_memory));
         }
         if !layout.memories.is_empty() {
             ensure_memory_export(&mut layout.exports, symbol_db.args.memory_export_name());
@@ -5924,6 +5971,7 @@ where
             stack_first,
             initial_memory,
             max_memory,
+            shared_memory,
         )?;
         // wasm-ld only defines `__heap_end` when linear memory exists (end of `memory.initial`).
         let heap_end = if layout.memories.is_empty() {
@@ -7945,13 +7993,14 @@ mod tests {
         };
 
         let pages =
-            ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, true, None, None).unwrap();
+            ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, true, None, None, false).unwrap();
         assert_eq!(pages, 1);
         assert_eq!(layout.memories[0].initial, 1);
         assert_eq!(layout.memories[0].maximum, None);
+        assert!(!layout.memories[0].shared);
 
-        let pages =
-            ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, false, None, None).unwrap();
+        let pages = ensure_memory_covers(&mut layout, DEFAULT_STACK_SIZE, false, None, None, false)
+            .unwrap();
         let expected_pages = (u64::from(data_end) + u64::from(DEFAULT_STACK_SIZE))
             .div_ceil(wasm_page_size())
             .max(1);
