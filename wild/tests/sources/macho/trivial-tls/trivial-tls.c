@@ -9,6 +9,6 @@
 #include "../common/runtime.h"
 
 _Thread_local int initialized = 1;
-_Thread_local int uninitialized;
+_Thread_local int uninitialized __attribute__((aligned(64)));
 
 void main(void) { exit_syscall(42); }

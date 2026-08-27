@@ -41,6 +41,7 @@ use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
+use crate::platform::SectionAttributes as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution;
@@ -1928,6 +1929,29 @@ impl platform::Platform for MachO {
         match segment_name {
             Some(segment_name) => write!(f, "{segment_name},{section_name}"),
             None => write!(f, "{section_name}"),
+        }
+    }
+
+    fn finalise_output_section_alignments(
+        sizes: &OutputSectionPartMap<u64>,
+        output_sections: &mut crate::output_section_id::OutputSections<'_, Self>,
+    ) {
+        let tlv_sections = output_sections
+            .ids_with_info()
+            .filter_map(|(section_id, info)| info.section_attributes.is_tls().then_some(section_id))
+            .collect_vec();
+
+        let max_align = tlv_sections
+            .iter()
+            .map(|&section_id| {
+                sizes.max_alignment(section_id.part_id_range::<MachO>(), output_sections)
+            })
+            .max();
+
+        if let Some(max_align) = max_align {
+            for section_id in tlv_sections {
+                output_sections.bump_min_alignment(section_id, max_align);
+            }
         }
     }
 }
