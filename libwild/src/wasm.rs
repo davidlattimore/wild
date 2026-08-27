@@ -4028,7 +4028,8 @@ fn setup_got_mem_and_indices<'data>(
                 &LinkerDefinedIndexRequest {
                     has_init_funcs,
                     export_symbols: requested_linker_export_symbols(symbol_db.args),
-                    has_memory: any_object_needs_linker_memory(layout_inputs),
+                    // Executables always get a defined linear memory.
+                    has_memory: true,
                     wrap_entry,
                     got_mem_count: scan.got_mem.len(),
                     got_func_count: scan.got_func.len(),
@@ -4866,7 +4867,8 @@ impl LinkerDefinedIndices {
     ) -> Result<Self> {
         let mut needs_memory_base = request.needs_memory_base;
         let mut needs_table_base = request.needs_table_base;
-        let mut needs_stack_pointer = false;
+        // wasm-ld always defines `__stack_pointer` for non-PIC executables.
+        let mut needs_stack_pointer = true;
         let mut needs_tls_base = false;
         let mut needs_ctors = request.has_init_funcs;
         let mut export_data = Vec::new();
@@ -5906,7 +5908,8 @@ where
         );
         deduplicate_output_types(&mut layout);
 
-        if linker_memory && layout.memories.is_empty() {
+        // wasm-ld always defines a linear memory for executables.
+        if layout.memories.is_empty() {
             layout
                 .memories
                 .push(linker_output_memory_type(&layout_inputs));
