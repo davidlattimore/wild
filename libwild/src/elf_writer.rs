@@ -260,14 +260,8 @@ fn write_file_contents<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
 ) -> Result {
     timing_phase!("Write data to file");
     let (mut section_buffers, padding) = split_output_into_sections(layout, &mut sized_output.out);
-    for pslice in padding.slices {
-        if let Some(section_id) = pslice.parent_section_id {
-            let section_info = layout.output_sections.output_info(section_id);
-            fill_section_padding::<C, A>(pslice.slice, section_info);
-        } else {
-            pslice.slice.fill(0);
-        }
-    }
+
+    fill_padding_for_sections::<C, A>(layout, padding);
 
     let sym_index_map = if layout.args().should_output_partial_object() {
         build_sym_index_map(layout)
@@ -325,6 +319,22 @@ fn write_file_contents<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     fill_padding(section_buffers);
 
     Ok(())
+}
+
+fn fill_padding_for_sections<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
+    layout: &Layout<'_, elf::Elf<C>>,
+    padding: crate::file_writer::PaddingSlices<'_>,
+) {
+    timing_phase!("Fill padding for sections");
+
+    for pslice in padding.slices {
+        if let Some(section_id) = pslice.parent_section_id {
+            let section_info = layout.output_sections.output_info(section_id);
+            fill_section_padding::<C, A>(pslice.slice, section_info);
+        } else {
+            pslice.slice.fill(0);
+        }
+    }
 }
 
 fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
@@ -1798,6 +1808,8 @@ fn write_thunks<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
 }
 
 fn build_sym_index_map<C: ElfClass>(layout: &ElfLayout<'_, C>) -> Vec<Option<u32>> {
+    timing_phase!("Build sym index map");
+
     let section_sym_indices = build_section_sym_indices(layout);
 
     let num_all_locals = (layout

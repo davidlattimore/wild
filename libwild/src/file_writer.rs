@@ -394,6 +394,8 @@ pub(crate) fn split_buffers_by_alignment<'out, 'data, P: Platform>(
     section_buffers: &'out mut OutputSectionMap<&mut [u8]>,
     layout: &Layout<'data, P>,
 ) -> OutputSectionPartMap<&'out mut [u8]> {
+    timing_phase!("Split buffers by alignment");
+
     layout.section_part_layouts.output_order_map(
         &layout.output_order,
         &layout.output_sections,
