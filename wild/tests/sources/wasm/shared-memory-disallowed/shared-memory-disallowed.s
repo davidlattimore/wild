@@ -7,7 +7,7 @@ _start:
   end_function
 
   .section .custom_section.target_features,"",@
-  .int8 1
-  .int8 45
-  .int8 10
+  .int8 1 # Number of target features
+  .int8 45 # '-'
+  .int8 10 # Length of target features string
   .ascii "shared-mem"
