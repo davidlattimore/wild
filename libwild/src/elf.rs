@@ -8,7 +8,6 @@ use crate::args::elf::BuildIdOption;
 use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::debug_assert_bail;
-use crate::elf;
 use crate::elf_writer;
 use crate::ensure;
 use crate::error;
@@ -1986,7 +1985,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 mem_sizes.increment(part_id::GOT, C::GOT_ENTRY_SIZE);
             }
             if flags.needs_plt() {
-                mem_sizes.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
+                mem_sizes.increment(part_id::PLT_GOT, PLT_ENTRY_SIZE);
             }
             if flags.is_ifunc() {
                 mem_sizes.increment(part_id::RELA_PLT, C::RELA_ENTRY_SIZE);
@@ -2118,7 +2117,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .iter()
             .map(|&sym_id| {
                 let name_len = symbol_db.symbol_name(sym_id).map_or(0, |n| n.bytes().len());
-                elf::THUNK_SYMBOL_PREFIX.len() + name_len + 1
+                THUNK_SYMBOL_PREFIX.len() + name_len + 1
             })
             .sum();
         sizes.increment(
@@ -6327,7 +6326,7 @@ fn allocate_got_relr<C: ElfClass>(memory_offsets: &mut OutputSectionPartMap<u64>
 
 fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
     let plt_address = NonZeroU64::new(memory_offsets.get(part_id::PLT_GOT)).unwrap();
-    memory_offsets.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
+    memory_offsets.increment(part_id::PLT_GOT, PLT_ENTRY_SIZE);
     plt_address
 }
 
