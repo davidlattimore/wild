@@ -9,7 +9,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
-const PREFIX: &str = "lld_lit";
+const PREFIX: &str = "external_test_suites/lld_lit";
 
 pub(crate) fn collect_tests(
     tests: &mut Vec<Trial>,
