@@ -65,6 +65,7 @@ use object::macho::S_ATTR_PURE_INSTRUCTIONS;
 use object::macho::S_ATTR_SOME_INSTRUCTIONS;
 use object::macho::S_GB_ZEROFILL;
 use object::macho::S_THREAD_LOCAL_REGULAR;
+use object::macho::S_THREAD_LOCAL_VARIABLES;
 use object::macho::S_THREAD_LOCAL_ZEROFILL;
 use object::macho::S_ZEROFILL;
 use object::macho::SECTION_ATTRIBUTES;
@@ -1941,6 +1942,13 @@ impl platform::Platform for MachO {
             .filter_map(|(section_id, info)| info.section_attributes.is_tls().then_some(section_id))
             .collect_vec();
 
+        let tlv_descriptors = output_sections
+            .ids_with_info()
+            .filter_map(|(section_id, info)| {
+                (info.section_attributes.ty() == S_THREAD_LOCAL_VARIABLES).then_some(section_id)
+            })
+            .collect_vec();
+
         let max_align = tlv_sections
             .iter()
             .map(|&section_id| {
@@ -1952,6 +1960,10 @@ impl platform::Platform for MachO {
             for section_id in tlv_sections {
                 output_sections.bump_min_alignment(section_id, max_align);
             }
+        }
+
+        for section_id in tlv_descriptors {
+            output_sections.bump_min_alignment(section_id, alignment::USIZE);
         }
     }
 }

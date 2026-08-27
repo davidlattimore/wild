@@ -5,6 +5,7 @@
 //#Object:runtime.c
 //#ExpectSection:__thread_data
 //#ExpectSection:__thread_bss
+//#ExpectSection:__thread_vars
 
 #include "../common/runtime.h"
 
