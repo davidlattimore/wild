@@ -44,6 +44,10 @@ pub enum RelaxationKind {
     /// Replace add with adr. We don't apply this, but lld does, so this is used by linker-diff.
     AddToAdr,
     LdrToAdr,
+
+    /// Replace ldr with add
+    LdrToAdd,
+
     /// Relax ADRP+ADD pair to NOP+ADR. Applied at the ADD instruction position.
     /// Writes NOP at ADRP position (offset-4) and ADR base at current position.
     AdrpAddToNopAdr,
@@ -97,6 +101,16 @@ impl RelaxationKind {
             }
             RelaxationKind::LdrToAdr => {
                 section_bytes[offset + 3] &= !0x89;
+            }
+            RelaxationKind::LdrToAdd => {
+                let mut insn = u32_from_slice(&section_bytes[offset..offset + 4]);
+                debug_assert_eq!(
+                    insn & 0xffc0_0000,
+                    0xf940_0000,
+                    "64-bit unsigned-immediate `ldr` is required"
+                );
+                insn = (insn & 0x001f_ffff) | 0x9100_0000;
+                section_bytes[offset..offset + 4].copy_from_slice(&insn.to_le_bytes());
             }
             RelaxationKind::AdrpAddToNopAdr => {
                 let adrp_dest_reg = u64::from(u32_from_slice(&section_bytes[offset - 4..offset]))
