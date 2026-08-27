@@ -2474,8 +2474,7 @@ fn process_directive(
             );
         }
         "ExpectSharedMemory" => {
-            config.assertions.expect_shared_memory =
-                arg.parse().context("Invalid bool for ExpectSharedMemory")?;
+            config.assertions.expect_shared_memory = arg.parse()?;
         }
         "ExpectSection" => {
             let arg = arg.trim();
