@@ -140,7 +140,7 @@ fn is_gcc_bitcode(data: &[u8], header: &crate::elf::FileHeader64) -> Option<bool
     Some(memchr::memmem::find(strings, b"\0.gnu.lto_.").is_some())
 }
 
-// FIXME: Add to object crate.
+// TODO: Use object crate once a new version is up.
 const SHT_LLVM_LTO: object::elf::SectionType = object::elf::SectionType(0x6fff4c0c);
 
 fn is_llvm_bitcode(data: &[u8], header: &crate::elf::FileHeader64) -> Option<bool> {
