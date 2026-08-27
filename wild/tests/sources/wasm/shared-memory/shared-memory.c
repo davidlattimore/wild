@@ -19,4 +19,10 @@
 //#CompArgs: -matomics
 //#ExpectError: maximum memory must be aligned
 
-void _start(void) {}
+int value = 42;
+
+void _start(void) {
+  if (value != 42) {
+    __builtin_trap();
+  }
+}
