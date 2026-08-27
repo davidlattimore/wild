@@ -78,20 +78,6 @@ jobs:
       - run: echo "WILD_TEST_CONFIG=test-config-ci.toml" >> $GITHUB_ENV
       - name: Check regressions
         run: WILD_TEST_CROSS=all cargo test --features external_tests external_test_suites -- --skip expect_failure
-      - name: Build Wild for lit tests
-        run: cargo build -p wild-linker
-      - name: Check regressions (LLD tests via lit)
-        env:
-          WILD_BIN: target/debug/wild
-          LLVM_TOOLS_DIR: /usr/lib/llvm-21/bin
-        run: |
-          ln -s $(pwd)/wild/tests/external_tests/wild-lit.site.cfg.py \
-            external_test_suites/lld/test/wild-lit.site.cfg.py
-          /usr/lib/llvm-21/bin/lit \
-            --config-prefix=wild-lit.site \
-            --ignore-fail \
-            external_test_suites/lld/test/ELF/ \
-            2>&1
       - name: Check tests that should fail still fail
         run: WILD_TEST_CROSS=all cargo test --features external_tests expect_failure
 

@@ -35,7 +35,7 @@ const PREFIX: &str = "external_test_suites/lld";
 
 /// Maps LLD test filename prefixes (e.g. `x86-64-pcrel.s`, `aarch64-abs16.s`)
 /// to their corresponding architecture and Wild `-m` emulation value.
-const SUPPORTED_ARCHS: &[(&str, crate::Architecture)] = &[
+pub(super) const SUPPORTED_ARCHS: &[(&str, crate::Architecture)] = &[
     ("x86-64", crate::Architecture::X86_64),
     ("aarch64", crate::Architecture::AArch64),
 ];

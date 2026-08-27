@@ -1,3 +1,4 @@
+mod lld_lit_tests;
 mod lld_tests;
 mod mold_tests;
 
@@ -24,6 +25,7 @@ pub(super) fn collect_tests(
 
     if cfg!(feature = "lld_tests") {
         lld_tests::collect_tests(tests, filter, test_config)?;
+        lld_lit_tests::collect_tests(tests, filter, test_config)?;
     }
 
     Ok(())
