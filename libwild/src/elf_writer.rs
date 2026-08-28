@@ -3965,8 +3965,6 @@ fn write_prelude_except_gdb_index<'data, C: ElfClass, A: Arch<Platform = elf::El
 
     write_section_headers(table_writer, layout)?;
 
-    write_section_header_strings(table_writer, &layout.output_sections, &layout.output_order)?;
-
     write_plt_got_entries::<C, A>(prelude, layout, table_writer)?;
 
     if !layout.args().should_strip_all() {
@@ -5754,6 +5752,14 @@ fn write_section_headers<C: ElfClass>(
             }
         }
 
+        let name = layout.output_sections.name(section_id).with_context(|| {
+            format!(
+                "Missing name for section {}",
+                layout.output_sections.section_debug(section_id)
+            )
+        })?;
+        table_writer.write_section_header_string(name.bytes())?;
+
         let entry = table_writer.take_section_header()?;
         entry.set_name(name_offset);
 
@@ -5773,13 +5779,6 @@ fn write_section_headers<C: ElfClass>(
         }
 
         entry.set_flags(flags)?;
-
-        let name = layout.output_sections.name(section_id).with_context(|| {
-            format!(
-                "Missing name for section {}",
-                layout.output_sections.section_debug(section_id)
-            )
-        })?;
 
         let mut info_value = *info_values.get(section_id);
 
@@ -5846,22 +5845,6 @@ fn compute_info_values<C: ElfClass>(layout: &ElfLayout<C>) -> OutputSectionMap<u
         as u32;
 
     infos
-}
-
-fn write_section_header_strings<C: ElfClass>(
-    table_writer: &mut TableWriter<'_, '_, C>,
-    sections: &OutputSections<elf::Elf<C>>,
-    output_order: &OutputOrder,
-) -> Result {
-    for event in output_order {
-        if let OrderEvent::Section(id) = event
-            && sections.output_index_of_section(id).is_some()
-            && let Some(name) = sections.name(id)
-        {
-            table_writer.write_section_header_string(name.bytes())?;
-        }
-    }
-    Ok(())
 }
 
 struct ProgramHeaderWriter<'out, C: ElfClass> {
