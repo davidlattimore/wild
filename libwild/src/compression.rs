@@ -472,7 +472,80 @@ fn update_allocation_sizes<P: Platform>(layout: &mut Layout<P>) {
     }
 }
 
-fn update_file_offset<P: Platform>(layout: &mut Layout<P>) -> Result {
+/// Full recalculation of file offsets AND segment sizes.
+///
+/// Used by `--only-keep-debug` where alloc sections are zeroed, causing segments to compact in the
+/// file. Unlike `update_file_offset`, this function updates `segment_layouts.sizes.file_offset`
+/// and `file_size` instead of bailing when they change.
+///
+/// Segment `file_size` invariant (mirrors `compute_segment_layout`):
+///   `seg.file_size = max(s.file_offset + s.file_size for s in seg) - seg.file_offset`
+/// Alignment padding between sections inside a segment is included because we track a running
+/// `seg_file_end` via `max()` rather than a simple sum.
+///
+/// Uses a `seg_cursor` index into `segment_layouts.segments` (a small, forward-ordered Vec)
+/// instead of an iterator so that both `SegmentStart` and `SegmentEnd` can mutate the same
+/// element without conflicting borrows. `open_seg_idx` holds the index of the currently open
+/// segment; segments cannot nest so it is always `Some` between a `SegmentStart`/`SegmentEnd`
+/// pair and `None` outside one.
+pub(crate) fn recalculate_file_offsets<P: Platform>(layout: &mut Layout<P>) -> Result {
+    let mut seg_cursor = 0usize;
+    let mut open_seg_idx: Option<usize> = None;
+    let mut seg_file_end = 0usize;
+    let mut file_offset = 0usize;
+
+    for event in &layout.output_order {
+        match event {
+            OrderEvent::SegmentStart(segment_id)
+                if seg_cursor < layout.segment_layouts.segments.len()
+                    && layout.segment_layouts.segments[seg_cursor].id == segment_id =>
+            {
+                layout.segment_layouts.segments[seg_cursor].sizes.file_offset = file_offset;
+                seg_file_end = file_offset;
+                open_seg_idx = Some(seg_cursor);
+                seg_cursor += 1;
+            }
+            OrderEvent::SegmentEnd(_) => {
+                if let Some(idx) = open_seg_idx.take() {
+                    let seg = &mut layout.segment_layouts.segments[idx];
+                    seg.sizes.file_size = seg_file_end.saturating_sub(seg.sizes.file_offset);
+                }
+                seg_file_end = 0;
+            }
+            OrderEvent::Section(section_id) => {
+                let section_layout = layout.section_layouts.get_mut(section_id);
+                file_offset = section_layout.alignment.align_up_usize(file_offset);
+
+                section_layout.file_offset = file_offset;
+
+                let merge_target = layout
+                    .output_sections
+                    .merge_target(section_id)
+                    .unwrap_or(section_id);
+                let merged_section_layout = layout.merged_section_layouts.get_mut(merge_target);
+                if merge_target == section_id {
+                    merged_section_layout.file_offset = file_offset;
+                }
+
+                for part_id in section_id.parts::<P>() {
+                    let part_layout = layout.section_part_layouts.get_mut(part_id);
+                    part_layout.file_offset = file_offset;
+                    file_offset += part_layout.file_size;
+                }
+
+                section_layout.file_size = file_offset - section_layout.file_offset;
+                merged_section_layout.file_size = file_offset - merged_section_layout.file_offset;
+
+                seg_file_end = seg_file_end.max(file_offset);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn update_file_offset<P: Platform>(layout: &mut Layout<P>) -> Result {
     timing_phase!("Update file offsets post-compression");
 
     // Recalculate file offsets since we changed file_sizes
