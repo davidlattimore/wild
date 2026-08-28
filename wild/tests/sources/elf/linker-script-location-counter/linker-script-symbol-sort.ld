@@ -9,12 +9,11 @@ SECTIONS
         *(.custom.2)
         . = custom_two + 0x100;
         *(.custom.3)
-        . = 0x1000;
     }
 
     .sort : {
         KEEP(*(SORT_BY_NAME(.sort.*)))
-		ASSERT(sort_a < sort_b && sort_b < sort_c, "sort order is incorrect");
-		. += ASSERT(sort_a < sort_b && sort_b < sort_c, "sort order is incorrect");
     }
 }
+
+ASSERT(sort_a < sort_b && sort_b < sort_c, "sort order is incorrect");

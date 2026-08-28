@@ -48,6 +48,12 @@
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
 
+//#Config:earlier_section_symbol
+//#Arch:x86_64
+//#LinkerScript:linker-script-earlier-section-symbol.ld
+//#Object:runtime.c
+//#RunEnabled:false
+
 //#Config:object_symbol_offset
 //#LinkerScript:linker-script-object-symbol-offset.ld
 //#Object:runtime.c
@@ -58,13 +64,34 @@
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
 
-//#Config:symbol_in_sort
-//#ReferenceLinkers:
+//#Config:mixed_symbol_kinds
+//#Arch:x86_64
+//#ReferenceLinkers:bfd,lld
+//#LinkerScript:linker-script-mixed-symbol-kinds.ld
+//#Object:runtime.c
+//#RunEnabled:false
+//#DiffIgnore:segment.LOAD.RX.alignment
+//#DiffIgnore:segment.LOAD.RWX.alignment
+
+//#Config:symbol_with_unrelated_sort
+//#ReferenceLinkers:bfd,lld
 //#LinkerScript:linker-script-symbol-sort.ld
 //#Object:runtime.c
+//#RunEnabled:false
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64,ppc64le
-//#ExpectError:Early evaluation of sorted section .sort.b is not supported
+//#DiffIgnore:segment.LOAD.RX.alignment
+//#DiffIgnore:segment.LOAD.RWX.alignment
+
+//#Config:symbol_only_reference
+//#Arch:x86_64
+//#ReferenceLinkers:bfd,lld
+//#LinkerScript:linker-script-symbol-only-reference.ld
+//#Object:runtime.c
+//#Object:location-counter-only-symbol.c
+//#RunEnabled:false
+//#DiffIgnore:segment.LOAD.RX.alignment
+//#DiffIgnore:segment.LOAD.RWX.alignment
 
 #include <stddef.h>
 
@@ -87,6 +114,7 @@ __attribute__((section(".sort.c"), used)) void sort_c(void) {}
 
 __asm__(".global abs_symbol\n.set abs_symbol, 0x1000000\n");
 __asm__(".global abs_between\n.set abs_between, 0x650000\n");
+__asm__(".global abs_small\n.set abs_small, 5\n");
 
 void begin_here(void) {
   foo();
