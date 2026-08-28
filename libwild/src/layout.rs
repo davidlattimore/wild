@@ -4976,22 +4976,32 @@ fn compute_object_section_addresses<'data, P: Platform>(
     offsets: &mut OutputSectionPartMap<u64>,
     symbol_db: &SymbolDb<'data, P>,
     output_sections: &OutputSections<'data, P>,
-) -> Vec<u64> {
+    skip_sorted_sections: bool,
+) -> Result<Vec<u64>> {
     let mut addresses = vec![0u64; obj.sections.len()];
-    for (sec_idx, slot) in obj.sections.iter().enumerate() {
+    for (sec_idx, slot) in obj
+        .sections
+        .iter()
+        .enumerate()
+        .map(|(idx, slot)| (object::SectionIndex(idx), slot))
+    {
         match slot {
             SectionSlot::Loaded(sec) => {
-                let part_id =
-                    obj.section_part_id(object::SectionIndex(sec_idx), &symbol_db.section_part_ids);
-                addresses[sec_idx] = offsets.get(part_id);
+                let part_id = obj.section_part_id(sec_idx, &symbol_db.section_part_ids);
+                addresses[sec_idx.0] = offsets.get(part_id);
                 *offsets.get_mut(part_id) += sec.capacity(part_id, output_sections);
             }
             SectionSlot::LoadedDebugInfo(sec) => {
                 // Advance offsets so subsequent sections are placed correctly, but we don't need
                 // the address for relaxation.
-                let part_id =
-                    obj.section_part_id(object::SectionIndex(sec_idx), &symbol_db.section_part_ids);
+                let part_id = obj.section_part_id(sec_idx, &symbol_db.section_part_ids);
                 *offsets.get_mut(part_id) += sec.capacity(part_id, output_sections);
+            }
+            SectionSlot::Sorted(sec) if !skip_sorted_sections => {
+                bail!(
+                    "Early evaluation of sorted section {} is not supported",
+                    obj.object.section_display_name(sec_idx)
+                );
             }
             _ => {}
         }
@@ -4999,7 +5009,7 @@ fn compute_object_section_addresses<'data, P: Platform>(
 
     P::compute_object_addresses(obj, offsets);
 
-    addresses
+    Ok(addresses)
 }
 
 /// Compute the output address of every loaded input section and every symbol in a single parallel
@@ -5034,7 +5044,9 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
                             &mut offsets,
                             symbol_db,
                             output_sections,
-                        );
+                            true,
+                        )
+                        .unwrap();
 
                         // While we have the section addresses, also resolve symbol
                         // output addresses for this file's canonical definitions.
@@ -5130,8 +5142,13 @@ pub(crate) fn compute_object_symbol_address<'data, P: Platform>(
         );
     };
 
-    let addresses =
-        compute_object_section_addresses(obj, &mut offsets[group_idx], symbol_db, output_sections);
+    let addresses = compute_object_section_addresses(
+        obj,
+        &mut offsets[group_idx],
+        symbol_db,
+        output_sections,
+        false,
+    )?;
 
     match obj.object.symbol_section(sym, sym_input_idx)? {
         Some(section_index) => {
@@ -5472,7 +5489,15 @@ fn compute_layout_sections<'data, P: Platform>(
                         {
                             let primary_id =
                                 output_sections.primary_output_section(current_section);
-                            Ok(address - section_layouts.get(primary_id).mem_offset)
+                            address
+                                .checked_sub(section_layouts.get(primary_id).mem_offset)
+                                .ok_or_else(|| {
+                                    error!(
+                                        "Address {} is not within section {}",
+                                        address,
+                                        output_sections.display_name(current_section)
+                                    )
+                                })
                         }
                         _ => Ok(address),
                     }

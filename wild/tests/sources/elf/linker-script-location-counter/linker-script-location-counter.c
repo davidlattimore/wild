@@ -58,6 +58,14 @@
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
 
+//#Config:symbol_in_sort
+//#ReferenceLinkers:
+//#LinkerScript:linker-script-symbol-sort.ld
+//#Object:runtime.c
+// RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
+//#SkipArch:riscv64,ppc64le
+//#ExpectError:Early evaluation of sorted section .sort.b is not supported
+
 #include <stddef.h>
 
 #include "../common/runtime.h"
@@ -69,17 +77,21 @@ __attribute__((section(".foo.second"), aligned(8))) int data_second = 2;
 
 __attribute__((section(".text.foo"))) void foo(void) {}
 
-__attribute__((section(".text.1"))) void text_one(void) {}
-__attribute__((section(".text.2"))) void text_two(void) {}
-__attribute__((section(".text.3"))) void text_three(void) {}
+__attribute__((section(".custom.1"))) void custom_one(void) {}
+__attribute__((section(".custom.2"))) void custom_two(void) {}
+__attribute__((section(".custom.3"))) void custom_three(void) {}
+
+__attribute__((section(".sort.b"), used)) void sort_b(void) {}
+__attribute__((section(".sort.a"), used)) void sort_a(void) {}
+__attribute__((section(".sort.c"), used)) void sort_c(void) {}
 
 __asm__(".global abs_symbol\n.set abs_symbol, 0x1000000\n");
 __asm__(".global abs_between\n.set abs_between, 0x650000\n");
 
 void begin_here(void) {
   foo();
-  text_one();
-  text_two();
-  text_three();
+  custom_one();
+  custom_two();
+  custom_three();
   exit_syscall(ret);
 }
