@@ -3278,7 +3278,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
         let entry_size = size_of::<P::SymtabEntry>() as u64;
 
-        if resources.symbol_db.args.should_output_partial_object() {
+        if resources.symbol_db.args.emit_relocs() {
             let mut num_section_syms = 0;
             for (id, _) in output_sections.ids_with_info() {
                 if output_sections.will_emit_section_symbol_for_partial_objects(id) {
@@ -4193,6 +4193,7 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                 queue,
                 scope,
             )?;
+            self.load_relocation_section(frame_data_section_index, common, resources)?;
         }
 
         if let Some(section_index) = note_gnu_property_section {
@@ -4309,6 +4310,8 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             SectionSlot::Loaded(section)
         };
 
+        self.load_relocation_section(section_index, common, resources)?;
+
         common.store_section_attributes(part_id, header);
 
         if let Some(config) = A::thunk_config()
@@ -4354,6 +4357,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         );
         common.store_section_attributes(part_id, header);
         self.sections[section_index.0] = SectionSlot::LoadedDebugInfo(section);
+        self.load_relocation_section(section_index, common, resources)?;
 
         Ok(())
     }
@@ -4694,6 +4698,34 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
 
     pub(crate) fn relocations(&self, index: SectionIndex) -> Result<P::RelocationList<'data>> {
         self.object.relocations(index, &self.relocations)
+    }
+
+    fn load_relocation_section(
+        &mut self,
+        section_index: SectionIndex,
+        common: &mut CommonGroupState<'data, P>,
+        resources: &GraphResources<'data, '_, P>,
+    ) -> Result {
+        if resources.symbol_db.args.emit_relocs()
+            && let Some(rel_sec_idx) = self
+                .object
+                .relocation_section(section_index, &self.relocations)
+            && matches!(
+                self.sections.get(rel_sec_idx.0),
+                Some(SectionSlot::Unloaded(..))
+            )
+        {
+            let part_id = self.section_part_id(rel_sec_idx, &resources.symbol_db.section_part_ids);
+            let header = self.object.section(rel_sec_idx)?;
+            let section = Section::create(header, self, part_id)?;
+            common.allocate(
+                part_id,
+                section.capacity(part_id, resources.output_sections),
+            );
+            common.store_section_attributes(part_id, header);
+            self.sections[rel_sec_idx.0] = SectionSlot::Loaded(section);
+        }
+        Ok(())
     }
 
     pub(crate) fn section_part_id(
