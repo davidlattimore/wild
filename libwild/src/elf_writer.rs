@@ -5649,6 +5649,11 @@ fn write_section_headers<C: ElfClass>(out: &mut [u8], layout: &ElfLayout<C>) -> 
 
         let sh_type = if layout.args().use_android_relr_tags && section_type == sht::RELR {
             object::elf::SHT_ANDROID_RELR
+        } else if layout.args().only_keep_debug()
+            && output_sections.section_flags(section_id).is_alloc()
+            && section_type != sht::NOTE
+        {
+            sht::NOBITS
         } else {
             section_type
         };

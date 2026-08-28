@@ -482,6 +482,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
     };
 
     P::maybe_compress_debug_sections::<A>(&mut layout)?;
+    P::maybe_only_keep_debug::<A>(&mut layout)?;
 
     output.set_size(compute_total_file_size(&layout.section_layouts));
 
