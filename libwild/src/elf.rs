@@ -2072,7 +2072,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     num_globals += 1;
                 }
                 strings_size += symtab_name_for_strtab(info.name).len() + 1;
-            } else if (symbol_db.args.emit_relocs())
+            } else if symbol_db.args.emit_relocs()
                 && sym.is_undefined()
                 && let Ok(name) = state.object.symbol_name(sym)
                 && !name.is_empty()

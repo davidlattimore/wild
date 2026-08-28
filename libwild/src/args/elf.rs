@@ -859,16 +859,6 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         });
 
     parser
-        .declare()
-        .short("q")
-        .long("emit-relocs")
-        .help("Leaves relocation sections in the output")
-        .execute(|args, _modifier_stack| {
-            args.emit_relocs = true;
-            Ok(())
-        });
-
-    parser
         .declare_with_param()
         .long("pack-dyn-relocs")
         .help("Specify dynamic relocation packing format")
@@ -1813,6 +1803,16 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Discard SFrame section")
         .execute(|args, _modifier_stack| {
             args.discard_sframe = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .short("q")
+        .long("emit-relocs")
+        .help("Leaves relocation sections in the output")
+        .execute(|args, _modifier_stack| {
+            args.emit_relocs = true;
             Ok(())
         });
 
