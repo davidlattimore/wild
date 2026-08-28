@@ -1653,4 +1653,8 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     fn output_format_endian(&self) -> Option<Endianness> {
         None
     }
+
+    fn emit_relocs(&self) -> bool {
+        false
+    }
 }
