@@ -139,6 +139,9 @@ pub struct ElfArgs {
     pub(crate) debug_compression_kind: Option<CompressionKind>,
     pub(crate) sort_section: Option<SortSectionMode>,
     pub(crate) output_format_endian: Option<Endianness>,
+
+    pub(crate) only_keep_debug_requested: bool,
+    pub(crate) strip_requested: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +156,7 @@ pub(crate) enum Strip {
     Debug,
     All,
     Retain(HashSet<Vec<u8>>),
+    OnlyKeepDebug,
 }
 
 #[derive(Debug)]
@@ -345,6 +349,9 @@ impl Default for ElfArgs {
             sort_section: None,
             gdb_index: false,
             output_format_endian: None,
+
+            only_keep_debug_requested: false,
+            strip_requested: false,
         }
     }
 }
@@ -414,6 +421,12 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
 
     if !args.rpath_set.is_empty() {
         args.rpath = Some(std::mem::take(&mut args.rpath_set).into_iter().join(":"));
+    }
+
+    if args.only_keep_debug_requested && args.strip_requested
+        && !args.should_output_partial_object()
+    {
+        bail!("--only-keep-debug is mutually exclusive with --strip-debug and --strip-all");
     }
 
     args.common.report_unrecognized()?;
@@ -777,6 +790,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .short("s")
         .help("Strip all symbols")
         .execute(|args, _modifier_stack| {
+            args.strip_requested = true;
             args.strip = Strip::All;
             Ok(())
         });
@@ -787,7 +801,18 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .short("S")
         .help("Strip debug symbols")
         .execute(|args, _modifier_stack| {
+            args.strip_requested = true;
             args.strip = Strip::Debug;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("only-keep-debug")
+        .help("Retain only debug sections; convert alloc non-NOTE sections to SHT_NOBITS")
+        .execute(|args, _modifier_stack| {
+            args.only_keep_debug_requested = true;
+            args.strip = Strip::OnlyKeepDebug;
             Ok(())
         });
 
@@ -1878,6 +1903,10 @@ impl platform::Args for ElfArgs {
 
     fn should_strip_all(&self) -> bool {
         !self.should_output_partial_object() && matches!(self.strip, Strip::All)
+    }
+
+    fn only_keep_debug(&self) -> bool {
+        !self.should_output_partial_object() && matches!(self.strip, Strip::OnlyKeepDebug)
     }
 
     fn should_strip_symbol_named(&self, name: &[u8]) -> bool {
