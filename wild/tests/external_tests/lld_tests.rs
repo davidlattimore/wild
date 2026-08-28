@@ -5,9 +5,25 @@ use crate::Result;
 use crate::TestConfig;
 use libtest_mimic::Failed;
 use libtest_mimic::Trial;
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
+
+#[derive(Deserialize)]
+struct Config {
+    skipped_groups: HashMap<String, SkippedGroup>,
+}
+
+#[derive(Deserialize)]
+struct SkippedGroup {
+    tests: Vec<String>,
+}
+
+static SKIP_TESTS: OnceLock<Vec<String>> = OnceLock::new();
 
 const PREFIX: &str = "external_test_suites/lld_lit";
 
@@ -49,6 +65,27 @@ pub(crate) fn collect_tests(
     }
 
     Ok(())
+}
+
+fn load_xfail_list() -> &'static Vec<String> {
+    SKIP_TESTS.get_or_init(|| {
+        let skip_tests_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("external_tests")
+            .join("lld_skip_tests.toml");
+
+        fs::read_to_string(&skip_tests_path)
+            .map(|content| {
+                let config: Config =
+                    toml::from_str(&content).expect("Failed to parse lld_skip_tests.toml");
+                config
+                    .skipped_groups
+                    .into_values()
+                    .flat_map(|group| group.tests)
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
 }
 
 fn find_lit_binary(test_config: &TestConfig) -> Option<PathBuf> {
@@ -95,10 +132,16 @@ fn run_lit_for_arch(
     }
 
     let tmpdir = tempfile::tempdir()?;
-    let output = Command::new(lit_binary)
-        .arg("--config-prefix")
+
+    let xfail_list: Vec<String> = load_xfail_list()
+        .iter()
+        .filter(|t| t.contains(arch))
+        .map(|t| format!("lld :: ELF/{t}"))
+        .collect();
+
+    let mut cmd = Command::new(lit_binary);
+    cmd.arg("--config-prefix")
         .arg("wild-lit.site")
-        .arg("--ignore-fail")
         .arg(test_dir.join("ELF"))
         .arg(format!("--filter={arch}"))
         .env("WILD_BIN", wild_bin)
@@ -107,8 +150,13 @@ fn run_lit_for_arch(
         .env("LLD_OBJ_ROOT", tmpdir.path())
         .env("HOST_TRIPLE", "x86_64-unknown-linux-gnu")
         .env("TARGET_TRIPLE", arch)
-        .env("WILD_EMULATION", emulation)
-        .output()?;
+        .env("WILD_EMULATION", emulation);
+
+    if !xfail_list.is_empty() {
+        cmd.arg("--xfail").arg(xfail_list.join(";"));
+    }
+
+    let output = cmd.output()?;
 
     print!("{}", String::from_utf8_lossy(&output.stdout));
     eprint!("{}", String::from_utf8_lossy(&output.stderr));
