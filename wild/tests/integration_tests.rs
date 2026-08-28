@@ -358,6 +358,7 @@ use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
 use object::macho::LC_DYLD_EXPORTS_TRIE;
 use object::macho::S_THREAD_LOCAL_REGULAR;
+use object::macho::S_THREAD_LOCAL_VARIABLES;
 use object::macho::S_THREAD_LOCAL_ZEROFILL;
 use object::macho::SEG_LINKEDIT;
 use object::macho::SEG_TEXT;
@@ -5999,6 +6000,8 @@ fn verify_macho_tlv_template_layout(obj: &object::File) -> Result {
         return Ok(());
     };
 
+    const MACHO64_POINTER_ALIGNMENT: u64 = 8;
+
     let mut sections = Vec::new();
     for section in obj.sections() {
         let object::SectionFlags::MachO { flags, .. } = section.flags() else {
@@ -6012,6 +6015,24 @@ fn verify_macho_tlv_template_layout(obj: &object::File) -> Result {
             section.address(),
         ));
     }
+
+    let descriptors = sections
+        .iter()
+        .copied()
+        .filter(|(_, ty, _, _)| *ty == S_THREAD_LOCAL_VARIABLES)
+        .collect_vec();
+
+    ensure!(
+        descriptors
+            .iter()
+            .all(|(_, _, align, address)| *align >= MACHO64_POINTER_ALIGNMENT
+                && address.is_multiple_of(*align)),
+        "Mach-O TLV descriptors must satisfy a minimum alignment of pointer size {MACHO64_POINTER_ALIGNMENT}: {}",
+        descriptors
+            .iter()
+            .map(|(name, _, align, address)| { format!("{name} {address:#x} alignment: {align}") })
+            .join(", ")
+    );
 
     let is_tlv_template = |ty| matches!(ty, S_THREAD_LOCAL_REGULAR | S_THREAD_LOCAL_ZEROFILL);
 
