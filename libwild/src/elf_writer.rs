@@ -666,6 +666,9 @@ struct TableWriter<'layout, 'out, C: ElfClass> {
 
     dynamic: DynamicEntriesWriter<'out, C>,
     version_writer: VersionWriter<'out>,
+
+    section_headers: &'out mut [elf::SectionHeader<C>],
+    shstrtab: &'out mut [u8],
 }
 
 impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
@@ -735,7 +738,30 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
             eh_frame_hdr,
             dynamic,
             version_writer,
+            section_headers: slice_from_all_bytes_mut(buffers.take(part_id::SECTION_HEADERS)),
+            shstrtab: buffers.take(part_id::SHSTRTAB),
         }
+    }
+
+    fn section_header_count(&self) -> usize {
+        self.section_headers.len()
+    }
+
+    fn take_section_header(&mut self) -> Result<&'out mut elf::SectionHeader<C>> {
+        self.section_headers
+            .split_off_first_mut()
+            .ok_or_else(|| insufficient_allocation("section headers"))
+    }
+
+    fn write_section_header_string(&mut self, string: &[u8]) -> Result {
+        let len_with_terminator = string.len() + 1;
+        let out = self
+            .shstrtab
+            .split_off_mut(..len_with_terminator)
+            .ok_or_else(|| insufficient_allocation(".shstrtab"))?;
+        out[..string.len()].copy_from_slice(string);
+        out[string.len()] = 0;
+        Ok(())
     }
 
     fn process_resolution<'data, A: Arch<Platform = elf::Elf<C>>>(
@@ -1044,6 +1070,20 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
 
     /// Checks that we used all of the entries that we requested during layout.
     fn validate_empty(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
+        if !self.section_headers.is_empty() {
+            return Err(excessive_allocation(
+                "section headers",
+                std::mem::size_of_val(self.section_headers) as u64,
+                mem_sizes.get(part_id::SECTION_HEADERS),
+            ));
+        }
+        if !self.shstrtab.is_empty() {
+            return Err(excessive_allocation(
+                ".shstrtab",
+                self.shstrtab.len() as u64,
+                mem_sizes.get(part_id::SHSTRTAB),
+            ));
+        }
         if !self.got.is_empty() {
             return Err(excessive_allocation(
                 ".got",
@@ -3923,13 +3963,9 @@ fn write_prelude_except_gdb_index<'data, C: ElfClass, A: Arch<Platform = elf::El
         ProgramHeaderWriter::<C>::new(buffers.get_mut(part_id::PROGRAM_HEADERS));
     write_program_headers(&mut program_headers, layout)?;
 
-    write_section_headers(buffers.get_mut(part_id::SECTION_HEADERS), layout)?;
+    write_section_headers(table_writer, layout)?;
 
-    write_section_header_strings(
-        buffers.get_mut(part_id::SHSTRTAB),
-        &layout.output_sections,
-        &layout.output_order,
-    );
+    write_section_header_strings(table_writer, &layout.output_sections, &layout.output_order)?;
 
     write_plt_got_entries::<C, A>(prelude, layout, table_writer)?;
 
@@ -5644,10 +5680,12 @@ impl<'out, C: ElfClass> DynamicEntriesWriter<'out, C> {
     }
 }
 
-fn write_section_headers<C: ElfClass>(out: &mut [u8], layout: &ElfLayout<C>) -> Result {
-    let entries: &mut [elf::SectionHeader<C>] = slice_from_all_bytes_mut(out);
+fn write_section_headers<C: ElfClass>(
+    table_writer: &mut TableWriter<'_, '_, C>,
+    layout: &ElfLayout<C>,
+) -> Result {
     let output_sections = &layout.output_sections;
-    let mut entries = entries.iter_mut();
+    let num_entries = table_writer.section_header_count();
     let mut name_offset = 0;
     let info_values = compute_info_values(layout);
 
@@ -5684,8 +5722,8 @@ fn write_section_headers<C: ElfClass>(out: &mut [u8], layout: &ElfLayout<C>) -> 
 
         if section_type == sht::NULL {
             alignment = 0;
-            if entries.len() >= usize::from(object::elf::SHN_LORESERVE) {
-                size = entries.len() as u64;
+            if num_entries >= usize::from(object::elf::SHN_LORESERVE) {
+                size = num_entries as u64;
             } else {
                 size = 0;
             }
@@ -5716,7 +5754,7 @@ fn write_section_headers<C: ElfClass>(out: &mut [u8], layout: &ElfLayout<C>) -> 
             }
         }
 
-        let entry = entries.next().unwrap();
+        let entry = table_writer.take_section_header()?;
         entry.set_name(name_offset);
 
         let sh_type = if layout.args().use_android_relr_tags && section_type == sht::RELR {
@@ -5777,11 +5815,6 @@ fn write_section_headers<C: ElfClass>(out: &mut [u8], layout: &ElfLayout<C>) -> 
 
         name_offset += name.len() as u32 + 1;
     }
-    ensure!(
-        entries.next().is_none(),
-        "Allocated section entries that weren't used"
-    );
-
     Ok(())
 }
 
@@ -5816,20 +5849,19 @@ fn compute_info_values<C: ElfClass>(layout: &ElfLayout<C>) -> OutputSectionMap<u
 }
 
 fn write_section_header_strings<C: ElfClass>(
-    mut out: &mut [u8],
+    table_writer: &mut TableWriter<'_, '_, C>,
     sections: &OutputSections<elf::Elf<C>>,
     output_order: &OutputOrder,
-) {
+) -> Result {
     for event in output_order {
         if let OrderEvent::Section(id) = event
             && sections.output_index_of_section(id).is_some()
             && let Some(name) = sections.name(id)
         {
-            let name_out = out.split_off_mut(..=name.len()).unwrap();
-            name_out[..name.len()].copy_from_slice(name.bytes());
-            name_out[name.len()] = 0;
+            table_writer.write_section_header_string(name.bytes())?;
         }
     }
+    Ok(())
 }
 
 struct ProgramHeaderWriter<'out, C: ElfClass> {
