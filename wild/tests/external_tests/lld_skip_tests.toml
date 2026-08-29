@@ -104,7 +104,6 @@ reason = "x86-64 tests discovered by lit but not yet triaged"
 tests = [
   "lto/x86-64-global-offset-table.ll",
   "invalid/x86-64-tlsdesc-gd.s",
-  "x86-64-tls-gd-got.s",
 ]
 
 [skipped_groups.aarch64_untriaged]
