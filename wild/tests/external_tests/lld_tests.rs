@@ -154,11 +154,20 @@ fn run_lit_for_arch(
 
     let output = cmd.output()?;
 
-    print!("{}", String::from_utf8_lossy(&output.stdout));
-    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    print!("{}", stdout);
+    eprint!("{}", stderr);
 
     if !output.status.success() {
         return Err(format!("lit exited with status: {}", output.status).into());
+    }
+
+    if stdout.contains("Unexpectedly Passed") || stderr.contains("Unexpectedly Passed") {
+        return Err("One or more tests unexpectedly passed. \
+            Remove them from lld_skip_tests.toml."
+            .into());
     }
 
     Ok(())
