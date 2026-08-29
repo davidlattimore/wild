@@ -99,6 +99,10 @@ tests = [
 reason = "Uses split-file, not yet supported by this harness (TODO: follow-up PR)"
 tests = ["x86-64-section-layout.s"]
 
+[skipped_groups.x86_untriaged]
+reason = "x86-64 tests discovered by lit but not yet triaged"
+tests = ["lto/x86-64-global-offset-table.ll", "invalid/x86-64-tlsdesc-gd.s"]
+
 [skipped_groups.aarch64_untriaged]
 reason = "aarch64 support newly activated; failures not yet triaged into individual root-cause categories"
 tests = [
@@ -222,4 +226,13 @@ tests = [
   "aarch64-tstbr14-reloc.s",
   "aarch64-undefined-weak.s",
   "aarch64-variant_pcs.s",
+  "basic-aarch64.s",
+  "eh-frame-nonzero-offset-aarch64.s",
+  "emulation-aarch64.s",
+  "global-offset-table-position-aarch64.s",
+  "relocation-b-aarch64.test",
+  "invalid/invalid-relocation-aarch64.test",
+  "lto/aarch64.ll",
+  "lto/aarch64-pac-got-func.ll",
+  "aarch64-reloc-implicit-addend.test",
 ]
