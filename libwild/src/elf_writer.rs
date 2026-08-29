@@ -196,6 +196,7 @@ pub(crate) fn write<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
 
     if layout.args().should_write_eh_frame_hdr
+        && !layout.args().only_keep_debug()
         && layout
             .section_layouts
             .get(output_section_id::EH_FRAME_HDR)
@@ -413,7 +414,17 @@ fn write_program_headers<C: ElfClass>(
         segment_header.set_offset(segment_sizes.file_offset as u64)?;
         segment_header.set_virtual_address(segment_sizes.mem_offset)?;
         segment_header.set_physical_address(segment_sizes.lma_offset)?;
-        segment_header.set_file_size(segment_sizes.file_size as u64)?;
+        // --only-keep-debug: PT_LOAD segments have no file-backed content (all alloc
+        // sections became NOBITS), so emit p_filesz = 0. The internal layout still
+        // tracks real offsets for FILE_HEADER / PROGRAM_HEADERS buffer allocation.
+        let file_size = if layout.args().only_keep_debug()
+            && layout.program_segments.is_load_segment(segment_id)
+        {
+            0
+        } else {
+            segment_sizes.file_size as u64
+        };
+        segment_header.set_file_size(file_size)?;
         segment_header.set_memory_size(segment_sizes.mem_size)?;
         segment_header.set_alignment(alignment.value())?;
     }
@@ -2135,6 +2146,18 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         }
     }
 
+    // --only-keep-debug: alloc non-NOTE sections are converted to SHT_NOBITS — skip writing.
+    if layout.args().only_keep_debug() {
+        use crate::platform::SectionAttributes as _;
+        let section_info = layout
+            .output_sections
+            .output_info(part_id.output_section_id::<elf::Elf<C>>());
+        let attrs = &section_info.section_attributes;
+        if attrs.is_alloc() && attrs.ty != linker_utils::elf::sht::NOTE {
+            return Ok(());
+        }
+    }
+
     let out = write_section_raw::<C, A>(object, layout, section, section_index, buffers)?;
 
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
@@ -2616,6 +2639,10 @@ fn write_eh_frame_data<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     table_writer: &mut TableWriter<'_, '_, C>,
     trace: &TraceOutput,
 ) -> Result {
+    // --only-keep-debug: .eh_frame is an alloc section; skip writing its content.
+    if layout.args().only_keep_debug() {
+        return Ok(());
+    }
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
     match object.relocations(eh_frame_section_index)? {
         elf::RelocationList::Rela(relocations) => {
@@ -3902,6 +3929,7 @@ fn write_prelude_except_gdb_index<'data, C: ElfClass, A: Arch<Platform = elf::El
     }
 
     if layout.args().should_write_eh_frame_hdr
+        && !layout.args().only_keep_debug()
         && layout
             .section_layouts
             .get(output_section_id::EH_FRAME_HDR)
@@ -4316,7 +4344,7 @@ fn write_epilogue<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             &epilogue_offsets,
         )?;
     }
-    if epilogue.format_specific.needs_eh_frame_terminator {
+    if epilogue.format_specific.needs_eh_frame_terminator && !layout.args().only_keep_debug() {
         table_writer.write_eh_frame_terminator();
     }
 
