@@ -101,10 +101,7 @@ tests = ["x86-64-section-layout.s"]
 
 [skipped_groups.x86_untriaged]
 reason = "x86-64 tests discovered by lit but not yet triaged"
-tests = [
-  "lto/x86-64-global-offset-table.ll",
-  "invalid/x86-64-tlsdesc-gd.s",
-]
+tests = ["lto/x86-64-global-offset-table.ll", "invalid/x86-64-tlsdesc-gd.s"]
 
 [skipped_groups.aarch64_untriaged]
 reason = "aarch64 support newly activated; failures not yet triaged into individual root-cause categories"
