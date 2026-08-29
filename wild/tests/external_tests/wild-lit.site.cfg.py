@@ -27,4 +27,5 @@ config.llvm_shlib_ext = ".so"
 config.host_triple = os.environ.get("HOST_TRIPLE", "x86_64-unknown-linux-gnu")
 config.target_triple = os.environ.get("TARGET_TRIPLE", "aarch64-unknown-linux-gnu")
 
-lit_config.load_config(config, os.path.join(os.path.dirname(__file__), 'lit.cfg.py'))
+LIT_CFG = os.environ.get("WILD_LIT_CFG", os.path.join(os.path.dirname(__file__), 'lit.cfg.py'))
+lit_config.load_config(config, LIT_CFG)

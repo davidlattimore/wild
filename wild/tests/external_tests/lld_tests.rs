@@ -105,14 +105,9 @@ fn run_lit_for_arch(
 ) -> Result {
     let repo_root = crate::base_dir().join("..");
     let cfg_src = repo_root.join("wild/tests/external_tests/wild-lit.site.cfg.py");
-    let cfg_link = test_dir.join("wild-lit.site.cfg.py");
-
-    // Create symlink so lit can find the config alongside lit.cfg.py.
-    // Use a temp name + rename for atomic replacement to avoid race conditions
-    // when multiple arch tests run concurrently.
-    let tmp_link = test_dir.join(format!("wild-lit.site.cfg.py.tmp.{arch}"));
-    std::os::unix::fs::symlink(&cfg_src, &tmp_link)?;
-    std::fs::rename(&tmp_link, &cfg_link)?;
+    let lit_tmp = tempfile::tempdir()?;
+    std::os::unix::fs::symlink(&cfg_src, lit_tmp.path().join("wild-lit.site.cfg.py"))?;
+    std::os::unix::fs::symlink(test_dir.join("ELF"), lit_tmp.path().join("ELF"))?;
 
     let wild_bin = std::path::Path::new(env!("CARGO_BIN_EXE_wild"));
     let llvm_tools_dir = test_config.llvm_tools_dir.to_str().unwrap();
@@ -142,7 +137,7 @@ fn run_lit_for_arch(
     let mut cmd = Command::new(lit_binary);
     cmd.arg("--config-prefix")
         .arg("wild-lit.site")
-        .arg(test_dir.join("ELF"))
+        .arg(lit_tmp.path().join("ELF"))
         .arg(format!("--filter={arch}"))
         .env("WILD_BIN", wild_bin)
         .env("WILD_FAKES_DIR", fakes_dir.path())
@@ -150,7 +145,8 @@ fn run_lit_for_arch(
         .env("LLD_OBJ_ROOT", tmpdir.path())
         .env("HOST_TRIPLE", "x86_64-unknown-linux-gnu")
         .env("TARGET_TRIPLE", arch)
-        .env("WILD_EMULATION", emulation);
+        .env("WILD_EMULATION", emulation)
+        .env("WILD_LIT_CFG", test_dir.join("lit.cfg.py"));
 
     if !xfail_list.is_empty() {
         cmd.arg("--xfail").arg(xfail_list.join(";"));
