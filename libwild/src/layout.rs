@@ -6152,7 +6152,7 @@ impl<'data, P: Platform> LinkerScriptLayoutState<'data, P> {
                                 resources,
                                 queue,
                                 scope,
-                                &lc.get_expression(),
+                                lc.get_expression(),
                             );
                         }
                     }
