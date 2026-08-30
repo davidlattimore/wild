@@ -1363,6 +1363,30 @@ struct VersionedDynsymWriter<'layout, 'out, C: ElfClass> {
     versym: Option<&'out mut [Versym]>,
 }
 
+fn object_symbol_size<C: ElfClass>(
+    sym: &elf::SymtabEntry<C>,
+    sym_index: SymbolIndex,
+    object: &ObjectLayout<elf::Elf<C>>,
+) -> Result<u64> {
+    let e = LittleEndian;
+    let st_size: u64 = sym.st_size(e).into();
+    if st_size == 0 {
+        return Ok(0);
+    }
+    let Some(section_index) = object.object.symbol_section(sym, sym_index)? else {
+        return Ok(st_size);
+    };
+    let Some(deltas) = object.section_relax_deltas.get(section_index.0) else {
+        return Ok(st_size);
+    };
+
+    // Adjust symbol size for relaxation-induced byte deletions.
+    let st_value: u64 = sym.st_value(e).into();
+    let start_output = deltas.input_to_output_offset(st_value);
+    let end_output = deltas.input_to_output_offset(st_value + st_size);
+    Ok(end_output - start_output)
+}
+
 struct SymbolTableWriter<'layout, 'out, C: ElfClass> {
     local_entries: &'out mut [elf::SymtabEntry<C>],
     global_entries: &'out mut [elf::SymtabEntry<C>],
@@ -1420,6 +1444,64 @@ impl<'layout, 'out, C: ElfClass> SymbolTableWriter<'layout, 'out, C> {
             symtab_shndx_local_entries: None,
             symtab_shndx_global_entries: None,
         }
+    }
+
+    fn copy_object_symbol(
+        &mut self,
+        sym: &elf::SymtabEntry<C>,
+        sym_index: SymbolIndex,
+        symbol_id: SymbolId,
+        name: &[u8],
+        object: &ObjectLayout<elf::Elf<C>>,
+        layout: &ElfLayout<C>,
+        value: u64,
+        flags: ValueFlags,
+    ) -> Result {
+        let e = LittleEndian;
+
+        let section_id =
+            if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
+                match &object.sections[section_index.0] {
+                    SectionSlot::Loaded(_)
+                    | SectionSlot::Sorted(_)
+                    | SectionSlot::LoadedDebugInfo(_)
+                    | SectionSlot::MergeStrings(_) => object
+                        .section_part_id(section_index, &layout.symbol_db.section_part_ids)
+                        .output_section_id::<elf::Elf<C>>(),
+                    SectionSlot::FrameData(..) => output_section_id::EH_FRAME,
+                    _ => {
+                        if layout.symbol_db.is_mapping_symbol(symbol_id) {
+                            return Ok(());
+                        }
+                        bail!(
+                            "Tried to copy a symbol in a section we didn't load. {}",
+                            layout.symbol_debug(symbol_id)
+                        )
+                    }
+                }
+            } else if sym.is_common(e) {
+                if sym.st_type() == STT_TLS {
+                    output_section_id::TBSS
+                } else {
+                    output_section_id::BSS
+                }
+            } else if sym.is_absolute(e) {
+                self.copy_absolute_symbol(sym, name, flags)
+                    .with_context(|| {
+                        format!("Failed to absolute {}", layout.symbol_debug(symbol_id))
+                    })?;
+                return Ok(());
+            } else {
+                bail!("Attempted to output a symtab entry with an unexpected section type")
+            };
+
+        let section_id = layout.output_sections.primary_output_section(section_id);
+
+        let entry = self.copy_symbol(sym, name, section_id, value, flags)?;
+
+        entry.set_size(object_symbol_size(sym, sym_index, object)?)?;
+
+        Ok(())
     }
 
     #[inline(always)]
@@ -2318,47 +2400,6 @@ fn write_symbols<'data, C: ElfClass>(
             flags.get(),
             &object.sections,
         ) {
-            let e = LittleEndian;
-
-            let section_id =
-                if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
-                    match &object.sections[section_index.0] {
-                        SectionSlot::Loaded(_)
-                        | SectionSlot::Sorted(_)
-                        | SectionSlot::LoadedDebugInfo(_)
-                        | SectionSlot::MergeStrings(_) => object
-                            .section_part_id(section_index, &layout.symbol_db.section_part_ids)
-                            .output_section_id::<elf::Elf<C>>(),
-                        SectionSlot::FrameData(..) => output_section_id::EH_FRAME,
-                        _ => {
-                            if layout.symbol_db.is_mapping_symbol(symbol_id) {
-                                continue;
-                            }
-                            bail!(
-                                "Tried to copy a symbol in a section we didn't load. {}",
-                                layout.symbol_debug(symbol_id)
-                            )
-                        }
-                    }
-                } else if sym.is_common(e) {
-                    if sym.st_type() == STT_TLS {
-                        output_section_id::TBSS
-                    } else {
-                        output_section_id::BSS
-                    }
-                } else if sym.is_absolute(e) {
-                    symbol_writer
-                        .copy_absolute_symbol(sym, info.name, flags.get())
-                        .with_context(|| {
-                            format!("Failed to absolute {}", layout.symbol_debug(symbol_id))
-                        })?;
-                    continue;
-                } else {
-                    bail!("Attempted to output a symtab entry with an unexpected section type")
-                };
-
-            let section_id = layout.output_sections.primary_output_section(section_id);
-
             let Some(res) = layout.local_symbol_resolution(symbol_id) else {
                 bail!("Missing resolution for {}", layout.symbol_debug(symbol_id));
             };
@@ -2369,22 +2410,18 @@ fn write_symbols<'data, C: ElfClass>(
                 symbol_value -= layout.tls_start_address();
             }
 
-            let entry = symbol_writer
-                .copy_symbol(sym, info.name, section_id, symbol_value, flags.get())
+            symbol_writer
+                .copy_object_symbol(
+                    sym,
+                    sym_index,
+                    symbol_id,
+                    info.name,
+                    object,
+                    layout,
+                    symbol_value,
+                    flags.get(),
+                )
                 .with_context(|| format!("Failed to copy {}", layout.symbol_debug(symbol_id)))?;
-
-            // Adjust symbol size for relaxation-induced byte deletions.
-            if let Some(section_index) = object.object.symbol_section(sym, sym_index)?
-                && let Some(deltas) = object.section_relax_deltas.get(section_index.0)
-            {
-                let st_value: u64 = sym.st_value(e).into();
-                let st_size: u64 = sym.st_size(e).into();
-                if st_size > 0 {
-                    let start_output = deltas.input_to_output_offset(st_value);
-                    let end_output = deltas.input_to_output_offset(st_value + st_size);
-                    entry.set_size(end_output - start_output)?;
-                }
-            }
         }
     }
 
@@ -4924,113 +4961,11 @@ fn write_regular_object_dynamic_symbol_definition<'data, C: ElfClass>(
     let sym_index = sym_def.symbol_id.to_input(object.symbol_id_range);
     let sym = object.object.symbol(sym_index)?;
     let name = sym_def.name;
-    if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
-        let output_section_id = match &object.sections[section_index.0] {
-            SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => object
-                .section_part_id(section_index, &layout.symbol_db.section_part_ids)
-                .output_section_id::<elf::Elf<C>>(),
-            SectionSlot::Sorted(_) => object
-                .section_part_id(section_index, &layout.symbol_db.section_part_ids)
-                .output_section_id::<elf::Elf<C>>(),
-            _ => bail!(
-                "Internal error: Defined symbols should always be for a loaded, merge-strings or sorted section"
-            ),
-        };
-        let output_section_id = layout
-            .output_sections
-            .primary_output_section(output_section_id);
-        let symbol_id = sym_def.symbol_id;
-        let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
-            format!(
-                "Tried to write dynamic symbol definition without a resolution: {}",
-                layout.symbol_debug(symbol_id)
-            )
-        })?;
-
-        // For non-PIE executables, export IFUNC symbols as STT_FUNC pointing to PLT stub.
-        // For PIE executables, keep IFUNC as-is.
-        if resolution.flags.is_ifunc()
-            && layout.symbol_db.output_kind.is_executable()
-            && !layout.symbol_db.output_kind.is_relocatable()
-            && let Some(plt_address) = resolution.format_specific.plt_address
-        {
-            let plt_output_section_id = layout
-                .output_sections
-                .primary_output_section(output_section_id::PLT_GOT);
-            let shndx = dynamic_symbol_writer
-                .output_sections
-                .output_index_of_section(plt_output_section_id)
-                .with_context(|| {
-                    format!(
-                        "PLT section not found for ifunc symbol `{}`",
-                        String::from_utf8_lossy(name),
-                    )
-                })?;
-            let e = LittleEndian;
-            let size = sym.st_size(e);
-            let entry = dynamic_symbol_writer.define_symbol(
-                false,
-                SymbolSection::Index(shndx),
-                plt_address.into(),
-                size.into(),
-                Some(name),
-            )?;
-            entry.set_binding_and_type(sym.st_bind(), object::elf::STT_FUNC);
-            entry.set_other(sym.st_other());
-        } else {
-            let mut symbol_value = resolution.raw_value;
-            if sym.st_type() == object::elf::STT_TLS {
-                symbol_value -= layout.tls_start_address();
-            }
-            dynamic_symbol_writer
-                .copy_symbol(
-                    sym,
-                    name,
-                    output_section_id,
-                    symbol_value,
-                    ValueFlags::empty(),
-                )
-                .with_context(|| {
-                    format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
-                })?;
-        }
-    } else if platform::Symbol::is_common(sym) {
-        let symbol_id = sym_def.symbol_id;
-        let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
-            format!(
-                "Tried to write dynamic symbol definition without a resolution: {}",
-                layout.symbol_debug(symbol_id)
-            )
-        })?;
-
-        let mut sym_value = resolution.value();
-
-        // As common symbols are denoted by setting shndx=SHN_COMMON which is a special section,
-        // we need to put them manually into BSS/TBSS sections depending on whether they are thread
-        // local or not.
-        let section_id = if sym.st_type() == STT_TLS {
-            sym_value -= layout.tls_start_address();
-            output_section_id::TBSS
-        } else {
-            output_section_id::BSS
-        };
-        let section_id = layout.output_sections.primary_output_section(section_id);
-
-        dynamic_symbol_writer
-            .copy_symbol(sym, name, section_id, sym_value, ValueFlags::empty())
-            .with_context(|| {
-                format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
-            })?;
-    } else if platform::Symbol::is_absolute(sym) {
-        dynamic_symbol_writer
-            .copy_absolute_symbol(sym, name, ValueFlags::empty())
-            .with_context(|| {
-                format!(
-                    "Failed to absolute {}",
-                    layout.symbol_debug(sym_def.symbol_id)
-                )
-            })?;
-    } else {
+    let section_index = object.object.symbol_section(sym, sym_index)?;
+    if section_index.is_none()
+        && !platform::Symbol::is_common(sym)
+        && !platform::Symbol::is_absolute(sym)
+    {
         dynamic_symbol_writer
             .copy_symbol_shndx(sym, name, 0, 0, ValueFlags::empty())
             .with_context(|| {
@@ -5038,6 +4973,67 @@ fn write_regular_object_dynamic_symbol_definition<'data, C: ElfClass>(
                     "Failed to copy dynamic {}",
                     layout.symbol_debug(sym_def.symbol_id)
                 )
+            })?;
+        return Ok(());
+    }
+
+    let symbol_id = sym_def.symbol_id;
+    let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
+        format!(
+            "Tried to write dynamic symbol definition without a resolution: {}",
+            layout.symbol_debug(symbol_id)
+        )
+    })?;
+
+    // For non-PIE executables, export IFUNC symbols as STT_FUNC pointing to PLT stub.
+    // For PIE executables, keep IFUNC as-is.
+    if section_index.is_some()
+        && resolution.flags.is_ifunc()
+        && layout.symbol_db.output_kind.is_executable()
+        && !layout.symbol_db.output_kind.is_position_independent()
+        && let Some(plt_address) = resolution.format_specific.plt_address
+    {
+        let plt_output_section_id = layout
+            .output_sections
+            .primary_output_section(output_section_id::PLT_GOT);
+        let shndx = dynamic_symbol_writer
+            .output_sections
+            .output_index_of_section(plt_output_section_id)
+            .with_context(|| {
+                format!(
+                    "PLT section not found for ifunc symbol `{}`",
+                    String::from_utf8_lossy(name),
+                )
+            })?;
+        let size = object_symbol_size(sym, sym_index, object)?;
+        let entry = dynamic_symbol_writer.define_symbol(
+            false,
+            SymbolSection::Index(shndx),
+            plt_address.into(),
+            size,
+            Some(name),
+        )?;
+        entry.set_binding_and_type(sym.st_bind(), object::elf::STT_FUNC);
+        entry.set_other(sym.st_other());
+    } else {
+        let mut symbol_value = resolution.value_for_symbol_table();
+        if sym.st_type() == object::elf::STT_TLS {
+            symbol_value -= layout.tls_start_address();
+        }
+
+        dynamic_symbol_writer
+            .copy_object_symbol(
+                sym,
+                sym_index,
+                symbol_id,
+                name,
+                object,
+                layout,
+                symbol_value,
+                ValueFlags::empty(),
+            )
+            .with_context(|| {
+                format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
             })?;
     }
     Ok(())
