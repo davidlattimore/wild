@@ -40,6 +40,59 @@
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
 
+//#Config:symbols
+//#LinkerScript:linker-script-location-counter-symbols.ld
+//#Object:runtime.c
+// RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
+//#SkipArch:riscv64,ppc64le
+//#DiffIgnore:segment.LOAD.RX.alignment
+//#DiffIgnore:segment.LOAD.RWX.alignment
+
+//#Config:earlier_section_symbol
+//#Arch:x86_64
+//#LinkerScript:linker-script-earlier-section-symbol.ld
+//#Object:runtime.c
+//#RunEnabled:false
+
+//#Config:object_symbol_offset
+//#LinkerScript:linker-script-object-symbol-offset.ld
+//#Object:runtime.c
+//#Object:object-symbol-prefix.c
+//#Object:object-symbol-target.c
+// RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
+//#SkipArch:riscv64,ppc64le
+//#DiffIgnore:segment.LOAD.RX.alignment
+//#DiffIgnore:segment.LOAD.RWX.alignment
+
+//#Config:mixed_symbol_kinds
+//#Arch:x86_64
+//#ReferenceLinkers:bfd,lld
+//#LinkerScript:linker-script-mixed-symbol-kinds.ld
+//#Object:runtime.c
+//#RunEnabled:false
+//#DiffIgnore:segment.LOAD.RX.alignment
+//#DiffIgnore:segment.LOAD.RWX.alignment
+
+//#Config:symbol_with_unrelated_sort
+//#ReferenceLinkers:bfd,lld
+//#LinkerScript:linker-script-symbol-sort.ld
+//#Object:runtime.c
+//#RunEnabled:false
+// RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
+//#SkipArch:riscv64,ppc64le
+//#DiffIgnore:segment.LOAD.RX.alignment
+//#DiffIgnore:segment.LOAD.RWX.alignment
+
+//#Config:symbol_only_reference
+//#Arch:x86_64
+//#ReferenceLinkers:lld
+//#LinkerScript:linker-script-symbol-only-reference.ld
+//#Object:runtime.c
+//#Object:location-counter-only-symbol.c
+//#RunEnabled:false
+//#DiffIgnore:segment.LOAD.RX.alignment
+//#DiffIgnore:segment.LOAD.RWX.alignment
+
 #include <stddef.h>
 
 #include "../common/runtime.h"
@@ -51,7 +104,22 @@ __attribute__((section(".foo.second"), aligned(8))) int data_second = 2;
 
 __attribute__((section(".text.foo"))) void foo(void) {}
 
+__attribute__((section(".custom.1"))) void custom_one(void) {}
+__attribute__((section(".custom.2"))) void custom_two(void) {}
+__attribute__((section(".custom.3"))) void custom_three(void) {}
+
+__attribute__((section(".sort.b"), used)) void sort_b(void) {}
+__attribute__((section(".sort.a"), used)) void sort_a(void) {}
+__attribute__((section(".sort.c"), used)) void sort_c(void) {}
+
+__asm__(".global abs_symbol\n.set abs_symbol, 0x1000000\n");
+__asm__(".global abs_between\n.set abs_between, 0x650000\n");
+__asm__(".global abs_small\n.set abs_small, 5\n");
+
 void begin_here(void) {
   foo();
+  custom_one();
+  custom_two();
+  custom_three();
   exit_syscall(ret);
 }

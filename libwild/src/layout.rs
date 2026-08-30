@@ -16,6 +16,7 @@ use crate::error::Context;
 use crate::error::Error;
 use crate::error::Result;
 use crate::expression_eval::ResolvedLocationCounter;
+use crate::expression_eval::ResolvedSymbolValue;
 use crate::expression_eval::evaluate_const;
 use crate::file_writer;
 use crate::grouping::Group;
@@ -92,6 +93,7 @@ use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fmt::Display;
@@ -295,6 +297,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
 
     let (mut section_part_layouts, mut section_layouts, mut resolved_location_counters) =
         compute_layout_sections::<A::Platform>(
+            &group_states,
             &section_part_sizes,
             &output_sections,
             &program_segments,
@@ -610,10 +613,12 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
                 if let Some(section_base) = current_section_base
                     && resolution.raw_value >= section_base
                 {
-                    return Ok(resolution.raw_value - section_base);
+                    return Ok(ResolvedSymbolValue::SectionRelative(
+                        resolution.raw_value - section_base,
+                    ));
                 }
 
-                Ok(resolution.raw_value)
+                Ok(ResolvedSymbolValue::Absolute(resolution.raw_value))
             },
         )?;
 
@@ -3590,16 +3595,25 @@ fn load_redirect_referenced_symbols<'data, 'scope, A: Arch>(
     queue: &mut LocalWorkQueue<A::Platform>,
     scope: &Scope<'scope>,
     symbol_id: SymbolId,
-    redirect: &crate::parsing::Redirect<'_>,
+    redirect: &crate::parsing::Redirect<'data>,
 ) {
     resources
         .per_symbol_flags
         .get_atomic(symbol_id)
         .or_assign(ValueFlags::DIRECT);
 
+    load_expression_referenced_symbols::<A>(resources, queue, scope, &redirect.expression);
+}
+
+fn load_expression_referenced_symbols<'data, 'scope, A: Arch>(
+    resources: &'scope GraphResources<'data, '_, <A as Arch>::Platform>,
+    queue: &mut LocalWorkQueue<A::Platform>,
+    scope: &Scope<'scope>,
+    expression: &Expression<'data>,
+) {
     // Also mark any symbols in the expression as used and queue it for loading to
     // prevent it from being GC'd.
-    redirect.expression.visit_expressions(&mut |e| {
+    expression.visit_expressions(&mut |e| {
         if let crate::linker_script::Expression::Symbol(target_name) = e
             && let Some(target_symbol_id) = resources
                 .symbol_db
@@ -4946,6 +4960,17 @@ const MAX_RELAXATION_ITERATIONS: usize = 5;
 /// unknown.
 const SYMBOL_ADDRESS_UNRESOLVED: u64 = u64::MAX;
 
+#[derive(Debug, Clone, Copy)]
+struct InputSectionPosition {
+    part_id: PartId,
+    address: u64,
+}
+
+/// Input-section positions in the coordinate system supplied by the initial part offsets.
+/// Zero initial offsets produce part-relative positions, while final part offsets produce output
+/// addresses.
+type InputSectionPositions = Vec<Vec<Vec<Option<InputSectionPosition>>>>;
+
 /// Stores precomputed output-address information for every symbol.
 struct SymbolOutputInfos {
     addresses: Vec<u64>,
@@ -4970,14 +4995,82 @@ impl SymbolOutputInfos {
     }
 }
 
+fn compute_object_section_positions<'data, P: Platform>(
+    obj: &ObjectLayoutState<'data, P>,
+    offsets: &mut OutputSectionPartMap<u64>,
+    symbol_db: &SymbolDb<'data, P>,
+    output_sections: &OutputSections<P>,
+) -> Vec<Option<InputSectionPosition>> {
+    let mut positions = vec![None; obj.sections.len()];
+    for (sec_idx, slot) in obj
+        .sections
+        .iter()
+        .enumerate()
+        .map(|(idx, slot)| (object::SectionIndex(idx), slot))
+    {
+        match slot {
+            SectionSlot::Loaded(sec) => {
+                let part_id = obj.section_part_id(sec_idx, &symbol_db.section_part_ids);
+                positions[sec_idx.0] = Some(InputSectionPosition {
+                    part_id,
+                    address: offsets.get(part_id),
+                });
+                *offsets.get_mut(part_id) += sec.capacity(part_id, output_sections);
+            }
+            SectionSlot::LoadedDebugInfo(sec) => {
+                // Advance offsets so subsequent sections are placed correctly, but we don't need
+                // the address for relaxation.
+                let part_id = obj.section_part_id(sec_idx, &symbol_db.section_part_ids);
+                *offsets.get_mut(part_id) += sec.capacity(part_id, output_sections);
+            }
+            _ => {}
+        }
+    }
+
+    P::compute_object_addresses(obj, offsets);
+
+    positions
+}
+
+fn compute_input_section_positions<'data, P: Platform>(
+    group_states: &[GroupState<'data, P>],
+    mem_offsets: OutputSectionPartMap<u64>,
+    symbol_db: &SymbolDb<'data, P>,
+    output_sections: &OutputSections<P>,
+) -> InputSectionPositions {
+    let starting_offsets = compute_start_offsets_by_group(group_states, mem_offsets);
+
+    group_states
+        .par_iter()
+        .enumerate()
+        .map(|(group_idx, group)| {
+            let mut offsets = starting_offsets[group_idx].clone();
+
+            group
+                .files
+                .iter()
+                .map(|file| match file {
+                    FileLayoutState::Object(obj) => compute_object_section_positions(
+                        obj,
+                        &mut offsets,
+                        symbol_db,
+                        output_sections,
+                    ),
+                    _ => vec![],
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// Compute the output address of every loaded input section and every symbol in a single parallel
 /// pass over groups.
 fn compute_section_and_symbol_addresses<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
     symbol_db: &SymbolDb<'data, P>,
-    output_sections: &OutputSections<P>,
-) -> (Vec<Vec<Vec<u64>>>, SymbolOutputInfos) {
+    output_sections: &OutputSections<'data, P>,
+) -> (InputSectionPositions, SymbolOutputInfos) {
     timing_phase!("Compute section and symbol addresses");
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
     let starting_offsets = compute_start_offsets_by_group(group_states, mem_offsets);
@@ -4986,7 +5079,7 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
         .map(|_| AtomicU64::new(SYMBOL_ADDRESS_UNRESOLVED))
         .collect();
 
-    let section_addresses: Vec<Vec<Vec<u64>>> = group_states
+    let section_positions = group_states
         .par_iter()
         .enumerate()
         .map(|(group_idx, group)| {
@@ -4997,33 +5090,12 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
                 .iter()
                 .map(|file| match file {
                     FileLayoutState::Object(obj) => {
-                        let mut addresses = vec![0u64; obj.sections.len()];
-                        for (sec_idx, slot) in obj.sections.iter().enumerate() {
-                            match slot {
-                                SectionSlot::Loaded(sec) => {
-                                    let part_id = obj.section_part_id(
-                                        object::SectionIndex(sec_idx),
-                                        &symbol_db.section_part_ids,
-                                    );
-                                    addresses[sec_idx] = offsets.get(part_id);
-                                    *offsets.get_mut(part_id) +=
-                                        sec.capacity(part_id, output_sections);
-                                }
-                                SectionSlot::LoadedDebugInfo(sec) => {
-                                    // Advance offsets so subsequent sections are placed
-                                    // correctly, but we don't need the address for relaxation.
-                                    let part_id = obj.section_part_id(
-                                        object::SectionIndex(sec_idx),
-                                        &symbol_db.section_part_ids,
-                                    );
-                                    *offsets.get_mut(part_id) +=
-                                        sec.capacity(part_id, output_sections);
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        P::compute_object_addresses(obj, &mut offsets);
+                        let positions = compute_object_section_positions(
+                            obj,
+                            &mut offsets,
+                            symbol_db,
+                            output_sections,
+                        );
 
                         // While we have the section addresses, also resolve symbol
                         // output addresses for this file's canonical definitions.
@@ -5041,12 +5113,22 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
 
                             match obj.object.symbol_section(sym, sym_input_idx) {
                                 Ok(Some(section)) => {
-                                    let sec_addr = addresses.get(section.0).copied().unwrap_or(0);
-                                    if sec_addr == 0 {
+                                    let Some(sec_addr) =
+                                        positions.get(section.0).copied().flatten()
+                                    else {
                                         continue;
-                                    }
+                                    };
+                                    let Ok(input_offset) =
+                                        obj.object.symbol_offset_in_section(sym, section)
+                                    else {
+                                        continue;
+                                    };
+                                    let output_offset = opt_input_to_output(
+                                        obj.section_relax_deltas.get(section.0),
+                                        input_offset,
+                                    );
                                     symbol_addresses[sym_id.as_usize()]
-                                        .store(sec_addr + sym.value(), Relaxed);
+                                        .store(sec_addr.address + output_offset, Relaxed);
                                 }
                                 Ok(None) if sym.is_absolute() => {
                                     symbol_addresses[sym_id.as_usize()].store(sym.value(), Relaxed);
@@ -5055,7 +5137,7 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
                             }
                         }
 
-                        addresses
+                        positions
                     }
                     _ => vec![],
                 })
@@ -5068,7 +5150,74 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
         .map(|a| a.into_inner())
         .collect();
 
-    (section_addresses, SymbolOutputInfos { addresses })
+    (section_positions, SymbolOutputInfos { addresses })
+}
+
+enum EarlyObjectSymbolValue {
+    Absolute(u64),
+    PartRelative { part_id: PartId, offset: u64 },
+}
+
+fn resolve_early_object_symbol<'data, P: Platform>(
+    symbol_id: SymbolId,
+    group_states: &[GroupState<'data, P>],
+    section_positions: &InputSectionPositions,
+    symbol_db: &SymbolDb<'data, P>,
+) -> Result<EarlyObjectSymbolValue> {
+    let canonical_id = symbol_db.definition(symbol_id);
+    let file_id = symbol_db.file_id_for_symbol(canonical_id);
+    let Some(FileLayoutState::Object(obj)) = group_states
+        .get(file_id.group())
+        .and_then(|group| group.files.get(file_id.file()))
+    else {
+        bail!(
+            "symbol '{}' is not defined by an input object",
+            symbol_db.symbol_name_for_display(canonical_id)
+        );
+    };
+
+    let local_index = canonical_id.to_input(obj.symbol_id_range);
+    let symbol = obj.object.symbol(local_index)?;
+    let Some(section_index) = obj.object.symbol_section(symbol, local_index)? else {
+        if symbol.is_absolute() {
+            return Ok(EarlyObjectSymbolValue::Absolute(symbol.value()));
+        }
+        bail!(
+            "cannot resolve address of symbol '{}'",
+            symbol_db.symbol_name_for_display(canonical_id)
+        );
+    };
+
+    let section_position = section_positions
+        .get(file_id.group())
+        .and_then(|group| group.get(file_id.file()))
+        .and_then(|file| file.get(section_index.0))
+        .copied()
+        .flatten();
+
+    let Some(section_position) = section_position else {
+        if matches!(
+            obj.sections.get(section_index.0),
+            Some(SectionSlot::Sorted(_))
+        ) {
+            bail!(
+                "Early evaluation of sorted section {} is not supported",
+                obj.object.section_display_name(section_index)
+            );
+        }
+        bail!(
+            "cannot resolve address of symbol '{}' because its section does not have an early layout",
+            symbol_db.symbol_name_for_display(canonical_id)
+        );
+    };
+
+    let input_offset = obj.object.symbol_offset_in_section(symbol, section_index)?;
+    let output_offset =
+        opt_input_to_output(obj.section_relax_deltas.get(section_index.0), input_offset);
+    Ok(EarlyObjectSymbolValue::PartRelative {
+        part_id: section_position.part_id,
+        offset: section_position.address + output_offset,
+    })
 }
 
 /// Per-file list of section indices to rescan on subsequent relaxation iterations. Indexed as
@@ -5090,7 +5239,7 @@ fn relaxation_scan_pass<'data, A: Arch>(
     per_symbol_flags: &PerSymbolFlags,
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     prev_rescan: Option<&RescanSections>,
-    output_sections: &OutputSections<A::Platform>,
+    output_sections: &OutputSections<'data, A::Platform>,
 ) -> (u64, RescanCandidates) {
     timing_phase!("Relaxation scan pass");
 
@@ -5149,10 +5298,14 @@ fn relaxation_scan_pass<'data, A: Arch>(
                             continue;
                         };
 
-                        let sec_output_addr = file_section_addrs.get(sec_idx).copied().unwrap_or(0);
-                        if sec_output_addr == 0 {
+                        let Some(sec_output_addr) = file_section_addrs
+                            .get(sec_idx)
+                            .copied()
+                            .flatten()
+                            .map(|section| section.address)
+                        else {
                             continue;
-                        }
+                        };
 
                         let existing_deltas = obj.section_relax_deltas.get(sec_idx);
 
@@ -5305,6 +5458,7 @@ fn perform_iterative_relaxation<'data, A: Arch>(
             *section_layouts,
             *resolved_location_counters,
         ) = compute_layout_sections::<A::Platform>(
+            group_states,
             section_part_sizes,
             output_sections,
             program_segments,
@@ -5318,6 +5472,7 @@ fn perform_iterative_relaxation<'data, A: Arch>(
 }
 
 fn compute_layout_sections<'data, P: Platform>(
+    group_states: &[GroupState<'data, P>],
     sizes: &OutputSectionPartMap<u64>,
     output_sections: &OutputSections<'data, P>,
     program_segments: &ProgramSegments<P::ProgramSegmentDef>,
@@ -5342,28 +5497,92 @@ fn compute_layout_sections<'data, P: Platform>(
     timing_phase!("Layout sections");
 
     let mut section_layouts = OutputSectionMap::with_size(output_sections.num_sections());
+    let section_positions = OnceCell::new();
 
-    let expression_eval = |expr: &Expression<'data>,
-                           loc: &SymbolLoc,
-                           memory_regions: &HashMap<&[u8], MemoryRegion>,
-                           section_layouts: &OutputSectionMap<OutputRecordLayout>,
-                           resolved_lc: &[ResolvedLocationCounter]| {
-        crate::expression_eval::evaluate_expression(
-            expr,
-            loc,
-            None,
-            section_layouts,
-            output_sections,
-            memory_regions,
-            symbol_db,
-            sizeof_headers,
-            resolved_lc,
-            &|_| {
-                bail!("Symbols with the set location operation are not yet supported.");
-            },
-        )
-    };
+    let expression_eval =
+        |expr: &Expression<'data>,
+         loc: &SymbolLoc,
+         memory_regions: &HashMap<&[u8], MemoryRegion>,
+         section_layouts: &OutputSectionMap<OutputRecordLayout>,
+         resolved_lc: &[ResolvedLocationCounter],
+         laid_out_mem_offsets: &OutputSectionPartMap<Option<u64>>| {
+            crate::expression_eval::evaluate_expression(
+                expr,
+                loc,
+                None,
+                section_layouts,
+                output_sections,
+                memory_regions,
+                symbol_db,
+                sizeof_headers,
+                resolved_lc,
+                &|name| {
+                    let Some(symbol_id) =
+                        symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
+                    else {
+                        bail!(
+                            "undefined symbol '{}' in linker script expression",
+                            String::from_utf8_lossy(name)
+                        );
+                    };
 
+                    let symbol_value = match resolve_early_object_symbol(
+                        symbol_id,
+                        group_states,
+                        section_positions.get_or_init(|| {
+                            compute_input_section_positions(
+                                group_states,
+                                sizes.new_empty_like(),
+                                symbol_db,
+                                output_sections,
+                            )
+                        }),
+                        symbol_db,
+                    )? {
+                        EarlyObjectSymbolValue::Absolute(value) => {
+                            ResolvedSymbolValue::Absolute(value)
+                        }
+                        EarlyObjectSymbolValue::PartRelative { part_id, offset } => {
+                            let Some(part_address) = laid_out_mem_offsets.get(part_id) else {
+                                bail!(
+                                    "cannot resolve address of symbol '{}' because its output section part has not been laid out yet",
+                                    String::from_utf8_lossy(name)
+                                );
+                            };
+                            let address = part_address + offset;
+                            let symbol_section = output_sections
+                                .primary_output_section(part_id.output_section_id::<P>());
+                            let current_section = match loc {
+                                SymbolLoc::SectionStartRelative(id)
+                                | SymbolLoc::SectionEndRelative(id)
+                                | SymbolLoc::LocationCounter(_, Some(id)) => {
+                                    Some(output_sections.primary_output_section(*id))
+                                }
+                                _ => None,
+                            };
+                            if current_section == Some(symbol_section) {
+                                let section_base = section_layouts.get(symbol_section).mem_offset;
+                                ResolvedSymbolValue::SectionRelative(
+                                    address.checked_sub(section_base).with_context(|| {
+                                        format!(
+                                            "address of symbol '{}' is before its output section",
+                                            String::from_utf8_lossy(name)
+                                        )
+                                    })?,
+                                )
+                            } else {
+                                ResolvedSymbolValue::Absolute(address)
+                            }
+                        }
+                    };
+                    Ok(symbol_value)
+                },
+            )
+        };
+
+    // Memory offsets of the output-section parts that have been laid out so far. Used to resolve
+    // object symbols referenced from location-counter expressions.
+    let mut laid_out_mem_offsets = output_sections.new_part_map::<Option<u64>>();
     let mut file_offset = 0;
     let mut mem_offset = expression_eval(
         &output_sections.base_address,
@@ -5371,6 +5590,7 @@ fn compute_layout_sections<'data, P: Platform>(
         memory_regions,
         &section_layouts,
         &[],
+        &laid_out_mem_offsets,
     )?;
     let mut lma_offset = mem_offset;
     let mut nonalloc_mem_offsets: OutputSectionMap<u64> =
@@ -5406,8 +5626,14 @@ fn compute_layout_sections<'data, P: Platform>(
                     };
                     loc = SymbolLoc::LocationCounter(idx, None);
                 }
-                let value =
-                    expression_eval(&expr, &loc, memory_regions, &section_layouts, &resolved_lc)?;
+                let value = expression_eval(
+                    &expr,
+                    &loc,
+                    memory_regions,
+                    &section_layouts,
+                    &resolved_lc,
+                    &laid_out_mem_offsets,
+                )?;
                 pending_location = Some(value);
                 resolved_lc[idx] = ResolvedLocationCounter {
                     value,
@@ -5417,8 +5643,14 @@ fn compute_layout_sections<'data, P: Platform>(
             OrderEvent::SetLocationRelative(expr, section_id, loc, idx) => {
                 let primary_id = output_sections.primary_output_section(section_id);
                 let section_base = section_layouts.get(primary_id).mem_offset;
-                let value =
-                    expression_eval(&expr, &loc, memory_regions, &section_layouts, &resolved_lc)?;
+                let value = expression_eval(
+                    &expr,
+                    &loc,
+                    memory_regions,
+                    &section_layouts,
+                    &resolved_lc,
+                    &laid_out_mem_offsets,
+                )?;
                 let offset = value - section_base;
                 pending_location = Some(value);
                 resolved_lc[idx] = ResolvedLocationCounter {
@@ -5433,6 +5665,7 @@ fn compute_layout_sections<'data, P: Platform>(
                     memory_regions,
                     &section_layouts,
                     &resolved_lc,
+                    &laid_out_mem_offsets,
                 )?;
                 pending_location = Some(value);
             }
@@ -5632,6 +5865,8 @@ fn compute_layout_sections<'data, P: Platform>(
                         file_offset += mem_size as usize;
                     }
 
+                    *laid_out_mem_offsets.get_mut(part_id) = Some(part_layout.mem_offset);
+
                     layout_section_from_part_layouts(
                         part_layout,
                         section_layouts.get_mut(section_id),
@@ -5650,6 +5885,7 @@ fn compute_layout_sections<'data, P: Platform>(
                             memory_regions,
                             &section_layouts,
                             &resolved_lc,
+                            &laid_out_mem_offsets,
                         )?;
                         part_layout.lma_offset = lma_offset;
                         let section_layout = section_layouts.get_mut(section_id);
@@ -5907,6 +6143,23 @@ impl<'data, P: Platform> LinkerScriptLayoutState<'data, P> {
         queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) -> Result {
+        for group in &resources.symbol_db.groups {
+            match group {
+                Group::LinkerScripts(linker_scripts) => {
+                    for script in linker_scripts {
+                        for lc in &script.parsed.location_counters {
+                            load_expression_referenced_symbols::<A>(
+                                resources,
+                                queue,
+                                scope,
+                                lc.get_expression(),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         self.internal_symbols
             .activate_symbols::<A>(common, resources, queue, scope)
     }
@@ -6042,6 +6295,7 @@ fn test_no_disallowed_overlaps() {
         crate::symbol_db::SymbolDb::<Elf64>::new(&args, output_kind, &auxiliary, &herd).unwrap();
 
     let (_, section_layouts, _) = compute_layout_sections::<Elf64>(
+        &[],
         &section_part_sizes,
         &output_sections,
         &program_segments,

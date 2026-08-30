@@ -32,6 +32,23 @@ pub(crate) struct ResolvedLocationCounter {
     pub(crate) section_offset: Option<u64>,
 }
 
+pub(crate) enum ResolvedSymbolValue {
+    Absolute(u64),
+    SectionRelative(u64),
+}
+
+#[derive(Default)]
+struct ExpressionValueKind {
+    contains_absolute: bool,
+    contains_section_relative: bool,
+}
+
+impl ExpressionValueKind {
+    fn needs_section_base(&self) -> bool {
+        self.contains_section_relative || !self.contains_absolute
+    }
+}
+
 fn evaluate_location<'data, P: Platform>(
     expr_loc: &SymbolLoc,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
@@ -78,9 +95,9 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
     sizeof_headers: u64,
     resolved_location_counters: &[ResolvedLocationCounter],
-    symbol_resolution_callback: &dyn Fn(&[u8]) -> Result<u64>,
+    symbol_resolution_callback: &dyn Fn(&[u8]) -> Result<ResolvedSymbolValue>,
 ) -> Result<u64> {
-    let mut has_section_relative_offset = true;
+    let mut value_kind = ExpressionValueKind::default();
     let value = evaluate_expression_value(
         expr,
         expr_loc,
@@ -91,11 +108,11 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
         symbol_db,
         sizeof_headers,
         resolved_location_counters,
-        &mut has_section_relative_offset,
+        &mut value_kind,
         symbol_resolution_callback,
     )?;
 
-    let offset = if has_section_relative_offset {
+    let offset = if value_kind.needs_section_base() {
         match expr_loc {
             SymbolLoc::SectionStartRelative(id) | SymbolLoc::SectionEndRelative(id) => {
                 let primary_id = output_sections.primary_output_section(*id);
@@ -126,8 +143,8 @@ fn evaluate_expression_value<'data, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
     sizeof_headers: u64,
     resolved_location_counters: &[ResolvedLocationCounter],
-    has_section_relative_offset: &mut bool,
-    symbol_resolution_callback: &dyn Fn(&[u8]) -> Result<u64>,
+    value_kind: &mut ExpressionValueKind,
+    symbol_resolution_callback: &dyn Fn(&[u8]) -> Result<ResolvedSymbolValue>,
 ) -> Result<u64> {
     macro_rules! eval {
         ($e:expr) => {
@@ -141,7 +158,7 @@ fn evaluate_expression_value<'data, P: Platform>(
                 symbol_db,
                 sizeof_headers,
                 resolved_location_counters,
-                has_section_relative_offset,
+                value_kind,
                 symbol_resolution_callback,
             )
         };
@@ -174,7 +191,16 @@ fn evaluate_expression_value<'data, P: Platform>(
             resolved_location_counters,
         ),
 
-        Expression::Symbol(name) => symbol_resolution_callback(name),
+        Expression::Symbol(name) => match symbol_resolution_callback(name)? {
+            ResolvedSymbolValue::Absolute(value) => {
+                value_kind.contains_absolute = true;
+                Ok(value)
+            }
+            ResolvedSymbolValue::SectionRelative(value) => {
+                value_kind.contains_section_relative = true;
+                Ok(value)
+            }
+        },
 
         Expression::Add(l, r) => Ok(eval!(l)?.wrapping_add(eval!(r)?)),
         Expression::Subtract(l, r) => Ok(eval!(l)?.wrapping_sub(eval!(r)?)),
@@ -205,12 +231,12 @@ fn evaluate_expression_value<'data, P: Platform>(
         Expression::Sizeof(name) => Ok(section_size(name, section_layouts, output_sections)),
         Expression::Alignof(name) => Ok(section_align(name, section_layouts, output_sections)),
         Expression::Addr(name) => {
-            *has_section_relative_offset = false;
+            value_kind.contains_absolute = true;
             section_address(name, section_layouts, output_sections)
         }
 
         Expression::Loadaddr(name) => {
-            *has_section_relative_offset = false;
+            value_kind.contains_absolute = true;
             section_load_address(name, section_layouts, output_sections)
         }
 
@@ -247,7 +273,7 @@ fn evaluate_expression_value<'data, P: Platform>(
         Expression::Negate(e) => Ok(eval!(e)?.wrapping_neg()),
 
         Expression::Origin(name) => {
-            *has_section_relative_offset = false;
+            value_kind.contains_absolute = true;
             let region = memory_regions.get(name).ok_or_else(|| {
                 crate::error!(
                     "ORIGIN: memory region '{}' not found",
@@ -266,7 +292,7 @@ fn evaluate_expression_value<'data, P: Platform>(
             Ok(region.length)
         }
         Expression::SegmentStart(name, default_expr) => {
-            *has_section_relative_offset = false;
+            value_kind.contains_absolute = true;
             if let Some(val) = symbol_db.args.segment_start_override(*name) {
                 Ok(val)
             } else {
@@ -466,7 +492,7 @@ mod tests {
                 symbol_db,
                 0,
                 &[],
-                &|_| Ok(1),
+                &|_| Ok(ResolvedSymbolValue::Absolute(1)),
             )
         })
     }
@@ -922,7 +948,7 @@ mod tests {
                     symbol_db,
                     0,
                     &[],
-                    &|_| Ok(0),
+                    &|_| Ok(ResolvedSymbolValue::Absolute(0)),
                 )
             };
             assert_eq!(eval(&Expression::Origin(b"rom")).unwrap(), 0x08000000);

@@ -161,6 +161,15 @@ pub(crate) enum LocationCounter<'data> {
     Relative(linker_script::Expression<'data>, SymbolLoc, OutputSectionId),
 }
 
+impl<'data> LocationCounter<'data> {
+    pub(crate) fn get_expression(&self) -> &linker_script::Expression<'data> {
+        match self {
+            LocationCounter::Absolute(expr, ..) => expr,
+            LocationCounter::Relative(expr, ..) => expr,
+        }
+    }
+}
+
 fn loc_for_global_expr<'data>(
     expr: &crate::linker_script::Expression<'data>,
     section_id: Option<OutputSectionId>,
