@@ -6255,9 +6255,8 @@ fn test_no_disallowed_overlaps() {
     use crate::elf::Elf64;
     use crate::output_section_id::OrderEvent;
 
-    let output_kind = crate::output_kind::OutputKind::StaticExecutable(
-        crate::args::RelocationModel::NonRelocatable,
-    );
+    let output_kind =
+        crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed);
     let mut output_sections = OutputSections::<Elf64>::with_base_address(0x1000, output_kind);
     let (output_order, program_segments) =
         output_sections.output_order(output_kind, &[], &[]).unwrap();
@@ -6285,9 +6284,8 @@ fn test_no_disallowed_overlaps() {
         }
     });
 
-    let output_kind = crate::output_kind::OutputKind::StaticExecutable(
-        crate::args::RelocationModel::NonRelocatable,
-    );
+    let output_kind =
+        crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed);
     let arena = colosseum::sync::Arena::new();
     let auxiliary = crate::input_data::AuxiliaryFiles::new(&args, &arena, &OsFileSystem).unwrap();
     let herd = Default::default();

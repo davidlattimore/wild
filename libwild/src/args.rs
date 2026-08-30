@@ -303,15 +303,15 @@ pub enum CounterKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RelocationModel {
-    NonRelocatable,
-    Relocatable,
+    Fixed,
+    PositionIndependent,
 }
 
 impl Default for CommonArgs {
     fn default() -> Self {
         Self {
             output: Arc::from(Path::new("a.out")),
-            relocation_model: RelocationModel::NonRelocatable,
+            relocation_model: RelocationModel::Fixed,
             available_threads: NonZeroUsize::new(1).unwrap(),
             num_threads: None,
             jobserver_client: None,

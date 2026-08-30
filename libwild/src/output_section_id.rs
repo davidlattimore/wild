@@ -314,7 +314,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             return (stop, start);
         }
 
-        if self.output_kind.is_partial_object() {
+        if self.output_kind.is_partial_link() {
             return (start, stop);
         }
 
@@ -418,7 +418,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             self.events.push(OrderEvent::SegmentEnd(segment_id));
         }
 
-        if !self.output_kind.is_partial_object() && !self.has_custom_phdrs {
+        if !self.output_kind.is_partial_link() && !self.has_custom_phdrs {
             for def in P::unconditional_segment_defs() {
                 let segment_id = self.program_segments.add_segment(*def);
                 self.events.push(OrderEvent::SegmentStart(segment_id));
@@ -786,7 +786,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         attributes: Option<&linker_script::SectionAttributes>,
     ) -> OutputSectionId {
         let mut resolved_id = None;
-        if !self.output_kind.is_partial_object()
+        if !self.output_kind.is_partial_link()
             && let Some(builtin_id) = (0..regular_section_base::<P>().as_usize())
                 .map(OutputSectionId::from_usize)
                 .find(|&bid| self.identity(bid) == Some(identity))
@@ -1116,9 +1116,8 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     pub(crate) fn for_testing() -> OutputSections<'static, crate::elf::Elf64> {
         use crate::elf::Elf64;
 
-        let output_kind = crate::output_kind::OutputKind::StaticExecutable(
-            crate::args::RelocationModel::NonRelocatable,
-        );
+        let output_kind =
+            crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed);
         let mut output_sections = OutputSections::<Elf64>::with_base_address(0x1000, output_kind);
         let mut add_name = |name: &'static str| {
             output_sections.add_named_section(

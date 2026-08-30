@@ -8,7 +8,7 @@ pub(crate) enum OutputKind {
     StaticExecutable(RelocationModel),
     DynamicExecutable(RelocationModel),
     SharedObject,
-    Relocatable,
+    PartialLink,
 }
 
 impl OutputKind {
@@ -19,12 +19,12 @@ impl OutputKind {
         let model = args.relocation_model();
         if !args.should_output_executable() {
             if args.should_output_partial_object() {
-                return OutputKind::Relocatable;
+                return OutputKind::PartialLink;
             }
             OutputKind::SharedObject
-        } else if args.dynamic_linker().is_some() && model == RelocationModel::Relocatable {
-            // GNU ld turns static relocatable executables into dynamic ones if dynamic linker is
-            // set.
+        } else if args.dynamic_linker().is_some() && model == RelocationModel::PositionIndependent {
+            // GNU ld turns static position-independent executables into dynamic ones if a dynamic
+            // linker is set.
             OutputKind::DynamicExecutable(model)
         } else if input_data.has_dynamic {
             // When attempting to create static executable, but DSO is added as an input we need to
@@ -39,15 +39,15 @@ impl OutputKind {
     }
 
     pub(crate) fn is_executable(self) -> bool {
-        !matches!(self, OutputKind::SharedObject | OutputKind::Relocatable)
+        !matches!(self, OutputKind::SharedObject | OutputKind::PartialLink)
     }
 
     pub(crate) fn is_shared_object(self) -> bool {
         matches!(self, OutputKind::SharedObject)
     }
 
-    pub(crate) fn is_partial_object(self) -> bool {
-        matches!(self, OutputKind::Relocatable)
+    pub(crate) fn is_partial_link(self) -> bool {
+        matches!(self, OutputKind::PartialLink)
     }
 
     pub(crate) fn is_dynamic_executable(self) -> bool {
@@ -58,22 +58,20 @@ impl OutputKind {
         matches!(self, OutputKind::StaticExecutable(_))
     }
 
-    pub(crate) fn is_relocatable(self) -> bool {
-        matches!(
-            self,
-            OutputKind::StaticExecutable(RelocationModel::Relocatable)
-                | OutputKind::DynamicExecutable(RelocationModel::Relocatable)
-                | OutputKind::SharedObject
-                | OutputKind::Relocatable
-        )
-    }
-
     pub(crate) fn is_position_independent(self) -> bool {
         matches!(
             self,
             OutputKind::SharedObject
-                | OutputKind::DynamicExecutable(RelocationModel::Relocatable)
-                | OutputKind::StaticExecutable(RelocationModel::Relocatable)
+                | OutputKind::DynamicExecutable(RelocationModel::PositionIndependent)
+                | OutputKind::StaticExecutable(RelocationModel::PositionIndependent)
+        )
+    }
+
+    pub(crate) fn has_fixed_load_address(self) -> bool {
+        matches!(
+            self,
+            OutputKind::StaticExecutable(RelocationModel::Fixed)
+                | OutputKind::DynamicExecutable(RelocationModel::Fixed)
         )
     }
 
@@ -84,14 +82,14 @@ impl OutputKind {
                 | OutputKind::SharedObject
                 // It seems a bit weird to have dynsym in a static-PIE binary, but that's what GNU
                 // ld does. It just doesn't have any symbols besides the undefined symbol.
-                | OutputKind::StaticExecutable(RelocationModel::Relocatable)
+                | OutputKind::StaticExecutable(RelocationModel::PositionIndependent)
         )
     }
 
     pub(crate) fn needs_dynamic(self) -> bool {
         !matches!(
             self,
-            OutputKind::StaticExecutable(RelocationModel::NonRelocatable) | OutputKind::Relocatable
+            OutputKind::StaticExecutable(RelocationModel::Fixed) | OutputKind::PartialLink
         )
     }
 

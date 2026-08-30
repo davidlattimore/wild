@@ -122,7 +122,7 @@ mod tests {
     use crate::output_section_id;
 
     fn check_platform_part_ids<P: Platform>() {
-        let output_kind = OutputKind::StaticExecutable(RelocationModel::NonRelocatable);
+        let output_kind = OutputKind::StaticExecutable(RelocationModel::Fixed);
         let output_sections = OutputSections::<P>::with_base_address(0, output_kind);
         let regular_part_base = regular_part_base::<P>();
         let regular_section_base = output_section_id::regular_section_base::<P>();

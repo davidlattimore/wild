@@ -825,7 +825,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("pic-executable")
         .help("Create a position-independent executable")
         .execute(|args, _modifier_stack| {
-            args.common.relocation_model = RelocationModel::Relocatable;
+            args.common.relocation_model = RelocationModel::PositionIndependent;
             args.should_output_executable = true;
             Ok(())
         });
@@ -835,7 +835,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("no-pie")
         .help("Do not create a position-independent executable (default)")
         .execute(|args, _modifier_stack| {
-            args.common.relocation_model = RelocationModel::NonRelocatable;
+            args.common.relocation_model = RelocationModel::Fixed;
             args.should_output_executable = true;
             Ok(())
         });
