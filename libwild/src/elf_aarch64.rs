@@ -176,7 +176,7 @@ impl crate::platform::Arch for ElfAArch64 {
     where
         Self: std::marker::Sized,
     {
-        let mut relocation = ElfAArch64::relocation_from_raw(relocation_kind).unwrap();
+        let mut relocation = ElfAArch64::relocation_from_raw(relocation_kind).ok()?;
         let interposable = flags.is_interposable();
 
         // IFuncs cannot be referenced directly, they always need to go via the GOT.

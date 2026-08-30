@@ -6080,6 +6080,18 @@ fn classify_symbol_relocation<
         next_modifier = relaxation.next_modifier();
         relaxation.rel_info()
     } else {
+        // R_AARCH64_FUNCINIT64 has specific restrictions.
+        if r_type == object::elf::RelocationType(0x13d) {
+            if flags.is_ifunc() {
+                let sym_name = symbol_db.symbol_name_for_display(local_symbol_id);
+                bail!(
+                    "relocation R_AARCH64_FUNCINIT64 cannot be used against ifunc symbol '{sym_name}'"
+                );
+            } else if !flags.is_dynamic() && !flags.is_interposable() {
+                bail!("relocation R_AARCH64_FUNCINIT64 cannot be used against local symbol");
+            }
+        }
+
         A::relocation_from_raw(r_type)?
     };
 
