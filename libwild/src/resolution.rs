@@ -17,7 +17,6 @@ use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::input_section_id::SectionIdRange;
-use crate::layout_rules::LocationCounter;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::layout_rules::SectionRules;
 use crate::linker_script::Expression;
@@ -361,17 +360,6 @@ fn resolve_group<'data, 'definitions, P: Platform>(
                         symbol_id_range: s.symbol_id_range,
                         // TODO: Consider alternative to cloning this.
                         symbol_definitions: s.parsed.symbol_defs.clone(),
-                        relative_location_counter_expressions: s
-                            .parsed
-                            .location_counters
-                            .iter()
-                            .filter_map(|location_counter| match location_counter {
-                                LocationCounter::Relative(expression, ..) => {
-                                    Some(expression.clone())
-                                }
-                                LocationCounter::Absolute(..) => None,
-                            })
-                            .collect(),
                     })
                 })
                 .collect();
@@ -817,7 +805,6 @@ pub(crate) struct ResolvedLinkerScript<'data, P: Platform> {
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
-    pub(crate) relative_location_counter_expressions: Vec<Expression<'data>>,
 }
 
 #[derive(Debug, Clone)]

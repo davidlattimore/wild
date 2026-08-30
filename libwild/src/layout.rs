@@ -926,7 +926,6 @@ pub(crate) struct LinkerScriptLayoutState<'data, P: Platform> {
     input: InputRef<'data>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) internal_symbols: InternalSymbols<'data, P>,
-    relative_location_counter_expressions: Vec<Expression<'data>>,
 }
 
 #[derive(Debug)]
@@ -6134,7 +6133,6 @@ impl<'data, P: Platform> LinkerScriptLayoutState<'data, P> {
                 symbol_definitions: input.symbol_definitions,
                 start_symbol_id: input.symbol_id_range.start(),
             },
-            relative_location_counter_expressions: input.relative_location_counter_expressions,
         }
     }
 
@@ -6145,8 +6143,22 @@ impl<'data, P: Platform> LinkerScriptLayoutState<'data, P> {
         queue: &mut LocalWorkQueue<P>,
         scope: &Scope<'scope>,
     ) -> Result {
-        for expression in &self.relative_location_counter_expressions {
-            load_expression_referenced_symbols::<A>(resources, queue, scope, expression);
+        for group in &resources.symbol_db.groups {
+            match group {
+                Group::LinkerScripts(linker_scripts) => {
+                    for script in linker_scripts {
+                        for lc in &script.parsed.location_counters {
+                            load_expression_referenced_symbols::<A>(
+                                resources,
+                                queue,
+                                scope,
+                                &lc.get_expression(),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
         self.internal_symbols
             .activate_symbols::<A>(common, resources, queue, scope)

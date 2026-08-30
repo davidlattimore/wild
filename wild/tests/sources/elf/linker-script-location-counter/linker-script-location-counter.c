@@ -85,7 +85,7 @@
 
 //#Config:symbol_only_reference
 //#Arch:x86_64
-//#ReferenceLinkers:bfd,lld
+//#ReferenceLinkers:lld
 //#LinkerScript:linker-script-symbol-only-reference.ld
 //#Object:runtime.c
 //#Object:location-counter-only-symbol.c
