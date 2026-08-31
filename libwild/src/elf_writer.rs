@@ -426,9 +426,9 @@ fn populate_file_header<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     header: &mut elf::FileHeader<C>,
 ) -> Result {
     let output_kind = layout.symbol_db.output_kind;
-    let mut ty = if output_kind.is_partial_object() {
+    let mut ty = if output_kind.is_partial_link() {
         object::elf::ET_REL
-    } else if output_kind.is_relocatable() {
+    } else if output_kind.is_position_independent() {
         object::elf::ET_DYN
     } else {
         object::elf::ET_EXEC
@@ -450,7 +450,7 @@ fn populate_file_header<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     header.set_machine(A::arch_identifier());
     header.set_version(object::elf::EV_CURRENT.0.into());
     header.set_entry(elf_entry_address(layout)?)?;
-    header.set_program_header_offset(if output_kind.is_partial_object() {
+    header.set_program_header_offset(if output_kind.is_partial_link() {
         0
     } else {
         u64::from(C::FILE_HEADER_SIZE)
@@ -460,7 +460,7 @@ fn populate_file_header<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     )?;
     header.set_flags(layout.format_specific.eflags);
     header.set_header_size(C::FILE_HEADER_SIZE);
-    header.set_program_header_entry_size(if output_kind.is_partial_object() {
+    header.set_program_header_entry_size(if output_kind.is_partial_link() {
         0
     } else {
         C::PROGRAM_HEADER_SIZE
@@ -809,7 +809,9 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
             let value = if is_got_relr {
                 // GOT_RELR entries are bitmap-packed by write_got_relr_bitmap — just store value.
                 res.raw_value
-            } else if res.flags.has_link_time_address() && self.output_kind.is_relocatable() {
+            } else if res.flags.has_link_time_address()
+                && self.output_kind.is_position_independent()
+            {
                 self.write_relr_entry_flat::<A>(got_address, res.raw_value)?
             } else {
                 res.raw_value
@@ -828,7 +830,7 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
             let ifunc_got_address = got_address + C::GOT_ENTRY_SIZE;
             let got_entry = self.take_next_got_entry()?;
             let plt_address = res.plt_address()?;
-            let value = if self.output_kind.is_relocatable() {
+            let value = if self.output_kind.is_position_independent() {
                 self.write_relr_entry_flat::<A>(ifunc_got_address, plt_address)?
             } else {
                 plt_address
@@ -1206,8 +1208,8 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         relative_address: u64,
     ) -> Result<u64> {
         debug_assert_bail!(
-            self.output_kind.is_relocatable(),
-            "write_address_relocation called when output is not relocatable"
+            self.output_kind.is_position_independent(),
+            "write_address_relocation called when output is not position-independent"
         );
         // Odd offsets can't be encoded as RELR address entries (LSB used as bitmap
         // marker), so fall back to RELA for them.
@@ -1274,7 +1276,7 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         let _span = tracing::trace_span!("write_dynamic_symbol_relocation").entered();
         debug_assert_bail!(
             self.output_kind.needs_dynsym(),
-            "Tried to write dynamic relocation with non-relocatable output"
+            "Tried to write dynamic relocation without a dynamic symbol table"
         );
         let rela = self.take_rela_dyn()?;
         rela.set_offset(place)?;
@@ -3084,7 +3086,7 @@ fn apply_relocation<
             return Ok(RelocationModifier::Normal);
         }
         RelocationKind::Relative if rel.symbol().is_none() => {
-            if layout.symbol_db.output_kind.is_relocatable() {
+            if layout.symbol_db.output_kind.is_position_independent() {
                 bail!(
                     "relocation of type {} to absolute address cannot be used in \
                     position-independent output; recompile with -fPIC",
@@ -3819,12 +3821,12 @@ fn write_absolute_relocation<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>
         Ok(0)
     } else if resolution.flags.is_ifunc()
         && section_info.is_writable
-        && table_writer.output_kind.is_relocatable()
+        && table_writer.output_kind.is_position_independent()
     {
         table_writer
             .write_ifunc_relocation_for_data::<A>(place, resolution.raw_value as i64 + addend)?;
         Ok(0)
-    } else if table_writer.output_kind.is_relocatable() && !resolution.is_absolute() {
+    } else if table_writer.output_kind.is_position_independent() && !resolution.is_absolute() {
         let address = resolution.value_with_addend(
             addend,
             symbol_index,
@@ -5461,7 +5463,7 @@ impl DynamicEntryInputs<'_> {
         let mut flags = object::elf::DynamicFlags1(0);
         flags |= object::elf::DF_1_NOW;
 
-        if self.output_kind.is_executable() && self.output_kind.is_relocatable() {
+        if self.output_kind.is_executable() && self.output_kind.is_position_independent() {
             flags |= object::elf::DF_1_PIE;
         }
 

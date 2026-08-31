@@ -161,8 +161,7 @@ impl crate::platform::Arch for ElfX86_64 {
     ) -> Option<Self::Relaxation> {
         let is_known_address = flags.has_link_time_address();
         let is_absolute = flags.is_absolute() && !flags.is_dynamic();
-        let non_relocatable = !output_kind.is_relocatable();
-        let is_absolute_address = is_known_address && non_relocatable;
+        let is_absolute_address = is_known_address && output_kind.has_fixed_load_address();
         let interposable = flags.is_interposable();
 
         // IFuncs cannot be referenced directly. They always need to go via the GOT. So if we've got
@@ -279,7 +278,8 @@ impl crate::platform::Arch for ElfX86_64 {
                             return Some(Relaxation {
                                 kind: RelaxationKind::CallIndirectToRelative,
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_PC32),
-                                mandatory: output_kind.is_static_executable() && !non_relocatable,
+                                mandatory: output_kind.is_static_executable()
+                                    && output_kind.is_position_independent(),
                             });
                         }
                         // jmp *x(%rip)
@@ -288,7 +288,8 @@ impl crate::platform::Arch for ElfX86_64 {
                             return Some(Relaxation {
                                 kind: RelaxationKind::JmpIndirectToRelative,
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_PC32),
-                                mandatory: output_kind.is_static_executable() && !non_relocatable,
+                                mandatory: output_kind.is_static_executable()
+                                    && output_kind.is_position_independent(),
                             });
                         }
                         _ => return None,
@@ -602,7 +603,7 @@ fn test_relaxation() {
             bytes_in,
             offset,
             ValueFlags::empty(),
-            OutputKind::StaticExecutable(RelocationModel::Relocatable),
+            OutputKind::StaticExecutable(RelocationModel::PositionIndependent),
             shf::EXECINSTR,
             None,
             0,
@@ -622,7 +623,7 @@ fn test_relaxation() {
             bytes_in,
             offset,
             ValueFlags::ABSOLUTE,
-            OutputKind::StaticExecutable(RelocationModel::Relocatable),
+            OutputKind::StaticExecutable(RelocationModel::PositionIndependent),
             shf::EXECINSTR,
             None,
             0,

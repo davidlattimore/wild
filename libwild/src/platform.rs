@@ -235,10 +235,10 @@ pub(crate) trait Arch: Send + Sync + 'static {
 
     /// Return the starting load address for non-PIE output.
     fn start_memory_address(output_kind: OutputKind) -> u64 {
-        if output_kind.is_relocatable() {
-            0
-        } else {
+        if output_kind.has_fixed_load_address() {
             Self::DEFAULT_LOAD_ADDRESS
+        } else {
+            0
         }
     }
 

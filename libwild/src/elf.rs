@@ -1342,10 +1342,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
         symbols.section_start(output_section_id::GOT, "_GLOBAL_OFFSET_TABLE_");
 
-        // .rela.plt start/stop symbols are only emitted for non-relocatable executables. Emitting
-        // them for relocatable binaries causes glibc to try to call the resolver functions without
-        // taking into account that the binary has been relocated.
-        if output_kind != OutputKind::StaticExecutable(RelocationModel::Relocatable) {
+        // Don't emit .rela.plt start/stop symbols for static PIE executables. Doing so causes glibc
+        // to call the resolver functions without taking into account that the binary has been
+        // relocated.
+        if output_kind != OutputKind::StaticExecutable(RelocationModel::PositionIndependent) {
             symbols
                 .section_start(output_section_id::RELA_PLT, "__rela_iplt_start")
                 .hide();
@@ -1421,7 +1421,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .section_start(output_section_id::TDATA, "__tdata_start")
             .hide();
 
-        if output_kind != OutputKind::StaticExecutable(RelocationModel::NonRelocatable) {
+        if output_kind != OutputKind::StaticExecutable(RelocationModel::Fixed) {
             symbols.section_start(output_section_id::DYNAMIC, "_DYNAMIC");
         }
 
@@ -1991,7 +1991,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 mem_sizes.increment(part_id::RELA_PLT, C::RELA_ENTRY_SIZE);
             } else if has_dynamic_symbol {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
-            } else if flags.has_link_time_address() && output_kind.is_relocatable() {
+            } else if flags.has_link_time_address() && output_kind.is_position_independent() {
                 if args.is_relr_enabled() && !is_got_relr {
                     // Flat RELR for section boundary symbols (not bitmap-packed)
                     mem_sizes.increment(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
@@ -2004,7 +2004,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
 
         if flags.needs_ifunc_got_for_address() {
             mem_sizes.increment(part_id::GOT, C::GOT_ENTRY_SIZE);
-            if output_kind.is_relocatable() {
+            if output_kind.is_position_independent() {
                 if args.is_relr_enabled() {
                     mem_sizes.increment(part_id::RELR_DYN, C::RELR_ENTRY_SIZE);
                 } else {
@@ -6178,10 +6178,10 @@ fn materialize_relocation_requirements<
     } else if flags.is_ifunc()
         && rel_kind == RelocationKind::Absolute
         && section_is_writable
-        && symbol_db.output_kind.is_relocatable()
+        && symbol_db.output_kind.is_position_independent()
     {
         common.allocate(part_id::RELA_DYN_GENERAL, C::RELA_ENTRY_SIZE);
-    } else if symbol_db.output_kind.is_relocatable()
+    } else if symbol_db.output_kind.is_position_independent()
         && rel_kind == RelocationKind::Absolute
         && flags.has_link_time_address()
     {
@@ -6218,7 +6218,7 @@ fn materialize_relocation_requirements<
         *flags_to_add |= ValueFlags::GOT | ValueFlags::PLT;
     }
 
-    if flags.is_ifunc() && relocation_needs_got && !symbol_db.output_kind.is_relocatable() {
+    if flags.is_ifunc() && relocation_needs_got && symbol_db.output_kind.has_fixed_load_address() {
         *flags_to_add |= ValueFlags::IFUNC_GOT_FOR_ADDRESS;
     }
 
@@ -6298,7 +6298,7 @@ pub(crate) fn is_got_relr_eligible(
         && !has_dynamic_symbol
         && flags.has_link_time_address()
         && !flags.is_downgraded_to_local()
-        && output_kind.is_relocatable()
+        && output_kind.is_position_independent()
 }
 
 fn got_relr_bitmap_relr_count<C: ElfClass>(n: u64) -> u64 {

@@ -311,9 +311,7 @@ fn test_merge_parts() {
     let output_sections = crate::output_section_id::OutputSections::<Elf64>::for_testing();
     let (output_order, _program_segments) = output_sections
         .output_order(
-            crate::output_kind::OutputKind::StaticExecutable(
-                crate::args::RelocationModel::NonRelocatable,
-            ),
+            crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed),
             &[],
             &[],
         )
@@ -428,9 +426,7 @@ fn test_output_order_map_consistent() {
         crate::output_section_id::OutputSections::<crate::elf::Elf64>::for_testing();
     let (output_order, _program_segments) = output_sections
         .output_order(
-            crate::output_kind::OutputKind::StaticExecutable(
-                crate::args::RelocationModel::NonRelocatable,
-            ),
+            crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed),
             &[],
             &[],
         )
@@ -497,9 +493,7 @@ fn test_output_order_map() {
     let output_sections = crate::output_section_id::OutputSections::<Elf64>::for_testing();
     let (output_order, _program_segments) = output_sections
         .output_order(
-            crate::output_kind::OutputKind::StaticExecutable(
-                crate::args::RelocationModel::NonRelocatable,
-            ),
+            crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed),
             &[],
             &[],
         )
