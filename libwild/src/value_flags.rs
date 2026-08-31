@@ -106,6 +106,13 @@ bitflags! {
 
         /// Whether the symbol has a reference from non-IR code.
         const HAS_NON_IR_REF = 1 << 16;
+
+        /// Symbol needs a canonical PLT in order to preserve address identity.
+        const CANONICAL_PLT = 1 << 17;
+
+        /// We need a second GOT entry. i.e GOT->PLT->GOT. This is only used in conjunction with
+        /// canonical PLT entries.
+        const GOT_FOR_PLT_ENTRY = 1 << 18;
     }
 }
 
@@ -135,7 +142,9 @@ impl ValueFlags {
                 | ValueFlags::GOT_TLS_DESCRIPTOR
                 | ValueFlags::EXPORT_DYNAMIC
                 | ValueFlags::COPY_RELOCATION
-                | ValueFlags::IFUNC_GOT_FOR_ADDRESS,
+                | ValueFlags::IFUNC_GOT_FOR_ADDRESS
+                | ValueFlags::CANONICAL_PLT
+                | ValueFlags::GOT_FOR_PLT_ENTRY,
         )
     }
 
@@ -233,6 +242,16 @@ impl ValueFlags {
     #[must_use]
     pub(crate) fn needs_ifunc_got_for_address(self) -> bool {
         self.contains(ValueFlags::IFUNC_GOT_FOR_ADDRESS)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_canonical_plt(self) -> bool {
+        self.contains(ValueFlags::CANONICAL_PLT)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_canonical_plt_got_for_address(self) -> bool {
+        self.contains(ValueFlags::CANONICAL_PLT | ValueFlags::GOT_FOR_PLT_ENTRY)
     }
 
     #[must_use]

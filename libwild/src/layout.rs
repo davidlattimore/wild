@@ -163,6 +163,13 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
     let mut dynamic_symbol_definitions =
         merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
 
+    create_canonical_plt_entries(
+        &group_states,
+        &symbol_db,
+        &atomic_per_symbol_flags,
+        &mut dynamic_symbol_definitions,
+    )?;
+
     let mut script_sorted_sections = harvest_and_sort_script_sections(
         &mut group_states,
         &output_sections,
@@ -687,6 +694,37 @@ fn merge_dynamic_symbol_definitions<'data, P: Platform>(
     )?;
 
     Ok(dynamic_symbol_definitions)
+}
+
+fn create_canonical_plt_entries<'data, P: Platform>(
+    group_states: &[GroupState<'data, P>],
+    symbol_db: &SymbolDb<'data, P>,
+    per_symbol_flags: &AtomicPerSymbolFlags<'_>,
+    dynamic_symbol_definitions: &mut Vec<DynamicSymbolDefinition<'data, P>>,
+) -> Result {
+    timing_phase!("Create canonical PLT entries");
+
+    for group in group_states {
+        for file in &group.files {
+            let FileLayoutState::Dynamic(dynamic) = file else {
+                continue;
+            };
+
+            for symbol_id in dynamic.symbol_id_range {
+                if symbol_db.is_canonical(symbol_id)
+                    && per_symbol_flags
+                        .get_atomic(symbol_id)
+                        .get()
+                        .needs_canonical_plt()
+                {
+                    dynamic_symbol_definitions
+                        .push(P::create_dynamic_symbol_definition(symbol_db, symbol_id)?);
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn append_prelude_defsym_dynamic_symbols<'data, P: Platform>(
