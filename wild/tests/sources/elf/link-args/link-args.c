@@ -31,6 +31,27 @@
 //#ReferenceLinkers:lld
 //#LinkArgs:--no-mmap-output-file
 
+//#Config:fallocate-output
+//#Object:runtime.c
+//#ReferenceLinkers:
+//#LinkArgs:--fallocate-output-file
+
+//#Config:madvise-huge-pages
+//#Object:runtime.c
+//#ReferenceLinkers:
+//#LinkArgs:--madvise-huge-pages
+
+//#Config:madvise-huge-pages-no-mmap
+//#Object:runtime.c
+//#ReferenceLinkers:
+//#LinkArgs:--madvise-huge-pages --no-mmap-output-file
+//#ExpectErrorWild:--madvise-huge-pages requires mmapped output file
+
+//#Config:disable-output-allocation-options
+//#Object:runtime.c
+//#ReferenceLinkers:
+//#LinkArgs:--no-fallocate-output-file --no-madvise-huge-pages
+
 // The later --strip-all flag should override --strip-debug.
 //#Config:strip-debug-strip-all
 //#Object:runtime.c

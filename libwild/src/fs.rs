@@ -43,6 +43,8 @@ pub struct OutputOptions {
     pub size: u64,
     pub file_replacement_mode: FileReplacementMode,
     pub write_mode: Option<FileWriteMode>,
+    pub fallocate: Option<bool>,
+    pub madvise_huge_pages: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -532,21 +534,63 @@ impl FileSystem for OsFileSystem {
             }
         };
 
-        let file_write_mode = options
-            .write_mode
-            .unwrap_or_else(|| default_file_write_mode_for_file(&file));
+        let defaults = OutputFileDefaults::for_file(&file);
+
+        let fallocate = options.fallocate.unwrap_or(defaults.fallocate);
+        let huge_pages_required = options.madvise_huge_pages == Some(true);
+        let madvise_huge_pages = options
+            .madvise_huge_pages
+            .unwrap_or(defaults.madvise_huge_pages);
+        let file_write_mode = options.write_mode.unwrap_or(defaults.write_mode);
+
+        if huge_pages_required && matches!(file_write_mode, FileWriteMode::BufferThenWrite) {
+            return Err(crate::error!(
+                "--madvise-huge-pages requires mmapped output file"
+            ));
+        }
+
+        let set_len_result = file.set_len(options.size);
+
+        if fallocate
+            && let Err(error) = preallocate_output_file(&file, options.size)
+            && options.fallocate.is_some()
+        {
+            return Err(error).with_context(|| format!("Failed to fallocate `{}`", path.display()));
+        }
 
         let buffer = match file_write_mode {
             FileWriteMode::Mmap => {
                 // For some types of output file (e.g. character devices) we can't mmap, so we try
                 // to mmap the file and if it fails, fall back to non-mmapped output.
-                if file.set_len(options.size).is_ok() {
-                    match unsafe { MmapOptions::new().map_mut(&file) } {
-                        Ok(mmap) => OsOutputBuffer::Mmap(mmap),
+                match set_len_result {
+                    Ok(()) => match unsafe { MmapOptions::new().map_mut(&file) } {
+                        Ok(mmap) => {
+                            if let Err(error) =
+                                advise_huge_pages_if_requested(&mmap, madvise_huge_pages)
+                                && huge_pages_required
+                            {
+                                return Err(error).with_context(|| {
+                                    format!("madvise huge pages failed for `{}`", path.display())
+                                });
+                            }
+                            OsOutputBuffer::Mmap(mmap)
+                        }
+                        Err(error) if huge_pages_required => {
+                            return Err(error).with_context(|| {
+                                format!(
+                                    "--madvise-huge-pages requires mmap, but mmap of `{}` failed",
+                                    path.display()
+                                )
+                            });
+                        }
                         Err(_) => OsOutputBuffer::InMemory(vec![0; options.size as usize]),
+                    },
+                    Err(error) if huge_pages_required => {
+                        return Err(error).with_context(|| {
+                            format!("Failed to set size `{}` for mmap", path.display())
+                        });
                     }
-                } else {
-                    OsOutputBuffer::InMemory(vec![0; options.size as usize])
+                    Err(_) => OsOutputBuffer::InMemory(vec![0; options.size as usize]),
                 }
             }
             FileWriteMode::BufferThenWrite => {
@@ -554,7 +598,7 @@ impl FileSystem for OsFileSystem {
                 // to fail for some types of files, e.g. /dev/null. If there's actually a problem
                 // writing to the file, we'll discover that when we go to write the content later
                 // on.
-                let _ = file.set_len(options.size);
+                let _ = set_len_result;
                 OsOutputBuffer::InMemory(vec![0; options.size as usize])
             }
         };
@@ -569,26 +613,98 @@ impl FileSystem for OsFileSystem {
     }
 }
 
-fn default_file_write_mode_for_file(file: &std::fs::File) -> FileWriteMode {
-    cfg_select! {
-        any(target_os = "android", target_os = "linux") => {
-            match nix::sys::statfs::fstatfs(file)
-                .map(|stat| stat.filesystem_type())
-                .ok()
-            {
-                // Multi-threaded write performance with BTRFS is terrible. It's substantially
-                // faster to just buffer it all in memory then write it afterwards.
-                Some(nix::sys::statfs::BTRFS_SUPER_MAGIC) => FileWriteMode::BufferThenWrite,
-                // vfat isn't quite as bad as BTRFS in this regard, but it's still at least 4-10%
-                // faster if we avoid mmap.
-                Some(nix::sys::statfs::MSDOS_SUPER_MAGIC) => FileWriteMode::BufferThenWrite,
-                _ => FileWriteMode::Mmap,
+#[cfg(target_os = "linux")]
+fn preallocate_output_file(file: &File, size: u64) -> Result {
+    if size > 0 {
+        nix::fcntl::fallocate(
+            file,
+            nix::fcntl::FallocateFlags::empty(),
+            0,
+            i64::try_from(size).context("Output file is too large for fallocate")?,
+        )?;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn preallocate_output_file(_file: &File, _size: u64) -> Result {
+    Err(crate::error!("fallocate is only supported on Linux"))
+}
+
+#[cfg(target_os = "linux")]
+fn advise_huge_pages_if_requested(mmap: &memmap2::MmapMut, requested: bool) -> Result {
+    if requested {
+        mmap.advise(memmap2::Advice::HugePage)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn advise_huge_pages_if_requested(_mmap: &memmap2::MmapMut, requested: bool) -> Result {
+    if requested {
+        return Err(crate::error!("MADV_HUGEPAGE is only supported on Linux"));
+    }
+    Ok(())
+}
+
+struct OutputFileDefaults {
+    write_mode: FileWriteMode,
+    fallocate: bool,
+    madvise_huge_pages: bool,
+}
+
+impl OutputFileDefaults {
+    fn for_file(file: &std::fs::File) -> Self {
+        #[allow(unused_mut)]
+        let mut defaults = Self {
+            write_mode: FileWriteMode::Mmap,
+            fallocate: false,
+            madvise_huge_pages: false,
+        };
+
+        cfg_select! {
+            any(target_os = "android", target_os = "linux") => {
+                use nix::sys::statfs;
+
+                let Ok(fs_type) =
+                    nix::sys::statfs::fstatfs(file).map(|stat| stat.filesystem_type())
+                else {
+                    return defaults;
+                };
+
+                match fs_type {
+                    // Multi-threaded write performance with BTRFS is terrible. It's substantially
+                    // faster to just buffer it all in memory then write it afterwards.
+                    statfs::BTRFS_SUPER_MAGIC => {
+                        defaults.write_mode = FileWriteMode::BufferThenWrite;
+                    }
+                    // vfat isn't quite as bad as BTRFS in this regard, but it's still at least
+                    // 4-10% faster if we avoid mmap.
+                    statfs::MSDOS_SUPER_MAGIC => {
+                        defaults.write_mode = FileWriteMode::BufferThenWrite;
+                    }
+                    // Note, despite the constant name, this actually applies to ext3 and ext2 as
+                    // well as ext4.
+                    statfs::EXT4_SUPER_MAGIC => {
+                        defaults.fallocate = true;
+                        defaults.madvise_huge_pages = true;
+                    }
+                    // For some reason statfs doesn't define the XFS constant when target is musl.
+                    #[cfg(not(target_env = "musl"))]
+                    statfs::XFS_SUPER_MAGIC => {
+                        defaults.fallocate = true;
+                        defaults.madvise_huge_pages = true;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {
+                let _ = file;
             }
         }
-        _ => {
-            let _ = file;
-            FileWriteMode::Mmap
-        }
+
+        defaults
     }
 }
 

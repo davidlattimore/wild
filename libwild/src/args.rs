@@ -77,6 +77,8 @@ pub struct CommonArgs {
     pub(crate) inputs: Vec<Input>,
     pub(crate) file_replacement_mode: Option<FileReplacementMode>,
     pub(crate) file_write_mode: Option<FileWriteMode>,
+    pub(crate) fallocate_output_file: Option<bool>,
+    pub(crate) madvise_huge_pages: Option<bool>,
     pub(crate) save_dir: SaveDir,
 
     pub(crate) prepopulate_maps: bool,
@@ -321,6 +323,8 @@ impl Default for CommonArgs {
             unrecognized_options: Vec::new(),
             save_dir: SaveDir::default(),
             file_write_mode: None,
+            fallocate_output_file: None,
+            madvise_huge_pages: None,
             prepopulate_maps: false,
             debug_fuel: None,
             should_fork: true,
@@ -1526,6 +1530,42 @@ fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
         .help("Write output file without mmap")
         .execute(|args, _modifier_stack| {
             args.common_mut().file_write_mode = Some(FileWriteMode::BufferThenWrite);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("fallocate-output-file")
+        .help("Preallocate space for the output file with fallocate")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().fallocate_output_file = Some(true);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-fallocate-output-file")
+        .help("Do not preallocate space for the output file with fallocate")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().fallocate_output_file = Some(false);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("madvise-huge-pages")
+        .help("Request transparent huge pages for the output file mmap")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().madvise_huge_pages = Some(true);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-madvise-huge-pages")
+        .help("Do not request transparent huge pages for the output file mmap")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().madvise_huge_pages = Some(false);
             Ok(())
         });
 
