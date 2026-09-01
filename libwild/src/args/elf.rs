@@ -423,10 +423,21 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         args.rpath = Some(std::mem::take(&mut args.rpath_set).into_iter().join(":"));
     }
 
-    if args.only_keep_debug_requested && args.strip_requested
+    if args.only_keep_debug_requested
+        && args.strip_requested
         && !args.should_output_partial_object()
     {
         bail!("--only-keep-debug is mutually exclusive with --strip-debug and --strip-all");
+    }
+
+    if args.only_keep_debug_requested
+        && matches!(args.build_id, BuildIdOption::Fast | BuildIdOption::Uuid)
+    {
+        bail!(
+            "--only-keep-debug with --build-id=fast or --build-id=uuid would produce a \
+             build-id that differs from the stripped binary. Use --build-id=none or \
+             --build-id=0x<hex> to specify a matching build-id explicitly."
+        );
     }
 
     args.common.report_unrecognized()?;
@@ -2514,5 +2525,43 @@ mod tests {
             args.start_address_for_section(SectionName(b".text")),
             Some(0x600000)
         );
+    }
+
+    #[test]
+    fn test_only_keep_debug_flag_parsing() {
+        let args = parse_args(["--only-keep-debug"]);
+        assert!(args.only_keep_debug());
+    }
+
+    #[test]
+    fn test_only_keep_debug_conflicts_with_strip() {
+        let err = parse_args_err(["--only-keep-debug", "--strip-debug"]);
+        assert!(err.to_string().contains("mutually exclusive"));
+
+        let err = parse_args_err(["--only-keep-debug", "--strip-all"]);
+        assert!(err.to_string().contains("mutually exclusive"));
+
+        let err = parse_args_err(["--only-keep-debug", "-s"]);
+        assert!(err.to_string().contains("mutually exclusive"));
+
+        let err = parse_args_err(["--only-keep-debug", "-S"]);
+        assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn test_only_keep_debug_build_id_validation() {
+        // Fast / UUID hash-based build-id should fail with --only-keep-debug
+        let err = parse_args_err(["--only-keep-debug", "--build-id=fast"]);
+        assert!(err.to_string().contains("differs from the stripped binary"));
+
+        let err = parse_args_err(["--only-keep-debug", "--build-id=uuid"]);
+        assert!(err.to_string().contains("differs from the stripped binary"));
+
+        // Explicit hex or none should succeed
+        let args = parse_args(["--only-keep-debug", "--build-id=none"]);
+        assert!(args.only_keep_debug());
+
+        let args = parse_args(["--only-keep-debug", "--build-id=0x1234abcd"]);
+        assert!(args.only_keep_debug());
     }
 }

@@ -414,17 +414,7 @@ fn write_program_headers<C: ElfClass>(
         segment_header.set_offset(segment_sizes.file_offset as u64)?;
         segment_header.set_virtual_address(segment_sizes.mem_offset)?;
         segment_header.set_physical_address(segment_sizes.lma_offset)?;
-        // --only-keep-debug: PT_LOAD segments have no file-backed content (all alloc
-        // sections became NOBITS), so emit p_filesz = 0. The internal layout still
-        // tracks real offsets for FILE_HEADER / PROGRAM_HEADERS buffer allocation.
-        let file_size = if layout.args().only_keep_debug()
-            && layout.program_segments.is_load_segment(segment_id)
-        {
-            0
-        } else {
-            segment_sizes.file_size as u64
-        };
-        segment_header.set_file_size(file_size)?;
+        segment_header.set_file_size(segment_sizes.file_size as u64)?;
         segment_header.set_memory_size(segment_sizes.mem_size)?;
         segment_header.set_alignment(alignment.value())?;
     }
