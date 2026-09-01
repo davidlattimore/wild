@@ -18,6 +18,7 @@ use crate::error::Result;
 use crate::expression_eval::ResolvedLocationCounter;
 use crate::expression_eval::ResolvedSymbolValue;
 use crate::expression_eval::evaluate_const;
+use crate::expression_eval::evaluate_early_expression;
 use crate::file_writer;
 use crate::grouping::Group;
 use crate::grouping::SequencedLinkerScript;
@@ -80,6 +81,7 @@ use crate::verbose_timing_phase;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
+use hashbrown::HashSet;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
 use linker_utils::relaxation::RelaxDeltaMap;
@@ -577,15 +579,10 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
     resolved_location_counters: &[ResolvedLocationCounter],
 ) -> Result {
     if let SymbolPlacement::Redirect(redirect) = &def_info.placement {
-        let current_section_base = match redirect.loc {
-            SymbolLoc::SectionStartRelative(id)
-            | SymbolLoc::SectionEndRelative(id)
-            | SymbolLoc::LocationCounter(_, Some(id)) => {
-                let primary_id = output_sections.primary_output_section(id);
-                Some(section_layouts.get(primary_id).mem_offset)
-            }
-            _ => None,
-        };
+        let current_section_base = redirect.loc.relative_section_id().map(|id| {
+            let primary_id = output_sections.primary_output_section(id);
+            section_layouts.get(primary_id).mem_offset
+        });
 
         let value = crate::expression_eval::evaluate_expression(
             &redirect.expression,
@@ -597,7 +594,7 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
             symbol_db,
             sizeof_headers,
             resolved_location_counters,
-            &|name| {
+            &mut |name| {
                 let Some(target_symbol_id) =
                     symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
                 else {
@@ -4961,7 +4958,7 @@ const MAX_RELAXATION_ITERATIONS: usize = 5;
 const SYMBOL_ADDRESS_UNRESOLVED: u64 = u64::MAX;
 
 #[derive(Debug, Clone, Copy)]
-struct InputSectionPosition {
+pub(crate) struct InputSectionPosition {
     part_id: PartId,
     address: u64,
 }
@@ -4969,7 +4966,7 @@ struct InputSectionPosition {
 /// Input-section positions in the coordinate system supplied by the initial part offsets.
 /// Zero initial offsets produce part-relative positions, while final part offsets produce output
 /// addresses.
-type InputSectionPositions = Vec<Vec<Vec<Option<InputSectionPosition>>>>;
+pub(crate) type InputSectionPositions = Vec<Vec<Vec<Option<InputSectionPosition>>>>;
 
 /// Stores precomputed output-address information for every symbol.
 struct SymbolOutputInfos {
@@ -5032,7 +5029,7 @@ fn compute_object_section_positions<'data, P: Platform>(
     positions
 }
 
-fn compute_input_section_positions<'data, P: Platform>(
+pub(crate) fn compute_input_section_positions<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
     mem_offsets: OutputSectionPartMap<u64>,
     symbol_db: &SymbolDb<'data, P>,
@@ -5153,29 +5150,25 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
     (section_positions, SymbolOutputInfos { addresses })
 }
 
-enum EarlyObjectSymbolValue {
+pub(crate) enum EarlyObjectSymbolValue {
     Absolute(u64),
-    PartRelative { part_id: PartId, offset: u64 },
+    PartRelative {
+        part_id: PartId,
+        offset: u64,
+    },
+    SectionRelative {
+        section_id: OutputSectionId,
+        address: u64,
+    },
 }
 
-fn resolve_early_object_symbol<'data, P: Platform>(
-    symbol_id: SymbolId,
-    group_states: &[GroupState<'data, P>],
+pub(crate) fn resolve_early_object_symbol<'data, P: Platform>(
+    canonical_id: SymbolId,
+    obj: &ObjectLayoutState<'data, P>,
     section_positions: &InputSectionPositions,
     symbol_db: &SymbolDb<'data, P>,
 ) -> Result<EarlyObjectSymbolValue> {
-    let canonical_id = symbol_db.definition(symbol_id);
     let file_id = symbol_db.file_id_for_symbol(canonical_id);
-    let Some(FileLayoutState::Object(obj)) = group_states
-        .get(file_id.group())
-        .and_then(|group| group.files.get(file_id.file()))
-    else {
-        bail!(
-            "symbol '{}' is not defined by an input object",
-            symbol_db.symbol_name_for_display(canonical_id)
-        );
-    };
-
     let local_index = canonical_id.to_input(obj.symbol_id_range);
     let symbol = obj.object.symbol(local_index)?;
     let Some(section_index) = obj.object.symbol_section(symbol, local_index)? else {
@@ -5506,77 +5499,21 @@ fn compute_layout_sections<'data, P: Platform>(
          section_layouts: &OutputSectionMap<OutputRecordLayout>,
          resolved_lc: &[ResolvedLocationCounter],
          laid_out_mem_offsets: &OutputSectionPartMap<Option<u64>>| {
-            crate::expression_eval::evaluate_expression(
+            let mut visited_nodes = HashSet::new();
+            evaluate_early_expression(
                 expr,
                 loc,
-                None,
-                section_layouts,
-                output_sections,
                 memory_regions,
+                section_layouts,
+                resolved_lc,
+                laid_out_mem_offsets,
+                group_states,
+                sizes,
+                output_sections,
                 symbol_db,
                 sizeof_headers,
-                resolved_lc,
-                &|name| {
-                    let Some(symbol_id) =
-                        symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
-                    else {
-                        bail!(
-                            "undefined symbol '{}' in linker script expression",
-                            String::from_utf8_lossy(name)
-                        );
-                    };
-
-                    let symbol_value = match resolve_early_object_symbol(
-                        symbol_id,
-                        group_states,
-                        section_positions.get_or_init(|| {
-                            compute_input_section_positions(
-                                group_states,
-                                sizes.new_empty_like(),
-                                symbol_db,
-                                output_sections,
-                            )
-                        }),
-                        symbol_db,
-                    )? {
-                        EarlyObjectSymbolValue::Absolute(value) => {
-                            ResolvedSymbolValue::Absolute(value)
-                        }
-                        EarlyObjectSymbolValue::PartRelative { part_id, offset } => {
-                            let Some(part_address) = laid_out_mem_offsets.get(part_id) else {
-                                bail!(
-                                    "cannot resolve address of symbol '{}' because its output section part has not been laid out yet",
-                                    String::from_utf8_lossy(name)
-                                );
-                            };
-                            let address = part_address + offset;
-                            let symbol_section = output_sections
-                                .primary_output_section(part_id.output_section_id::<P>());
-                            let current_section = match loc {
-                                SymbolLoc::SectionStartRelative(id)
-                                | SymbolLoc::SectionEndRelative(id)
-                                | SymbolLoc::LocationCounter(_, Some(id)) => {
-                                    Some(output_sections.primary_output_section(*id))
-                                }
-                                _ => None,
-                            };
-                            if current_section == Some(symbol_section) {
-                                let section_base = section_layouts.get(symbol_section).mem_offset;
-                                ResolvedSymbolValue::SectionRelative(
-                                    address.checked_sub(section_base).with_context(|| {
-                                        format!(
-                                            "address of symbol '{}' is before its output section",
-                                            String::from_utf8_lossy(name)
-                                        )
-                                    })?,
-                                )
-                            } else {
-                                ResolvedSymbolValue::Absolute(address)
-                            }
-                        }
-                    };
-                    Ok(symbol_value)
-                },
+                &section_positions,
+                &mut visited_nodes,
             )
         };
 

@@ -2135,16 +2135,9 @@ impl std::fmt::Display for SymbolId {
 impl<P: Platform> InternalSymDefInfo<'_, P> {
     pub(crate) fn section_id(&self) -> Option<OutputSectionId> {
         match self.placement {
-            SymbolPlacement::Redirect(Redirect {
-                loc:
-                    SymbolLoc::SectionEnd(i)
-                    | SymbolLoc::SectionStartRelative(i)
-                    | SymbolLoc::SectionEndRelative(i),
-                ..
-            }) => Some(i),
+            SymbolPlacement::Redirect(Redirect { ref loc, .. }) => loc.section_id(),
             SymbolPlacement::Undefined
             | SymbolPlacement::ForceUndefined
-            | SymbolPlacement::Redirect(_)
             | SymbolPlacement::PlatformSpecific(_) => None,
             SymbolPlacement::SectionStart(i) => Some(i),
             SymbolPlacement::SectionEnd(i) => Some(i),

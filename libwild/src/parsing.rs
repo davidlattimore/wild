@@ -111,6 +111,27 @@ pub(crate) enum SymbolLoc {
     None,
 }
 
+impl SymbolLoc {
+    pub(crate) fn section_id(&self) -> Option<OutputSectionId> {
+        match self {
+            SymbolLoc::SectionStartRelative(id)
+            | SymbolLoc::SectionEndRelative(id)
+            | SymbolLoc::SectionEnd(id) => Some(*id),
+            SymbolLoc::LocationCounter(_, section_id) => *section_id,
+            SymbolLoc::FirstSection | SymbolLoc::None => None,
+        }
+    }
+
+    pub(crate) fn relative_section_id(&self) -> Option<OutputSectionId> {
+        match self {
+            SymbolLoc::SectionStartRelative(id)
+            | SymbolLoc::SectionEndRelative(id)
+            | SymbolLoc::LocationCounter(_, Some(id)) => Some(*id),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Redirect<'data> {
     pub(crate) kind: RedirectKind,
