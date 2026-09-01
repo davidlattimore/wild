@@ -36,6 +36,7 @@ pub struct WasmArgs {
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) export_symbols: Vec<String>,
     pub(crate) required_export_symbols: Vec<String>,
+    pub(crate) extra_features: Vec<String>,
     pub(crate) export_memory: Option<String>,
     pub(crate) z_stack_size: u32,
     // Since LLVM 22, the default option is true.
@@ -74,6 +75,7 @@ impl Default for WasmArgs {
         Self {
             common: CommonArgs::default(),
             lib_search_path: Vec::new(),
+            extra_features: Vec::new(),
             export_symbols: Vec::new(),
             required_export_symbols: Vec::new(),
             z_stack_size: DEFAULT_STACK_SIZE,
@@ -275,6 +277,19 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Export the module's memory (default name \"memory\")")
         .execute(|args, _modifier_stack, value| {
             args.export_memory = Some(value.unwrap_or(DEFAULT_MEMORY_EXPORT_NAME).to_owned());
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("extra-features")
+        .help("Comma-separated list of features to add to the default set of features inferred from input objects")
+        .execute(|args, _modifier_stack, value| {
+            args.extra_features = value
+                .split(',')
+                .filter(|feature| !feature.is_empty())
+                .map(str::to_owned)
+                .collect();
             Ok(())
         });
 
@@ -516,6 +531,24 @@ mod tests {
         assert_eq!(
             Args::force_export_symbol_names(&args),
             ["foo", "bar", "baz"]
+        );
+    }
+
+    #[test]
+    fn extra_features() {
+        assert_eq!(
+            parse_args(["--extra-features=foo,bar", "-o", "out.wasm"]).extra_features,
+            ["foo", "bar"]
+        );
+        assert_eq!(
+            parse_args(["--extra-features=a", "--extra-features=b", "-o", "out.wasm"])
+                .extra_features,
+            ["b"]
+        );
+        assert!(
+            parse_args(["--extra-features=", "-o", "out.wasm"])
+                .extra_features
+                .is_empty()
         );
     }
 }

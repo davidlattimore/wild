@@ -1875,13 +1875,16 @@ fn validate_shared_memory_features(
     layout_inputs: &[WasmObjectLayoutInput<'_>],
     symbol_db: &SymbolDb<'_, Wasm>,
 ) -> Result {
-    let (used, disallowed) = collect_target_feature_sets(layout_inputs)?;
+    let (mut used, disallowed) = collect_target_feature_sets(layout_inputs)?;
     if let Some(&file_id) = disallowed.get("shared-mem") {
         bail!(
             "--shared-memory is disallowed by {} because it was not compiled with 'atomics' or 'bulk-memory' features.",
             symbol_db.file(file_id)
         );
     }
+
+    used.extend(symbol_db.args.extra_features.iter().map(|s| s.as_str()));
+
     for feature in ["atomics", "bulk-memory"] {
         if !used.contains(feature) {
             bail!("'{feature}' feature must be used in order to use shared memory");
@@ -1893,8 +1896,9 @@ fn validate_shared_memory_features(
 /// Merge `target_features` from linked objects and encode the output custom section.
 fn build_target_features_section<'data>(
     layout_inputs: &[WasmObjectLayoutInput<'data>],
+    extra_features: &'data [String],
 ) -> Result<Option<wasm_encoder::CustomSection<'static>>> {
-    let (used, disallowed) = collect_target_feature_sets(layout_inputs)?;
+    let (mut used, disallowed) = collect_target_feature_sets(layout_inputs)?;
 
     for name in &used {
         if let Some(&file_id) = disallowed.get(name) {
@@ -1904,6 +1908,8 @@ fn build_target_features_section<'data>(
             );
         }
     }
+
+    used.extend(extra_features.iter().map(|s| s.as_str()));
 
     if used.is_empty() {
         return Ok(None);
@@ -1959,6 +1965,7 @@ impl<'data> WasmLayout<'data> {
         indices: &LinkerDefinedIndices,
         got_mem: &GotMem,
         got_func: &GotFunc,
+        symbol_db: &SymbolDb<'data, Wasm>,
     ) -> Result {
         timing_phase!("Encode Wasm metadata sections");
 
@@ -2035,7 +2042,9 @@ impl<'data> WasmLayout<'data> {
 
         {
             timing_phase!("Encode Wasm target_features section");
-            if let Some(target_features) = build_target_features_section(layout_inputs)? {
+            if let Some(target_features) =
+                build_target_features_section(layout_inputs, &symbol_db.args.extra_features)?
+            {
                 self.encoded_sections.target_features = Some(encode_wasm_section(&target_features));
             }
         }
@@ -6045,7 +6054,7 @@ where
         // GOT.func inits need table slots assigned above.
         fill_got_func_inits(&mut layout, &indices, got_func, &layout_inputs)?;
     }
-    layout.encode_metadata_sections(&layout_inputs, &indices, got_mem, got_func)?;
+    layout.encode_metadata_sections(&layout_inputs, &indices, got_mem, got_func, symbol_db)?;
     Ok(layout)
 }
 
@@ -7785,7 +7794,7 @@ mod tests {
             layout_input_with_features(1, &features_a),
             layout_input_with_features(2, &features_b),
         ];
-        let section = build_target_features_section(&inputs)
+        let section = build_target_features_section(&inputs, &[])
             .unwrap()
             .expect("expected target_features section");
         assert_eq!(emitted_feature_names(&section), ["bulk-memory", "sign-ext"]);
@@ -7805,7 +7814,7 @@ mod tests {
             layout_input_with_features(1, &used),
             layout_input_with_features(2, &disallowed),
         ];
-        let err = build_target_features_section(&inputs).unwrap_err();
+        let err = build_target_features_section(&inputs, &[]).unwrap_err();
         let msg = format!("{err:?}");
         assert!(
             msg.contains("atomics") && msg.contains("disallowed"),
