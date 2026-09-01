@@ -1,3 +1,4 @@
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 //! Standalone tests for --only-keep-debug ELF output properties.
 
 use object::LittleEndian as LE;
@@ -73,7 +74,6 @@ fn section_has_file_content(
 ///   - Debug sections (.debug_info, .debug_line, .debug_abbrev, .debug_str) are preserved
 ///   - Symbol table (.symtab, .strtab) is preserved
 #[test]
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn elf_section_and_segment_properties() {
     let tmp = tempfile::tempdir().unwrap();
     let obj = build_obj(tmp.path());
@@ -193,7 +193,6 @@ fn elf_section_and_segment_properties() {
 ///   - Every named symbol in the normal build exists in the debug build with matching st_value
 ///   - The debug-only ELF is smaller than the normal ELF
 #[test]
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn two_pass_address_preservation() {
     let tmp = tempfile::tempdir().unwrap();
     let obj = build_obj(tmp.path());
@@ -264,7 +263,6 @@ fn two_pass_address_preservation() {
 /// Verify that explicit --build-id=0x... produces identical .note.gnu.build-id
 /// in both normal and --only-keep-debug builds.
 #[test]
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn build_id_explicit_matching() {
     let tmp = tempfile::tempdir().unwrap();
     let obj = build_obj(tmp.path());
@@ -309,7 +307,6 @@ fn build_id_explicit_matching() {
 /// This tests the interaction between the two post-layout passes:
 ///   compress debug → only-keep-debug → recalculate layout
 #[test]
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn compressed_debug_with_only_keep_debug() {
     let tmp = tempfile::tempdir().unwrap();
     let obj = build_obj(tmp.path());

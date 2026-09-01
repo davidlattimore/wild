@@ -487,7 +487,7 @@ fn update_allocation_sizes<P: Platform>(layout: &mut Layout<P>) {
 /// segments inside a LOAD segment), so we use a stack of open segments rather than a single
 /// cursor. Each `SegmentStart` pushes onto the stack, each `Section` updates all open segments,
 /// and each `SegmentEnd` pops the matching entry and finalises the segment's `file_size`.
-pub(crate) fn recalculate_file_offsets<P: Platform>(layout: &mut Layout<P>) -> Result {
+pub(crate) fn recalculate_file_offsets<P: Platform>(layout: &mut Layout<P>) {
     // Build a map from ProgramSegmentId → index in segment_layouts.segments.
     let id_to_idx: std::collections::HashMap<crate::program_segments::ProgramSegmentId, usize> =
         layout
@@ -511,12 +511,12 @@ pub(crate) fn recalculate_file_offsets<P: Platform>(layout: &mut Layout<P>) -> R
                 }
             }
             OrderEvent::SegmentEnd(segment_id) => {
-                if let Some(&idx) = id_to_idx.get(&segment_id) {
-                    if let Some(pos) = seg_stack.iter().rposition(|(i, _)| *i == idx) {
-                        let (_, seg_file_end) = seg_stack.remove(pos);
-                        let seg = &mut layout.segment_layouts.segments[idx];
-                        seg.sizes.file_size = seg_file_end.saturating_sub(seg.sizes.file_offset);
-                    }
+                if let Some(&idx) = id_to_idx.get(&segment_id)
+                    && let Some(pos) = seg_stack.iter().rposition(|(i, _)| *i == idx)
+                {
+                    let (_, seg_file_end) = seg_stack.remove(pos);
+                    let seg = &mut layout.segment_layouts.segments[idx];
+                    seg.sizes.file_size = seg_file_end.saturating_sub(seg.sizes.file_offset);
                 }
             }
             OrderEvent::Section(section_id) => {
@@ -574,15 +574,13 @@ pub(crate) fn recalculate_file_offsets<P: Platform>(layout: &mut Layout<P>) -> R
                 merged_section_layout.file_size = file_offset - merged_section_layout.file_offset;
 
                 // Update seg_file_end for all open segments.
-                for (_, seg_file_end) in seg_stack.iter_mut() {
+                for (_, seg_file_end) in &mut seg_stack {
                     *seg_file_end = (*seg_file_end).max(file_offset);
                 }
             }
             _ => {}
         }
     }
-
-    Ok(())
 }
 
 pub(crate) fn update_file_offset<P: Platform>(layout: &mut Layout<P>) -> Result {

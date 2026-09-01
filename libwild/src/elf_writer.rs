@@ -745,6 +745,11 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         args: &ElfArgs,
         res: &Resolution<elf::Elf<C>>,
     ) -> Result {
+        // --only-keep-debug: .got/.plt are alloc sections with zeroed file_size,
+        // so their buffers are empty. Skip GOT/PLT writing entirely.
+        if args.only_keep_debug() {
+            return Ok(());
+        }
         let Some(got_address) = res.format_specific.got_address else {
             return Ok(());
         };
