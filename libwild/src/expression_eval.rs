@@ -461,10 +461,7 @@ pub(crate) fn evaluate_early_expression<'data, P: Platform>(
                     match &def_info.placement {
                         SymbolPlacement::Redirect(redirect) => {
                             if !visited_nodes.insert(canonical_id) {
-                                bail!(
-                                    "symbol cycle detected for '{}'",
-                                    symbol_db.symbol_name_for_display(canonical_id)
-                                );
+                                return Ok(ResolvedSymbolValue::Absolute(0));
                             }
                             let value = evaluate_early_expression(
                                 &redirect.expression,
