@@ -94,7 +94,17 @@ impl crate::platform::Arch for ElfAArch64 {
     fn is_disallowed_in_shared_object(r_type: object::elf::RelocationType) -> bool {
         matches!(
             r_type,
-            object::elf::R_AARCH64_ABS32 | object::elf::R_AARCH64_ABS16
+            object::elf::R_AARCH64_ABS32
+                | object::elf::R_AARCH64_ABS16
+                | object::elf::R_AARCH64_PREL16
+                | object::elf::R_AARCH64_PREL32
+                | object::elf::R_AARCH64_PREL64
+                | object::elf::R_AARCH64_ADD_ABS_LO12_NC
+                | object::elf::R_AARCH64_ADR_PREL_LO21
+                | object::elf::R_AARCH64_ADR_PREL_PG_HI21
+                | object::elf::R_AARCH64_LDST8_ABS_LO12_NC
+                | object::elf::R_AARCH64_LDST32_ABS_LO12_NC
+                | object::elf::R_AARCH64_LDST64_ABS_LO12_NC
         )
     }
 

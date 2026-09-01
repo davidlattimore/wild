@@ -3099,7 +3099,7 @@ fn apply_relocation<
                 .write_to_buffer(value, &mut out[offset_in_section as usize..])?;
             return Ok(RelocationModifier::Normal);
         }
-        RelocationKind::Absolute
+        RelocationKind::Absolute | RelocationKind::Relative
             if layout.symbol_db.output_kind.is_shared_object()
                 && A::is_disallowed_in_shared_object(r_type) =>
         {
