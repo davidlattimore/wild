@@ -241,4 +241,3 @@ tests = [
   "aarch64-fpic-prel32.s",
   "aarch64-fpic-prel64.s",
 ]
-
