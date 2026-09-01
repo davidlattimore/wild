@@ -34,6 +34,8 @@ impl crate::platform::Arch for ElfLoongArch64 {
     type Relaxation = Relaxation;
     type Platform = Elf64;
 
+    const NUM_GOT_PLT_HEADER_ENTRIES: u64 = 2;
+
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_LOONGARCH
     }

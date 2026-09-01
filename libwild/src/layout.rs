@@ -3278,6 +3278,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         P::apply_late_size_adjustments_prelude(
             total_sizes,
             &mut extra_sizes,
+            resources.format_specific,
             resources.symbol_db.args,
         )?;
 
