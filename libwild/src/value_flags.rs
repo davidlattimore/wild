@@ -106,6 +106,9 @@ bitflags! {
 
         /// Whether the symbol has a reference from non-IR code.
         const HAS_NON_IR_REF = 1 << 16;
+
+        /// Set when space for the symbol has been allocated in the symbol table.
+        const SYMTAB_INSTALLED = 1 << 17;
     }
 }
 

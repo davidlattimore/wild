@@ -2079,14 +2079,31 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                     num_globals += 1;
                 }
                 strings_size += symtab_name_for_strtab(info.name).len() + 1;
-            } else if symbol_db.args.should_output_partial_object
+            } else if symbol_db.args.emit_relocs()
                 && sym.is_undefined()
-                && symbol_db.is_canonical(symbol_id)
                 && let Ok(name) = state.object.symbol_name(sym)
                 && !name.is_empty()
             {
-                num_globals += 1;
-                strings_size += symtab_name_for_strtab(name).len() + 1;
+                let canonical = symbol_db.definition(symbol_id);
+                let def_file = symbol_db.file_id_for_symbol(canonical);
+                let is_dynamic = per_symbol_flags
+                    .get_atomic(canonical)
+                    .get()
+                    .contains(ValueFlags::DYNAMIC);
+                if (symbol_db.is_canonical(symbol_id) || is_dynamic)
+                    && def_file != crate::input_data::PRELUDE_FILE_ID
+                {
+                    let old_flags = per_symbol_flags
+                        .get_atomic(canonical)
+                        .fetch_or(ValueFlags::SYMTAB_INSTALLED);
+                    if !old_flags.contains(ValueFlags::SYMTAB_INSTALLED) {
+                        per_symbol_flags
+                            .get_atomic(symbol_id)
+                            .fetch_or(ValueFlags::SYMTAB_INSTALLED);
+                        num_globals += 1;
+                        strings_size += symtab_name_for_strtab(name).len() + 1;
+                    }
+                }
             }
         }
         let entry_size = C::SYMTAB_ENTRY_SIZE;
@@ -2315,7 +2332,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         };
 
         let mut rules = Vec::with_capacity(
-            DEFAULT_SECTION_PLACEMENT_RULES.len() + LINKER_MANAGED_SECTION_RULES.len() + 1,
+            DEFAULT_SECTION_PLACEMENT_RULES.len() + LINKER_MANAGED_SECTION_RULES.len() + 3,
         );
 
         if args.gdb_index {
@@ -2328,6 +2345,13 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 SectionRuleOutcome::DebugIndex,
             ));
         }
+        let reloc_rule = if args.emit_relocs() {
+            SectionRuleOutcome::Custom
+        } else {
+            SectionRuleOutcome::Discard
+        };
+        rules.push(SectionRule::prefix(secnames::RELA_SECTION_NAME, reloc_rule));
+        rules.push(SectionRule::prefix(secnames::CREL_SECTION_NAME, reloc_rule));
 
         rules.extend(DEFAULT_SECTION_PLACEMENT_RULES.iter().cloned());
         rules.extend(LINKER_MANAGED_SECTION_RULES.iter().cloned());
@@ -3221,6 +3245,14 @@ impl<'data, C: ElfClass> platform::ObjectFile<'data> for File<'data, C> {
                 RelocationList::Rela(&[])
             },
         )
+    }
+
+    fn relocation_section(
+        &self,
+        index: object::SectionIndex,
+        relocations: &RelocationSections,
+    ) -> Option<object::SectionIndex> {
+        relocations.get(index)
     }
 
     fn symbol(&self, index: object::SymbolIndex) -> Result<&SymtabEntry<C>> {
@@ -6507,8 +6539,6 @@ const DEFAULT_SECTION_PLACEMENT_RULES: &[SectionRule<'static>] = &[
 /// Rules for input sections that the linker processes itself instead of copying them into an output
 /// section.
 const LINKER_MANAGED_SECTION_RULES: &[SectionRule<'static>] = &[
-    SectionRule::prefix(secnames::RELA_SECTION_NAME, SectionRuleOutcome::Discard),
-    SectionRule::prefix(secnames::CREL_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(
         secnames::NOTE_GNU_STACK_SECTION_NAME,
         SectionRuleOutcome::NoteGnuStack,

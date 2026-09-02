@@ -1187,6 +1187,14 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         relocations: &<Self::Platform as Platform>::RelocationSections,
     ) -> Result<<Self::Platform as Platform>::RelocationList<'data>>;
 
+    fn relocation_section(
+        &self,
+        _index: object::SectionIndex,
+        _relocations: &<Self::Platform as Platform>::RelocationSections,
+    ) -> Option<object::SectionIndex> {
+        None
+    }
+
     fn parse_relocations(&self) -> Result<<Self::Platform as Platform>::RelocationSections>;
 
     /// Get the version of a symbol. Only intended for diagnostic purposes since it's potentially
@@ -1662,5 +1670,9 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn output_format_endian(&self) -> Option<Endianness> {
         None
+    }
+
+    fn emit_relocs(&self) -> bool {
+        false
     }
 }
