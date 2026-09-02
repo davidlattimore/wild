@@ -9,19 +9,20 @@ use crate::error::Result;
 use crate::grouping::Group;
 use crate::input_data::InputRef;
 use crate::layout;
-use crate::layout::EarlyObjectSymbolValue;
 use crate::layout::FileLayoutState;
 use crate::layout::GroupState;
 use crate::layout::InputSectionPositions;
 use crate::layout::MemoryRegion;
 use crate::layout::OutputRecordLayout;
 use crate::linker_script::Expression;
+use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::SymbolLoc;
 use crate::parsing::SymbolPlacement;
+use crate::part_id::PartId;
 use crate::platform::Args;
 use crate::platform::Platform;
 use crate::symbol::UnversionedSymbolName;
@@ -43,9 +44,85 @@ pub(crate) struct ResolvedLocationCounter {
     pub(crate) section_offset: Option<u64>,
 }
 
-pub(crate) enum ResolvedSymbolValue {
+pub(crate) enum SymbolValue {
     Absolute(u64),
-    SectionRelative(u64),
+    PartRelative {
+        part_id: PartId,
+        offset: u64,
+    },
+    SectionRelative {
+        section_id: OutputSectionId,
+        address: u64,
+    },
+}
+
+fn evaluate_symbol_value<P: Platform>(
+    symbol_value: &SymbolValue,
+    loc: &SymbolLoc,
+    output_sections: &OutputSections<'_, P>,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    laid_out_mem_offsets: &OutputSectionPartMap<Option<u64>>,
+    value_kind: &mut ExpressionValueKind,
+    name: &[u8],
+) -> Result<u64> {
+    let current_section = loc
+        .relative_section_id()
+        .map(|id| output_sections.primary_output_section(id));
+    match symbol_value {
+        SymbolValue::Absolute(value) => {
+            value_kind.contains_absolute = true;
+            Ok(*value)
+        }
+        SymbolValue::SectionRelative {
+            section_id,
+            address,
+        } => {
+            let primary_section = output_sections.primary_output_section(*section_id);
+            if current_section == Some(primary_section) {
+                value_kind.contains_section_relative = true;
+                let section_base = section_layouts.get(primary_section).mem_offset;
+                let offset = address.checked_sub(section_base).with_context(|| {
+                    format!(
+                        "address of symbol '{}' is before its output section",
+                        String::from_utf8_lossy(name)
+                    )
+                })?;
+                Ok(offset)
+            } else if let Some(section) = current_section {
+                value_kind.contains_absolute = true;
+                let section_base = section_layouts.get(section).mem_offset;
+                Ok(address + section_base)
+            } else {
+                value_kind.contains_absolute = true;
+                Ok(*address)
+            }
+        }
+        SymbolValue::PartRelative { part_id, offset } => {
+            let Some(part_address) = laid_out_mem_offsets.get(*part_id) else {
+                bail!(
+                    "cannot resolve address of symbol '{}' because its output section part has not been laid out yet",
+                    String::from_utf8_lossy(name)
+                );
+            };
+            let address = part_address + offset;
+            let symbol_section =
+                output_sections.primary_output_section(part_id.output_section_id::<P>());
+            if current_section == Some(symbol_section) {
+                value_kind.contains_section_relative = true;
+                let section_base = section_layouts.get(symbol_section).mem_offset;
+                let offset = address.checked_sub(section_base).with_context(|| {
+                    format!(
+                        "address of symbol '{}' is before its output section",
+                        String::from_utf8_lossy(name)
+                    )
+                })?;
+                Ok(offset)
+            } else {
+                value_kind.contains_absolute = true;
+                Ok(address)
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -106,7 +183,8 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
     sizeof_headers: u64,
     resolved_location_counters: &[ResolvedLocationCounter],
-    symbol_resolution_callback: &mut dyn FnMut(&[u8]) -> Result<ResolvedSymbolValue>,
+    laid_out_mem_offsets: &OutputSectionPartMap<Option<u64>>,
+    symbol_resolution_callback: &mut dyn FnMut(&[u8]) -> Result<SymbolValue>,
 ) -> Result<u64> {
     let mut value_kind = ExpressionValueKind::default();
     let value = evaluate_expression_value(
@@ -120,6 +198,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
         sizeof_headers,
         resolved_location_counters,
         &mut value_kind,
+        laid_out_mem_offsets,
         symbol_resolution_callback,
     )?;
 
@@ -149,7 +228,8 @@ fn evaluate_expression_value<'data, P: Platform>(
     sizeof_headers: u64,
     resolved_location_counters: &[ResolvedLocationCounter],
     value_kind: &mut ExpressionValueKind,
-    symbol_resolution_callback: &mut dyn FnMut(&[u8]) -> Result<ResolvedSymbolValue>,
+    laid_out_mem_offsets: &OutputSectionPartMap<Option<u64>>,
+    symbol_resolution_callback: &mut dyn FnMut(&[u8]) -> Result<SymbolValue>,
 ) -> Result<u64> {
     macro_rules! eval {
         ($e:expr) => {
@@ -164,6 +244,7 @@ fn evaluate_expression_value<'data, P: Platform>(
                 sizeof_headers,
                 resolved_location_counters,
                 value_kind,
+                laid_out_mem_offsets,
                 symbol_resolution_callback,
             )
         };
@@ -181,6 +262,7 @@ fn evaluate_expression_value<'data, P: Platform>(
                 symbol_db,
                 sizeof_headers,
                 resolved_location_counters,
+                laid_out_mem_offsets,
                 symbol_resolution_callback,
             )
         };
@@ -203,16 +285,18 @@ fn evaluate_expression_value<'data, P: Platform>(
             )
         }
 
-        Expression::Symbol(name) => match symbol_resolution_callback(name)? {
-            ResolvedSymbolValue::Absolute(value) => {
-                value_kind.contains_absolute = true;
-                Ok(value)
-            }
-            ResolvedSymbolValue::SectionRelative(value) => {
-                value_kind.contains_section_relative = true;
-                Ok(value)
-            }
-        },
+        Expression::Symbol(name) => {
+            let value = symbol_resolution_callback(name)?;
+            evaluate_symbol_value(
+                &value,
+                expr_loc,
+                output_sections,
+                section_layouts,
+                laid_out_mem_offsets,
+                value_kind,
+                name,
+            )
+        }
 
         Expression::Add(l, r) => Ok(eval!(l)?.wrapping_add(eval!(r)?)),
         Expression::Subtract(l, r) => Ok(eval!(l)?.wrapping_sub(eval!(r)?)),
@@ -422,6 +506,7 @@ pub(crate) fn evaluate_early_expression<'data, P: Platform>(
         symbol_db,
         sizeof_headers,
         resolved_lc,
+        laid_out_mem_offsets,
         &mut |name| {
             let Some(symbol_id) =
                 symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
@@ -437,7 +522,7 @@ pub(crate) fn evaluate_early_expression<'data, P: Platform>(
             let file = group_states
                 .get(file_id.group())
                 .and_then(|group| group.files.get(file_id.file()));
-            let symbol_value = match file {
+            match file {
                 Some(FileLayoutState::Object(obj)) => layout::resolve_early_object_symbol(
                     canonical_id,
                     obj,
@@ -461,7 +546,7 @@ pub(crate) fn evaluate_early_expression<'data, P: Platform>(
                     match &def_info.placement {
                         SymbolPlacement::Redirect(redirect) => {
                             if !visited_nodes.insert(canonical_id) {
-                                return Ok(ResolvedSymbolValue::Absolute(0));
+                                return Ok(SymbolValue::Absolute(0));
                             }
                             let value = evaluate_early_expression(
                                 &redirect.expression,
@@ -485,12 +570,12 @@ pub(crate) fn evaluate_early_expression<'data, P: Platform>(
                                 .relative_section_id()
                                 .map(|id| output_sections.primary_output_section(id));
                             if let Some(symbol_section) = symbol_section {
-                                Ok(EarlyObjectSymbolValue::SectionRelative {
+                                Ok(SymbolValue::SectionRelative {
                                     section_id: symbol_section,
                                     address: value,
                                 })
                             } else {
-                                Ok(EarlyObjectSymbolValue::Absolute(value))
+                                Ok(SymbolValue::Absolute(value))
                             }
                         }
                         _ => {
@@ -504,63 +589,7 @@ pub(crate) fn evaluate_early_expression<'data, P: Platform>(
                         symbol_db.symbol_name_for_display(canonical_id)
                     );
                 }
-            };
-
-            let symbol_value = match symbol_value? {
-                EarlyObjectSymbolValue::Absolute(value) => ResolvedSymbolValue::Absolute(value),
-                EarlyObjectSymbolValue::SectionRelative {
-                    section_id,
-                    address,
-                } => {
-                    let current_section = loc
-                        .relative_section_id()
-                        .map(|id| output_sections.primary_output_section(id));
-                    if current_section == Some(section_id) {
-                        let section_base = section_layouts.get(section_id).mem_offset;
-                        ResolvedSymbolValue::SectionRelative(
-                            address.checked_sub(section_base).with_context(|| {
-                                format!(
-                                    "address of symbol '{}' is before its output section",
-                                    String::from_utf8_lossy(name)
-                                )
-                            })?,
-                        )
-                    } else if let Some(section) = current_section {
-                        let section_base = section_layouts.get(section).mem_offset;
-                        ResolvedSymbolValue::Absolute(address + section_base)
-                    } else {
-                        ResolvedSymbolValue::Absolute(address)
-                    }
-                }
-                EarlyObjectSymbolValue::PartRelative { part_id, offset } => {
-                    let Some(part_address) = laid_out_mem_offsets.get(part_id) else {
-                        bail!(
-                            "cannot resolve address of symbol '{}' because its output section part has not been laid out yet",
-                            String::from_utf8_lossy(name)
-                        );
-                    };
-                    let address = part_address + offset;
-                    let symbol_section =
-                        output_sections.primary_output_section(part_id.output_section_id::<P>());
-                    let current_section = loc
-                        .relative_section_id()
-                        .map(|id| output_sections.primary_output_section(id));
-                    if current_section == Some(symbol_section) {
-                        let section_base = section_layouts.get(symbol_section).mem_offset;
-                        ResolvedSymbolValue::SectionRelative(
-                            address.checked_sub(section_base).with_context(|| {
-                                format!(
-                                    "address of symbol '{}' is before its output section",
-                                    String::from_utf8_lossy(name)
-                                )
-                            })?,
-                        )
-                    } else {
-                        ResolvedSymbolValue::Absolute(address)
-                    }
-                }
-            };
-            Ok(symbol_value)
+            }
         },
     )
 }
@@ -672,7 +701,8 @@ mod tests {
                 symbol_db,
                 0,
                 &[],
-                &mut |_| Ok(ResolvedSymbolValue::Absolute(1)),
+                &OutputSectionPartMap::default(),
+                &mut |_| Ok(SymbolValue::Absolute(1)),
             )
         })
     }
@@ -1042,6 +1072,7 @@ mod tests {
                 symbol_db,
                 sizeof_headers,
                 resolved_location_counters,
+                &OutputSectionPartMap::default(),
                 &mut |_| unreachable!(),
             )?;
         }
@@ -1128,7 +1159,8 @@ mod tests {
                     symbol_db,
                     0,
                     &[],
-                    &mut |_| Ok(ResolvedSymbolValue::Absolute(0)),
+                    &OutputSectionPartMap::default(),
+                    &mut |_| Ok(SymbolValue::Absolute(0)),
                 )
             };
             assert_eq!(eval(&Expression::Origin(b"rom")).unwrap(), 0x08000000);

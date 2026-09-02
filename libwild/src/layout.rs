@@ -16,7 +16,7 @@ use crate::error::Context;
 use crate::error::Error;
 use crate::error::Result;
 use crate::expression_eval::ResolvedLocationCounter;
-use crate::expression_eval::ResolvedSymbolValue;
+use crate::expression_eval::SymbolValue;
 use crate::expression_eval::evaluate_const;
 use crate::expression_eval::evaluate_early_expression;
 use crate::file_writer;
@@ -579,11 +579,6 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
     resolved_location_counters: &[ResolvedLocationCounter],
 ) -> Result {
     if let SymbolPlacement::Redirect(redirect) = &def_info.placement {
-        let current_section_base = redirect.loc.relative_section_id().map(|id| {
-            let primary_id = output_sections.primary_output_section(id);
-            section_layouts.get(primary_id).mem_offset
-        });
-
         let value = crate::expression_eval::evaluate_expression(
             &redirect.expression,
             &redirect.loc,
@@ -594,6 +589,8 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
             symbol_db,
             sizeof_headers,
             resolved_location_counters,
+            // During late evaluation of linker scripts, we don't have any part relative symbols.
+            &OutputSectionPartMap::default(),
             &mut |name| {
                 let Some(target_symbol_id) =
                     symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
@@ -607,15 +604,14 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
                     .as_ref()
                     .ok_or_else(|| redirect.missing_resolution(name))?;
 
-                if let Some(section_base) = current_section_base
-                    && resolution.raw_value >= section_base
-                {
-                    return Ok(ResolvedSymbolValue::SectionRelative(
-                        resolution.raw_value - section_base,
-                    ));
-                }
-
-                Ok(ResolvedSymbolValue::Absolute(resolution.raw_value))
+                let symbol_value = match symbol_db.output_section_id(canonical_target_id) {
+                    Some(section_id) => SymbolValue::SectionRelative {
+                        section_id,
+                        address: resolution.raw_value,
+                    },
+                    None => SymbolValue::Absolute(resolution.raw_value),
+                };
+                Ok(symbol_value)
             },
         )?;
 
@@ -5150,30 +5146,18 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
     (section_positions, SymbolOutputInfos { addresses })
 }
 
-pub(crate) enum EarlyObjectSymbolValue {
-    Absolute(u64),
-    PartRelative {
-        part_id: PartId,
-        offset: u64,
-    },
-    SectionRelative {
-        section_id: OutputSectionId,
-        address: u64,
-    },
-}
-
 pub(crate) fn resolve_early_object_symbol<'data, P: Platform>(
     canonical_id: SymbolId,
     obj: &ObjectLayoutState<'data, P>,
     section_positions: &InputSectionPositions,
     symbol_db: &SymbolDb<'data, P>,
-) -> Result<EarlyObjectSymbolValue> {
+) -> Result<SymbolValue> {
     let file_id = symbol_db.file_id_for_symbol(canonical_id);
     let local_index = canonical_id.to_input(obj.symbol_id_range);
     let symbol = obj.object.symbol(local_index)?;
     let Some(section_index) = obj.object.symbol_section(symbol, local_index)? else {
         if symbol.is_absolute() {
-            return Ok(EarlyObjectSymbolValue::Absolute(symbol.value()));
+            return Ok(SymbolValue::Absolute(symbol.value()));
         }
         bail!(
             "cannot resolve address of symbol '{}'",
@@ -5207,7 +5191,7 @@ pub(crate) fn resolve_early_object_symbol<'data, P: Platform>(
     let input_offset = obj.object.symbol_offset_in_section(symbol, section_index)?;
     let output_offset =
         opt_input_to_output(obj.section_relax_deltas.get(section_index.0), input_offset);
-    Ok(EarlyObjectSymbolValue::PartRelative {
+    Ok(SymbolValue::PartRelative {
         part_id: section_position.part_id,
         offset: section_position.address + output_offset,
     })
