@@ -1089,6 +1089,12 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .map(SectionGcUnit::new))
     }
 
+    const NEEDS_START_STOP_SECTION_GC: bool = true;
+
+    fn gc_unit_for_section(section_index: object::SectionIndex) -> Self::GcUnit {
+        SectionGcUnit::new(section_index)
+    }
+
     fn activate_object_gc<'data, 'scope, A: Arch<Platform = Self>>(
         object: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,

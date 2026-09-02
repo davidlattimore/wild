@@ -1,11 +1,13 @@
 //#AbstractConfig:default
 //#Object:runtime.c
+//#Object:dead_start_stop.c
 //#ExpectSym: dot1 section=".dot"
 //#ExpectSym: dot2 section=".dot.2"
 //#ExpectSym:__start_foo
 //#ExpectSym:__stop_foo
 //#ExpectSym:__start_bar
 //#ExpectSym:__stop_bar
+//#NoSection:dead_start_stop
 
 //#Config:archive:default
 //#Archive:custom_section0.c
