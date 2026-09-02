@@ -3099,9 +3099,10 @@ pub(crate) fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         | RelocationKind::TpOff
         | RelocationKind::SymRelGotBase
         | RelocationKind::PairSubtractionULEB128(..) => ValueFlags::DIRECT,
-        RelocationKind::None | RelocationKind::AbsoluteLowPart | RelocationKind::Alignment => {
-            ValueFlags::empty()
-        }
+        RelocationKind::None
+        | RelocationKind::AbsoluteLowPart
+        | RelocationKind::Alignment
+        | RelocationKind::FuncInit => ValueFlags::empty(),
     }
 }
 

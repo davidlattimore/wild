@@ -3035,7 +3035,7 @@ fn apply_relocation<
     let mut addend = rel.addend();
 
     match A::relocation_from_raw(r_type)?.kind {
-        RelocationKind::None => return Ok(RelocationModifier::Normal),
+        RelocationKind::None | RelocationKind::FuncInit => return Ok(RelocationModifier::Normal),
         RelocationKind::Alignment => {
             let addend = addend as u64;
             let removed_bytes =
@@ -3468,7 +3468,7 @@ fn apply_relocation<
             .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
-        RelocationKind::Alignment => unreachable!(),
+        RelocationKind::Alignment | RelocationKind::FuncInit => unreachable!(),
     };
 
     let offset_in_section = offset_in_section as usize;

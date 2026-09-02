@@ -546,6 +546,10 @@ pub enum RelocationKind {
 
     /// The address must fulfill the alignment requirement.
     Alignment,
+
+    /// Function pointer initialization (R_AARCH64_FUNCINIT64).
+    /// Only valid for non-local, non-ifunc symbols.
+    FuncInit,
 }
 
 impl RelocationKind {

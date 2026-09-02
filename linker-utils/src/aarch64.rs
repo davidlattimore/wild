@@ -977,6 +977,14 @@ pub const fn relocation_type_from_raw(
             1,
         ),
 
+        object::elf::RelocationType(0x13d) => (
+            RelocationKind::FuncInit,
+            RelocationSize::ByteSize(8),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+
         _ => return None,
     };
 

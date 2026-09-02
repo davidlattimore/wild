@@ -71,6 +71,8 @@ tests = [
   "x86-64-tls-ie-err.s",
   "x86-64-split-stack-prologue-adjust-fail.s",
   "x86-64-gotpc-no-relax-err.s",
+  # Wild stops at first error; test requires two errors reported simultaneously
+  "aarch64-funcinit64-invalid.s",
 ]
 
 [skipped_groups.relocation_bugs]
@@ -158,7 +160,6 @@ tests = [
   "aarch64-fpic-prel16.s",
   "aarch64-fpic-prel32.s",
   "aarch64-fpic-prel64.s",
-  "aarch64-funcinit64-invalid.s",
   "aarch64-funcinit64.s",
   "aarch64-gnu-ifunc2.s",
   "aarch64-gnu-ifunc-address.s",
