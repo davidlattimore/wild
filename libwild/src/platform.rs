@@ -87,6 +87,9 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// Override this for architectures that need a different default.
     const DEFAULT_LOAD_ADDRESS: u64 = 0x400_000;
 
+    /// Number of entries reserved by the runtime at the start of the table addressed by DT_PLTGOT.
+    const NUM_GOT_PLT_HEADER_ENTRIES: u64 = 0;
+
     /// Returns the identifier to be written into the output file that identifies the file as
     /// belonging to this architecture. e.g. for ELF, this is the header magic for the architecture.
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier;
@@ -722,6 +725,7 @@ pub(crate) trait Platform:
     fn apply_late_size_adjustments_prelude(
         _current_sizes: &OutputSectionPartMap<u64>,
         _extra_sizes: &mut OutputSectionPartMap<u64>,
+        _format_specific: &Self::FinaliseSizesExt<'_>,
         _args: &Self::Args,
     ) -> Result {
         Ok(())

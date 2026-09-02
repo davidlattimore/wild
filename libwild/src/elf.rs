@@ -1849,8 +1849,16 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     fn apply_late_size_adjustments_prelude(
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
+        format_specific: &LayoutExt,
         args: &ElfArgs,
     ) -> Result {
+        extra_sizes.increment(
+            part_id::GOT,
+            C::GOT_ENTRY_SIZE
+                * format_specific
+                    .num_got_plt_header_entries(current_sizes.get(part_id::RELA_PLT) > 0),
+        );
+
         if args.should_write_eh_frame_hdr && current_sizes.get(part_id::EH_FRAME_HDR) != 0 {
             extra_sizes.increment(part_id::EH_FRAME_HDR, size_of::<EhFrameHdr>() as u64);
         }
@@ -2152,6 +2160,15 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             Self::take_dynsym_index(memory_offsets, resources.section_layouts)?;
         }
 
+        let got_plt_header_entries = resources.format_specific.num_got_plt_header_entries(
+            resources
+                .section_layouts
+                .get(output_section_id::RELA_PLT)
+                .mem_size
+                > 0,
+        );
+        memory_offsets.increment(part_id::GOT, C::GOT_ENTRY_SIZE * got_plt_header_entries);
+
         let tlsld_got_entry = prelude.format_specific.needs_tlsld_got_entry.then(|| {
             let address = NonZeroU64::new(memory_offsets.get(part_id::GOT))
                 .expect("GOT address must never be zero");
@@ -2159,7 +2176,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             address
         });
 
-        Ok(PreludeLayoutExt { tlsld_got_entry })
+        Ok(PreludeLayoutExt {
+            got_plt_header_entries,
+            tlsld_got_entry,
+        })
     }
 
     #[inline(always)]
@@ -4305,6 +4325,7 @@ pub(crate) struct LayoutExt {
     pub(crate) riscv_attributes: RiscVAttributes,
     pub(crate) eflags: object::elf::FileFlags,
     has_eh_frame_input: bool,
+    num_got_plt_header_entries: u64,
 }
 
 impl LayoutExt {
@@ -4329,7 +4350,16 @@ impl LayoutExt {
             riscv_attributes,
             eflags,
             has_eh_frame_input,
+            num_got_plt_header_entries: A::NUM_GOT_PLT_HEADER_ENTRIES,
         })
+    }
+
+    fn num_got_plt_header_entries(&self, has_plt_relocations: bool) -> u64 {
+        if has_plt_relocations {
+            self.num_got_plt_header_entries
+        } else {
+            0
+        }
     }
 }
 
@@ -6266,6 +6296,7 @@ pub(crate) struct PreludeLayoutStateExt {
 
 #[derive(Default, Debug)]
 pub(crate) struct PreludeLayoutExt {
+    pub(crate) got_plt_header_entries: u64,
     pub(crate) tlsld_got_entry: Option<NonZeroU64>,
 }
 

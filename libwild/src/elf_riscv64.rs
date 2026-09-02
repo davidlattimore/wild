@@ -53,6 +53,8 @@ impl crate::platform::Arch for ElfRiscV64 {
     type Platform = Elf64;
     const DEFAULT_LOAD_ADDRESS: u64 = 0x10000;
 
+    const NUM_GOT_PLT_HEADER_ENTRIES: u64 = 2;
+
     fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_RISCV
     }
