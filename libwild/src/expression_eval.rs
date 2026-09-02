@@ -11,6 +11,7 @@ use crate::input_data::InputRef;
 use crate::layout;
 use crate::layout::FileLayoutState;
 use crate::layout::GroupState;
+use crate::layout::HandlerData;
 use crate::layout::InputSectionPositions;
 use crate::layout::MemoryRegion;
 use crate::layout::OutputRecordLayout;
@@ -543,45 +544,43 @@ pub(crate) fn evaluate_early_expression<'data, P: Platform>(
                     let symbol_offset = ls.symbol_id_range.id_to_offset(canonical_id);
 
                     let def_info = &script.parsed.symbol_defs[symbol_offset];
-                    match &def_info.placement {
-                        SymbolPlacement::Redirect(redirect) => {
-                            if !visited_nodes.insert(canonical_id) {
-                                return Ok(SymbolValue::Absolute(0));
-                            }
-                            let value = evaluate_early_expression(
-                                &redirect.expression,
-                                &redirect.loc,
-                                memory_regions,
-                                section_layouts,
-                                resolved_lc,
-                                laid_out_mem_offsets,
-                                group_states,
-                                sizes,
-                                output_sections,
-                                symbol_db,
-                                sizeof_headers,
-                                section_positions,
-                                visited_nodes,
-                            );
-                            visited_nodes.remove(&canonical_id);
-                            let value = value?;
-                            let symbol_section = redirect
-                                .loc
-                                .relative_section_id()
-                                .map(|id| output_sections.primary_output_section(id));
-                            if let Some(symbol_section) = symbol_section {
-                                Ok(SymbolValue::SectionRelative {
-                                    section_id: symbol_section,
-                                    address: value,
-                                })
-                            } else {
-                                Ok(SymbolValue::Absolute(value))
-                            }
-                        }
-                        _ => {
-                            bail!("Unsupported symbol type");
-                        }
-                    }
+                    evaluate_early_expression_internal_symbol(
+                        memory_regions,
+                        section_layouts,
+                        resolved_lc,
+                        laid_out_mem_offsets,
+                        group_states,
+                        sizes,
+                        output_sections,
+                        symbol_db,
+                        sizeof_headers,
+                        section_positions,
+                        visited_nodes,
+                        canonical_id,
+                        def_info,
+                    )
+                }
+                Some(FileLayoutState::Prelude(prelude))
+                    if let Group::Prelude(p) = &symbol_db.groups[file_id.group()] =>
+                {
+                    let def_info =
+                        &p.symbol_definitions[prelude.symbol_id_range().id_to_offset(canonical_id)];
+
+                    evaluate_early_expression_internal_symbol(
+                        memory_regions,
+                        section_layouts,
+                        resolved_lc,
+                        laid_out_mem_offsets,
+                        group_states,
+                        sizes,
+                        output_sections,
+                        symbol_db,
+                        sizeof_headers,
+                        section_positions,
+                        visited_nodes,
+                        canonical_id,
+                        def_info,
+                    )
                 }
                 _ => {
                     bail!(
@@ -592,6 +591,70 @@ pub(crate) fn evaluate_early_expression<'data, P: Platform>(
             }
         },
     )
+}
+
+fn evaluate_early_expression_internal_symbol<'data, P: Platform>(
+    memory_regions: &HashMap<&[u8], MemoryRegion>,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    resolved_lc: &[ResolvedLocationCounter],
+    laid_out_mem_offsets: &OutputSectionPartMap<Option<u64>>,
+    group_states: &[GroupState<'data, P>],
+    sizes: &OutputSectionPartMap<u64>,
+    output_sections: &OutputSections<'data, P>,
+    symbol_db: &SymbolDb<'data, P>,
+    sizeof_headers: u64,
+    section_positions: &OnceCell<InputSectionPositions>,
+    visited_nodes: &mut hashbrown::HashSet<SymbolId>,
+    canonical_id: SymbolId,
+    def_info: &crate::parsing::InternalSymDefInfo<'data, P>,
+) -> Result<SymbolValue> {
+    match &def_info.placement {
+        SymbolPlacement::Redirect(redirect) => {
+            if !visited_nodes.insert(canonical_id) {
+                return Ok(SymbolValue::Absolute(0));
+            }
+            let value = evaluate_early_expression(
+                &redirect.expression,
+                &redirect.loc,
+                memory_regions,
+                section_layouts,
+                resolved_lc,
+                laid_out_mem_offsets,
+                group_states,
+                sizes,
+                output_sections,
+                symbol_db,
+                sizeof_headers,
+                section_positions,
+                visited_nodes,
+            );
+            visited_nodes.remove(&canonical_id);
+            let value = value?;
+            let symbol_section = redirect
+                .loc
+                .relative_section_id()
+                .map(|id| output_sections.primary_output_section(id));
+            if let Some(symbol_section) = symbol_section {
+                Ok(SymbolValue::SectionRelative {
+                    section_id: symbol_section,
+                    address: value,
+                })
+            } else {
+                Ok(SymbolValue::Absolute(value))
+            }
+        }
+        SymbolPlacement::SectionStart(section_id) => Ok(SymbolValue::SectionRelative {
+            section_id: *section_id,
+            address: 0,
+        }),
+        SymbolPlacement::SectionEnd(section_id) => Ok(SymbolValue::SectionRelative {
+            section_id: *section_id,
+            address: section_layouts.get(*section_id).mem_size,
+        }),
+        _ => {
+            bail!("Unsupported symbol type");
+        }
+    }
 }
 
 fn section_size<'data, P: Platform>(

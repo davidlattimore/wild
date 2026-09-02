@@ -42,6 +42,7 @@
 
 //#Config:symbols
 //#LinkerScript:linker-script-location-counter-symbols.ld
+//#LinkArgs:--defsym=offset4=0x300
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64,ppc64le
