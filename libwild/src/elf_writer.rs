@@ -784,7 +784,10 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         } else {
             self.take_next_got_entry()?
         };
-        if res.flags.is_dynamic()
+        if res.flags.needs_canonical_plt() {
+            *got_entry = elf::Word::<C>::from_u64(0)?;
+            self.write_jump_slot_relocation::<A>(got_address, res.dynamic_symbol_index()?)?;
+        } else if res.flags.is_dynamic()
             || (flags.needs_export_dynamic() && res.flags.is_interposable())
                 && !res.flags.is_ifunc()
         {
@@ -836,6 +839,18 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
                 plt_address
             };
             *got_entry = elf::Word::<C>::from_u64(value)?;
+        }
+
+        if res.flags.needs_canonical_plt_got_for_address() {
+            let address_got_address = got_address + C::GOT_ENTRY_SIZE;
+            *self.take_next_got_entry()? = elf::Word::<C>::from_u64(0)?;
+
+            self.write_dynamic_symbol_relocation::<A>(
+                address_got_address,
+                0,
+                res.dynamic_symbol_index()?,
+                DynamicRelocationKind::GotEntry,
+            )?;
         }
 
         Ok(())
@@ -1109,6 +1124,27 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
             0,
             A::get_dynamic_relocation_type(DynamicRelocationKind::Irelative),
         )?;
+        Ok(())
+    }
+
+    fn write_jump_slot_relocation<A: Arch<Platform = elf::Elf<C>>>(
+        &mut self,
+        got_address: u64,
+        dynamic_symbol_index: u32,
+    ) -> Result {
+        let out = self
+            .rela_plt
+            .split_off_first_mut()
+            .ok_or_else(|| insufficient_allocation(".rela.plt"))?;
+
+        out.set_addend(0)?;
+        out.set_offset(got_address)?;
+
+        out.set_info(
+            dynamic_symbol_index,
+            A::get_dynamic_relocation_type(DynamicRelocationKind::JumpSlot),
+        )?;
+
         Ok(())
     }
 
@@ -4640,12 +4676,24 @@ fn write_dynamic_symbol_definitions<C: ElfClass>(
                         }
                     }
                     FileLayout::Dynamic(object) => {
-                        write_copy_relocation_dynamic_symbol_definition(
-                            sym_def,
-                            object,
-                            layout,
-                            &mut table_writer.dynsym_writer,
-                        )?;
+                        if layout
+                            .flags_for_symbol(sym_def.symbol_id)
+                            .needs_canonical_plt()
+                        {
+                            write_canonical_plt_dynamic_symbol_definition(
+                                sym_def,
+                                object,
+                                layout,
+                                &mut table_writer.dynsym_writer,
+                            )?;
+                        } else {
+                            write_copy_relocation_dynamic_symbol_definition(
+                                sym_def,
+                                object,
+                                layout,
+                                &mut table_writer.dynsym_writer,
+                            )?;
+                        }
 
                         if let Some(versym) = table_writer.versym.as_mut() {
                             copy_symbol_version(
@@ -4955,6 +5003,26 @@ fn write_copy_relocation_dynamic_symbol_definition<'data, C: ElfClass>(
                 layout.symbol_debug(sym_def.symbol_id)
             )
         })?;
+    Ok(())
+}
+
+fn write_canonical_plt_dynamic_symbol_definition<'data, C: ElfClass>(
+    sym_def: &crate::layout::DynamicSymbolDefinition<elf::Elf<C>>,
+    object: &DynamicLayout<'data, elf::Elf<C>>,
+    layout: &ElfLayout<C>,
+    dynamic_symbol_writer: &mut SymbolTableWriter<'_, '_, C>,
+) -> Result {
+    let sym_index = sym_def.symbol_id.to_input(object.symbol_id_range);
+    let sym = object.object.symbol(sym_index)?;
+
+    let resolution = layout
+        .local_symbol_resolution(sym_def.symbol_id)
+        .context("Canonical PLT symbol has no resolution")?;
+
+    let entry = dynamic_symbol_writer.undefined_symbol(false, sym_def.name)?;
+    entry.set_value(resolution.plt_address()?)?;
+    entry.set_binding_and_type(sym.st_bind(), object::elf::STT_FUNC);
+
     Ok(())
 }
 
@@ -5839,13 +5907,18 @@ fn write_dynamic_file<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
                     res.value(),
                     ValueFlags::empty(),
                 )?;
-            } else {
+            } else if !res.flags.needs_canonical_plt() {
                 let entry = table_writer.dynsym_writer.undefined_symbol(false, name)?;
 
-                // Note, we copy st_info, but not st_other since we don't want to copy the
-                // visibility. We want to emit the symbol with default visibility, otherwise the
-                // runtime loader may ignore dynamic relocations that reference the symbol.
-                entry.set_info(symbol.st_info());
+                let symbol_type = if symbol.st_type() == object::elf::STT_GNU_IFUNC {
+                    // An undefined reference to an IFUNC needs to be emitted as type FUNC.
+                    object::elf::STT_FUNC
+                } else {
+                    symbol.st_type()
+                };
+
+                // Note, for undefined symbols, we always use default visibility.
+                entry.set_binding_and_type(symbol.st_bind(), symbol_type);
 
                 if let Some(versym) = table_writer.version_writer.versym.as_mut() {
                     copy_symbol_version(

@@ -76,7 +76,6 @@ tests = [
 [skipped_groups.arch_x86_64]
 reason = "x86_64 specific tests"
 tests = [
-  "arch-x86_64-address-equality.sh",
   "arch-x86_64-comdat-signatures.sh",
   "arch-x86_64-empty-mergeable-section.sh",
   "arch-x86_64-execstack-if-needed.sh",
@@ -232,8 +231,6 @@ tests = [
 reason = "Not grouped yet"
 tests = [
   "as-needed-gc.sh",
-  "bno-symbolic.sh",
-  "canonical-plt.sh",
   "common-archive.sh",
   "common-ref.sh",
   "common-symbols.sh",

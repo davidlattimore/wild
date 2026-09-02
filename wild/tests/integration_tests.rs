@@ -314,6 +314,9 @@
 //! binding=local|global|weak: Type: string. Asserts the binding of the symbol (STB_LOCAL,
 //! STB_GLOBAL or STB_WEAK).
 //!
+//! type=notype|object|func|section|file|common|tls|ifunc: Type: string. Asserts the ELF symbol
+//! type. This property is only supported for ELF symbols.
+//!
 //! line={num} Parses debug info to check that the symbol is on the line specified.
 //!
 //! ## Program Header properties
@@ -1989,6 +1992,9 @@ struct SymtabAssertions {
     size: Option<u64>,
 
     binding: Option<String>,
+
+    #[serde(rename = "type")]
+    symbol_type: Option<String>,
 
     line: Option<u64>,
 }
@@ -6476,6 +6482,40 @@ where
                 bail!(
                     "Expected symbol `{}` to have binding `{expected_binding}`, \
                      but it actually had binding `{actual_binding}`",
+                    exp.name
+                );
+            }
+        }
+
+        if let Some(expected_type) = exp.assertions.symbol_type.as_deref() {
+            let expected_type_value = match expected_type {
+                "notype" => object::elf::STT_NOTYPE,
+                "object" => object::elf::STT_OBJECT,
+                "func" => object::elf::STT_FUNC,
+                "section" => object::elf::STT_SECTION,
+                "file" => object::elf::STT_FILE,
+                "common" => object::elf::STT_COMMON,
+                "tls" => object::elf::STT_TLS,
+                "ifunc" => object::elf::STT_GNU_IFUNC,
+                _ => bail!(
+                    "Invalid type value `{expected_type}` for symbol `{}`. Must be one of: \
+                     notype, object, func, section, file, common, tls, ifunc",
+                    exp.name
+                ),
+            };
+
+            let object::SymbolFlags::Elf { st_info, .. } = sym.flags() else {
+                bail!(
+                    "Cannot assert ELF symbol type `{expected_type}` for non-ELF symbol `{}`",
+                    exp.name
+                );
+            };
+
+            let actual_type = st_info.st_type();
+            if actual_type != expected_type_value {
+                bail!(
+                    "Expected symbol `{}` to have type `{expected_type}`, but it actually had \
+                     type `{actual_type:?}`",
                     exp.name
                 );
             }
