@@ -4,20 +4,33 @@
 /// features. Symbol resolution and full location counter semantics (e.g. ALIGN with a non-zero
 /// current address) will be implemented in future work.
 use crate::bail;
+use crate::error::Context;
 use crate::error::Result;
+use crate::grouping::Group;
 use crate::input_data::InputRef;
 use crate::layout;
+use crate::layout::FileLayoutState;
+use crate::layout::GroupState;
+use crate::layout::HandlerData;
+use crate::layout::InputSectionPositions;
+use crate::layout::MemoryRegion;
 use crate::layout::OutputRecordLayout;
 use crate::linker_script::Expression;
+use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
+use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::SymbolLoc;
+use crate::parsing::SymbolPlacement;
+use crate::part_id::PartId;
 use crate::platform::Args;
 use crate::platform::Platform;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
+use crate::symbol_db::SymbolId;
 use hashbrown::HashMap;
+use std::cell::OnceCell;
 
 /// Compute 1-based line number by counting newlines before `remainder` in `file_bytes`.
 fn line_number(file_bytes: &[u8], remainder: &[u8]) -> u32 {
@@ -32,9 +45,85 @@ pub(crate) struct ResolvedLocationCounter {
     pub(crate) section_offset: Option<u64>,
 }
 
-pub(crate) enum ResolvedSymbolValue {
+pub(crate) enum SymbolValue {
     Absolute(u64),
-    SectionRelative(u64),
+    PartRelative {
+        part_id: PartId,
+        offset: u64,
+    },
+    SectionRelative {
+        section_id: OutputSectionId,
+        address: u64,
+    },
+}
+
+fn evaluate_symbol_value<P: Platform>(
+    symbol_value: &SymbolValue,
+    loc: &SymbolLoc,
+    output_sections: &OutputSections<'_, P>,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    laid_out_mem_offsets: &OutputSectionPartMap<Option<u64>>,
+    value_kind: &mut ExpressionValueKind,
+    name: &[u8],
+) -> Result<u64> {
+    let current_section = loc
+        .relative_section_id()
+        .map(|id| output_sections.primary_output_section(id));
+    match symbol_value {
+        SymbolValue::Absolute(value) => {
+            value_kind.contains_absolute = true;
+            Ok(*value)
+        }
+        SymbolValue::SectionRelative {
+            section_id,
+            address,
+        } => {
+            let primary_section = output_sections.primary_output_section(*section_id);
+            if current_section == Some(primary_section) {
+                value_kind.contains_section_relative = true;
+                let section_base = section_layouts.get(primary_section).mem_offset;
+                let offset = address.checked_sub(section_base).with_context(|| {
+                    format!(
+                        "address of symbol '{}' is before its output section",
+                        String::from_utf8_lossy(name)
+                    )
+                })?;
+                Ok(offset)
+            } else if let Some(section) = current_section {
+                value_kind.contains_absolute = true;
+                let section_base = section_layouts.get(section).mem_offset;
+                Ok(address + section_base)
+            } else {
+                value_kind.contains_absolute = true;
+                Ok(*address)
+            }
+        }
+        SymbolValue::PartRelative { part_id, offset } => {
+            let Some(part_address) = laid_out_mem_offsets.get(*part_id) else {
+                bail!(
+                    "cannot resolve address of symbol '{}' because its output section part has not been laid out yet",
+                    String::from_utf8_lossy(name)
+                );
+            };
+            let address = part_address + offset;
+            let symbol_section =
+                output_sections.primary_output_section(part_id.output_section_id::<P>());
+            if current_section == Some(symbol_section) {
+                value_kind.contains_section_relative = true;
+                let section_base = section_layouts.get(symbol_section).mem_offset;
+                let offset = address.checked_sub(section_base).with_context(|| {
+                    format!(
+                        "address of symbol '{}' is before its output section",
+                        String::from_utf8_lossy(name)
+                    )
+                })?;
+                Ok(offset)
+            } else {
+                value_kind.contains_absolute = true;
+                Ok(address)
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -95,7 +184,8 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
     sizeof_headers: u64,
     resolved_location_counters: &[ResolvedLocationCounter],
-    symbol_resolution_callback: &dyn Fn(&[u8]) -> Result<ResolvedSymbolValue>,
+    laid_out_mem_offsets: &OutputSectionPartMap<Option<u64>>,
+    symbol_resolution_callback: &mut dyn FnMut(&[u8]) -> Result<SymbolValue>,
 ) -> Result<u64> {
     let mut value_kind = ExpressionValueKind::default();
     let value = evaluate_expression_value(
@@ -109,22 +199,17 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
         sizeof_headers,
         resolved_location_counters,
         &mut value_kind,
+        laid_out_mem_offsets,
         symbol_resolution_callback,
     )?;
 
     let offset = if value_kind.needs_section_base() {
-        match expr_loc {
-            SymbolLoc::SectionStartRelative(id) | SymbolLoc::SectionEndRelative(id) => {
-                let primary_id = output_sections.primary_output_section(*id);
-                let section_layout = section_layouts.get(primary_id);
-                section_layout.mem_offset
-            }
-            SymbolLoc::LocationCounter(_, Some(id)) => {
-                let primary_id = output_sections.primary_output_section(*id);
-                let section_layout = section_layouts.get(primary_id);
-                section_layout.mem_offset
-            }
-            _ => 0,
+        if let Some(id) = expr_loc.relative_section_id() {
+            let primary_id = output_sections.primary_output_section(id);
+            let section_layout = section_layouts.get(primary_id);
+            section_layout.mem_offset
+        } else {
+            0
         }
     } else {
         0
@@ -144,7 +229,8 @@ fn evaluate_expression_value<'data, P: Platform>(
     sizeof_headers: u64,
     resolved_location_counters: &[ResolvedLocationCounter],
     value_kind: &mut ExpressionValueKind,
-    symbol_resolution_callback: &dyn Fn(&[u8]) -> Result<ResolvedSymbolValue>,
+    laid_out_mem_offsets: &OutputSectionPartMap<Option<u64>>,
+    symbol_resolution_callback: &mut dyn FnMut(&[u8]) -> Result<SymbolValue>,
 ) -> Result<u64> {
     macro_rules! eval {
         ($e:expr) => {
@@ -159,6 +245,7 @@ fn evaluate_expression_value<'data, P: Platform>(
                 sizeof_headers,
                 resolved_location_counters,
                 value_kind,
+                laid_out_mem_offsets,
                 symbol_resolution_callback,
             )
         };
@@ -176,6 +263,7 @@ fn evaluate_expression_value<'data, P: Platform>(
                 symbol_db,
                 sizeof_headers,
                 resolved_location_counters,
+                laid_out_mem_offsets,
                 symbol_resolution_callback,
             )
         };
@@ -184,23 +272,32 @@ fn evaluate_expression_value<'data, P: Platform>(
     match expr {
         Expression::Number(n) => Ok(*n),
 
-        Expression::LocationCounter => evaluate_location(
-            expr_loc,
-            section_layouts,
-            output_sections,
-            resolved_location_counters,
-        ),
-
-        Expression::Symbol(name) => match symbol_resolution_callback(name)? {
-            ResolvedSymbolValue::Absolute(value) => {
-                value_kind.contains_absolute = true;
-                Ok(value)
-            }
-            ResolvedSymbolValue::SectionRelative(value) => {
+        Expression::LocationCounter => {
+            if expr_loc.relative_section_id().is_some() {
                 value_kind.contains_section_relative = true;
-                Ok(value)
+            } else {
+                value_kind.contains_absolute = true;
             }
-        },
+            evaluate_location(
+                expr_loc,
+                section_layouts,
+                output_sections,
+                resolved_location_counters,
+            )
+        }
+
+        Expression::Symbol(name) => {
+            let value = symbol_resolution_callback(name)?;
+            evaluate_symbol_value(
+                &value,
+                expr_loc,
+                output_sections,
+                section_layouts,
+                laid_out_mem_offsets,
+                value_kind,
+                name,
+            )
+        }
 
         Expression::Add(l, r) => Ok(eval!(l)?.wrapping_add(eval!(r)?)),
         Expression::Subtract(l, r) => Ok(eval!(l)?.wrapping_sub(eval!(r)?)),
@@ -385,6 +482,181 @@ pub(crate) fn evaluate_const<'data>(expr: &Expression<'data>) -> Result<u64> {
     }
 }
 
+pub(crate) fn evaluate_early_expression<'data, P: Platform>(
+    expr: &Expression<'data>,
+    loc: &SymbolLoc,
+    memory_regions: &HashMap<&[u8], MemoryRegion>,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    resolved_lc: &[ResolvedLocationCounter],
+    laid_out_mem_offsets: &OutputSectionPartMap<Option<u64>>,
+    group_states: &[GroupState<'data, P>],
+    sizes: &OutputSectionPartMap<u64>,
+    output_sections: &OutputSections<'data, P>,
+    symbol_db: &SymbolDb<'data, P>,
+    sizeof_headers: u64,
+    section_positions: &OnceCell<InputSectionPositions>,
+    visited_nodes: &mut hashbrown::HashSet<SymbolId>,
+) -> Result<u64> {
+    crate::expression_eval::evaluate_expression(
+        expr,
+        loc,
+        None,
+        section_layouts,
+        output_sections,
+        memory_regions,
+        symbol_db,
+        sizeof_headers,
+        resolved_lc,
+        laid_out_mem_offsets,
+        &mut |name| {
+            let Some(symbol_id) =
+                symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
+            else {
+                bail!(
+                    "undefined symbol '{}' in linker script expression",
+                    String::from_utf8_lossy(name)
+                );
+            };
+
+            let canonical_id = symbol_db.definition(symbol_id);
+            let file_id = symbol_db.file_id_for_symbol(canonical_id);
+            let file = group_states
+                .get(file_id.group())
+                .and_then(|group| group.files.get(file_id.file()));
+            match file {
+                Some(FileLayoutState::Object(obj)) => layout::resolve_early_object_symbol(
+                    canonical_id,
+                    obj,
+                    section_positions.get_or_init(|| {
+                        layout::compute_input_section_positions(
+                            group_states,
+                            sizes.new_empty_like(),
+                            symbol_db,
+                            output_sections,
+                        )
+                    }),
+                    symbol_db,
+                ),
+                Some(FileLayoutState::LinkerScript(ls))
+                    if let Group::LinkerScripts(scripts) = &symbol_db.groups[file_id.group()] =>
+                {
+                    let script = &scripts[file_id.file()];
+                    let symbol_offset = ls.symbol_id_range.id_to_offset(canonical_id);
+
+                    let def_info = &script.parsed.symbol_defs[symbol_offset];
+                    evaluate_early_expression_internal_symbol(
+                        memory_regions,
+                        section_layouts,
+                        resolved_lc,
+                        laid_out_mem_offsets,
+                        group_states,
+                        sizes,
+                        output_sections,
+                        symbol_db,
+                        sizeof_headers,
+                        section_positions,
+                        visited_nodes,
+                        canonical_id,
+                        def_info,
+                    )
+                }
+                Some(FileLayoutState::Prelude(prelude))
+                    if let Group::Prelude(p) = &symbol_db.groups[file_id.group()] =>
+                {
+                    let def_info =
+                        &p.symbol_definitions[prelude.symbol_id_range().id_to_offset(canonical_id)];
+
+                    evaluate_early_expression_internal_symbol(
+                        memory_regions,
+                        section_layouts,
+                        resolved_lc,
+                        laid_out_mem_offsets,
+                        group_states,
+                        sizes,
+                        output_sections,
+                        symbol_db,
+                        sizeof_headers,
+                        section_positions,
+                        visited_nodes,
+                        canonical_id,
+                        def_info,
+                    )
+                }
+                _ => {
+                    bail!(
+                        "symbol '{}' is not defined by an input object",
+                        symbol_db.symbol_name_for_display(canonical_id)
+                    );
+                }
+            }
+        },
+    )
+}
+
+fn evaluate_early_expression_internal_symbol<'data, P: Platform>(
+    memory_regions: &HashMap<&[u8], MemoryRegion>,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    resolved_lc: &[ResolvedLocationCounter],
+    laid_out_mem_offsets: &OutputSectionPartMap<Option<u64>>,
+    group_states: &[GroupState<'data, P>],
+    sizes: &OutputSectionPartMap<u64>,
+    output_sections: &OutputSections<'data, P>,
+    symbol_db: &SymbolDb<'data, P>,
+    sizeof_headers: u64,
+    section_positions: &OnceCell<InputSectionPositions>,
+    visited_nodes: &mut hashbrown::HashSet<SymbolId>,
+    canonical_id: SymbolId,
+    def_info: &crate::parsing::InternalSymDefInfo<'data, P>,
+) -> Result<SymbolValue> {
+    match &def_info.placement {
+        SymbolPlacement::Redirect(redirect) => {
+            if !visited_nodes.insert(canonical_id) {
+                return Ok(SymbolValue::Absolute(0));
+            }
+            let value = evaluate_early_expression(
+                &redirect.expression,
+                &redirect.loc,
+                memory_regions,
+                section_layouts,
+                resolved_lc,
+                laid_out_mem_offsets,
+                group_states,
+                sizes,
+                output_sections,
+                symbol_db,
+                sizeof_headers,
+                section_positions,
+                visited_nodes,
+            );
+            visited_nodes.remove(&canonical_id);
+            let value = value?;
+            let symbol_section = redirect
+                .loc
+                .relative_section_id()
+                .map(|id| output_sections.primary_output_section(id));
+            if let Some(symbol_section) = symbol_section {
+                Ok(SymbolValue::SectionRelative {
+                    section_id: symbol_section,
+                    address: value,
+                })
+            } else {
+                Ok(SymbolValue::Absolute(value))
+            }
+        }
+        SymbolPlacement::SectionStart(section_id) => Ok(SymbolValue::SectionRelative {
+            section_id: *section_id,
+            address: 0,
+        }),
+        SymbolPlacement::SectionEnd(section_id) => Ok(SymbolValue::SectionRelative {
+            section_id: *section_id,
+            address: section_layouts.get(*section_id).mem_size,
+        }),
+        _ => {
+            bail!("Unsupported symbol type");
+        }
+    }
+}
+
 fn section_size<'data, P: Platform>(
     name: &[u8],
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
@@ -492,7 +764,8 @@ mod tests {
                 symbol_db,
                 0,
                 &[],
-                &|_| Ok(ResolvedSymbolValue::Absolute(1)),
+                &OutputSectionPartMap::default(),
+                &mut |_| Ok(SymbolValue::Absolute(1)),
             )
         })
     }
@@ -862,7 +1135,8 @@ mod tests {
                 symbol_db,
                 sizeof_headers,
                 resolved_location_counters,
-                &|_| unreachable!(),
+                &OutputSectionPartMap::default(),
+                &mut |_| unreachable!(),
             )?;
         }
         Ok(())
@@ -948,7 +1222,8 @@ mod tests {
                     symbol_db,
                     0,
                     &[],
-                    &|_| Ok(ResolvedSymbolValue::Absolute(0)),
+                    &OutputSectionPartMap::default(),
+                    &mut |_| Ok(SymbolValue::Absolute(0)),
                 )
             };
             assert_eq!(eval(&Expression::Origin(b"rom")).unwrap(), 0x08000000);

@@ -851,6 +851,31 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         }
     }
 
+    pub(crate) fn output_section_id(&self, symbol_id: SymbolId) -> Option<OutputSectionId> {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        match self.file(file_id) {
+            SequencedInput::Object(obj) => {
+                let local_index = symbol_id.to_input(obj.symbol_id_range);
+                let sym = obj.parsed.object.symbol(local_index).ok()?;
+                let sec_idx = obj.parsed.object.symbol_section(sym, local_index).ok()??;
+                let part_id = self
+                    .section_part_ids
+                    .get(obj.section_id_range.start().as_usize() + sec_idx.0)?;
+                Some(part_id.output_section_id::<P>())
+            }
+            SequencedInput::LinkerScript(script) => {
+                let local_index = symbol_id.to_input(script.symbol_id_range);
+                let def_info = script.parsed.symbol_defs.get(local_index.0)?;
+                if let crate::parsing::SymbolPlacement::Redirect(redirect) = &def_info.placement {
+                    redirect.loc.relative_section_id()
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_mapping_symbol(&self, symbol_id: SymbolId) -> bool {
         let Ok(name) = self.symbol_name(symbol_id) else {
             // We don't want to bother the caller with an error here. If there's a problem getting
@@ -2135,16 +2160,9 @@ impl std::fmt::Display for SymbolId {
 impl<P: Platform> InternalSymDefInfo<'_, P> {
     pub(crate) fn section_id(&self) -> Option<OutputSectionId> {
         match self.placement {
-            SymbolPlacement::Redirect(Redirect {
-                loc:
-                    SymbolLoc::SectionEnd(i)
-                    | SymbolLoc::SectionStartRelative(i)
-                    | SymbolLoc::SectionEndRelative(i),
-                ..
-            }) => Some(i),
+            SymbolPlacement::Redirect(Redirect { ref loc, .. }) => loc.section_id(),
             SymbolPlacement::Undefined
             | SymbolPlacement::ForceUndefined
-            | SymbolPlacement::Redirect(_)
             | SymbolPlacement::PlatformSpecific(_) => None,
             SymbolPlacement::SectionStart(i) => Some(i),
             SymbolPlacement::SectionEnd(i) => Some(i),

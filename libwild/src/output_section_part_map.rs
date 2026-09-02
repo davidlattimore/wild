@@ -43,6 +43,15 @@ impl<T: Default> OutputSectionPartMap<T> {
     }
 }
 
+impl<T> Default for OutputSectionPartMap<T> {
+    fn default() -> Self {
+        Self {
+            parts: Vec::new(),
+            sparse: None,
+        }
+    }
+}
+
 pub(crate) enum RangeIterator<'a, T> {
     Dense(PartId, &'a [T]),
     Sparse(std::collections::btree_map::Range<'a, PartId, T>),

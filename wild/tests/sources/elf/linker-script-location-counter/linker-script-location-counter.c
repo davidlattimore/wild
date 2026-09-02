@@ -42,6 +42,7 @@
 
 //#Config:symbols
 //#LinkerScript:linker-script-location-counter-symbols.ld
+//#LinkArgs:--defsym=offset4=0x300
 //#Object:runtime.c
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64,ppc64le
@@ -92,6 +93,15 @@
 //#RunEnabled:false
 //#DiffIgnore:segment.LOAD.RX.alignment
 //#DiffIgnore:segment.LOAD.RWX.alignment
+
+//#Config:cyclic_symbol
+//#LinkerScript:linker-script-location-counter-cyclic-symbol.ld
+//#ReferenceLinkers:bfd,lld
+//#Object:runtime.c
+// RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
+//#SkipArch:riscv64,ppc64le
+// The binary created is not valid, so we can't run it.
+//#RunEnabled:false
 
 #include <stddef.h>
 
