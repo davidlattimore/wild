@@ -558,6 +558,13 @@ pub(crate) trait Platform:
         symbol_index: object::SymbolIndex,
     ) -> Result<Option<Self::GcUnit>>;
 
+    const NEEDS_START_STOP_SECTION_GC: bool = false;
+
+    /// Must be implemented if `NEEDS_START_STOP_SECTION_GC` is true.
+    fn gc_unit_for_section(_section_index: object::SectionIndex) -> Self::GcUnit {
+        unreachable!("NEEDS_START_STOP_SECTION_GC requires gc_unit_for_section");
+    }
+
     /// Loads GC roots for an object. May also perform platform-specific allocation.
     fn activate_object_gc<'data, 'scope, A: Arch<Platform = Self>>(
         object: &mut layout::ObjectLayoutState<'data, Self>,

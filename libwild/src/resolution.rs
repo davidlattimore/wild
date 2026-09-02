@@ -25,6 +25,7 @@ use crate::output_section_id::CustomSectionDetails;
 use crate::output_section_id::InitFiniSectionDetail;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
+use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
@@ -97,14 +98,16 @@ impl<'data, P: Platform> Resolver<'data, P> {
 
         resolve_sections(&mut self.resolved_groups, symbol_db, layout_rules)?;
 
-        let mut syn = symbol_db.new_synthetic_symbols_group();
-
         assign_section_ids(
             &mut self.resolved_groups,
             &mut symbol_db.section_part_ids,
             output_sections,
             symbol_db.args,
         );
+
+        let start_stop_sections =
+            P::NEEDS_START_STOP_SECTION_GC.then(|| output_sections.new_section_map());
+        let mut syn = symbol_db.new_synthetic_symbols_group(start_stop_sections);
 
         // Apply -Ttext/-Tdata/-Tbss (and --section-start) overrides to built-in sections.
         output_sections.apply_section_start_overrides(symbol_db.args);
@@ -115,6 +118,14 @@ impl<'data, P: Platform> Resolver<'data, P> {
             &self.resolved_groups,
             symbol_db,
             per_symbol_flags,
+            &mut syn,
+        );
+
+        populate_start_stop_sections(
+            &self.resolved_groups,
+            &symbol_db.section_part_ids,
+            output_sections,
+            symbol_db.args,
             &mut syn,
         );
 
@@ -378,6 +389,7 @@ fn resolve_group<'data, 'definitions, P: Platform>(
                     file_id: syn.file_id,
                     start_symbol_id: syn.symbol_id_range.start(),
                     symbol_definitions: Vec::new(),
+                    start_stop_sections: None,
                 })],
             }
         }
@@ -812,6 +824,13 @@ pub(crate) struct ResolvedSyntheticSymbols<'data, P: Platform> {
     pub(crate) file_id: FileId,
     pub(crate) start_symbol_id: SymbolId,
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
+    pub(crate) start_stop_sections: Option<OutputSectionMap<Vec<StartStopCandidate<P>>>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StartStopCandidate<P: Platform> {
+    pub(crate) file_id: FileId,
+    pub(crate) gc_unit: P::GcUnit,
 }
 
 #[cfg(all(feature = "plugins", unix))]
@@ -841,6 +860,69 @@ fn assign_section_ids<'data, P: Platform>(
                     obj_part_ids,
                     output_sections,
                 );
+            }
+        }
+    }
+}
+
+fn populate_start_stop_sections<'data, P: Platform>(
+    resolved: &[ResolvedGroup<'data, P>],
+    section_part_ids: &[PartId],
+    output_sections: &OutputSections<'data, P>,
+    args: &P::Args,
+    syn: &mut ResolvedSyntheticSymbols<'data, P>,
+) {
+    if !P::NEEDS_START_STOP_SECTION_GC || !args.should_gc_sections() {
+        return;
+    }
+
+    let mut referenced_sections = output_sections.new_section_map::<bool>();
+    let mut has_referenced_sections = false;
+
+    for definition in &syn.symbol_definitions {
+        if let Some(section_id) = definition.section_id() {
+            *referenced_sections.get_mut(section_id) = true;
+            has_referenced_sections = true;
+        }
+    }
+
+    if !has_referenced_sections {
+        return;
+    }
+
+    let start_stop_sections = syn.start_stop_sections.as_mut().unwrap();
+    for group in resolved {
+        for file in &group.files {
+            let ResolvedFile::Object(s) = file else {
+                continue;
+            };
+
+            let obj_part_ids = &section_part_ids[s.section_id_range.as_usize()];
+
+            for custom_section in &s.custom_sections {
+                let section_index = custom_section.index;
+
+                let SectionSlot::Unloaded(unloaded) = s.sections[section_index.0] else {
+                    continue;
+                };
+
+                if !unloaded.start_stop_eligible {
+                    continue;
+                }
+
+                let section_id = obj_part_ids[section_index.0].output_section_id::<P>();
+                if !*referenced_sections.get(section_id) {
+                    continue;
+                }
+
+                let gc_unit = P::gc_unit_for_section(section_index);
+
+                start_stop_sections
+                    .get_mut(section_id)
+                    .push(StartStopCandidate {
+                        file_id: s.common.file_id,
+                        gc_unit,
+                    });
             }
         }
     }

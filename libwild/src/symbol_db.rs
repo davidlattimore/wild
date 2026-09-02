@@ -24,6 +24,7 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_map::OutputSectionMap;
 use crate::parsing;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Prelude;
@@ -991,7 +992,12 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         })
     }
 
-    pub(crate) fn new_synthetic_symbols_group(&mut self) -> ResolvedSyntheticSymbols<'data, P> {
+    pub(crate) fn new_synthetic_symbols_group(
+        &mut self,
+        start_stop_sections: Option<
+            OutputSectionMap<Vec<crate::resolution::StartStopCandidate<P>>>,
+        >,
+    ) -> ResolvedSyntheticSymbols<'data, P> {
         let file_id = FileId::new(self.groups.len() as u32, 0);
         let start_symbol_id = self.next_symbol_id();
 
@@ -1004,6 +1010,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             file_id,
             start_symbol_id,
             symbol_definitions: Vec::new(),
+            start_stop_sections,
         }
     }
 

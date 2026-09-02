@@ -77,8 +77,6 @@ use crate::value_flags::FlagsForSymbol as _;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
-use crossbeam_queue::ArrayQueue;
-use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
@@ -106,7 +104,6 @@ use std::sync::Mutex;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
 pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
@@ -901,6 +898,7 @@ pub(crate) struct SyntheticSymbolsLayoutState<'data, P: Platform> {
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
     internal_symbols: InternalSymbols<'data, P>,
+    start_stop_sections: Option<OutputSectionMap<Vec<resolution::StartStopCandidate<P>>>>,
 }
 
 pub(crate) struct EpilogueLayoutState<P: Platform> {
@@ -1245,11 +1243,13 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for SyntheticSymbolsLayo
         let def_info =
             &self.internal_symbols.symbol_definitions[self.symbol_id_range.id_to_offset(symbol_id)];
 
-        if let Some(output_section_id) = def_info.section_id() {
-            // We've gotten a request to load a __start_ / __stop_ symbol, sent requests to load all
+        if let Some(output_section_id) = def_info.section_id()
+            && let Some(start_stop_sections) = &mut self.start_stop_sections
+        {
+            // We've gotten a request to load a __start_ / __stop_ symbol, send requests to load all
             // sections that would go into that section.
-            let sections = resources.start_stop_sections.get(output_section_id);
-            while let Some(request) = sections.pop() {
+            for candidate in take(start_stop_sections.get_mut(output_section_id)) {
+                let request = GcLoadRequest::new(candidate.file_id, candidate.gc_unit);
                 resources.send_work::<A>(
                     request.file_id,
                     WorkItem::LoadGcUnit(request),
@@ -1482,17 +1482,6 @@ pub(crate) struct GraphResources<'data, 'scope, P: Platform> {
     has_variant_pcs: AtomicBool,
 
     pub(crate) thunk_layout_builder: Option<crate::thunks::ThunkLayoutBuilder>,
-
-    /// For each OutputSectionId, this tracks a list of sections that should be loaded if that
-    /// section gets referenced. The sections here will only be those that are eligible for having
-    /// __start_ / __stop_ symbols. i.e. sections that don't start their names with a ".".
-    start_stop_sections: OutputSectionMap<SegQueue<GcLoadRequest<P>>>,
-
-    /// The number of groups that haven't yet completed activation.
-    activations_remaining: AtomicUsize,
-
-    /// Groups that cannot be processed until all groups have completed activation.
-    delay_processing: ArrayQueue<GroupState<'data, P>>,
 
     pub(crate) layout_resources_ext: P::LayoutResourcesExt<'data>,
 }
@@ -2311,38 +2300,16 @@ impl<'data, P: Platform> GroupActivationInputs<'data, P> {
             common: CommonGroupState::new(resources.output_sections),
         };
 
-        let mut should_delay_processing = false;
-
         for file in &mut group.files {
             let r = activate::<A>(&mut group.common, file, &mut group.queue, resources, scope)
                 .with_context(|| format!("Failed to activate {file}"));
-
-            // SyntheticSymbols can't be processed until all groups have completed activation, since
-            // it can read from `start_stop_sections` which gets populated by other objects during
-            // activation.
-            should_delay_processing |= matches!(file, FileLayoutState::SyntheticSymbols(_));
 
             if let Err(error) = r {
                 resources.errors.lock().unwrap().push(error);
             }
         }
 
-        if should_delay_processing {
-            resources.delay_processing.push(group).unwrap();
-        } else {
-            group.do_pending_work::<A>(resources, scope);
-        }
-
-        let remaining = resources
-            .activations_remaining
-            .fetch_sub(1, atomic::Ordering::Relaxed)
-            - 1;
-
-        if remaining == 0 {
-            while let Some(group) = resources.delay_processing.pop() {
-                group.do_pending_work::<A>(resources, scope);
-            }
-        }
+        group.do_pending_work::<A>(resources, scope);
     }
 }
 
@@ -2379,9 +2346,6 @@ fn traverse_reference_graph<'data, A: Arch>(
         has_static_tls: AtomicBool::new(false),
         has_variant_pcs: AtomicBool::new(false),
         thunk_layout_builder,
-        start_stop_sections: output_sections.new_section_map(),
-        activations_remaining: AtomicUsize::new(num_groups),
-        delay_processing: ArrayQueue::new(1),
         layout_resources_ext,
     };
     let resources_ref = &resources;
@@ -3909,6 +3873,7 @@ impl<'data, P: Platform> SyntheticSymbolsLayoutState<'data, P> {
                 symbol_definitions: input_state.symbol_definitions,
                 start_symbol_id: input_state.start_symbol_id,
             },
+            start_stop_sections: input_state.start_stop_sections,
         }
     }
 
@@ -4171,7 +4136,7 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                         scope,
                     );
                 }
-                SectionSlot::Unloaded(sec) => {
+                SectionSlot::Unloaded(_) => {
                     if no_gc {
                         queue.send_gc_unit_request::<A>(
                             self.file_id,
@@ -4179,18 +4144,6 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                             resources,
                             scope,
                         );
-                    } else if sec.start_stop_eligible {
-                        let part_id = self.section_part_id(
-                            object::SectionIndex(i),
-                            &resources.symbol_db.section_part_ids,
-                        );
-                        resources
-                            .start_stop_sections
-                            .get(part_id.output_section_id::<P>())
-                            .push(GcLoadRequest::new(
-                                self.file_id,
-                                SectionGcUnit::new(object::SectionIndex(i)),
-                            ));
                     }
                 }
                 SectionSlot::FrameData(index) => {
