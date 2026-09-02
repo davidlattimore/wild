@@ -5,6 +5,7 @@ use crate::bail;
 use crate::ensure;
 use crate::macho::MachO;
 use crate::platform::PreviousRelocationInfo;
+use linker_utils::aarch64::RelaxationKind;
 use linker_utils::elf::AArch64Instruction;
 use linker_utils::elf::AllowedRange;
 use linker_utils::elf::PAGE_MASK_4KB;
@@ -30,15 +31,18 @@ const _ASSERTS: () = {
 };
 
 #[derive(Debug, Clone)]
-pub(crate) struct Relaxation {}
+pub(crate) struct Relaxation {
+    kind: RelaxationKind,
+    rel_info: RelocationKindInfo,
+}
 
 impl crate::platform::Relaxation for Relaxation {
     fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
-        todo!()
+        self.kind.apply(section_bytes, offset_in_section, addend);
     }
 
     fn rel_info(&self) -> linker_utils::elf::RelocationKindInfo {
-        todo!()
+        self.rel_info
     }
 
     fn debug_kind(&self) -> impl std::fmt::Debug {
@@ -121,7 +125,7 @@ impl crate::platform::Arch for MachOAArch64 {
                     4,
                 )
             }
-            object::macho::ARM64_RELOC_PAGE21 => {
+            object::macho::ARM64_RELOC_PAGE21 | object::macho::ARM64_RELOC_TLVP_LOAD_PAGE21 => {
                 debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
                 (
                     rel_kind,
@@ -131,7 +135,8 @@ impl crate::platform::Arch for MachOAArch64 {
                     1,
                 )
             }
-            object::macho::ARM64_RELOC_PAGEOFF12 => {
+            object::macho::ARM64_RELOC_PAGEOFF12
+            | object::macho::ARM64_RELOC_TLVP_LOAD_PAGEOFF12 => {
                 debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
                 (
                     RelocationKind::AbsoluteLowPart,
@@ -222,6 +227,22 @@ impl crate::platform::Arch for MachOAArch64 {
         _rel_addend: i64,
         _previous_relocation: Option<PreviousRelocationInfo<object::macho::RelocationInfo>>,
     ) -> Option<Self::Relaxation> {
-        todo!()
+        let interposable = flags.is_interposable();
+
+        match relocation_kind.r_type {
+            object::macho::ARM64_RELOC_TLVP_LOAD_PAGEOFF12
+                if output_kind.is_executable()
+                    && flags.has_link_time_address()
+                    && !interposable =>
+            {
+                let relocation = MachOAArch64::relocation_from_raw(relocation_kind)
+                    .expect("TLVP_LOAD_PAGEOFF12 must have relocation information");
+                Some(Relaxation {
+                    kind: RelaxationKind::LdrToAdd,
+                    rel_info: relocation,
+                })
+            }
+            _ => None,
+        }
     }
 }
