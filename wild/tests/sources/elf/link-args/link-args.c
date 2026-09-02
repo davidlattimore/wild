@@ -39,7 +39,7 @@
 //#Config:madvise-huge-pages
 //#Object:runtime.c
 //#ReferenceLinkers:
-//#LinkArgs:--madvise-huge-pages
+//#LinkArgs:--madvise-huge-pages --mmap-output-file
 
 //#Config:madvise-huge-pages-no-mmap
 //#Object:runtime.c
