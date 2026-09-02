@@ -488,7 +488,6 @@ fn update_allocation_sizes<P: Platform>(layout: &mut Layout<P>) {
 /// cursor. Each `SegmentStart` pushes onto the stack, each `Section` updates all open segments,
 /// and each `SegmentEnd` pops the matching entry and finalises the segment's `file_size`.
 pub(crate) fn recalculate_file_offsets<P: Platform>(layout: &mut Layout<P>) {
-    // Build a map from ProgramSegmentId → index in segment_layouts.segments.
     let id_to_idx: std::collections::HashMap<crate::program_segments::ProgramSegmentId, usize> =
         layout
             .segment_layouts
@@ -520,9 +519,8 @@ pub(crate) fn recalculate_file_offsets<P: Platform>(layout: &mut Layout<P>) {
                 }
             }
             OrderEvent::Section(section_id) => {
-                // Check if this section contributes any bytes to the file.
-                // If all parts have file_size == 0 (e.g. zeroed by --only-keep-debug),
-                // don't let alignment padding inflate file_offset or segment file_size.
+                // If all parts have file_size == 0 (e.g. for --only-keep-debug), don't let
+                // alignment padding inflate file_offset or segment file_size.
                 let total_part_file_size: usize = section_id
                     .parts::<P>()
                     .map(|part_id| layout.section_part_layouts.get(part_id).file_size)
@@ -546,7 +544,6 @@ pub(crate) fn recalculate_file_offsets<P: Platform>(layout: &mut Layout<P>) {
                     for part_id in section_id.parts::<P>() {
                         layout.section_part_layouts.get_mut(part_id).file_offset = file_offset;
                     }
-                    // Don't update seg_file_end — no file content.
                     continue;
                 }
 

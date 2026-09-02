@@ -745,8 +745,6 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         args: &ElfArgs,
         res: &Resolution<elf::Elf<C>>,
     ) -> Result {
-        // --only-keep-debug: .got/.plt are alloc sections with zeroed file_size,
-        // so their buffers are empty. Skip GOT/PLT writing entirely.
         if args.only_keep_debug() {
             return Ok(());
         }
@@ -2141,7 +2139,7 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         }
     }
 
-    // --only-keep-debug: alloc non-NOTE sections are converted to SHT_NOBITS — skip writing.
+    // For --only-keep-debug, alloc non-NOTE sections are NOBITS.
     if layout.args().only_keep_debug() {
         use crate::platform::SectionAttributes as _;
         let section_info = layout
@@ -2634,7 +2632,7 @@ fn write_eh_frame_data<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     table_writer: &mut TableWriter<'_, '_, C>,
     trace: &TraceOutput,
 ) -> Result {
-    // --only-keep-debug: .eh_frame is an alloc section; skip writing its content.
+    // For --only-keep-debug, .eh_frame has no file content.
     if layout.args().only_keep_debug() {
         return Ok(());
     }

@@ -1,7 +1,5 @@
-// Post-layout pass that implements `--only-keep-debug`.
-//
-// Zeroes `file_size` for every `SHF_ALLOC` non-NOTE section, then recalculates
-// file offsets and segment sizes so the output ELF is self-consistent.
+// Post-layout pass for --only-keep-debug.
+// Zeroes file_size for alloc non-NOTE sections, then recalculates file offsets.
 
 use crate::compression::recalculate_file_offsets;
 use crate::elf;
@@ -28,8 +26,7 @@ pub(crate) fn maybe_only_keep_debug_elf<C: ElfClass, A: Arch<Platform = elf::Elf
 }
 
 fn zero_alloc_section_sizes<C: ElfClass>(layout: &mut Layout<elf::Elf<C>>) {
-    // Skip internal linker-generated header sections (file header, program headers,
-    // section headers). These are SHF_ALLOC but must be written to the output file.
+    // Don't zero linker-generated headers (file header, program headers, section headers).
     let header_ids = [
         crate::output_section_id::FILE_HEADER,
         elf::output_section_id::PROGRAM_HEADERS,

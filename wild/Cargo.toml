@@ -74,7 +74,3 @@ macho = ["libwild/macho"]
 external_tests = ["mold_tests", "lld_tests"]
 mold_tests = []
 lld_tests = []
-
-[[test]]
-name = "only_keep_debug_test"
-path = "tests/only_keep_debug_test.rs"
