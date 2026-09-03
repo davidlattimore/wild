@@ -359,6 +359,13 @@ linkers need to do.
     their name, common symbols aren't commonly used. They are however used in libc, so are necessary
     if you want to be able to link pretty much anything.
   * Everything else with the [linker tag](https://maskray.me/blog/tags/linker/)
+* [mold: A Massively Parallel Linker](https://arxiv.org/abs/2608.23228). Rui Ueyama describes what
+  makes the mold linker fast. Wild got the following ideas from mold:
+  * Forking on startup in order to reduce shutdown costs.
+  * Calling fallocate on the output file.
+  * Calling madvise(MADV_HUGEPAGE) on the output file.
+  * Synthesising extra debug symbols for PLT and GOT entries.
+  * Wild also uses mold's test suite as a supplement to our own.
 * For Wild specific content, there's [David Lattimore's](https://davidlattimore.github.io/) blog.
 * There are also various specification documents. These may not be the best to read start-to-finish,
   but can be good when you need some specific details on something.
