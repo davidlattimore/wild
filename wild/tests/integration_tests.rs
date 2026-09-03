@@ -7610,9 +7610,7 @@ fn verify_linker_plugin_requirements(
                     .context("Can't execute compiler with -dumpversion")?;
                 let compiler_version = String::from_utf8_lossy(&output.stdout)
                     .split_once(".")
-                    .context("expected comma in the compiler version")?
-                    .0
-                    .parse::<u64>()
+                    .and_then(|version| version.0.parse::<u64>().ok())
                     .context("Can't parse compiler version")?;
 
                 const MINIMAL_GCC_VERSION: u64 = 14;
