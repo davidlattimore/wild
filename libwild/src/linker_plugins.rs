@@ -465,12 +465,7 @@ impl LoadedPlugin {
         // Linker plugins handle entries of this vector serially, which means the message callback
         // should be registered first. Otherwise, they won't be able to indicate the problem with
         // entries preceding the callback and, for example, silently skip invalid arguments.
-        // The message callback is variadic (printf-style), so we register the C trampoline
-        // directly as a raw pointer value rather than going through fn_ptr2.
-        transfer_vector.push(LdPluginTv {
-            tag: Tag::Message as u32,
-            value: wild_plugin_message_callback as *const () as usize,
-        });
+        transfer_vector.push(LdPluginTv::fn_ptr2_va(Tag::Message, message));
 
         for arg in &args.plugin_args {
             transfer_vector.push(LdPluginTv::c_str(Tag::Option, arg));
@@ -708,6 +703,13 @@ impl LdPluginTv {
         Self {
             tag: tag as u32,
             value: value as *const fn(P1, P2) -> RET as usize,
+        }
+    }
+
+    fn fn_ptr2_va<P1, P2, RET>(tag: Tag, value: unsafe extern "C" fn(P1, P2, ...) -> RET) -> Self {
+        Self {
+            tag: tag as u32,
+            value: value as *const extern "C" fn(P1, P2, ...) -> RET as usize,
         }
     }
 
@@ -1149,28 +1151,47 @@ extern "C" fn add_input_library(lib_name: *const libc::c_char) -> Status {
     Status::Ok
 }
 
+#[link(name = "c")]
 unsafe extern "C" {
-    /// C trampoline that accepts the plugin's printf-style varargs, formats them via vsnprintf,
-    /// then calls `wild_handle_plugin_message` with the resulting string. Defined in
-    /// `plugin_message_shim.c`.
-    fn wild_plugin_message_callback(level: libc::c_int, fmt: *const libc::c_char, ...);
+    fn vsnprintf(
+        str: *mut std::ffi::c_char,
+        n: usize,
+        format: *const std::ffi::c_char,
+        ...
+    ) -> std::ffi::c_int;
 }
 
-/// Called by the C shim `wild_plugin_message_callback` with the already-formatted message string.
-/// The `no_mangle` is required so the C shim can link against it by name.
-#[unsafe(no_mangle)]
-extern "C" fn wild_handle_plugin_message(level: libc::c_int, message: *const libc::c_char) {
-    let Some(level) = MessageLevel::from_raw(level) else {
-        return;
-    };
+/// This function is called when the plugin wants to emit a message.
+unsafe extern "C" fn message(level: libc::c_int, format: *const libc::c_char, args: ...) -> Status {
+    catch_panics(|| {
+        let Some(level) = MessageLevel::from_raw(level) else {
+            return Status::Err;
+        };
 
-    let text = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+        let mut buf = [0u8; 4096];
+        let written_chars = unsafe {
+            vsnprintf(
+                buf.as_mut_ptr() as *mut libc::c_char,
+                buf.len(),
+                format,
+                args,
+            ) as usize
+        };
 
-    eprintln!("Linker plugin {level}: {text}");
+        let (text, status) = if let Ok(str) = std::str::from_utf8(&buf[..written_chars]) {
+            (str, Status::Ok)
+        } else {
+            ("Malformed message from the linker plugin", Status::Err)
+        };
 
-    if level == MessageLevel::Error || level == MessageLevel::Fatal {
-        ERROR_MESSAGE.replace(Some(text.into_owned()));
-    }
+        eprintln!("Linker plugin {level}: {text}");
+
+        if level == MessageLevel::Error || level == MessageLevel::Fatal {
+            ERROR_MESSAGE.replace(Some(text.to_string()));
+        }
+
+        status
+    })
 }
 
 /// Runs `body`, catching any panics. In the case of a panic, the return status is changed to an
