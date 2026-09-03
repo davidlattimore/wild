@@ -65,5 +65,3 @@ impl Architecture {
 
 pub(crate) const SUPPORTED_TARGETS: &str =
     "elf64-x86-64 elf64-littleaarch64 elf64-littleriscv elf64-loongarch elf64-powerpcle";
-pub(crate) const SUPPORTED_EMULATIONS: &str =
-    "elf_x86_64 aarch64elf elf64lriscv elf64loongarch elf64lppc";
