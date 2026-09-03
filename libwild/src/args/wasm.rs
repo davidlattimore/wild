@@ -431,6 +431,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
 
     parser
         .declare()
+        .long("demangle")
+        .help("Demangle symbol names (default)")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().demangle = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
         .long("no-demangle")
         .help("Disable symbol demangling")
         .execute(|args, _modifier_stack| {
