@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Output;
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -91,14 +90,14 @@ pub(crate) fn collect_tests(
 
             if !should_skip_mold_test(&path) && !should_skip_by_local_config(&path, test_config) {
                 tests.push(Trial::test(name, move || {
-                    check_mold_tests_regression(path).map_err(|e| Failed::from(e.to_string()))
+                    check_mold_tests_regression(&path).map_err(|e| Failed::from(e.to_string()))
                 }));
             } else if should_skip_mold_test_by_toml(&path)
                 && !should_skip_mold_test_by_arch(&path)
                 && !should_skip_by_local_config(&path, test_config)
             {
                 tests.push(Trial::test(format!("{name}/expect_failure"), move || {
-                    verify_skipped_mold_tests_still_fail(path)
+                    verify_skipped_mold_tests_still_fail(&path)
                         .map_err(|e| Failed::from(e.to_string()))
                 }));
             }
@@ -107,8 +106,8 @@ pub(crate) fn collect_tests(
     Ok(())
 }
 
-fn check_mold_tests_regression(mold_test: PathBuf) -> Result {
-    let output = run_mold_test(&mold_test)?;
+fn check_mold_tests_regression(mold_test: &Path) -> Result {
+    let output = run_mold_test(mold_test)?;
     if !output.status.success() {
         let error_message = format!(
             "Mold test `{}` failed with status: {}\nOutput:\n{}",
@@ -122,8 +121,8 @@ fn check_mold_tests_regression(mold_test: PathBuf) -> Result {
     Ok(())
 }
 
-fn verify_skipped_mold_tests_still_fail(mold_test: PathBuf) -> Result {
-    let output = run_mold_test(&mold_test)?;
+fn verify_skipped_mold_tests_still_fail(mold_test: &Path) -> Result {
+    let output = run_mold_test(mold_test)?;
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if stdout.lines().any(|line| line.trim() == "skipped") {
@@ -152,26 +151,28 @@ fn verify_skipped_mold_tests_still_fail(mold_test: PathBuf) -> Result {
     Ok(())
 }
 
-fn load_skip_tests_config() -> &'static Option<Vec<String>> {
-    SKIP_TESTS_NAME.get_or_init(|| {
-        let skip_tests_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("external_tests")
-            .join("mold_skip_tests.toml");
+fn load_skip_tests_config() -> Option<&'static Vec<String>> {
+    SKIP_TESTS_NAME
+        .get_or_init(|| {
+            let skip_tests_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("external_tests")
+                .join("mold_skip_tests.toml");
 
-        fs::read_to_string(&skip_tests_path)
-            .map(|content| {
-                let config: Config =
-                    toml::from_str(&content).expect("Failed to parse skip_tests.toml");
+            fs::read_to_string(&skip_tests_path)
+                .map(|content| {
+                    let config: Config =
+                        toml::from_str(&content).expect("Failed to parse skip_tests.toml");
 
-                config
-                    .skipped_groups
-                    .into_values()
-                    .flat_map(|group| group.tests)
-                    .collect()
-            })
-            .ok()
-    })
+                    config
+                        .skipped_groups
+                        .into_values()
+                        .flat_map(|group| group.tests)
+                        .collect()
+                })
+                .ok()
+        })
+        .as_ref()
 }
 
 fn should_skip_mold_test(path: &Path) -> bool {

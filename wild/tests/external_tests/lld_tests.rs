@@ -157,8 +157,8 @@ fn run_lit_for_arch(
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    print!("{}", stdout);
-    eprint!("{}", stderr);
+    print!("{stdout}");
+    eprint!("{stderr}");
 
     if !output.status.success() {
         return Err(format!("lit exited with status: {}", output.status).into());

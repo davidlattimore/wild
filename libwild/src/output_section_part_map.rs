@@ -201,7 +201,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             let part_id_range = section_id.part_id_range::<P>();
             let max_alignment = self.max_alignment(part_id_range.clone(), output_sections);
 
-            for (part_id, input) in self.in_range(part_id_range.clone()) {
+            for (part_id, input) in self.in_range(part_id_range) {
                 let alignment = part_id.alignment(output_sections).min(max_alignment);
                 *output.get_mut(part_id) = cb(part_id, alignment, input);
             }

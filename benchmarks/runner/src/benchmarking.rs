@@ -50,7 +50,7 @@ pub(crate) fn run_bench(args: &BenchArgs, config: &Config) -> Result {
 
     let results = run(&bins, &benchmarks, args)?;
 
-    let output_path = crate::default_result_path(config, &args.output);
+    let output_path = crate::default_result_path(config, args.output.as_ref());
 
     std::fs::write(&output_path, postcard::to_stdvec(&results)?)
         .with_context(|| format!("Failed to write `{}`", output_path.display()))?;
@@ -95,9 +95,9 @@ fn run(bins: &[Bin], benchmarks: &[Benchmark], args: &BenchArgs) -> Result<Bench
             benchmarks.len()
         );
 
-        let progress_bar = indicatif::ProgressBar::new(
-            (args.num_batches * args.batch_size * bins.len() as u32) as u64,
-        )
+        let progress_bar = indicatif::ProgressBar::new(u64::from(
+            args.num_batches * args.batch_size * bins.len() as u32,
+        ))
         .with_style(indicatif::ProgressStyle::with_template(
             "{msg} {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}]",
         )?)
@@ -126,7 +126,7 @@ fn run(bins: &[Bin], benchmarks: &[Benchmark], args: &BenchArgs) -> Result<Bench
                 bench_results.push(BatchResult {
                     bin: bin.clone(),
                     runs: bin_results,
-                })
+                });
             }
         }
         bench_results.sort_by_key(|b| b.bin.index);
@@ -215,7 +215,7 @@ fn run_once(
     let elapsed = start.elapsed();
 
     if !res_use.status.success() {
-        bail!("Error returned from {command:?}\n{text_out}",)
+        bail!("Error returned from {command:?}\n{text_out}")
     }
 
     // Make sure that the linker runs without warning. Specifically what we care about is that the
@@ -254,7 +254,7 @@ fn find_benchmarks(args: &BenchArgs, config: &Config) -> Result<Vec<Benchmark>> 
     for (name, config) in &config.benches {
         available.remove(name);
         if !config.skip {
-            benchmarks.push(Benchmark::new(dir.join(name), config.clone())?);
+            benchmarks.push(Benchmark::new(&dir.join(name), config.clone())?);
         }
     }
 
@@ -288,12 +288,11 @@ fn filter_benchmarks_by_wild_version(benchmarks: Vec<Benchmark>, bins: &[Bin]) -
     benchmarks
         .into_iter()
         .filter(|bench| {
-            if !bench.supports_wild_version(maximum_wild_version) {
+            let supported = bench.supports_wild_version(maximum_wild_version);
+            if !supported {
                 println!("Skipping benchmark {bench} due to minimum version requirement");
-                false
-            } else {
-                true
             }
+            supported
         })
         .collect()
 }

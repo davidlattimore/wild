@@ -16,7 +16,7 @@ use std::path::PathBuf;
 const IMAGES_SUBDIR_NAME: &str = "images";
 
 pub(crate) fn run_report(args: &ReportArgs, config: &Config) -> Result {
-    let input_path = crate::default_result_path(config, &args.input);
+    let input_path = crate::default_result_path(config, args.input.as_ref());
     let report_dir = &args.dir;
     let target_subdir = report_dir.join(IMAGES_SUBDIR_NAME).join(&config.name);
     std::fs::create_dir_all(&target_subdir)
@@ -116,8 +116,8 @@ impl ReportMode {
         benchmark
     }
 
-    fn should_keep_run(&self, run: &crate::Run) -> bool {
-        run.extra_flags.iter().any(|f| f == "--no-fork") == (self == &ReportMode::Memory)
+    fn should_keep_run(self, run: &crate::Run) -> bool {
+        run.extra_flags.iter().any(|f| f == "--no-fork") == (self == ReportMode::Memory)
     }
 
     fn unit_name(self) -> &'static str {
@@ -130,7 +130,7 @@ impl ReportMode {
     fn unit_multiplier(self) -> f64 {
         match self {
             ReportMode::Time => 1000_f64,
-            ReportMode::Memory => 1_f64 / (1024 * 1024) as f64,
+            ReportMode::Memory => 1_f64 / f64::from(1024 * 1024),
         }
     }
 
@@ -139,6 +139,7 @@ impl ReportMode {
         mean(b, self) * self.unit_multiplier()
     }
 
+    #[allow(clippy::cast_precision_loss)]
     fn raw_value(self, r: &crate::Run) -> f64 {
         match self {
             ReportMode::Time => r.elapsed.as_secs_f64(),
@@ -154,11 +155,13 @@ fn alt_text(mode: ReportMode, benchmark: &BenchmarkResult) -> String {
     }
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn mean(batch_result: &BatchResult, mode: ReportMode) -> f64 {
     let total: f64 = batch_result.runs.iter().map(|r| mode.raw_value(r)).sum();
     total / batch_result.runs.len() as f64
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn std_def(batch_result: &BatchResult, mode: ReportMode) -> f64 {
     let mean = mean(batch_result, mode);
     let sum: f64 = batch_result
@@ -172,6 +175,7 @@ fn std_def(batch_result: &BatchResult, mode: ReportMode) -> f64 {
     (sum / batch_result.runs.len() as f64).sqrt()
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn std_err(batch_result: &BatchResult, mode: ReportMode) -> f64 {
     std_def(batch_result, mode) / (batch_result.runs.len() as f64).sqrt()
 }
@@ -257,12 +261,12 @@ font-size="16" fill="{fg}" transform="rotate(270, 5, 288)">{unit}</text>"#
 
     let unit_label_x = left - 10;
 
-    let value_to_y = |v: f64| bottom - (v / chart_max as f64 * (bottom - top) as f64) as u32;
+    let value_to_y = |v: f64| bottom - (v / f64::from(chart_max) * f64::from(bottom - top)) as u32;
 
     for val in (0..=chart_max).step_by(step as usize) {
         // Draw horizontal lines.
         let val_str = format_number(val);
-        let y = value_to_y(val as f64);
+        let y = value_to_y(f64::from(val));
         writeln!(
             &mut svg,
             r#"<line x1="{left}" y1="{y}" x2="{right}" y2="{y}" stroke="{fg}" />"#
@@ -315,11 +319,7 @@ font-size="16" fill="{fg}" transform="rotate(270, 5, 288)">{unit}</text>"#
 
         // Draw the percent change relative to the baseline (the last linker).
         let y = chart_height - 20;
-        let baseline = benchmark
-            .batches
-            .last()
-            .map(|b| mode.get_value(b))
-            .unwrap_or(0.0);
+        let baseline = benchmark.batches.last().map_or(0.0, |b| mode.get_value(b));
         let extra = ((value / baseline) * 100_f64).round() as i32 - 100;
         writeln!(
             &mut svg,
@@ -327,7 +327,7 @@ font-size="16" fill="{fg}" transform="rotate(270, 5, 288)">{unit}</text>"#
         )?;
     }
 
-    writeln!(&mut svg, r#"</svg>"#)?;
+    writeln!(&mut svg, r"</svg>")?;
 
     std::fs::write(&svg_path, &svg)
         .with_context(|| format!("Failed to write `{}`", svg_path.display()))?;
@@ -389,12 +389,12 @@ fn merge_batches(benchmark: &mut BenchmarkResult) {
         .unwrap_or(0) as usize;
 
     let mut by_bin: Vec<Option<BatchResult>> = vec![None; num_bins];
-    std::mem::take(&mut benchmark.batches)
-        .into_iter()
-        .for_each(|mut b| match &mut by_bin[b.bin.index as usize] {
+    for mut b in std::mem::take(&mut benchmark.batches) {
+        match &mut by_bin[b.bin.index as usize] {
             Some(existing) => existing.runs.append(&mut b.runs),
             n => *n = Some(b),
-        });
+        }
+    }
 
     benchmark.batches = by_bin.into_iter().flatten().collect();
 }

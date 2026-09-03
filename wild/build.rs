@@ -51,8 +51,7 @@ fn has_changes_relative_to(version_ref: &str) -> bool {
         .arg("--quiet")
         .arg(version_ref)
         .output()
-        .map(|output| !output.status.success())
-        .unwrap_or(true)
+        .map_or(true, |output| !output.status.success())
 }
 
 /// Returns the hash of the merge-point with origin/main.
