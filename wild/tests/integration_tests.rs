@@ -7594,6 +7594,33 @@ fn verify_linker_plugin_requirements(
 
             verify_command_success(&mut command)
                 .context("Can't use compiler with linker-plugin")?;
+
+            // Our linker plugin implementation requires at least GCC 14 (where the LAPI_V1 version
+            // got added).
+            let output = Command::new(&linker_driver_string)
+                .arg("--version")
+                .output()
+                .context("Can't execute compiler with --version")?;
+            let compiler_version = String::from_utf8_lossy(&output.stdout);
+            if compiler_version.contains("gcc") || compiler_version.contains("g++") {
+                let mut command = Command::new(&linker_driver_string);
+                let output = command
+                    .arg("-dumpfullversion")
+                    .output()
+                    .context("Can't execute compiler with -dumpversion")?;
+                let compiler_version = String::from_utf8_lossy(&output.stdout)
+                    .split_once(".")
+                    .context("expected comma in the compiler version")?
+                    .0
+                    .parse::<u64>()
+                    .context("Can't parse compiler version")?;
+
+                const MINIMAL_GCC_VERSION: u64 = 14;
+                ensure!(
+                    compiler_version >= MINIMAL_GCC_VERSION,
+                    "Expected GCC LTO plug-in version {MINIMAL_GCC_VERSION}, got: {compiler_version}"
+                );
+            }
         }
     }
 
