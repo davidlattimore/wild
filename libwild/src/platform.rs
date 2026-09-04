@@ -676,6 +676,18 @@ pub(crate) trait Platform:
         scope: &Scope<'scope>,
     ) -> Result;
 
+    /// Processes an input section containing initializer function pointers (Mach-O specific).
+    fn process_init_func_section<'data, 'scope, A: Arch<Platform = Self>>(
+        _object: &mut ObjectLayoutState<'data, Self>,
+        _common: &mut layout::CommonGroupState<'data, Self>,
+        _section_index: object::SectionIndex,
+        _resources: &'scope layout::GraphResources<'data, '_, Self>,
+        _queue: &mut layout::LocalWorkQueue<Self>,
+        _scope: &Scope<'scope>,
+    ) -> Result {
+        Ok(())
+    }
+
     /// Called when a section is loaded (not GCed). Implementations should process any exception
     /// frame data related to the loaded section.
     fn non_empty_section_loaded<'data, 'scope, A: Arch<Platform = Self>>(

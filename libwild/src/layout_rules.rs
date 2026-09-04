@@ -111,6 +111,7 @@ pub(crate) enum SectionRuleOutcome {
     DebugIndex,
     RiscVAttribute,
     SortedSection(SectionOutputInfo),
+    InitFunc,
 }
 
 impl SectionRuleOutcome {
