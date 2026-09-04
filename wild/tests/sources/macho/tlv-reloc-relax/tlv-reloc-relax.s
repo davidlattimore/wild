@@ -2,6 +2,7 @@
 //#RunEnabled:false
 //#DiffEnabled:false
 //#ExpectSection:__thread_vars
+//#ExpectSectionBytes:__thread_vars=0x0400000000000000 40..48
 //#ExpectSectionBytes:__text=0x00600091 4..8
 
 .section __DATA,__thread_data,thread_local_regular

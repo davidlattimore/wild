@@ -109,6 +109,9 @@ use object::macho::N_ABS;
 use object::macho::N_SECT;
 use object::macho::PLATFORM_MACOS;
 use object::macho::RelocationInfo;
+use object::macho::S_THREAD_LOCAL_REGULAR;
+use object::macho::S_THREAD_LOCAL_VARIABLES;
+use object::macho::S_THREAD_LOCAL_ZEROFILL;
 use object::macho::SegmentFlags;
 use object::slice_from_bytes_mut;
 use object::write::macho::CodeDirectory;
@@ -681,6 +684,17 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
 
     let mask = get_page_mask(rel_info.mask);
     let value = match rel_info.kind {
+        RelocationKind::Absolute
+            if section_flags.typ() == S_THREAD_LOCAL_VARIABLES
+                && flags.has_link_time_address()
+                && is_tlv_template_referent(layout, local_symbol_id) =>
+        {
+            // TODO: Once addends are supported, remember to change this to S + A -
+            // tlv_data_start_address().
+            resolution
+                .raw_value
+                .wrapping_sub(layout.tlv_data_start_address())
+        }
         RelocationKind::Absolute => resolution.raw_value.bitand(mask.symbol_plus_addend),
         RelocationKind::AbsoluteLowPart => resolution.raw_value.bitand(mask.symbol_plus_addend),
         RelocationKind::Relative => resolution
@@ -715,6 +729,19 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
         })?;
 
     Ok(())
+}
+
+fn is_tlv_template_referent(layout: &MachOLayout<'_>, symbol_id: SymbolId) -> bool {
+    layout
+        .symbol_db
+        .output_section_id(layout.symbol_db.definition(symbol_id))
+        .map(|id| layout.output_sections.primary_output_section(id))
+        .is_some_and(|id| {
+            matches!(
+                layout.output_sections.section_flags(id).typ(),
+                S_THREAD_LOCAL_REGULAR | S_THREAD_LOCAL_ZEROFILL
+            )
+        })
 }
 
 fn write_section_raw<'out, 'data>(
