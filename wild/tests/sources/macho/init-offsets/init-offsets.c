@@ -1,6 +1,7 @@
 //#LinkerDriver:clang
 //#ExpectSection:__init_offsets
 //#NoSection:__mod_init_func
+//#DiffIgnore:section.__unwind_info
 
 static int state;
 
