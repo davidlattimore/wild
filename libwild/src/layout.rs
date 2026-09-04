@@ -205,6 +205,9 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         &finalise_sizes_resources,
     )?;
 
+    let partial_link_plan =
+        PartialLinkPlan::build(&group_states, &symbol_db.section_part_ids, symbol_db.args)?;
+
     // Dropping `symbol_info_printer` will cause it to print. So we'll either print now, or, if we
     // got an error or panic, then we'll have printed at that point.
     symbol_info_printer.update(&symbol_db, &atomic_per_symbol_flags);
@@ -213,6 +216,10 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
     let non_addressable_counts = apply_non_addressable_indexes(&mut group_states, &symbol_db)?;
 
     propagate_section_attributes(&group_states, &mut output_sections);
+
+    if symbol_db.args.should_output_partial_object() {
+        clear_singleton_attributes::<P>(&mut output_sections);
+    }
 
     let linker_scripts: Vec<&SequencedLinkerScript<P>> = symbol_db
         .groups
@@ -237,7 +244,11 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         output_order.display::<A::Platform>(&output_sections, &program_segments)
     );
 
-    let (mut section_part_sizes, gdb_index_data) = compute_total_section_part_sizes(
+    let TotalSectionSizes {
+        mut section_part_sizes,
+        gdb_index_data,
+        partial_link,
+    } = compute_total_section_part_sizes(
         &mut group_states,
         &mut output_sections,
         &output_order,
@@ -245,6 +256,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         &mut per_symbol_flags,
         gc_outputs.must_keep_sections,
         &finalise_sizes_resources,
+        partial_link_plan.as_ref(),
     )?;
 
     let got_relr_n = A::Platform::GOT_RELR_SECTION_ID
@@ -424,7 +436,9 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         starting_mem_offsets_by_group,
         &mut per_group_res_writers,
         &resources,
+        partial_link_plan.as_ref(),
     )?;
+    drop(partial_link_plan);
 
     for shard in per_group_res_writers {
         res_writer
@@ -485,6 +499,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>, F: FileSystem>(
         compressed_debug_sections: OutputSectionMap::with_size(num_sections),
         gdb_index_data,
         script_sorted_sections,
+        partial_link,
     };
 
     P::maybe_compress_debug_sections::<A>(&mut layout)?;
@@ -817,6 +832,148 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) compressed_debug_sections: OutputSectionMap<Option<CompressedSection>>,
     pub(crate) gdb_index_data: Option<P::GdbIndexScanResult<'data>>,
     pub(crate) script_sorted_sections: Vec<InputSortedSection>,
+
+    pub(crate) partial_link: PartialLinkSingletons,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PartialLinkSingletons {
+    output_indexes: std::ops::Range<u32>,
+}
+
+#[derive(Debug)]
+struct PartialLinkPlan {
+    groups: Vec<SingletonGroupPlan>,
+    singleton_count: u32,
+    section_name_bytes: u64,
+}
+
+#[derive(Debug)]
+struct SingletonGroupPlan {
+    ordinals: std::ops::Range<u32>,
+}
+
+impl PartialLinkPlan {
+    fn build<P: Platform>(
+        group_states: &[GroupState<P>],
+        section_part_ids: &[PartId],
+        args: &P::Args,
+    ) -> Result<Option<Self>> {
+        if !args.should_output_partial_object() {
+            return Ok(None);
+        }
+
+        let singleton_id = P::PARTIAL_SINGLETONS_ID
+            .context("Partial linking is not supported for this output format")?;
+
+        let group_counts = group_states
+            .par_iter()
+            .map(|group| {
+                let mut singleton_count = 0u32;
+                let mut section_name_bytes = 0u64;
+
+                for file in &group.files {
+                    let FileLayoutState::Object(object) = file else {
+                        continue;
+                    };
+
+                    let object_part_ids = &section_part_ids[object.section_id_range.as_usize()];
+
+                    for (raw_index, (slot, &part_id)) in
+                        object.sections.iter().zip(object_part_ids).enumerate()
+                    {
+                        if part_id.output_section_id::<P>() != singleton_id {
+                            continue;
+                        }
+                        // Partial-link custom sections use ordinary loading, including debug sections.
+                        match slot {
+                            SectionSlot::Loaded(_) => {}
+                            SectionSlot::Discard | SectionSlot::Unloaded(_) => continue,
+                            _ => bail!(
+                                "Internal error: partial-link singleton {} in {} has unexpected state {slot:?}",
+                                object.object.section_display_name(SectionIndex(raw_index)),
+                                object.input,
+                            ),
+                        }
+
+                        singleton_count = singleton_count
+                            .checked_add(1)
+                            .context("Too many partial-link singleton sections")?;
+                        section_name_bytes +=
+                            object.object.section_name(SectionIndex(raw_index))?.len() as u64 + 1;
+                    }
+                }
+
+                Ok((singleton_count, section_name_bytes))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut singleton_count = 0u32;
+        let mut section_name_bytes = 0u64;
+        let groups = group_counts
+            .into_iter()
+            .map(|(count, name_bytes)| {
+                let start = singleton_count;
+                singleton_count = singleton_count
+                    .checked_add(count)
+                    .context("Too many partial-link singleton sections")?;
+                section_name_bytes += name_bytes;
+                Ok(SingletonGroupPlan {
+                    ordinals: start..singleton_count,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(Some(Self {
+            groups,
+            singleton_count,
+            section_name_bytes,
+        }))
+    }
+}
+
+impl PartialLinkSingletons {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.output_indexes.is_empty()
+    }
+
+    pub(crate) fn output_index_range(&self) -> std::ops::Range<u32> {
+        self.output_indexes.clone()
+    }
+
+    pub(crate) fn output_index(&self, singleton: &PartialLinkSingleton) -> u32 {
+        self.output_indexes.start + singleton.ordinal
+    }
+}
+
+impl SingletonGroupPlan {
+    fn finalise<P: Platform>(&self, layout: &mut GroupLayout<P>, section_part_ids: &[PartId]) {
+        if self.ordinals.is_empty() {
+            return;
+        }
+        let singleton_id = P::PARTIAL_SINGLETONS_ID.unwrap();
+        let mut ordinal = self.ordinals.start;
+        for file in &mut layout.files {
+            let FileLayout::Object(object) = file else {
+                continue;
+            };
+            let part_ids = &section_part_ids[object.section_id_range.as_usize()];
+            for (slot, &part_id) in object.sections.iter_mut().zip(part_ids) {
+                if part_id.output_section_id::<P>() != singleton_id {
+                    continue;
+                }
+                let section = match *slot {
+                    SectionSlot::Loaded(section) => section,
+                    SectionSlot::Discard | SectionSlot::Unloaded(_) => continue,
+                    _ => unreachable!("Singleton section changed state after planning: {slot:?}"),
+                };
+                *slot =
+                    SectionSlot::PartialLinkSingleton(PartialLinkSingleton { section, ordinal });
+                ordinal += 1;
+            }
+        }
+        assert_eq!(ordinal, self.ordinals.end);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1452,6 +1609,12 @@ pub(crate) struct SortedSection {
     pub(crate) section: Section,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PartialLinkSingleton {
+    pub(crate) section: Section,
+    pub(crate) ordinal: u32,
+}
+
 #[derive(Debug)]
 pub(crate) struct GroupLayout<'data, P: Platform> {
     pub(crate) files: Vec<FileLayout<'data, P>>,
@@ -1882,6 +2045,7 @@ fn compute_symbols_and_layouts<'data, P: Platform>(
     starting_mem_offsets_by_group: Vec<OutputSectionPartMap<u64>>,
     per_group_res_writers: &mut [sharded_vec_writer::Shard<Option<Resolution<P>>>],
     resources: &FinaliseLayoutResources<'_, 'data, P>,
+    partial_link_plan: Option<&PartialLinkPlan>,
 ) -> Result<Vec<GroupLayout<'data, P>>> {
     timing_phase!("Assign symbol addresses");
 
@@ -1889,32 +2053,42 @@ fn compute_symbols_and_layouts<'data, P: Platform>(
         .into_par_iter()
         .zip(starting_mem_offsets_by_group)
         .zip(per_group_res_writers)
-        .map(|((state, mut memory_offsets), symbols_out)| {
-            verbose_timing_phase!("Assign addresses for group");
+        .enumerate()
+        .map(
+            |(group_index, ((state, mut memory_offsets), symbols_out))| {
+                verbose_timing_phase!("Assign addresses for group");
 
-            if cfg!(debug_assertions) {
-                let offset_verifier = crate::verification::OffsetVerifier::new::<P>(
-                    &memory_offsets,
-                    &state.common.mem_sizes,
-                );
+                let mut layout = if cfg!(debug_assertions) {
+                    let offset_verifier = crate::verification::OffsetVerifier::new::<P>(
+                        &memory_offsets,
+                        &state.common.mem_sizes,
+                    );
 
-                // Make sure that ignored offsets really aren't used by `finalise_layout` by setting
-                // them to an arbitrary value. If they are used, we'll quickly notice.
-                crate::verification::clear_ignored::<P>(&mut memory_offsets);
+                    // Make sure that ignored offsets really aren't used by `finalise_layout` by
+                    // setting them to an arbitrary value. If they are used,
+                    // we'll quickly notice.
+                    crate::verification::clear_ignored::<P>(&mut memory_offsets);
 
-                let layout = state.finalise_layout(&mut memory_offsets, symbols_out, resources)?;
+                    let layout =
+                        state.finalise_layout(&mut memory_offsets, symbols_out, resources)?;
 
-                offset_verifier.verify(
-                    &memory_offsets,
-                    resources.output_sections,
-                    resources.output_order,
-                    &layout.files,
-                )?;
+                    offset_verifier.verify(
+                        &memory_offsets,
+                        resources.output_sections,
+                        resources.output_order,
+                        &layout.files,
+                    )?;
+                    layout
+                } else {
+                    state.finalise_layout(&mut memory_offsets, symbols_out, resources)?
+                };
+                if let Some(plan) = partial_link_plan {
+                    plan.groups[group_index]
+                        .finalise(&mut layout, &resources.symbol_db.section_part_ids);
+                }
                 Ok(layout)
-            } else {
-                state.finalise_layout(&mut memory_offsets, symbols_out, resources)
-            }
-        })
+            },
+        )
         .collect()
 }
 
@@ -2110,6 +2284,12 @@ fn compute_segment_layout<'data, P: Platform>(
     })
 }
 
+struct TotalSectionSizes<'data, P: Platform> {
+    section_part_sizes: OutputSectionPartMap<u64>,
+    gdb_index_data: Option<P::GdbIndexScanResult<'data>>,
+    partial_link: PartialLinkSingletons,
+}
+
 fn compute_total_section_part_sizes<'data, P: Platform>(
     group_states: &mut [GroupState<'data, P>],
     output_sections: &mut OutputSections<P>,
@@ -2118,10 +2298,8 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
     per_symbol_flags: &mut PerSymbolFlags,
     must_keep_sections: OutputSectionMap<bool>,
     resources: &FinaliseSizesResources<'data, '_, P>,
-) -> Result<(
-    OutputSectionPartMap<u64>,
-    Option<P::GdbIndexScanResult<'data>>,
-)> {
+    partial_link_plan: Option<&PartialLinkPlan>,
+) -> Result<TotalSectionSizes<'data, P>> {
     timing_phase!("Compute total section sizes");
 
     let mut total_sizes: OutputSectionPartMap<u64> = output_sections.new_part_map();
@@ -2161,7 +2339,7 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         unreachable!();
     };
 
-    prelude.apply_late_size_adjustments(
+    let partial_link = prelude.apply_late_size_adjustments(
         &mut first_group.common,
         &mut total_sizes,
         must_keep_sections,
@@ -2170,6 +2348,7 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         program_segments,
         per_symbol_flags,
         resources,
+        partial_link_plan,
     )?;
 
     let num_sections = prelude
@@ -2184,7 +2363,11 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         }
     }
 
-    Ok((total_sizes, gdb_index_data))
+    Ok(TotalSectionSizes {
+        section_part_sizes: total_sizes,
+        gdb_index_data,
+        partial_link,
+    })
 }
 
 /// Allocates space for thunk blocks in each object that owns one.
@@ -2225,6 +2408,14 @@ fn allocate_thunk_block_space<P: Platform>(
         group_state.common.mem_sizes.merge(&extra_thunk_sizes);
         total_sizes.merge(&extra_thunk_sizes);
     }
+}
+
+fn clear_singleton_attributes<P: Platform>(output_sections: &mut OutputSections<P>) {
+    let section_id = P::PARTIAL_SINGLETONS_ID.unwrap();
+    output_sections
+        .section_infos
+        .get_mut(section_id)
+        .section_attributes = Default::default();
 }
 
 /// Propagates attributes from input sections to the output sections into which they were placed.
@@ -3262,13 +3453,14 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         program_segments: &ProgramSegments<P::ProgramSegmentDef>,
         per_symbol_flags: &mut PerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
-    ) -> Result {
+        partial_link_plan: Option<&PartialLinkPlan>,
+    ) -> Result<PartialLinkSingletons> {
         // Total section  sizes have already been computed. So any allocations we do need to update
         // both `total_sizes` and the size records in `common`. We track the extra sizes in
         // `extra_sizes` which we can then later add to both.
         let mut extra_sizes = common.mem_sizes.new_empty_like();
 
-        self.determine_header_sizes(
+        let partial_link = self.determine_header_sizes(
             total_sizes,
             &mut extra_sizes,
             must_keep_sections,
@@ -3277,6 +3469,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             output_order,
             resources,
             per_symbol_flags,
+            partial_link_plan,
         );
 
         P::apply_late_size_adjustments_prelude(
@@ -3296,12 +3489,15 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         let entry_size = size_of::<P::SymtabEntry>() as u64;
 
         if resources.symbol_db.args.should_output_partial_object() {
-            let mut num_section_syms = 0;
+            let mut num_section_syms =
+                partial_link_plan.map_or(0, |plan| u64::from(plan.singleton_count));
+
             for (id, _) in output_sections.ids_with_info() {
                 if output_sections.will_emit_section_symbol_for_partial_objects(id) {
                     num_section_syms += 1;
                 }
             }
+
             extra_sizes.increment(
                 P::SYMTAB_LOCAL_SECTION_ID
                     .expect("partial objects require a local symbol table")
@@ -3315,7 +3511,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         common.mem_sizes.merge(&extra_sizes);
         total_sizes.merge(&extra_sizes);
 
-        Ok(())
+        Ok(partial_link)
     }
 
     /// Allocates space for our internal symbols. For unreferenced symbols, we also update the
@@ -3384,7 +3580,8 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         output_order: &OutputOrder<'data>,
         resources: &FinaliseSizesResources<'data, '_, P>,
         symbol_flags: &PerSymbolFlags,
-    ) {
+        partial_link_plan: Option<&PartialLinkPlan>,
+    ) -> PartialLinkSingletons {
         use output_section_id::OrderEvent;
 
         // Determine which sections to keep. To start with, we keep all sections that we've
@@ -3448,7 +3645,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             }
         }
 
-        let mut num_sections = keep_sections.values_iter().filter(|p| **p).count();
+        let singleton_count = partial_link_plan.map_or(0, |plan| plan.singleton_count as usize);
+        let mut num_sections =
+            keep_sections.values_iter().filter(|p| **p).count() + singleton_count;
         if P::requires_symtab_shndx(num_sections) {
             *keep_sections.get_mut(
                 P::SYMTAB_SHNDX_LOCAL_SECTION_ID
@@ -3473,7 +3672,14 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 next_output_index += 1;
             }
         }
+
         output_sections.output_section_indexes = output_section_indexes;
+
+        let partial_link = partial_link_plan.map_or_else(PartialLinkSingletons::default, |plan| {
+            PartialLinkSingletons {
+                output_indexes: next_output_index..next_output_index + plan.singleton_count,
+            }
+        });
 
         // Determine which program segments contain sections that we're keeping.
         let mut keep_segments = if program_segments.has_custom_phdrs() {
@@ -3531,6 +3737,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 .try_into()
                 .expect("output section count must fit in a u32"),
 
+            partial_link_section_name_bytes: partial_link_plan
+                .map_or(0, |plan| plan.section_name_bytes),
+
             active_segment_ids,
         };
 
@@ -3546,6 +3755,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         );
 
         self.header_info = Some(header_info);
+        partial_link
     }
 
     fn finalise_layout(
@@ -4057,6 +4267,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
 #[derive(Debug)]
 pub(crate) struct HeaderInfo {
     pub(crate) num_output_sections_with_content: u32,
+    pub(crate) partial_link_section_name_bytes: u64,
     pub(crate) active_segment_ids: Vec<ProgramSegmentId>,
 }
 
@@ -4269,6 +4480,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             }
             SectionSlot::Loaded(_)
             | SectionSlot::Sorted(_)
+            | SectionSlot::PartialLinkSingleton(_)
             | SectionSlot::FrameData(..)
             | SectionSlot::LoadedDebugInfo(..)
             | SectionSlot::NoteGnuProperty(..)
@@ -6282,6 +6494,7 @@ fn test_no_disallowed_overlaps() {
 
     let header_info = HeaderInfo {
         num_output_sections_with_content: 0,
+        partial_link_section_name_bytes: 0,
         active_segment_ids: (0..program_segments.len())
             .map(ProgramSegmentId::new)
             .collect(),

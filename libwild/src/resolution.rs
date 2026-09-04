@@ -23,7 +23,9 @@ use crate::linker_script::Expression;
 use crate::macho_stub_library::DefinedStubLibrary;
 use crate::output_section_id::CustomSectionDetails;
 use crate::output_section_id::InitFiniSectionDetail;
+use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SectionIdentity;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
@@ -56,6 +58,7 @@ use crate::verbose_timing_phase;
 use atomic_take::AtomicTake;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
+use hashbrown::HashMap;
 use object::SectionIndex;
 use rayon::Scope;
 use rayon::iter::IndexedParallelIterator;
@@ -729,6 +732,10 @@ pub(crate) enum SectionSlot {
     // Loaded section with debug info content.
     LoadedDebugInfo(crate::layout::Section),
 
+    /// A section with a unique name that is passed through from input to output without merging
+    /// with other input sections. Created after group layout finalisation.
+    PartialLinkSingleton(crate::layout::PartialLinkSingleton),
+
     // GNU property section (.note.gnu.property)
     NoteGnuProperty(object::SectionIndex),
 
@@ -852,6 +859,20 @@ fn assign_section_ids<'data, P: Platform>(
 ) {
     timing_phase!("Assign section IDs");
 
+    // An optimised path for partial linking to avoid allocating too many OutputSectionIds. We skip
+    // this if there are any linker scripts, since there are too many ways they could mess up our
+    // assumptions.
+    if args.should_output_partial_object()
+        && !resolved.iter().any(|group| {
+            group
+                .files
+                .iter()
+                .any(|file| matches!(file, ResolvedFile::LinkerScript(_)))
+        })
+    {
+        return assign_section_ids_partial(resolved, section_part_ids, output_sections, args);
+    }
+
     for group in resolved {
         for file in &mut group.files {
             if let ResolvedFile::Object(s) = file {
@@ -934,6 +955,72 @@ fn populate_start_stop_sections<'data, P: Platform>(
             }
         }
     }
+}
+
+fn assign_section_ids_partial<'data, P: Platform>(
+    resolved: &mut [ResolvedGroup<'data, P>],
+    section_part_ids: &mut [PartId],
+    output_sections: &mut OutputSections<'data, P>,
+    args: &<P as Platform>::Args,
+) {
+    // Where two or more input sections have the same name, we assign OutputSectionIds as per normal
+    // so that those input sections can be correctly merged. For input sections with unique names,
+    // no merging is needed, so we handle those separately so as to avoid the overheads associated
+    // with an extra OutputSectionId.
+
+    let singletons_id: OutputSectionId = P::PARTIAL_SINGLETONS_ID
+        .expect("Tried to do partial linking on platform that doesn't support it");
+
+    let mut section_counts: HashMap<SectionIdentity<P>, u32> = Default::default();
+
+    for group in resolved.iter() {
+        for file in &group.files {
+            if let ResolvedFile::Object(s) = file {
+                for section in &s.custom_sections {
+                    if !is_partial_link_singleton_candidate(s, section.index) {
+                        continue;
+                    }
+                    *section_counts.entry(section.identity).or_default() += 1;
+                }
+            }
+        }
+    }
+
+    for group in resolved {
+        for file in &mut group.files {
+            if let ResolvedFile::Object(s) = file {
+                for custom in &s.custom_sections {
+                    let obj_part_ids = &mut section_part_ids[s.section_id_range.as_usize()];
+
+                    let part_id = if !is_partial_link_singleton_candidate(s, custom.index)
+                        || section_counts[&custom.identity] >= 2
+                    {
+                        output_sections.get_or_create_custom_section_part(args, custom)
+                    } else {
+                        singletons_id.part_id_with_alignment::<P>(custom.alignment)
+                    };
+
+                    obj_part_ids[custom.index.0] = part_id;
+                }
+            }
+        }
+    }
+}
+
+fn is_partial_link_singleton_candidate<P: Platform>(
+    object: &ResolvedObject<P>,
+    section_index: SectionIndex,
+) -> bool {
+    // String merge sections and no-bits sections require special handling, so aren't eligible.
+    !matches!(
+        object.sections[section_index.0],
+        SectionSlot::MergeStrings(_)
+    ) && !object
+        .common
+        .object
+        .section(section_index)
+        .unwrap()
+        .is_no_bits()
 }
 
 struct Outputs<'data, P: Platform> {
@@ -1770,6 +1857,21 @@ impl<'data, P: Platform> std::fmt::Display for ResolvedFile<'data, P> {
 }
 
 impl SectionSlot {
+    pub(crate) fn singleton(&self) -> Option<&crate::layout::PartialLinkSingleton> {
+        match self {
+            Self::PartialLinkSingleton(singleton) => Some(singleton),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn loaded_section(&self) -> Option<&crate::layout::Section> {
+        match self {
+            Self::Loaded(section) => Some(section),
+            Self::PartialLinkSingleton(singleton) => Some(&singleton.section),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_loaded(&self) -> bool {
         !matches!(
             self,

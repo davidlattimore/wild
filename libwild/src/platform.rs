@@ -317,6 +317,7 @@ pub(crate) trait Platform:
     const INTERP_SECTION_ID: Option<OutputSectionId> = None;
     const SFRAME_SECTION_ID: Option<OutputSectionId> = None;
     const RELRO_PADDING_SECTION_ID: Option<OutputSectionId> = None;
+    const PARTIAL_SINGLETONS_ID: Option<OutputSectionId> = None;
 
     const CUSTOM_PHDR_EXCLUDED_SECTION_IDS: &'static [OutputSectionId] = &[];
     const PACKED_SECTION_IDS: &'static [OutputSectionId] = &[];
