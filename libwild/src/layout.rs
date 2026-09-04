@@ -4152,7 +4152,7 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
         let mut frame_section_indices = SmallVec::<[SectionIndex; 2]>::new();
         let mut note_gnu_property_section = None;
         let mut riscv_attributes_section = None;
-        let mut init_func_section = None;
+        let mut init_func_section_indices = SmallVec::<[SectionIndex; 1]>::new();
 
         let no_gc = !resources.symbol_db.args.should_gc_sections();
 
@@ -4188,7 +4188,7 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                     riscv_attributes_section = Some(*index);
                 }
                 SectionSlot::InitFunc(index) => {
-                    init_func_section = Some(*index);
+                    init_func_section_indices.push(*index);
                 }
                 _ => (),
             }
@@ -4219,7 +4219,7 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
             .context("Cannot parse .riscv.attributes section")?;
         }
 
-        if let Some(init_function_section_index) = init_func_section {
+        for init_function_section_index in init_func_section_indices {
             <A::Platform as Platform>::process_init_func_section::<A>(
                 self,
                 common,

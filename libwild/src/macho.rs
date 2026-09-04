@@ -1362,7 +1362,7 @@ impl platform::Platform for MachO {
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
         _args: &Self::Args,
         groups: &'files mut [layout::GroupState<'data, Self>],
-        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,
@@ -1376,7 +1376,13 @@ impl platform::Platform for MachO {
             for file in &group.files {
                 match file {
                     layout::FileLayoutState::Object(state) => {
-                        init_functions.extend_from_slice(&state.format_specific.init_functions);
+                        init_functions.extend(
+                            state
+                                .format_specific
+                                .init_functions
+                                .iter()
+                                .map(|local_symbol_id| symbol_db.definition(*local_symbol_id)),
+                        );
                     }
                     layout::FileLayoutState::StubLibrary(state) => {
                         if state.format_specific.loaded {
