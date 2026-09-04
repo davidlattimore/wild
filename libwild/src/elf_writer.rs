@@ -196,6 +196,7 @@ pub(crate) fn write<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
 
     if layout.args().should_write_eh_frame_hdr
+        && !layout.args().only_keep_debug()
         && layout
             .section_layouts
             .get(output_section_id::EH_FRAME_HDR)
@@ -770,6 +771,9 @@ impl<'layout, 'out, C: ElfClass> TableWriter<'layout, 'out, C> {
         args: &ElfArgs,
         res: &Resolution<elf::Elf<C>>,
     ) -> Result {
+        if args.only_keep_debug() {
+            return Ok(());
+        }
         let Some(got_address) = res.format_specific.got_address else {
             return Ok(());
         };
@@ -2235,6 +2239,18 @@ fn write_object_section<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         }
     }
 
+    // For --only-keep-debug, alloc non-NOTE sections are NOBITS.
+    if layout.args().only_keep_debug() {
+        use crate::platform::SectionAttributes as _;
+        let section_info = layout
+            .output_sections
+            .output_info(part_id.output_section_id::<elf::Elf<C>>());
+        let attrs = &section_info.section_attributes;
+        if attrs.is_alloc() && attrs.ty != linker_utils::elf::sht::NOTE {
+            return Ok(());
+        }
+    }
+
     let out = write_section_raw::<C, A>(object, layout, section, section_index, buffers)?;
 
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
@@ -2716,6 +2732,10 @@ fn write_eh_frame_data<'data, C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
     table_writer: &mut TableWriter<'_, '_, C>,
     trace: &TraceOutput,
 ) -> Result {
+    // For --only-keep-debug, .eh_frame has no file content.
+    if layout.args().only_keep_debug() {
+        return Ok(());
+    }
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
     match object.relocations(eh_frame_section_index)? {
         elf::RelocationList::Rela(relocations) => {
@@ -3996,6 +4016,7 @@ fn write_prelude_except_gdb_index<'data, C: ElfClass, A: Arch<Platform = elf::El
     }
 
     if layout.args().should_write_eh_frame_hdr
+        && !layout.args().only_keep_debug()
         && layout
             .section_layouts
             .get(output_section_id::EH_FRAME_HDR)
@@ -4414,7 +4435,7 @@ fn write_epilogue<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
             &epilogue_offsets,
         )?;
     }
-    if epilogue.format_specific.needs_eh_frame_terminator {
+    if epilogue.format_specific.needs_eh_frame_terminator && !layout.args().only_keep_debug() {
         table_writer.write_eh_frame_terminator();
     }
 
@@ -5795,6 +5816,11 @@ fn write_section_headers<C: ElfClass>(
 
         let sh_type = if layout.args().use_android_relr_tags && section_type == sht::RELR {
             object::elf::SHT_ANDROID_RELR
+        } else if layout.args().only_keep_debug()
+            && output_sections.section_flags(section_id).is_alloc()
+            && section_type != sht::NOTE
+        {
+            sht::NOBITS
         } else {
             section_type
         };
