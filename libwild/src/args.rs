@@ -868,7 +868,7 @@ impl<T: platform::Args> ArgumentParser<T> {
                     // Value has '=', look up key with trailing '='
                     if let Some(sub) = handler.sub_options.get(format!("{key}=").as_str()) {
                         match sub.handler {
-                            SubOptionHandler::NoValue(_) | SubOptionHandler::WithName(_) => {
+                            SubOptionHandler::NoValue(_) | SubOptionHandler::UseMainHandler => {
                                 (handler.handler)(args, modifier_stack, &value)?;
                             }
                             SubOptionHandler::WithValue(f) => f(args, modifier_stack, param_value)?,
@@ -882,7 +882,9 @@ impl<T: platform::Args> ArgumentParser<T> {
                     if let Some(sub) = handler.sub_options.get(value.as_str()) {
                         match sub.handler {
                             SubOptionHandler::NoValue(f) => f(args, modifier_stack)?,
-                            SubOptionHandler::WithName(f) => f(args, modifier_stack, &value),
+                            SubOptionHandler::UseMainHandler => {
+                                (handler.handler)(args, modifier_stack, &value)?;
+                            }
                             SubOptionHandler::WithValue(_) => {
                                 bail!("Option -{prefix} {value} requires a value");
                             }
@@ -1184,8 +1186,7 @@ struct WithOptionalParam;
 enum SubOptionHandler<T> {
     /// Handler without value parameter (exact match)
     NoValue(fn(&mut T, &mut Vec<Modifiers>) -> Result<()>),
-    /// Handler that receives the name of the matched sub-option.
-    WithName(fn(&mut T, &mut Vec<Modifiers>, &str)),
+    UseMainHandler,
     /// Handler with value parameter (prefix match)
     WithValue(fn(&mut T, &mut Vec<Modifiers>, &str) -> Result<()>),
 }
@@ -1259,17 +1260,12 @@ impl<'a, T, S> OptionDeclaration<'a, T, S> {
     }
 
     #[must_use]
-    fn sub_option_with_name(
-        mut self,
-        name: &'static str,
-        help: &'static str,
-        handler: fn(&mut T, &mut Vec<Modifiers>, &str),
-    ) -> Self {
+    fn value_help(mut self, name: &'static str, help: &'static str) -> Self {
         self.sub_options.insert(
             name,
             SubOption {
                 help,
-                handler: SubOptionHandler::WithName(handler),
+                handler: SubOptionHandler::UseMainHandler,
             },
         );
         self

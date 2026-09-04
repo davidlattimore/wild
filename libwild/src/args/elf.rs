@@ -18,7 +18,10 @@ use crate::args::UnresolvedSymbols;
 use crate::args::VersionMode;
 use crate::args::parse_number;
 use crate::bail;
+use crate::env;
+use crate::error;
 use crate::error::Context as _;
+use crate::error::Error;
 use crate::error::Result;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::output_kind::OutputKind;
@@ -51,6 +54,7 @@ pub struct ElfArgs {
     pub(crate) common: super::CommonArgs,
 
     emulation: Emulation,
+    emulation_error: Option<Error>,
     pub(crate) lib_search_path: Vec<Box<Path>>,
     dynamic_linker: DynamicLinker,
     pub(crate) strip: Strip,
@@ -265,6 +269,8 @@ const DEFAULT_SHORT_FLAGS: &[&str] = &[
     "X", // alias for --discard-locals
 ];
 
+pub(crate) const LDEMULATION_ENV: &str = "LDEMULATION";
+
 #[derive(Debug, Default)]
 enum DynamicLinker {
     #[default]
@@ -321,6 +327,7 @@ impl Default for ElfArgs {
             common: CommonArgs::default(),
 
             emulation: default_emulation(),
+            emulation_error: None,
 
             lib_search_path: Vec::new(),
             should_output_executable: true,
@@ -430,10 +437,32 @@ const fn default_emulation() -> Emulation {
 
 impl ElfArgs {
     pub(crate) fn new() -> Result<Self> {
-        Ok(Self {
+        let mut args = Self {
             common: CommonArgs::from_env()?,
             ..Default::default()
-        })
+        };
+
+        if let Ok(value) = env::var(LDEMULATION_ENV) {
+            args.set_emulation_str(&value, LDEMULATION_ENV);
+        }
+
+        Ok(args)
+    }
+
+    fn set_emulation_str(&mut self, value: &str, source: &'static str) {
+        match value.parse() {
+            Ok(emulation) => self.set_emulation(emulation),
+            Err(_) => {
+                self.emulation_error = Some(error!(
+                    "Emulation '{value}' is not yet supported (from {source})"
+                ));
+            }
+        }
+    }
+
+    fn set_emulation(&mut self, emulation: Emulation) {
+        self.emulation = emulation;
+        self.emulation_error = None;
     }
 
     pub(crate) fn is_relr_enabled(&self) -> bool {
@@ -448,14 +477,14 @@ impl ElfArgs {
 
     #[cfg(test)]
     pub(crate) fn set_architecture(&mut self, architecture: Architecture) {
-        self.emulation = match architecture {
+        self.set_emulation(match architecture {
             Architecture::X86_64 => Emulation::ElfX86_64,
             Architecture::AArch64 => Emulation::AArch64,
             Architecture::RiscV64 => Emulation::RiscV64,
             Architecture::LoongArch64 => Emulation::LoongArch64,
             Architecture::Ppc64 => Emulation::Ppc64,
             Architecture::Unsupported => Emulation::Unsupported,
-        };
+        });
     }
 }
 
@@ -471,6 +500,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         let arg = arg.as_ref();
 
         arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
+    }
+
+    if let Some(error) = args.emulation_error.take() {
+        return Err(error);
     }
 
     // Copy relocations are only permitted when building executables.
@@ -512,16 +545,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     }
 
     Ok(())
-}
-
-fn set_command_line_emulation(
-    args: &mut ElfArgs,
-    _modifier_stack: &mut Vec<Modifiers>,
-    emulation: &str,
-) {
-    args.emulation = emulation
-        .parse()
-        .expect("registered emulation should always parse");
 }
 
 fn emulations() -> impl Iterator<Item = (Emulation, &'static str)> {
@@ -618,15 +641,13 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Select linker emulation");
 
     for (emulation, name) in emulations() {
-        emulation_option = emulation_option.sub_option_with_name(
-            name,
-            emulation.get_message().unwrap(),
-            set_command_line_emulation,
-        );
+        emulation_option = emulation_option.value_help(name, emulation.get_message().unwrap());
     }
 
-    emulation_option
-        .execute(|_args, _modifier_stack, value| bail!("-m {value} is not yet supported"));
+    emulation_option.execute(|args, _modifier_stack, value| {
+        args.set_emulation_str(value, "-m");
+        Ok(())
+    });
 
     parser
         .declare_with_param()

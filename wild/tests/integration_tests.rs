@@ -34,6 +34,8 @@
 //!
 //! WildExtraLinkArgs:... Extra linker arguments that should only be passed to the Wild linker.
 //!
+//! Env:NAME=value Adds an environment variable to linker invocations.
+//!
 //! CompArgs:... Arguments to be passed to the compiler when building object files.
 //!
 //! CompSoArgs:... Arguments to be passed to the compiler when building shared objects.
@@ -1344,6 +1346,7 @@ struct Config {
     post_linker_args: ArgumentSet,
     linker_so_args: ArgumentSet,
     wild_extra_linker_args: ArgumentSet,
+    linker_env: HashMap<String, String>,
     compiler_args: ArgumentSet,
     compiler_so_args: ArgumentSet,
     diff_ignore: Vec<String>,
@@ -1800,7 +1803,8 @@ impl Config {
     }
 
     fn can_use_wild_in_process(&self) -> bool {
-        !self.test_update_in_place
+        self.linker_env.is_empty()
+            && !self.test_update_in_place
             && self.expect_stderr.is_empty()
             && self.expect_stdout.is_empty()
             && self.active_malfunction.is_none()
@@ -2123,6 +2127,7 @@ impl Config {
             compiler_args: ArgumentSet::default_for_compiling(),
             compiler_so_args: ArgumentSet::default_for_compiling(),
             wild_extra_linker_args: ArgumentSet::empty(),
+            linker_env: Default::default(),
             diff_ignore: Default::default(),
             reference_linkers: None,
             skip_linkers: Default::default(),
@@ -2418,6 +2423,18 @@ fn process_directive(
             config.linker_driver = LinkerDriver::parse(arg)?;
         }
         "WildExtraLinkArgs" => config.wild_extra_linker_args = ArgumentSet::parse(arg),
+        "Env" => {
+            let (name, value) = arg
+                .split_once('=')
+                .context("Env requires an argument of the form NAME=value")?;
+
+            ensure!(
+                !name.is_empty(),
+                "Environment variable name cannot be empty"
+            );
+
+            config.linker_env.insert(name.to_owned(), value.to_owned());
+        }
         "CompArgs" => {
             let arg = expand_test_arg_placeholders(arg, config);
             config.compiler_args = ArgumentSet::parse(&arg);
@@ -4385,6 +4402,8 @@ impl LinkCommand {
                 }
             }
         }
+
+        command.envs(&config.linker_env);
 
         let mut link_command = LinkCommand {
             command,
@@ -6630,6 +6649,15 @@ impl Display for LinkCommand {
         // wraps over several lines and there are multiple commands.
         write!(f, "        ")?;
 
+        for (key, value) in self.command.get_envs() {
+            write!(
+                f,
+                "{}={} ",
+                key.to_str().unwrap_or("??"),
+                value.and_then(|value| value.to_str()).unwrap_or_default(),
+            )?;
+        }
+
         let mut command_str = self.command.get_program().to_string_lossy();
 
         let mut args = self
@@ -6650,15 +6678,6 @@ impl Display for LinkCommand {
                 write!(f, "cargo run --bin wild -- {}", args.join(" "))
             }
             (LinkerInvocationMode::Script, Linker::Wild) => {
-                for (k, v) in self.command.get_envs() {
-                    write!(
-                        f,
-                        "{}={} ",
-                        k.to_str().unwrap_or("??"),
-                        v.and_then(|v| v.to_str()).unwrap_or_default(),
-                    )?;
-                }
-
                 // The first argument is the linker, which we're replacing with `cargo run --`.
                 args.remove(0);
 

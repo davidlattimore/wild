@@ -608,13 +608,20 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
 }
 
 /// Saves certain environment variables into the script. We only propagate environment variables
-/// that are known to be used for communication between the compiler and say linker plugins.
+/// that are known to affect the link or to be used for communication between the compiler and say
+/// linker plugins.
 fn write_env(out: &mut BufWriter<&mut std::fs::File>, args: &impl platform::Args) -> Result {
-    for var in &["COLLECT_GCC", "COLLECT_GCC_OPTIONS"] {
+    for var in &[
+        "COLLECT_GCC",
+        "COLLECT_GCC_OPTIONS",
+        crate::args::elf::LDEMULATION_ENV,
+    ] {
         if let Ok(mut value) = env::var(var) {
             // COLLECT_GCC_OPTIONS has things like "-o /path/to/output-file" in it. Update these so
             // that we use the run-with scripts output file instead.
-            if let Some(out) = args.output().to_str() {
+            if *var == "COLLECT_GCC_OPTIONS"
+                && let Some(out) = args.output().to_str()
+            {
                 value = value.replace(out, "${OUT}");
             }
             out.write_all(b"export ")?;
