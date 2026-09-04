@@ -853,7 +853,12 @@ fn assign_section_ids<'data, P: Platform>(
         for file in &mut group.files {
             if let ResolvedFile::Object(s) = file {
                 let obj_part_ids = &mut section_part_ids[s.section_id_range.as_usize()];
-                output_sections.add_sections(&s.custom_sections, obj_part_ids, args);
+
+                for custom in &s.custom_sections {
+                    obj_part_ids[custom.index.0] =
+                        output_sections.get_or_create_custom_section_part(args, custom);
+                }
+
                 apply_init_fini_secondaries(
                     &s.init_fini_sections,
                     s.sections.as_slice(),

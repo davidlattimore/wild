@@ -711,38 +711,37 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     pub(crate) fn secondary_order(&self, id: OutputSectionId) -> Option<SecondaryOrder> {
         self.section_infos.get(id).secondary_order
     }
-    pub(crate) fn add_sections(
-        &mut self,
-        custom_sections: &[CustomSectionDetails<'data, P>],
-        section_part_ids: &mut [PartId],
-        args: &P::Args,
-    ) {
-        for custom in custom_sections {
-            let location = args
-                .start_address_for_section(custom.identity.section_name())
-                .map(linker_script::Expression::Number);
-            let location_info = location.map(|loc| SectionLocationInfo {
-                location_counters: (0, 0),
-                location: Some(loc),
-                at_location: None,
-                is_top_level: true,
-            });
-            let section_id = self.add_named_section(
-                custom.identity,
-                custom.alignment,
-                None,
-                location_info.as_ref(),
-                None,
-                Vec::new(),
-                None,
-            );
 
-            let part_id = if section_id.is_regular::<P>() {
-                section_id.part_id_with_alignment::<P>(custom.alignment)
-            } else {
-                section_id.base_part_id::<P>()
-            };
-            section_part_ids[custom.index.0] = part_id;
+    pub(crate) fn get_or_create_custom_section_part(
+        &mut self,
+        args: &<P as Platform>::Args,
+        custom: &CustomSectionDetails<'data, P>,
+    ) -> PartId {
+        let location = args
+            .start_address_for_section(custom.identity.section_name())
+            .map(linker_script::Expression::Number);
+
+        let location_info = location.map(|loc| SectionLocationInfo {
+            location_counters: (0, 0),
+            location: Some(loc),
+            at_location: None,
+            is_top_level: true,
+        });
+
+        let section_id = self.get_or_create_named_section(
+            custom.identity,
+            custom.alignment,
+            None,
+            location_info.as_ref(),
+            None,
+            Vec::new(),
+            None,
+        );
+
+        if section_id.is_regular::<P>() {
+            section_id.part_id_with_alignment::<P>(custom.alignment)
+        } else {
+            section_id.base_part_id::<P>()
         }
     }
 
@@ -775,7 +774,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         }
     }
 
-    pub(crate) fn add_named_section(
+    pub(crate) fn get_or_create_named_section(
         &mut self,
         identity: SectionIdentity<'data, P>,
         min_alignment: Alignment,
@@ -1120,7 +1119,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             crate::output_kind::OutputKind::StaticExecutable(crate::args::RelocationModel::Fixed);
         let mut output_sections = OutputSections::<Elf64>::with_base_address(0x1000, output_kind);
         let mut add_name = |name: &'static str| {
-            output_sections.add_named_section(
+            output_sections.get_or_create_named_section(
                 SectionIdentity::new(SectionName(name.as_bytes()), ()),
                 crate::alignment::MIN,
                 None,
