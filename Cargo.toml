@@ -14,7 +14,6 @@ resolver = "2"
 repository = "https://github.com/wild-linker/wild"
 license = "MIT OR Apache-2.0"
 version = "0.10.0"
-readme = "README.md"
 rust-version = "1.97.1"
 edition = "2024"
 

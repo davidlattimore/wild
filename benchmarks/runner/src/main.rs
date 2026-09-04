@@ -145,7 +145,7 @@ fn main() -> Result {
         Subcommand::Report(report_args) => {
             for config_path in &report_args.configs()? {
                 let config = config::Config::load(config_path)?;
-                reporting::run_report(&report_args, &config)?
+                reporting::run_report(&report_args, &config)?;
             }
             Ok(())
         }
@@ -228,7 +228,7 @@ impl LinkerKind {
         }
     }
 
-    fn supports_arg(&self, arg: &str) -> bool {
+    fn supports_arg(self, arg: &str) -> bool {
         match arg {
             "--no-fork" => matches!(self, LinkerKind::Wild | LinkerKind::Mold),
             _ => true,
@@ -270,7 +270,7 @@ impl Bin {
 }
 
 impl Benchmark {
-    fn new(bench_dir: PathBuf, bench_config: BenchConfig) -> Result<Benchmark> {
+    fn new(bench_dir: &Path, bench_config: BenchConfig) -> Result<Benchmark> {
         let name = bench_dir
             .file_name()
             .context("Invalid filename")?
@@ -325,32 +325,32 @@ impl LinkerIdentifier {
             if let Some(r) = rest.strip_prefix("version ") {
                 rest = r;
             }
-            version = take_word(&mut rest)?.to_owned();
+            version = take_word(&mut rest).to_owned();
             if !bin_path.to_string_lossy().contains(&version) {
                 // For wild, we only consider the version to be true if the path to the linker
                 // contains the version number, otherwise we use the git hash.
-                hash = take_word(&mut rest).map(|w| w.replace(['(', ')'], ""));
+                hash = Some(take_word(&mut rest).replace(['(', ')'], ""));
             }
 
             kind = LinkerKind::Wild;
         } else if let Some(mut rest) = version_line.strip_prefix("LLD ") {
             kind = LinkerKind::Lld;
-            version = take_word(&mut rest)?.to_owned();
+            version = take_word(&mut rest).to_owned();
         } else if let Some(mut rest) = version_line.strip_prefix("Ubuntu LLD ") {
             kind = LinkerKind::Lld;
-            version = take_word(&mut rest)?.to_owned();
+            version = take_word(&mut rest).to_owned();
             variant = Some("Ubuntu".to_owned());
         } else if let Some(mut rest) = version_line.strip_prefix("Debian LLD ") {
             kind = LinkerKind::Lld;
-            version = take_word(&mut rest)?.to_owned();
+            version = take_word(&mut rest).to_owned();
             variant = Some("Debian".to_owned());
         } else if let Some(mut rest) = version_line.strip_prefix("mold ") {
             kind = LinkerKind::Mold;
-            version = take_word(&mut rest)?.to_owned();
+            version = take_word(&mut rest).to_owned();
         } else {
             let mut rest = version_line.strip_prefix("GNU ld (GNU Binutils for Ubuntu) ")?;
             kind = LinkerKind::Bfd;
-            version = take_word(&mut rest)?.to_owned();
+            version = take_word(&mut rest).to_owned();
             variant = Some("Ubuntu".to_owned());
         }
 
@@ -386,12 +386,12 @@ impl LinkerIdentifier {
     }
 }
 
-fn take_word<'a>(input: &mut &'a str) -> Option<&'a str> {
+fn take_word<'a>(input: &mut &'a str) -> &'a str {
     *input = input.trim();
     let i = input.find(' ').unwrap_or(input.len());
     let (word, rest) = input.split_at(i);
     *input = rest;
-    Some(word)
+    word
 }
 
 impl Display for Bin {
@@ -431,7 +431,7 @@ impl Display for Benchmark {
 }
 
 fn parse_version_number(v: &str) -> Result<Vec<u32>> {
-    v.split(".")
+    v.split('.')
         .map(|p| {
             p.parse()
                 .with_context(|| format!("Failed to parse version `{v}`"))
@@ -439,8 +439,8 @@ fn parse_version_number(v: &str) -> Result<Vec<u32>> {
         .collect()
 }
 
-fn default_result_path(config: &Config, path_buf: &Option<PathBuf>) -> PathBuf {
-    path_buf.clone().unwrap_or_else(|| {
+fn default_result_path(config: &Config, path_buf: Option<&PathBuf>) -> PathBuf {
+    path_buf.cloned().unwrap_or_else(|| {
         PathBuf::from("benchmarks").join(format!("{}.bench-results", config.name))
     })
 }

@@ -554,10 +554,9 @@ mod tests {
                 .extra_features,
             ["b"]
         );
-        assert!(
-            parse_args(["--extra-features=", "-o", "out.wasm"])
-                .extra_features
-                .is_empty()
+        assert_eq!(
+            parse_args(["--extra-features=", "-o", "out.wasm"]).extra_features,
+            Vec::<String>::new()
         );
     }
 }

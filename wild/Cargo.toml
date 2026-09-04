@@ -74,3 +74,6 @@ macho = ["libwild/macho"]
 external_tests = ["mold_tests", "lld_tests"]
 mold_tests = []
 lld_tests = []
+
+[lints]
+workspace = true
