@@ -7,7 +7,6 @@ use super::Input;
 use super::InputSpec;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
-use crate::arch::SUPPORTED_EMULATIONS;
 use crate::arch::SUPPORTED_TARGETS;
 use crate::args::CommonArgs;
 use crate::args::CopyRelocations;
@@ -44,14 +43,16 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
+use strum::EnumMessage as _;
+use strum::IntoEnumIterator as _;
 
 #[derive(Debug)]
 pub struct ElfArgs {
     pub(crate) common: super::CommonArgs,
 
-    pub(crate) arch: Architecture,
+    emulation: Emulation,
     pub(crate) lib_search_path: Vec<Box<Path>>,
-    pub(crate) dynamic_linker: Option<Box<Path>>,
+    dynamic_linker: DynamicLinker,
     pub(crate) strip: Strip,
     pub(crate) merge_sections: bool,
     pub(crate) version_script_path: Option<PathBuf>,
@@ -264,17 +265,67 @@ const DEFAULT_SHORT_FLAGS: &[&str] = &[
     "X", // alias for --discard-locals
 ];
 
+#[derive(Debug, Default)]
+enum DynamicLinker {
+    #[default]
+    EmulationDefault,
+    Omit,
+    Explicit(Box<Path>),
+}
+
+#[derive(Debug, Clone, Copy, strum::EnumIter, strum::EnumMessage, strum::EnumString)]
+enum Emulation {
+    #[strum(serialize = "elf_x86_64", message = "x86-64 ELF target")]
+    ElfX86_64,
+    #[strum(serialize = "elf_x86_64_sol2", message = "x86-64 ELF target (Solaris)")]
+    ElfX86_64Sol2,
+    #[strum(
+        serialize = "aarch64elf",
+        serialize = "aarch64linux",
+        message = "AArch64 ELF target"
+    )]
+    AArch64,
+    #[strum(serialize = "elf64lriscv", message = "RISC-V 64-bit ELF target")]
+    RiscV64,
+    #[strum(serialize = "elf64loongarch", message = "LoongArch 64-bit ELF target")]
+    LoongArch64,
+    #[strum(serialize = "elf64lppc", message = "PowerPC64 LE ELF target")]
+    Ppc64,
+    #[strum(disabled)]
+    Unsupported,
+}
+
+impl Emulation {
+    fn architecture(self) -> Architecture {
+        match self {
+            Emulation::ElfX86_64 | Emulation::ElfX86_64Sol2 => Architecture::X86_64,
+            Emulation::AArch64 => Architecture::AArch64,
+            Emulation::RiscV64 => Architecture::RiscV64,
+            Emulation::LoongArch64 => Architecture::LoongArch64,
+            Emulation::Ppc64 => Architecture::Ppc64,
+            Emulation::Unsupported => Architecture::Unsupported,
+        }
+    }
+
+    fn default_dynamic_linker(self) -> Option<&'static Path> {
+        match self {
+            Emulation::ElfX86_64Sol2 => Some(Path::new("/lib/amd64/ld.so.1")),
+            _ => None,
+        }
+    }
+}
+
 impl Default for ElfArgs {
     fn default() -> Self {
         Self {
             common: CommonArgs::default(),
 
-            arch: default_target_arch(),
+            emulation: default_emulation(),
 
             lib_search_path: Vec::new(),
             should_output_executable: true,
             should_output_partial_object: false,
-            dynamic_linker: None,
+            dynamic_linker: DynamicLinker::default(),
             strip: Strip::Nothing,
             // For now, we default to --gc-sections. This is different to other linkers, but other
             // than being different, there doesn't seem to be any downside to doing
@@ -349,32 +400,32 @@ impl Default for ElfArgs {
     }
 }
 
-const fn default_target_arch() -> Architecture {
+const fn default_emulation() -> Emulation {
     // We default to targeting the architecture that we're running on. We don't support running on
     // architectures that we can't target.
     #[cfg(target_arch = "x86_64")]
     {
-        return Architecture::X86_64;
+        return Emulation::ElfX86_64;
     }
     #[cfg(target_arch = "aarch64")]
     {
-        return Architecture::AArch64;
+        return Emulation::AArch64;
     }
     #[cfg(target_arch = "riscv64")]
     {
-        return Architecture::RiscV64;
+        return Emulation::RiscV64;
     }
     #[cfg(target_arch = "loongarch64")]
     {
-        return Architecture::LoongArch64;
+        return Emulation::LoongArch64;
     }
     #[cfg(all(target_arch = "powerpc64", target_endian = "little"))]
     {
-        return Architecture::Ppc64;
+        return Emulation::Ppc64;
     }
 
     #[allow(unreachable_code)]
-    Architecture::Unsupported
+    Emulation::Unsupported
 }
 
 impl ElfArgs {
@@ -389,6 +440,22 @@ impl ElfArgs {
         self.z_pack_relative_relocs
             || self.pack_dyn_relocs == PackDynRelocs::Relr
             || self.pack_dyn_relocs == PackDynRelocs::AndroidRelr
+    }
+
+    pub(crate) fn architecture(&self) -> Architecture {
+        self.emulation.architecture()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_architecture(&mut self, architecture: Architecture) {
+        self.emulation = match architecture {
+            Architecture::X86_64 => Emulation::ElfX86_64,
+            Architecture::AArch64 => Emulation::AArch64,
+            Architecture::RiscV64 => Emulation::RiscV64,
+            Architecture::LoongArch64 => Emulation::LoongArch64,
+            Architecture::Ppc64 => Emulation::Ppc64,
+            Architecture::Unsupported => Emulation::Unsupported,
+        };
     }
 }
 
@@ -445,6 +512,29 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     }
 
     Ok(())
+}
+
+fn set_command_line_emulation(
+    args: &mut ElfArgs,
+    _modifier_stack: &mut Vec<Modifiers>,
+    emulation: &str,
+) {
+    args.emulation = emulation
+        .parse()
+        .expect("registered emulation should always parse");
+}
+
+fn emulations() -> impl Iterator<Item = (Emulation, &'static str)> {
+    Emulation::iter().flat_map(|emulation| {
+        emulation
+            .get_serializations()
+            .iter()
+            .map(move |&name| (emulation, name))
+    })
+}
+
+pub(crate) fn supported_emulations() -> String {
+    emulations().map(|(_, name)| name).join(" ")
 }
 
 fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
@@ -522,52 +612,21 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             Ok(())
         });
 
-    parser
+    let mut emulation_option = parser
         .declare_with_param()
         .prefix("m")
-        .help("Set target architecture")
-        .sub_option("elf_x86_64", "x86-64 ELF target", |args, _| {
-            args.arch = Architecture::X86_64;
-            Ok(())
-        })
-        .sub_option(
-            "elf_x86_64_sol2",
-            "x86-64 ELF target (Solaris)",
-            |args, _| {
-                if args.dynamic_linker.is_none() {
-                    args.dynamic_linker = Some(Path::new("/lib/amd64/ld.so.1").into());
-                }
-                args.arch = Architecture::X86_64;
-                Ok(())
-            },
-        )
-        .sub_option("aarch64elf", "AArch64 ELF target", |args, _| {
-            args.arch = Architecture::AArch64;
-            Ok(())
-        })
-        .sub_option("aarch64linux", "AArch64 ELF target (Linux)", |args, _| {
-            args.arch = Architecture::AArch64;
-            Ok(())
-        })
-        .sub_option("elf64lriscv", "RISC-V 64-bit ELF target", |args, _| {
-            args.arch = Architecture::RiscV64;
-            Ok(())
-        })
-        .sub_option(
-            "elf64loongarch",
-            "LoongArch 64-bit ELF target",
-            |args, _| {
-                args.arch = Architecture::LoongArch64;
-                Ok(())
-            },
-        )
-        .sub_option("elf64lppc", "PowerPC64 LE ELF target", |args, _| {
-            args.arch = Architecture::Ppc64;
-            Ok(())
-        })
-        .execute(|_args, _modifier_stack, value| {
-            bail!("-m {value} is not yet supported");
-        });
+        .help("Select linker emulation");
+
+    for (emulation, name) in emulations() {
+        emulation_option = emulation_option.sub_option_with_name(
+            name,
+            emulation.get_message().unwrap(),
+            set_command_line_emulation,
+        );
+    }
+
+    emulation_option
+        .execute(|_args, _modifier_stack, value| bail!("-m {value} is not yet supported"));
 
     parser
         .declare_with_param()
@@ -884,7 +943,11 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
             // The following listing is something autoconf detection relies on.
             writeln!(stdout, "wild: supported targets: {SUPPORTED_TARGETS}")?;
-            writeln!(stdout, "wild: supported emulations: {SUPPORTED_EMULATIONS}")?;
+            writeln!(
+                stdout,
+                "wild: supported emulations: {}",
+                supported_emulations()
+            )?;
 
             std::process::exit(0);
         });
@@ -939,7 +1002,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("dynamic-linker")
         .help("Set dynamic linker path")
         .execute(|args, _modifier_stack, value| {
-            args.dynamic_linker = Some(Box::from(Path::new(value)));
+            args.dynamic_linker = DynamicLinker::Explicit(Box::from(Path::new(value)));
             Ok(())
         });
 
@@ -948,7 +1011,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("no-dynamic-linker")
         .help("Omit the load-time dynamic linker request")
         .execute(|args, _modifier_stack| {
-            args.dynamic_linker = None;
+            args.dynamic_linker = DynamicLinker::Omit;
             Ok(())
         });
 
@@ -1989,7 +2052,11 @@ impl platform::Args for ElfArgs {
     }
 
     fn dynamic_linker(&self) -> Option<&Path> {
-        self.dynamic_linker.as_deref()
+        match &self.dynamic_linker {
+            DynamicLinker::EmulationDefault => self.emulation.default_dynamic_linker(),
+            DynamicLinker::Omit => None,
+            DynamicLinker::Explicit(path) => Some(path),
+        }
     }
 
     fn should_allow_object_undefined(&self, output_kind: OutputKind) -> bool {
@@ -2029,7 +2096,7 @@ impl platform::Args for ElfArgs {
             return max_page_size;
         }
 
-        match self.arch {
+        match self.architecture() {
             Architecture::X86_64 => Alignment { exponent: 12 },
             Architecture::AArch64 => Alignment { exponent: 16 },
             Architecture::RiscV64 => Alignment { exponent: 12 },
@@ -2060,7 +2127,7 @@ impl platform::Args for ElfArgs {
     }
 
     fn architecture(&self) -> Architecture {
-        self.arch
+        ElfArgs::architecture(self)
     }
 
     fn output_format_endian(&self) -> Option<Endianness> {

@@ -5543,12 +5543,18 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_AARCH64_VARIANT_PCS,
-        |inputs| inputs.has_variant_pcs && inputs.args.arch == crate::arch::Architecture::AArch64,
+        |inputs| {
+            inputs.has_variant_pcs
+                && inputs.args.architecture() == crate::arch::Architecture::AArch64
+        },
         |_inputs| 0,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_RISCV_VARIANT_CC,
-        |inputs| inputs.has_variant_pcs && inputs.args.arch == crate::arch::Architecture::RiscV64,
+        |inputs| {
+            inputs.has_variant_pcs
+                && inputs.args.architecture() == crate::arch::Architecture::RiscV64
+        },
         |_inputs| 0,
     ),
     DynamicEntryWriter::new(object::elf::DT_NULL, |_inputs| 0),

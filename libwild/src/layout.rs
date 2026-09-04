@@ -6183,8 +6183,8 @@ fn test_no_disallowed_overlaps() {
     let (output_order, program_segments) =
         output_sections.output_order(output_kind, &[], &[]).unwrap();
     let mut args = crate::args::elf::ElfArgs::default();
-    if args.arch == crate::arch::Architecture::Unsupported {
-        args.arch = crate::arch::Architecture::X86_64;
+    if args.architecture() == crate::arch::Architecture::Unsupported {
+        args.set_architecture(crate::arch::Architecture::X86_64);
     }
 
     let sections_to_output: hashbrown::HashSet<OutputSectionId> = output_order

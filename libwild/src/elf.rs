@@ -162,7 +162,7 @@ pub(crate) fn link_for_arch<'data, F: FileSystem>(
     linker: &'data crate::Linker<F>,
     args: &'data ElfArgs,
 ) -> Result<crate::LinkerOutput<'data>> {
-    match args.arch {
+    match args.architecture() {
         crate::arch::Architecture::X86_64 => {
             linker.link_for_arch::<Elf64, crate::elf_x86_64::ElfX86_64>(args)
         }
@@ -1277,7 +1277,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 *keep = !args.nmagic;
             }
             if segment_def.segment_type == pt::RISCV_ATTRIBUTES
-                && args.arch != Architecture::RiscV64
+                && args.architecture() != Architecture::RiscV64
             {
                 *keep = false;
             }
@@ -1412,14 +1412,14 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .set_hidden(hidden);
         symbols.section_end(output_section_id::BSS, "__end").hide();
 
-        if args.arch == Architecture::RiscV64 {
+        if args.architecture() == Architecture::RiscV64 {
             symbols.section_start(
                 output_section_id::DATA,
                 crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
             );
         }
 
-        if args.arch == Architecture::Ppc64 {
+        if args.architecture() == Architecture::Ppc64 {
             symbols.section_start(output_section_id::GOT, crate::elf::TOC_SYMBOL_NAME);
         }
 
@@ -3106,12 +3106,12 @@ impl<'data, C: ElfClass> platform::ObjectFile<'data> for File<'data, C> {
 
         let file = Self::parse_bytes(input.data, is_dynamic)?;
 
-        if file.arch != args.arch {
+        if file.arch != args.architecture() {
             bail!(
                 "`{}` has incompatible architecture: {}, expecting {}",
                 input,
                 file.arch,
-                args.arch,
+                args.architecture(),
             )
         }
 
