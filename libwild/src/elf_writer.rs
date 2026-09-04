@@ -1537,49 +1537,73 @@ impl<'layout, 'out, C: ElfClass> SymbolTableWriter<'layout, 'out, C> {
     ) -> Result {
         let e = LittleEndian;
 
-        let section_id =
-            if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
-                match &object.sections[section_index.0] {
-                    SectionSlot::Loaded(_)
-                    | SectionSlot::Sorted(_)
-                    | SectionSlot::LoadedDebugInfo(_)
-                    | SectionSlot::MergeStrings(_) => object
-                        .section_part_id(section_index, &layout.symbol_db.section_part_ids)
-                        .output_section_id::<elf::Elf<C>>(),
-                    SectionSlot::FrameData(..) => output_section_id::EH_FRAME,
-                    _ => {
-                        if layout.symbol_db.is_mapping_symbol(symbol_id) {
-                            return Ok(());
-                        }
-                        bail!(
-                            "Tried to copy a symbol in a section we didn't load. {}",
-                            layout.symbol_debug(symbol_id)
-                        )
-                    }
-                }
-            } else if sym.is_common(e) {
-                if sym.st_type() == STT_TLS {
-                    output_section_id::TBSS
-                } else {
-                    output_section_id::BSS
-                }
-            } else if sym.is_absolute(e) {
-                self.copy_absolute_symbol(sym, name, flags)
-                    .with_context(|| {
-                        format!("Failed to absolute {}", layout.symbol_debug(symbol_id))
-                    })?;
-                return Ok(());
+        let entry = if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
+            self.copy_symbol_with_section(
+                sym,
+                symbol_id,
+                name,
+                object,
+                layout,
+                value,
+                flags,
+                section_index,
+            )?
+        } else if sym.is_common(e) {
+            let section_id = if sym.st_type() == STT_TLS {
+                output_section_id::TBSS
             } else {
-                bail!("Attempted to output a symtab entry with an unexpected section type")
+                output_section_id::BSS
             };
 
-        let section_id = layout.output_sections.primary_output_section(section_id);
+            Some(self.copy_symbol(sym, name, section_id, value, flags)?)
+        } else if sym.is_absolute(e) {
+            self.copy_absolute_symbol(sym, name, flags)
+                .with_context(|| {
+                    format!("Failed to absolute {}", layout.symbol_debug(symbol_id))
+                })?;
+            return Ok(());
+        } else {
+            bail!("Attempted to output a symtab entry with an unexpected section type")
+        };
 
-        let entry = self.copy_symbol(sym, name, section_id, value, flags)?;
-
-        entry.set_size(object_symbol_size(sym, sym_index, object)?)?;
+        if let Some(entry) = entry {
+            entry.set_size(object_symbol_size(sym, sym_index, object)?)?;
+        }
 
         Ok(())
+    }
+
+    fn copy_symbol_with_section(
+        &mut self,
+        sym: &elf::SymtabEntry<C>,
+        symbol_id: SymbolId,
+        name: &[u8],
+        object: &ObjectLayout<elf::Elf<C>>,
+        layout: &Layout<elf::Elf<C>>,
+        value: u64,
+        flags: ValueFlags,
+        section_index: object::SectionIndex,
+    ) -> Result<Option<&mut elf::SymtabEntry<C>>> {
+        let section_id = match &object.sections[section_index.0] {
+            SectionSlot::Loaded(_)
+            | SectionSlot::Sorted(_)
+            | SectionSlot::LoadedDebugInfo(_)
+            | SectionSlot::MergeStrings(_) => object
+                .section_part_id(section_index, &layout.symbol_db.section_part_ids)
+                .output_section_id::<elf::Elf<C>>(),
+            SectionSlot::FrameData(..) => output_section_id::EH_FRAME,
+            _ => {
+                if layout.symbol_db.is_mapping_symbol(symbol_id) {
+                    return Ok(None);
+                }
+                bail!(
+                    "Tried to copy a symbol in a section we didn't load. {}",
+                    layout.symbol_debug(symbol_id)
+                )
+            }
+        };
+        let section_id = layout.output_sections.primary_output_section(section_id);
+        Ok(Some(self.copy_symbol(sym, name, section_id, value, flags)?))
     }
 
     #[inline(always)]
