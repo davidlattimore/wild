@@ -1135,6 +1135,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         scope: &Scope<'scope>,
     ) -> Result {
         if resources.symbol_db.args.should_output_partial_object() {
+            let header = state.object.section(section_index)?;
+            if header.sh_type(LittleEndian) == object::elf::SHT_CREL {
+                bail!("CREL with partial linking isn't yet supported: {state}");
+            }
             return Ok(());
         }
         match state.relocations(section_index)? {
