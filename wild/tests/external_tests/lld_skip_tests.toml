@@ -224,6 +224,12 @@ tests = [
   "lto/aarch64.ll",
   "lto/aarch64-pac-got-func.ll",
   "aarch64-reloc-implicit-addend.test",
+  "aarch64-fpic-adr_prel_lo21.s",
+  "aarch64-fpic-adr_prel_pg_hi21.s",
+  "aarch64-fpic-got.s",
+  "aarch64-fpic-prel16.s",
+  "aarch64-fpic-prel32.s",
+  "aarch64-fpic-prel64.s",
 ]
 
 [skipped_groups.gc_sections_skips_validation]
@@ -231,13 +237,7 @@ reason = "Wild skips validation for GC'd sections by design. These tests expect 
 tests = [
   "aarch64-fpic-abs16.s",
   "aarch64-fpic-add_abs_lo12_nc.s",
-  "aarch64-fpic-adr_prel_lo21.s",
-  "aarch64-fpic-adr_prel_pg_hi21.s",
-  "aarch64-fpic-got.s",
+  "aarch64-fpic-ldst8_abs_lo12_nc.s",
   "aarch64-fpic-ldst32_abs_lo12_nc.s",
   "aarch64-fpic-ldst64_abs_lo12_nc.s",
-  "aarch64-fpic-ldst8_abs_lo12_nc.s",
-  "aarch64-fpic-prel16.s",
-  "aarch64-fpic-prel32.s",
-  "aarch64-fpic-prel64.s",
 ]
