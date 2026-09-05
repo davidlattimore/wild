@@ -5256,6 +5256,9 @@ fn write_internal_symbols<C: ElfClass>(
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
 
         entry.set_binding_and_type(st_bind, st_type);
+        if platform::Symbol::is_hidden(&def_info.symbol) {
+            entry.set_other(object::elf::STV_HIDDEN.into());
+        }
     }
     Ok(())
 }
