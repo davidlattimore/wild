@@ -234,6 +234,9 @@ fn evaluate_expression_value<'data, P: Platform>(
 ) -> Result<u64> {
     macro_rules! eval {
         ($e:expr) => {
+            eval!($e, value_kind)
+        };
+        ($e:expr, $value_kind:expr) => {
             evaluate_expression_value(
                 $e,
                 expr_loc,
@@ -244,29 +247,35 @@ fn evaluate_expression_value<'data, P: Platform>(
                 symbol_db,
                 sizeof_headers,
                 resolved_location_counters,
-                value_kind,
+                $value_kind,
                 laid_out_mem_offsets,
                 symbol_resolution_callback,
             )
         };
     }
 
-    macro_rules! eval_abs {
-        ($e:expr) => {
-            evaluate_expression(
-                $e,
-                expr_loc,
-                input_ref,
-                section_layouts,
-                output_sections,
-                memory_regions,
-                symbol_db,
-                sizeof_headers,
-                resolved_location_counters,
-                laid_out_mem_offsets,
-                symbol_resolution_callback,
-            )
-        };
+    macro_rules! eval_cmp {
+        ($l:expr, $r:expr, $cmp:expr) => {{
+            let mut l_kind = ExpressionValueKind::default();
+            let mut r_kind = ExpressionValueKind::default();
+            let mut l_val = eval!($l, &mut l_kind)?;
+            let r_val = eval!($r, &mut r_kind)?;
+
+            if let Some(id) = expr_loc.relative_section_id() {
+                let primary_id = output_sections.primary_output_section(id);
+                let section_base = section_layouts.get(primary_id).mem_offset;
+
+                let l_needs_base = l_kind.contains_section_relative
+                    && !l_kind.contains_absolute
+                    && r_kind.contains_absolute;
+
+                if l_needs_base {
+                    l_val = l_val.wrapping_add(section_base);
+                }
+            }
+
+            Ok(u64::from($cmp(l_val, r_val)))
+        }};
     }
 
     match expr {
@@ -318,12 +327,12 @@ fn evaluate_expression_value<'data, P: Platform>(
         }
 
         // Comparisons return 1 (true) or 0 (false)
-        Expression::LessThan(l, r) => Ok(u64::from(eval_abs!(l)? < eval_abs!(r)?)),
-        Expression::GreaterThan(l, r) => Ok(u64::from(eval_abs!(l)? > eval_abs!(r)?)),
-        Expression::LessEqual(l, r) => Ok(u64::from(eval_abs!(l)? <= eval_abs!(r)?)),
-        Expression::GreaterEqual(l, r) => Ok(u64::from(eval_abs!(l)? >= eval_abs!(r)?)),
-        Expression::Equal(l, r) => Ok(u64::from(eval_abs!(l)? == eval_abs!(r)?)),
-        Expression::NotEqual(l, r) => Ok(u64::from(eval_abs!(l)? != eval_abs!(r)?)),
+        Expression::LessThan(l, r) => eval_cmp!(l, r, |a, b| a < b),
+        Expression::GreaterThan(l, r) => eval_cmp!(l, r, |a, b| a > b),
+        Expression::LessEqual(l, r) => eval_cmp!(l, r, |a, b| a <= b),
+        Expression::GreaterEqual(l, r) => eval_cmp!(l, r, |a, b| a >= b),
+        Expression::Equal(l, r) => eval_cmp!(l, r, |a, b| a == b),
+        Expression::NotEqual(l, r) => eval_cmp!(l, r, |a, b| a != b),
 
         Expression::Sizeof(name) => Ok(section_size(name, section_layouts, output_sections)),
         Expression::Alignof(name) => Ok(section_align(name, section_layouts, output_sections)),
@@ -420,13 +429,40 @@ fn evaluate_expression_value<'data, P: Platform>(
             }
             Ok(result)
         }
-        Expression::Absolute(expression) => todo!(),
+        Expression::Absolute(expression) => {
+            let mut inner_kind = ExpressionValueKind::default();
+            let val = evaluate_expression_value(
+                expression,
+                expr_loc,
+                input_ref,
+                section_layouts,
+                output_sections,
+                memory_regions,
+                symbol_db,
+                sizeof_headers,
+                resolved_location_counters,
+                &mut inner_kind,
+                laid_out_mem_offsets,
+                symbol_resolution_callback,
+            )?;
+            value_kind.contains_absolute = true;
+            value_kind.contains_section_relative = false;
+            if inner_kind.contains_section_relative
+                && let Some(id) = expr_loc.relative_section_id()
+            {
+                let primary_id = output_sections.primary_output_section(id);
+                let section_layout = section_layouts.get(primary_id);
+                return Ok(val.wrapping_add(section_layout.mem_offset));
+            }
+            Ok(val)
+        }
     }
 }
 
 pub(crate) fn evaluate_const<'data>(expr: &Expression<'data>) -> Result<u64> {
     match expr {
         Expression::Number(n) => Ok(*n),
+        Expression::Absolute(expression) => evaluate_const(expression),
         Expression::Add(l, r) => Ok(evaluate_const(l)?.wrapping_add(evaluate_const(r)?)),
         Expression::Subtract(l, r) => Ok(evaluate_const(l)?.wrapping_sub(evaluate_const(r)?)),
         Expression::Multiply(l, r) => Ok(evaluate_const(l)?.wrapping_mul(evaluate_const(r)?)),

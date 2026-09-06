@@ -868,7 +868,11 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
                 let local_index = symbol_id.to_input(script.symbol_id_range);
                 let def_info = script.parsed.symbol_defs.get(local_index.0)?;
                 if let crate::parsing::SymbolPlacement::Redirect(redirect) = &def_info.placement {
-                    redirect.loc.relative_section_id()
+                    if redirect.expression.is_absolute() {
+                        None
+                    } else {
+                        redirect.loc.relative_section_id()
+                    }
                 } else {
                     None
                 }
@@ -2143,7 +2147,8 @@ impl<'data, P: Platform> Prelude<'data, P> {
                 }
                 SymbolPlacement::Redirect(redirect) => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
-                    if matches!(redirect.loc, SymbolLoc::None) {
+                    if matches!(redirect.loc, SymbolLoc::None) || redirect.expression.is_absolute()
+                    {
                         ValueFlags::NON_INTERPOSABLE | ValueFlags::ABSOLUTE
                     } else {
                         ValueFlags::NON_INTERPOSABLE
@@ -2167,7 +2172,17 @@ impl std::fmt::Display for SymbolId {
 impl<P: Platform> InternalSymDefInfo<'_, P> {
     pub(crate) fn section_id(&self) -> Option<OutputSectionId> {
         match self.placement {
-            SymbolPlacement::Redirect(Redirect { ref loc, .. }) => loc.section_id(),
+            SymbolPlacement::Redirect(Redirect {
+                ref loc,
+                ref expression,
+                ..
+            }) => {
+                if expression.is_absolute() {
+                    None
+                } else {
+                    loc.section_id()
+                }
+            }
             SymbolPlacement::Undefined
             | SymbolPlacement::ForceUndefined
             | SymbolPlacement::PlatformSpecific(_) => None,

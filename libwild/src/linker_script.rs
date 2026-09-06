@@ -334,6 +334,10 @@ impl<'a> Expression<'a> {
             }
         }
     }
+
+    pub(crate) fn is_absolute(&self) -> bool {
+        matches!(self, Expression::Absolute(_))
+    }
 }
 
 impl<'data> LinkerScript<'data> {
