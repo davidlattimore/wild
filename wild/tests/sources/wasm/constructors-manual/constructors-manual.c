@@ -1,5 +1,6 @@
-// When the program imports and calls __wasm_call_ctors, do not wrap the entry (wrapping would run
+// When the program imports and calls __wasm_call_ctors, do not wrap exports (wrapping would run
 // constructors twice).
+//#DoesNotContain: .command_export
 
 static int x;
 

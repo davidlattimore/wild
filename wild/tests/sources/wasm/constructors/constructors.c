@@ -2,6 +2,7 @@
 //#ExpectSection: Global
 //#ExpectSym: memory
 //#Contains: __stack_pointer
+//#Contains: _start.command_export
 
 static int x;
 

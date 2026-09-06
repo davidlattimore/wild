@@ -5,6 +5,7 @@
 //#ExpectSym: memory
 //#NoSym: _start
 //#NoSym: custom_entry
+//#DoesNotContain: .command_export
 
 //#Config:custom-entry
 //#LinkArgs: --entry=custom_entry

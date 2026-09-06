@@ -5,6 +5,7 @@
 //#ExpectSym: _start
 //#ExpectSym: memory
 //#NoSym: not_exported
+//#DoesNotContain: .command_export
 
 //#Config:missing-export
 //#LinkArgs: --export does_not_exist

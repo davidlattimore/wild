@@ -1576,6 +1576,8 @@ pub(crate) struct WasmLayout<'data> {
     pub(crate) encoded_sections: WasmEncodedSections,
     pub(crate) code_section_size: u64,
     pub(crate) data_section_size: u64,
+    /// Linker-synthesized `{export}.command_export` wrappers and their name-section names.
+    command_export_wrapper_names: Vec<(u32, String)>,
 }
 
 #[derive(Debug, Default)]
@@ -1773,6 +1775,12 @@ fn build_name_section<'data>(
         for (out_idx, name) in entries.globals {
             set_name_first_wins(&mut global_names, out_idx, name);
         }
+    }
+
+    // Named after object symbols so first-wins keeps `{export}.command_export` rather than the
+    // export name that is retargeted onto the wrapper.
+    for (idx, name) in &layout.command_export_wrapper_names {
+        set_name_first_wins(&mut function_names, *idx, name.as_str());
     }
 
     for export in &layout.exports {
@@ -3940,7 +3948,6 @@ struct LinkerDefinedIndices {
     /// `emit_reserved_linker_definitions` (not the Wasm module global index).
     stack_pointer_defined_slot: Option<u32>,
     call_ctors_func: Option<u32>,
-    entry_wrapper_func: Option<u32>,
     weak_undef_stubs: Vec<WeakUndefFunctionStub>,
     /// Linker-defined globals including GOT.mem.
     num_defined_globals: u32,
@@ -4033,7 +4040,6 @@ fn setup_got_mem_and_indices<'data>(
     symbol_db: &SymbolDb<'data, Wasm>,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
     has_init_funcs: bool,
-    wrap_entry: bool,
 ) -> Result<(
     LinkerDefinedIndices,
     LayoutRelocScan,
@@ -4083,7 +4089,6 @@ fn setup_got_mem_and_indices<'data>(
                     export_symbols: requested_linker_export_symbols(symbol_db.args),
                     // Executables always get a defined linear memory.
                     has_memory: true,
-                    wrap_entry,
                     got_mem_count: scan.got_mem.len(),
                     got_func_count: scan.got_func.len(),
                     needs_memory_base: scan.needs_memory_base,
@@ -4877,34 +4882,11 @@ fn call_ctors_used_in_objects(inputs: &[WasmObjectLayoutInput<'_>]) -> bool {
     })
 }
 
-fn entry_is_defined_function(
-    layout_inputs: &[WasmObjectLayoutInput<'_>],
-    symbol_db: &SymbolDb<'_, Wasm>,
-    file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
-) -> bool {
-    let Some(entry_name) = symbol_db.entry_symbol_name() else {
-        return false;
-    };
-    let Some(symbol_id) = symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(entry_name))
-    else {
-        return false;
-    };
-    let def_id = symbol_db.definition(symbol_id);
-    let def_file_id = symbol_db.file_id_for_symbol(def_id);
-    let Some(&obj_idx) = file_id_to_index.get(&def_file_id) else {
-        return false;
-    };
-    let input = &layout_inputs[obj_idx];
-    let sym = &input.symbols[input.symbol_id_range.id_to_offset(def_id)];
-    !sym.is_undefined() && sym.kind == WasmSymbolKind::Func
-}
-
 struct LinkerDefinedIndexRequest {
     has_init_funcs: bool,
     // Linker symbols named by `--export` / `--export-if-defined`.
     export_symbols: Vec<WasmLinkerSymbol>,
     has_memory: bool,
-    wrap_entry: bool,
     got_mem_count: u32,
     got_func_count: u32,
     needs_memory_base: bool,
@@ -5021,11 +5003,6 @@ impl LinkerDefinedIndices {
             next_func += 1;
             idx
         });
-        let entry_wrapper_func = request.wrap_entry.then(|| {
-            let idx = next_func;
-            next_func += 1;
-            idx
-        });
         for stub in &mut weak_undef_stubs {
             stub.function_index = next_func;
             next_func = next_func
@@ -5041,7 +5018,6 @@ impl LinkerDefinedIndices {
             tls_base_global,
             stack_pointer_defined_slot,
             call_ctors_func,
-            entry_wrapper_func,
             weak_undef_stubs,
             num_defined_globals,
             num_defined_functions,
@@ -5204,6 +5180,114 @@ fn encode_call_sequence_body(calls: &[(u32, usize)]) -> Vec<u8> {
     bytes
 }
 
+fn encode_command_export_wrapper_body(call_ctors: u32, original: u32, n_params: usize) -> Vec<u8> {
+    let mut bytes = vec![0x00]; // 0 locals
+    bytes.push(0x10); // call
+    leb128::write::unsigned(&mut bytes, u64::from(call_ctors))
+        .expect("leb128 write to Vec cannot fail");
+    for i in 0..n_params {
+        bytes.push(0x20); // local.get
+        leb128::write::unsigned(&mut bytes, i as u64).expect("leb128 write to Vec cannot fail");
+    }
+    bytes.push(0x10); // call
+    leb128::write::unsigned(&mut bytes, u64::from(original))
+        .expect("leb128 write to Vec cannot fail");
+    bytes.push(0x0b); // end
+    bytes
+}
+
+/// Like wasm-ld, wrap defined function exports when InitFuncs exist and crt / `--export` does not
+/// already take care of `__wasm_call_ctors`.
+fn should_wrap_command_exports(
+    has_init_funcs: bool,
+    layout_inputs: &[WasmObjectLayoutInput<'_>],
+    exports: &[OutputExport<'_>],
+) -> bool {
+    has_init_funcs
+        && !call_ctors_used_in_objects(layout_inputs)
+        && !export_name_exists(exports, "__wasm_call_ctors")
+}
+
+fn wrap_command_exports(layout: &mut WasmLayout<'_>, call_ctors: u32) -> Result<()> {
+    let (n_func_imports, _) = count_output_imports(layout);
+    let n_func_imports = u32::try_from(n_func_imports).context("too many Wasm function imports")?;
+
+    struct PendingWrap {
+        export_index: usize,
+        original: u32,
+        type_index: u32,
+        n_params: usize,
+        export_name: String,
+    }
+
+    let mut pending = Vec::new();
+    for (export_index, export) in layout.exports.iter().enumerate() {
+        if !matches!(
+            export.kind,
+            wasmparser::ExternalKind::Func | wasmparser::ExternalKind::FuncExact
+        ) {
+            continue;
+        }
+        if export.name == "__wasm_call_ctors" {
+            continue;
+        }
+        if export.index < n_func_imports {
+            continue;
+        }
+        let defined_idx = (export.index - n_func_imports) as usize;
+        let type_index = *layout
+            .function_type_indices
+            .get(defined_idx)
+            .ok_or_else(|| {
+                crate::error!(
+                    "export `{}` function index {} has no type",
+                    export.name,
+                    export.index
+                )
+            })?;
+        let n_params = layout
+            .output_types
+            .get(type_index as usize)
+            .ok_or_else(|| crate::error!("missing Wasm type {type_index}"))?
+            .params()
+            .len();
+        pending.push(PendingWrap {
+            export_index,
+            original: export.index,
+            type_index,
+            n_params,
+            export_name: export.name.to_owned(),
+        });
+    }
+
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    layout.function_type_indices.reserve(pending.len());
+    layout.function_bodies.reserve(pending.len());
+    layout.command_export_wrapper_names.reserve(pending.len());
+
+    for wrap in pending {
+        let wrapper_index = n_func_imports
+            .checked_add(
+                u32::try_from(layout.function_type_indices.len())
+                    .context("too many Wasm functions")?,
+            )
+            .ok_or_else(|| crate::error!("Wasm function index overflow"))?;
+        layout.function_type_indices.push(wrap.type_index);
+        layout.function_bodies.push(owned_linker_function_body(
+            encode_command_export_wrapper_body(call_ctors, wrap.original, wrap.n_params),
+        ));
+        layout.command_export_wrapper_names.push((
+            wrapper_index,
+            format!("{}.command_export", wrap.export_name),
+        ));
+        layout.exports[wrap.export_index].index = wrapper_index;
+    }
+    Ok(())
+}
+
 fn function_type_for_symbol<'a>(
     input: &'a WasmObjectLayoutInput<'_>,
     sym: &WasmSymbol,
@@ -5288,7 +5372,6 @@ fn emit_reserved_linker_definitions(
     layout: &mut WasmLayout<'_>,
     indices: &LinkerDefinedIndices,
     call_ctors_body: Option<Vec<u8>>,
-    entry_wrapper_body: Option<Vec<u8>>,
 ) {
     let mut linker_globals = Vec::with_capacity(indices.num_defined_globals as usize);
     if indices.memory_base_global.is_some() {
@@ -5356,13 +5439,6 @@ fn emit_reserved_linker_definitions(
         if indices.call_ctors_func.is_some() {
             type_indices.push(void_ty);
             bodies.push(match call_ctors_body {
-                Some(bytes) => owned_linker_function_body(bytes),
-                None => empty_linker_function_body(),
-            });
-        }
-        if indices.entry_wrapper_func.is_some() {
-            type_indices.push(void_ty);
-            bodies.push(match entry_wrapper_body {
                 Some(bytes) => owned_linker_function_body(bytes),
                 None => empty_linker_function_body(),
             });
@@ -5586,30 +5662,21 @@ fn resolve_entry_function<'data>(
     }))
 }
 
-/// Export the command entry (default `_start`). With a wrapper, retarget any existing export.
+/// Export the command entry (default `_start`).
 fn ensure_entry_export<'data>(
     exports: &mut Vec<OutputExport<'data>>,
     entry: Option<&ResolvedEntry<'data>>,
-    entry_wrapper_func: Option<u32>,
 ) {
     let Some(entry) = entry else {
         return;
     };
-    let index = entry_wrapper_func.unwrap_or(entry.function_index);
-    if let Some(existing) = exports
-        .iter_mut()
-        .find(|export| export.name == entry.export_name)
-    {
-        if entry_wrapper_func.is_some() {
-            existing.kind = wasmparser::ExternalKind::Func;
-            existing.index = index;
-        }
+    if export_name_exists(exports, entry.export_name) {
         return;
     }
     exports.push(OutputExport {
         name: entry.export_name,
         kind: wasmparser::ExternalKind::Func,
-        index,
+        index: entry.function_index,
     });
 }
 
@@ -5656,7 +5723,6 @@ fn ensure_force_exports<'data>(
     layout_inputs: &[WasmObjectLayoutInput<'data>],
     object_index_maps: &[WasmObjectIndexMap],
     symbol_db: &SymbolDb<'data, Wasm>,
-    entry: Option<&ResolvedEntry<'data>>,
     indices: &LinkerDefinedIndices,
     file_id_to_index: &HashMap<crate::input_data::FileId, usize>,
 ) -> Result<()> {
@@ -5714,14 +5780,8 @@ fn ensure_force_exports<'data>(
 
         match def_sym.kind {
             WasmSymbolKind::Func => {
-                let mut index =
+                let index =
                     remap_wasm_index(&index_map.function_indices, def_sym.index, "function")?;
-                // If this is the entry and we wrap it, export the wrapper.
-                if let (Some(entry), Some(wrapper)) = (entry, indices.entry_wrapper_func)
-                    && export_name == entry.export_name
-                {
-                    index = wrapper;
-                }
                 push_export(exports, export_name, wasmparser::ExternalKind::Func, index);
             }
             WasmSymbolKind::Global => {
@@ -5792,11 +5852,6 @@ where
     let has_init_funcs = layout_inputs
         .iter()
         .any(|input| !input.init_funcs.is_empty());
-    // Like wasm-ld, wrap only when InitFuncs exist and crt does not already call
-    // `__wasm_call_ctors`.
-    let wrap_entry = has_init_funcs
-        && !call_ctors_used_in_objects(&layout_inputs)
-        && entry_is_defined_function(&layout_inputs, symbol_db, &file_id_to_index);
 
     let (indices, reloc_scan, shared_imports) = setup_got_mem_and_indices(
         &layout_inputs,
@@ -5804,7 +5859,6 @@ where
         symbol_db,
         &file_id_to_index,
         has_init_funcs,
-        wrap_entry,
     )?;
     let got_mem = &reloc_scan.got_mem;
     let got_func = &reloc_scan.got_func;
@@ -5960,22 +6014,10 @@ where
         symbol_db,
         &file_id_to_index,
     )?;
-    let entry_wrapper_body = match (indices.entry_wrapper_func, indices.call_ctors_func, &entry) {
-        (Some(_), Some(ctors), Some(entry)) => Some(encode_call_sequence_body(&[
-            (ctors, 0),
-            (entry.function_index, 0),
-        ])),
-        _ => None,
-    };
 
     {
         timing_phase!("Wasm linker-defined symbols and data addresses");
-        emit_reserved_linker_definitions(
-            &mut layout,
-            &indices,
-            call_ctors_body,
-            entry_wrapper_body,
-        );
+        emit_reserved_linker_definitions(&mut layout, &indices, call_ctors_body);
         deduplicate_output_types(&mut layout);
 
         // wasm-ld always defines a linear memory for executables.
@@ -6036,20 +6078,20 @@ where
             stack_first,
         )?;
         fill_stack_pointer_init(&mut layout, &indices, stack_size, stack_first)?;
-        ensure_entry_export(
-            &mut layout.exports,
-            entry.as_ref(),
-            indices.entry_wrapper_func,
-        );
+        ensure_entry_export(&mut layout.exports, entry.as_ref());
         ensure_force_exports(
             &mut layout.exports,
             &layout_inputs,
             &layout.object_index_maps,
             symbol_db,
-            entry.as_ref(),
             &indices,
             &file_id_to_index,
         )?;
+        if should_wrap_command_exports(has_init_funcs, &layout_inputs, &layout.exports)
+            && let Some(ctors) = indices.call_ctors_func
+        {
+            wrap_command_exports(&mut layout, ctors)?;
+        }
     }
     {
         timing_phase!("Finalize Wasm indirect function table");
