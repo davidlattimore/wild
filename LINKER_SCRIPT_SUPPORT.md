@@ -89,6 +89,7 @@ end lists the features required to link the Linux kernel.
 | `DEFINED(sym)` | ✅ | |
 | `SIZEOF_HEADERS` | ✅ | |
 | `SEGMENT_START(segment, default)` | ✅ | Supports `"text"`, `"data"`, `"bss"`, `"rodata"`; returns `-Ttext`/`-Tdata`/`-Tbss` override if provided, otherwise `default`; unknown segment names always return `default` |
+| `ABSOLUTE(expr)` | ✅ | |
 
 ## MEMORY Command
 
