@@ -254,29 +254,27 @@ fn evaluate_expression_value<'data, P: Platform>(
         };
     }
 
-    macro_rules! eval_cmp {
-        ($l:expr, $r:expr, $cmp:expr) => {{
-            let mut l_kind = ExpressionValueKind::default();
-            let mut r_kind = ExpressionValueKind::default();
-            let mut l_val = eval!($l, &mut l_kind)?;
-            let r_val = eval!($r, &mut r_kind)?;
+    let mut eval_cmp = |l, r, cmp: fn(u64, u64) -> bool| {
+        let mut l_kind = ExpressionValueKind::default();
+        let mut r_kind = ExpressionValueKind::default();
+        let mut l_val = eval!(l, &mut l_kind)?;
+        let r_val = eval!(r, &mut r_kind)?;
 
-            if let Some(id) = expr_loc.relative_section_id() {
-                let primary_id = output_sections.primary_output_section(id);
-                let section_base = section_layouts.get(primary_id).mem_offset;
+        if let Some(id) = expr_loc.relative_section_id() {
+            let primary_id = output_sections.primary_output_section(id);
+            let section_base = section_layouts.get(primary_id).mem_offset;
 
-                let l_needs_base = l_kind.contains_section_relative
-                    && !l_kind.contains_absolute
-                    && r_kind.contains_absolute;
+            let l_needs_base = l_kind.contains_section_relative
+                && !l_kind.contains_absolute
+                && r_kind.contains_absolute;
 
-                if l_needs_base {
-                    l_val = l_val.wrapping_add(section_base);
-                }
+            if l_needs_base {
+                l_val = l_val.wrapping_add(section_base);
             }
+        }
 
-            Ok(u64::from($cmp(l_val, r_val)))
-        }};
-    }
+        Ok(u64::from(cmp(l_val, r_val)))
+    };
 
     match expr {
         Expression::Number(n) => Ok(*n),
@@ -327,12 +325,12 @@ fn evaluate_expression_value<'data, P: Platform>(
         }
 
         // Comparisons return 1 (true) or 0 (false)
-        Expression::LessThan(l, r) => eval_cmp!(l, r, |a, b| a < b),
-        Expression::GreaterThan(l, r) => eval_cmp!(l, r, |a, b| a > b),
-        Expression::LessEqual(l, r) => eval_cmp!(l, r, |a, b| a <= b),
-        Expression::GreaterEqual(l, r) => eval_cmp!(l, r, |a, b| a >= b),
-        Expression::Equal(l, r) => eval_cmp!(l, r, |a, b| a == b),
-        Expression::NotEqual(l, r) => eval_cmp!(l, r, |a, b| a != b),
+        Expression::LessThan(l, r) => eval_cmp(l, r, |a, b| a < b),
+        Expression::GreaterThan(l, r) => eval_cmp(l, r, |a, b| a > b),
+        Expression::LessEqual(l, r) => eval_cmp(l, r, |a, b| a <= b),
+        Expression::GreaterEqual(l, r) => eval_cmp(l, r, |a, b| a >= b),
+        Expression::Equal(l, r) => eval_cmp(l, r, |a, b| a == b),
+        Expression::NotEqual(l, r) => eval_cmp(l, r, |a, b| a != b),
 
         Expression::Sizeof(name) => Ok(section_size(name, section_layouts, output_sections)),
         Expression::Alignof(name) => Ok(section_align(name, section_layouts, output_sections)),
