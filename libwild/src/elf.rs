@@ -1353,7 +1353,9 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .section_start(crate::output_section_id::FILE_HEADER, "__ehdr_start")
             .hide();
 
-        symbols.section_start(output_section_id::GOT, "_GLOBAL_OFFSET_TABLE_");
+        symbols
+            .section_start(output_section_id::GOT, "_GLOBAL_OFFSET_TABLE_")
+            .hide();
 
         // Don't emit .rela.plt start/stop symbols for static PIE executables. Doing so causes glibc
         // to call the resolver functions without taking into account that the binary has been
