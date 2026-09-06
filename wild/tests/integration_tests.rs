@@ -130,7 +130,8 @@
 //! RunDynSym:{string} If set and RunEnabled:true, then, instead of executing the binary normally,
 //! the binary is loaded as a shared library and the function specified by the string is called. The
 //! function must return an integer to indicate status (status != 42 is an error). Such run is
-//! currently skipped if the shared library is cross compiled.
+//! currently skipped if the shared library is cross compiled. For Wasm, wasmtime is invoked with
+//! `--invoke` on the named export.
 //!
 //! ReferenceLinkers:{linker-names} List of reference linkers to run this test with.
 //!
@@ -876,10 +877,14 @@ fn validate_wasm(wasm_file: &Path, linker_name: &str) -> Result {
     Ok(())
 }
 
-fn run_wasm_with_wasmtime(wasm_file: &Path, linker_name: &str) -> Result {
-    let output = Command::new("wasmtime")
-        .arg("run")
-        .args(["-W", "threads,shared-memory"])
+fn run_wasm_with_wasmtime(wasm_file: &Path, linker_name: &str, invoke: Option<&str>) -> Result {
+    let mut command = Command::new("wasmtime");
+    command.arg("run");
+    command.args(["-W", "threads,shared-memory"]);
+    if let Some(func) = invoke {
+        command.arg("--invoke").arg(func);
+    }
+    let output = command
         .arg(wasm_file)
         .output()
         .context("Failed to run wasmtime")?;
@@ -3081,7 +3086,11 @@ const EXIT_SUCCESS: i32 = 42;
 impl LinkOutput {
     fn run(&self, cross_arch: Option<Architecture>) -> Result {
         if self.command.config.platform == PlatformKind::Wasm {
-            return run_wasm_with_wasmtime(&self.binary, self.linker_used.name());
+            return run_wasm_with_wasmtime(
+                &self.binary,
+                self.linker_used.name(),
+                self.command.config.run_dyn_sym.as_deref(),
+            );
         }
 
         let mut command = if let Some(arch) = cross_arch {
@@ -7305,14 +7314,20 @@ fn run_with_config(
             // If RunDynSym is set, execute our binary by loading it dynamically and calling the
             // configured function.
             if let Some(func) = config.run_dyn_sym.as_ref() {
-                // As we are loading the library directly into our process, our binary cannot be
-                // cross compiled. Also, if we are on a musl libc system, we cannot
-                // use dlopen() as the integration test is a statically linked binary.
-                // In those cases test execution is skipped.
+                // Wasm: `run` already passes `--invoke` to wasmtime.
+                if config.platform == PlatformKind::Wasm {
+                    program
+                        .link_output
+                        .run(cross_arch)
+                        .with_context(|| format!("Failed to run program. {program}"))?;
+                } else if cross_arch.is_none() && !is_musl_used() {
+                    // As we are loading the library directly into our process, our binary cannot be
+                    // cross compiled. Also, if we are on a musl libc system, we cannot
+                    // use dlopen() as the integration test is a statically linked binary.
+                    // In those cases test execution is skipped.
 
-                // TODO: To support those other cases: a small "wrapper executable" can be cross
-                // compiled and dynamically linked to load the shared library instead.
-                if cross_arch.is_none() && !is_musl_used() {
+                    // TODO: To support those other cases: a small "wrapper executable" can be cross
+                    // compiled and dynamically linked to load the shared library instead.
                     program
                         .link_output
                         .run_as_dynlib(func)
