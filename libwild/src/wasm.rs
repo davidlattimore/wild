@@ -229,9 +229,9 @@ pub(crate) struct File<'data> {
     #[debug(skip)]
     pub(crate) symbols: Vec<WasmSymbol>,
 
-    /// Per-data-segment alignments from the linking `SegmentInfo` subsection.
+    /// Per-data-segment metadata from the linking `SegmentInfo` subsection.
     #[debug(skip)]
-    pub(crate) segment_alignments: Vec<Alignment>,
+    pub(crate) segment_infos: Vec<WasmSegmentInfo<'data>>,
 
     /// Init functions from the linking section (`InitFuncs`), in input order.
     #[debug(skip)]
@@ -249,6 +249,23 @@ pub(crate) struct File<'data> {
     pub(crate) num_defined_functions: u32,
     pub(crate) num_defined_globals: u32,
     pub(crate) num_data_segments: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[expect(unused)]
+pub(crate) struct WasmSegmentInfo<'data> {
+    pub(crate) name: &'data str,
+    pub(crate) alignment: Alignment,
+    pub(crate) flags: wasmparser::SegmentFlags,
+}
+
+impl WasmSegmentInfo<'_> {
+    #[expect(unused)]
+    fn is_tls(self) -> bool {
+        self.flags.contains(wasmparser::SegmentFlags::TLS)
+            || self.name.starts_with(".tdata")
+            || self.name.starts_with(".tbss")
+    }
 }
 
 /// One entry of the Wasm tool-conventions `target_features` custom section.
@@ -2260,10 +2277,9 @@ fn layout_object_data<'data>(
             .unwrap_or(filtered_idx as u32);
         // Linking `SegmentInfo.alignment` is a power-of-two exponent.
         let align = input
-            .segment_alignments
+            .segment_infos
             .get(original_index as usize)
-            .copied()
-            .unwrap_or(crate::alignment::MIN);
+            .map_or(crate::alignment::MIN, |info| info.alignment);
         *memory_cursor = u32::try_from(align.align_up(u64::from(*memory_cursor)))
             .map_err(|_| crate::error!("Wasm data segment alignment overflow"))?;
         let output_memory_offset = *memory_cursor;
@@ -2866,7 +2882,7 @@ struct WasmObjectLayoutInput<'data> {
     code_relocations: Vec<WasmRelocation>,
     data_segments: Vec<WasmDataSegment<'data>>,
     data_segment_original_indices: Vec<u32>,
-    segment_alignments: &'data [Alignment],
+    segment_infos: &'data [WasmSegmentInfo<'data>],
     data_relocations: Vec<WasmRelocation>,
     symbols: &'data [WasmSymbol],
     init_funcs: &'data [WasmInitFunc],
@@ -3144,7 +3160,7 @@ impl<'data> WasmObjectLayoutInput<'data> {
             code_relocations,
             data_segments,
             data_segment_original_indices,
-            segment_alignments: file.segment_alignments.as_slice(),
+            segment_infos: file.segment_infos.as_slice(),
             data_relocations,
             symbols: file.symbols.as_slice(),
             init_funcs: file.init_funcs.as_slice(),
@@ -7177,7 +7193,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
 
     let mut sections: Vec<SectionHeader> = Vec::new();
     let mut symbols: Vec<WasmSymbol> = Vec::new();
-    let mut segment_alignments: Vec<Alignment> = Vec::new();
+    let mut segment_infos: Vec<WasmSegmentInfo<'data>> = Vec::new();
     let mut init_funcs: Vec<WasmInitFunc> = Vec::new();
     let mut reloc_sections: Vec<WasmRelocSection> = Vec::new();
     let mut target_features: Vec<WasmTargetFeature<'data>> = Vec::new();
@@ -7203,7 +7219,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
                         input,
                         &linking,
                         &mut symbols,
-                        &mut segment_alignments,
+                        &mut segment_infos,
                         &mut init_funcs,
                     )?;
                 }
@@ -7255,7 +7271,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         sections,
         standard_section_index,
         symbols,
-        segment_alignments,
+        segment_infos,
         init_funcs,
         reloc_sections,
         target_features,
@@ -7663,7 +7679,7 @@ fn parse_linking_subsections<'data>(
     data: &'data [u8],
     linking: &wasmparser::LinkingSectionReader<'data>,
     symbols: &mut Vec<WasmSymbol>,
-    segment_alignments: &mut Vec<Alignment>,
+    segment_infos: &mut Vec<WasmSegmentInfo<'data>>,
     init_funcs: &mut Vec<WasmInitFunc>,
 ) -> Result {
     let data_start = data.as_ptr() as usize;
@@ -7682,7 +7698,11 @@ fn parse_linking_subsections<'data>(
             Linking::SegmentInfo(map) => {
                 for seg in map {
                     let seg = seg?;
-                    segment_alignments.push(Alignment::from_exponent(seg.alignment)?);
+                    segment_infos.push(WasmSegmentInfo {
+                        name: seg.name,
+                        alignment: Alignment::from_exponent(seg.alignment)?,
+                        flags: seg.flags,
+                    });
                 }
             }
             Linking::InitFuncs(map) => {
@@ -7802,7 +7822,7 @@ mod tests {
             code_relocations: Vec::new(),
             data_segments: Vec::new(),
             data_segment_original_indices: Vec::new(),
-            segment_alignments: &[],
+            segment_infos: &[],
             data_relocations: Vec::new(),
             symbols: &[],
             init_funcs: &[],
