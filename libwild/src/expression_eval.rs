@@ -143,7 +143,13 @@ fn evaluate_location<'data, P: Platform>(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections<'data, P>,
     resolved_location_counters: &[ResolvedLocationCounter],
+    value_kind: &mut ExpressionValueKind,
 ) -> Result<u64> {
+    if expr_loc.relative_section_id().is_some() {
+        value_kind.contains_section_relative = true;
+    } else {
+        value_kind.contains_absolute = true;
+    }
     match expr_loc {
         SymbolLoc::SectionStartRelative(_) => Ok(0),
         SymbolLoc::SectionEndRelative(id) => {
@@ -203,7 +209,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
         symbol_resolution_callback,
     )?;
 
-    let offset = if value_kind.needs_section_base() {
+    let offset = if !expr.is_absolute() && value_kind.needs_section_base() {
         if let Some(id) = expr_loc.relative_section_id() {
             let primary_id = output_sections.primary_output_section(id);
             let section_layout = section_layouts.get(primary_id);
@@ -279,19 +285,13 @@ fn evaluate_expression_value<'data, P: Platform>(
     match expr {
         Expression::Number(n) => Ok(*n),
 
-        Expression::LocationCounter => {
-            if expr_loc.relative_section_id().is_some() {
-                value_kind.contains_section_relative = true;
-            } else {
-                value_kind.contains_absolute = true;
-            }
-            evaluate_location(
-                expr_loc,
-                section_layouts,
-                output_sections,
-                resolved_location_counters,
-            )
-        }
+        Expression::LocationCounter => evaluate_location(
+            expr_loc,
+            section_layouts,
+            output_sections,
+            resolved_location_counters,
+            value_kind,
+        ),
 
         Expression::Symbol(name) => {
             let value = symbol_resolution_callback(name)?;
@@ -349,18 +349,18 @@ fn evaluate_expression_value<'data, P: Platform>(
             if align == 0 {
                 bail!("ALIGN(0) is invalid");
             }
-            let expr = expr.as_ref().map_or_else(
-                || {
-                    evaluate_location(
-                        expr_loc,
-                        section_layouts,
-                        output_sections,
-                        resolved_location_counters,
-                    )
-                },
-                |e| eval!(e),
-            )?;
-            Ok(expr.next_multiple_of(align))
+            let value = if let Some(expr) = expr {
+                eval!(expr)?
+            } else {
+                evaluate_location(
+                    expr_loc,
+                    section_layouts,
+                    output_sections,
+                    resolved_location_counters,
+                    value_kind,
+                )?
+            };
+            Ok(value.next_multiple_of(align))
         }
 
         Expression::Min(l, r) => Ok(eval!(l)?.min(eval!(r)?)),
@@ -429,25 +429,11 @@ fn evaluate_expression_value<'data, P: Platform>(
         }
         Expression::Absolute(expression) => {
             let mut inner_kind = ExpressionValueKind::default();
-            let val = evaluate_expression_value(
-                expression,
-                expr_loc,
-                input_ref,
-                section_layouts,
-                output_sections,
-                memory_regions,
-                symbol_db,
-                sizeof_headers,
-                resolved_location_counters,
-                &mut inner_kind,
-                laid_out_mem_offsets,
-                symbol_resolution_callback,
-            )?;
-            value_kind.contains_absolute = true;
-            value_kind.contains_section_relative = false;
+            let val = eval!(expression, &mut inner_kind)?;
             if inner_kind.contains_section_relative
                 && let Some(id) = expr_loc.relative_section_id()
             {
+                value_kind.contains_absolute = true;
                 let primary_id = output_sections.primary_output_section(id);
                 let section_layout = section_layouts.get(primary_id);
                 return Ok(val.wrapping_add(section_layout.mem_offset));
@@ -665,9 +651,8 @@ fn evaluate_early_expression_internal_symbol<'data, P: Platform>(
             );
             visited_nodes.remove(&canonical_id);
             let value = value?;
-            let symbol_section = redirect
-                .loc
-                .relative_section_id()
+            let symbol_section = symbol_db
+                .output_section_id(canonical_id)
                 .map(|id| output_sections.primary_output_section(id));
             if let Some(symbol_section) = symbol_section {
                 Ok(SymbolValue::SectionRelative {

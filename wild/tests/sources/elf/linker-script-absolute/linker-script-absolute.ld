@@ -17,6 +17,15 @@ SECTIONS
         abs_sum_two = ABSOLUTE(ABSOLUTE(a) + ABSOLUTE(b));
         abs_max_func = ABSOLUTE(MAX(a, b));
         abs_nested = ABSOLUTE(ABSOLUTE(a));
+        absolute_aligned = ABSOLUTE(ALIGN(16));
+        absolute_plus = ABSOLUTE(16) + 8;
+
+        padding = ABSOLUTE(16);
+        . += padding;
+        after_padding = .;
+
+        absolute_last = ABSOLUTE(. + ABSOLUTE(0));
+        absolute_first = ABSOLUTE(ABSOLUTE(0) + .);
 
         ASSERT(a == ABSOLUTE(text_start) + 0x20, "a failed");
 
@@ -40,6 +49,15 @@ SECTIONS
 
         ASSERT(abs_nested == ABSOLUTE(text_start) + 0x20, "abs_nested failed");
 
+        ASSERT(absolute_aligned == ABSOLUTE(text_start), "absolute_aligned failed");
+        ASSERT(absolute_aligned != text_start, "absolute_aligned failed");
+
+        ASSERT(absolute_plus == 24, "arithmetic must preserve absolute symbol classification");
+
+        ASSERT(after_padding == text_start + 0x10, "after_padding failed");
+
+        ASSERT(absolute_first == absolute_last, "order does not afftect value");
+
         *(.text)
     }
 
@@ -56,3 +74,5 @@ SECTIONS
         *(.bss .bss.*)
     }
 }
+
+ASSERT(absolute_aligned == text_start, "absolute_aligned failed");
