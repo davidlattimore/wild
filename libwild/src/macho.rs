@@ -42,6 +42,7 @@ use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
+use crate::platform::Relaxation;
 use crate::platform::SectionAttributes as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
@@ -2310,7 +2311,23 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
         let mut flags = resources.local_flags_for_symbol(symbol_id);
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
 
-        let relocation = A::relocation_from_raw(rel_info)?;
+        let relocation = if let Some(relaxation) = A::new_relaxation(
+            rel_info,
+            &[],
+            u64::from(rel_info.r_address),
+            flags,
+            symbol_db.output_kind,
+            SectionFlags::default(),
+            None,
+            1,
+            0,
+            0,
+            None,
+        ) {
+            relaxation.rel_info()
+        } else {
+            A::relocation_from_raw(rel_info)?
+        };
         let mut flags_to_add = layout::resolution_flags(relocation.kind);
         if is_dynamic_library(&symbol_db.file(symbol_db.file_id_for_symbol(symbol_id))) {
             flags_to_add |= ValueFlags::GOT;
