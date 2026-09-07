@@ -2,7 +2,6 @@
 //#Object:runtime.c
 //#Object:ptr_black_box.c
 //#ReferenceLinkers:lld
-//#DiffMatchAny:true
 //#ExpectSym:__dso_handle
 //#NoDynSym:__dso_handle
 
