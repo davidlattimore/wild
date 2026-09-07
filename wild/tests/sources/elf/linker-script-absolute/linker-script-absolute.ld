@@ -56,7 +56,7 @@ SECTIONS
 
         ASSERT(after_padding == text_start + 0x10, "after_padding failed");
 
-        ASSERT(absolute_first == absolute_last, "order does not afftect value");
+        ASSERT(absolute_first == absolute_last, "order does not affect value");
 
         *(.text)
     }
