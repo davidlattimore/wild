@@ -48,6 +48,8 @@ tests = [
   "aarch64-tls-ie.s",
   "aarch64-tls-vaddr-align.s",
   "aarch64-abs64-dyn.s",
+  "aarch64-thunk-reuse2.s",
+  "aarch64-thunk-section-location.s",
   "basic-aarch64.s",
   "relocation-b-aarch64.test",
   "emulation-aarch64.s",
@@ -138,6 +140,11 @@ tests = [
   "aarch64-tlsdesc-zrel.s",
   "aarch64-tls-dtprel.s",
   "aarch64-tlsld-ldst.s",
+  "aarch64-thunk-bti.s",
+  "aarch64-thunk-bti-execute-only.s",
+  "aarch64-thunk-bti-multipass.s",
+  "aarch64-thunk-bti-overlay-reuse.s",
+  "aarch64-thunk-execute-only.s",
   "lto/aarch64.ll",
   "lto/aarch64-pac-got-func.ll",
   "aarch64-reloc-implicit-addend.test",
@@ -202,6 +209,8 @@ tests = [
   "aarch64-gotpage.s",
   "aarch64-fpic-got.s",
   "aarch64-long-thunk-converge.s",
+  "aarch64-range-thunk-extension-plt32.s",
+  "aarch64-thunk-pi.s",
   "aarch64-thunk-reuse.s",
   "aarch64-thunk-script.s",
   "aarch64-thunk-sort.s",
@@ -209,21 +218,9 @@ tests = [
   "eh-frame-nonzero-offset-aarch64.s",
 ]
 
-[skipped_groups.range_thunks_not_implemented]
-reason = "Range extension thunks not implemented"
-tests = [
-  "aarch64-call26-thunk.s",
-  "aarch64-jump26-thunk.s",
-  "aarch64-range-thunk-extension-plt32.s",
-  "aarch64-thunk-bti.s",
-  "aarch64-thunk-bti-execute-only.s",
-  "aarch64-thunk-bti-multipass.s",
-  "aarch64-thunk-bti-overlay-reuse.s",
-  "aarch64-thunk-execute-only.s",
-  "aarch64-thunk-pi.s",
-  "aarch64-thunk-reuse2.s",
-  "aarch64-thunk-section-location.s",
-]
+[skipped_groups.thunk_for_absolute_symbol]
+reason = "Wild does not allocate thunks for out-of-range branches to absolute symbols"
+tests = ["aarch64-call26-thunk.s", "aarch64-jump26-thunk.s"]
 
 [skipped_groups.gc_sections_skips_validation]
 reason = "Wild skips validation for GC'd sections by design"
