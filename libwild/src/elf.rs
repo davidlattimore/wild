@@ -1354,6 +1354,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
             .hide();
 
         symbols
+            .section_start(crate::output_section_id::FILE_HEADER, "__dso_handle")
+            .hide();
+
+        symbols
             .section_start(output_section_id::GOT, "_GLOBAL_OFFSET_TABLE_")
             .hide();
 
