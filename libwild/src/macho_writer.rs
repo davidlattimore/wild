@@ -18,6 +18,7 @@ use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
 use crate::layout::Resolution;
 use crate::layout::Section;
+use crate::layout::SegmentLayout;
 use crate::layout::SymbolCopyInfo;
 use crate::macho::BuildVersionCommand;
 use crate::macho::CHAINED_FIXUP_PAGE_START_SIZE;
@@ -285,6 +286,7 @@ fn write_epilogue(
 ) -> Result {
     verbose_timing_phase!("Write epilogue");
     write_chained_fixup_table(layout, buffers.get_mut(part_id::CHAINED_FIXUP_TABLE))?;
+    write_init_offsets(layout, buffers.get_mut(part_id::INIT_OFFSETS))?;
     let out = buffers.get_mut(part_id::EXPORTS_TRIE);
     ensure!(
         exports_trie.len() <= out.len(),
@@ -296,18 +298,35 @@ fn write_epilogue(
     Ok(())
 }
 
+fn write_init_offsets(layout: &MachOLayout<'_>, out: &mut [u8]) -> Result {
+    let text_segment = get_text_segment_layout(layout)?.sizes.mem_offset;
+
+    let chunks = out.as_chunks_mut::<4>();
+    ensure!(
+        chunks.1.is_empty(),
+        "Mach-O initializer must be a multiple of 4"
+    );
+    for (&address, slot) in layout
+        .format_specific
+        .init_function_addresses
+        .iter()
+        .zip(chunks.0)
+    {
+        let offset = address
+            .checked_sub(text_segment)
+            .context("Mach-O initializer is before the __TEXT segment")?;
+        let offset = u32::try_from(offset).context("Mach-O initializer offset exceeds 32 bits")?;
+        slot.copy_from_slice(&offset.to_le_bytes());
+    }
+    Ok(())
+}
+
 fn build_exports_trie(layout: &MachOLayout<'_>) -> Result<Vec<u8>> {
     if !layout.symbol_db.output_kind.needs_dynsym() {
         return Ok(Vec::new());
     }
 
-    let text_segment = layout
-        .segment_layouts
-        .segments
-        .iter()
-        .find(|segment| layout.program_segments.segment_def(segment.id).name == SegmentName::TEXT)
-        .context("Missing Mach-O __TEXT segment")?;
-
+    let text_segment = get_text_segment_layout(layout)?;
     let image_base = text_segment.sizes.mem_offset;
 
     let mut symbols = layout
@@ -1168,12 +1187,7 @@ fn write_code_signature_metadata(
         "Unexpected code directory size"
     );
 
-    let text_segment = layout
-        .segment_layouts
-        .segments
-        .iter()
-        .find(|segment| layout.program_segments.segment_def(segment.id).name == SegmentName::TEXT)
-        .ok_or_else(|| error!("__TEXT segment is mandatory"))?;
+    let text_segment = get_text_segment_layout(layout)?;
 
     let code_directory = CodeDirectory {
         length: (code_signature_section.file_size - CS_BLOB_HEADERS_SIZE as usize) as u32,
@@ -1390,4 +1404,13 @@ fn macho_section_index(layout: &MachOLayout<'_>, section_id: OutputSectionId) ->
     }
 
     bail!("cannot find the output section")
+}
+
+fn get_text_segment_layout<'a>(layout: &'a MachOLayout<'_>) -> Result<&'a SegmentLayout> {
+    layout
+        .segment_layouts
+        .segments
+        .iter()
+        .find(|segment| layout.program_segments.segment_def(segment.id).name == SegmentName::TEXT)
+        .context("Missing Mach-O __TEXT segment")
 }

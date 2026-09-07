@@ -22,6 +22,7 @@ use crate::layout::SymbolCopyInfo;
 use crate::layout::SymbolResolutions;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
+use crate::layout_rules::SectionRuleOutcome;
 use crate::macho::output_section_id::CHAINED_FIXUP_TABLE;
 use crate::macho::output_section_id::CODE_SIGNATURE;
 use crate::macho::output_section_id::EXPORTS_TRIE;
@@ -109,6 +110,7 @@ enum SinglePartSectionId {
     CodeSignature,
     ChainedFixupTable,
     ExportsTrie,
+    InitOffsets,
 
     // Must be last.
     Count,
@@ -126,6 +128,7 @@ pub(crate) mod part_id {
     pub(crate) const CODE_SIGNATURE: PartId = SinglePartSectionId::CodeSignature.part_id();
     pub(crate) const CHAINED_FIXUP_TABLE: PartId = SinglePartSectionId::ChainedFixupTable.part_id();
     pub(crate) const EXPORTS_TRIE: PartId = SinglePartSectionId::ExportsTrie.part_id();
+    pub(crate) const INIT_OFFSETS: PartId = SinglePartSectionId::InitOffsets.part_id();
 }
 
 pub(crate) mod output_section_id {
@@ -147,6 +150,8 @@ pub(crate) mod output_section_id {
         SinglePartSectionId::ChainedFixupTable.output_section_id();
     pub(crate) const EXPORTS_TRIE: OutputSectionId =
         SinglePartSectionId::ExportsTrie.output_section_id();
+    pub(crate) const INIT_OFFSETS: OutputSectionId =
+        SinglePartSectionId::InitOffsets.output_section_id();
 }
 
 const LE: Endianness = Endianness::Little;
@@ -172,6 +177,7 @@ pub(crate) const CHAINED_FIXUP_IMPORT_SIZE: u64 = size_of::<u32>() as u64;
 pub(crate) const CHAINED_FIXUP_PAGE_START_SIZE: u64 = size_of::<u16>() as u64;
 pub(crate) const GOT_ENTRY_SIZE: u64 = 8;
 pub(crate) const PLT_ENTRY_SIZE: u64 = 12;
+pub(crate) const INIT_OFFSET_ENTRY_SIZE: u64 = size_of::<u32>() as u64;
 
 type SectionHeader = Section64<crate::macho::Endianness>;
 type SectionTable<'data> = &'data [Section64<crate::macho::Endianness>];
@@ -262,12 +268,20 @@ impl std::fmt::Display for SegmentName {
 pub(crate) struct LayoutExt {
     /// Imported STUB library symbols, sorted by GOT.
     pub(crate) imported_symbols: Vec<ImportedSymbolWithResolution>,
+    /// Final addresses of initializer functions, in input relocation order.
+    pub(crate) init_function_addresses: Vec<u64>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct FinaliseSizesExt {
     imported_libraries: Vec<FileId>,
     imported_symbols: Vec<SymbolId>,
+    init_functions: Vec<SymbolId>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ObjectLayoutStateExt {
+    init_functions: Vec<SymbolId>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -563,7 +577,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn process_gnu_note_section(
         &self,
-        _state: &mut (),
+        _state: &mut ObjectLayoutStateExt,
         _section_index: object::SectionIndex,
     ) -> Result {
         todo!()
@@ -1075,7 +1089,7 @@ impl platform::Platform for MachO {
     type LayoutResourcesExt<'data> = ();
     type PreludeLayoutStateExt = PreludeLayoutExt;
     type PreludeLayoutExt = PreludeLayoutExt;
-    type ObjectLayoutStateExt<'data> = ();
+    type ObjectLayoutStateExt<'data> = ObjectLayoutStateExt;
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
@@ -1312,10 +1326,14 @@ impl platform::Platform for MachO {
     }
 
     fn create_linker_defined_symbols(
-        _symbols: &mut crate::parsing::InternalSymbolsBuilder<Self>,
+        symbols: &mut crate::parsing::InternalSymbolsBuilder<Self>,
         _output_kind: crate::output_kind::OutputKind,
         _args: &Self::Args,
     ) {
+        // Mach-O object symbol names include the C ABI's leading underscore.
+        symbols
+            .section_start(crate::output_section_id::FILE_HEADER, "___dso_handle")
+            .hide();
     }
 
     fn built_in_section_infos<'data>()
@@ -1344,7 +1362,7 @@ impl platform::Platform for MachO {
     fn create_finalise_sizes_ext<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
         _args: &Self::Args,
         groups: &'files mut [layout::GroupState<'data, Self>],
-        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) -> Result<Self::FinaliseSizesExt<'data>>
     where
         'data: 'files,
@@ -1352,10 +1370,20 @@ impl platform::Platform for MachO {
     {
         let mut imported_libraries = Vec::new();
         let mut imported_symbols = Vec::new();
+        let mut init_functions = Vec::new();
 
         for group in groups {
             for file in &group.files {
                 match file {
+                    layout::FileLayoutState::Object(state) => {
+                        init_functions.extend(
+                            state
+                                .format_specific
+                                .init_functions
+                                .iter()
+                                .map(|local_symbol_id| symbol_db.definition(*local_symbol_id)),
+                        );
+                    }
                     layout::FileLayoutState::StubLibrary(state) => {
                         if state.format_specific.loaded {
                             imported_libraries.push(state.file_id());
@@ -1378,6 +1406,7 @@ impl platform::Platform for MachO {
         Ok(FinaliseSizesExt {
             imported_libraries,
             imported_symbols,
+            init_functions,
         })
     }
 
@@ -1412,6 +1441,18 @@ impl platform::Platform for MachO {
             .into_iter()
             .sorted_by_key(|symbol| symbol.got_address)
             .collect();
+        layout_ext.init_function_addresses = finalise_sizes_ext
+            .init_functions
+            .iter()
+            .map(|&symbol_id| {
+                resolutions
+                    .get(symbol_id)
+                    .map(|resolution| resolution.raw_value)
+                    .ok_or_else(|| {
+                        error!("missing resolution for Mach-O initializer {symbol_id:?}")
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(layout_ext)
     }
@@ -1425,6 +1466,45 @@ impl platform::Platform for MachO {
         _scope: &rayon::Scope<'scope>,
     ) -> Result {
         todo!()
+    }
+
+    fn process_init_func_section<'data, 'scope, A: platform::Arch<Platform = Self>>(
+        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        section_index: object::SectionIndex,
+        resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
+        queue: &mut crate::layout::LocalWorkQueue<Self>,
+        scope: &rayon::Scope<'scope>,
+    ) -> Result {
+        let header = object.object.section(section_index)?;
+        ensure!(
+            header.flags.get(LE).typ() == macho::S_MOD_INIT_FUNC_POINTERS,
+            "Mach-O __mod_init_func section has an unexpected section type"
+        );
+
+        for rel in object
+            .relocations(section_index)?
+            .relocations
+            .iter()
+            .sorted_unstable_by_key(|rel| rel.info(LE).r_address)
+        {
+            let info = rel.info(LE);
+            ensure!(
+                info.r_extern
+                    && !info.r_pcrel
+                    && info.r_length == 3
+                    && info.r_type == macho::ARM64_RELOC_UNSIGNED,
+                "unsupported Mach-O initializer relocation"
+            );
+            object.format_specific.init_functions.push(
+                object
+                    .symbol_id_range
+                    .input_to_id(SymbolIndex(info.r_symbolnum as usize)),
+            );
+            process_relocation::<A>(object, rel, section_index, resources, queue, scope)?;
+        }
+
+        Ok(())
     }
 
     fn non_empty_section_loaded<'data, 'scope, A: platform::Arch<Platform = Self>>(
@@ -1484,7 +1564,7 @@ impl platform::Platform for MachO {
         state: &mut Self::EpilogueLayoutExt,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
-        _format_specific: &Self::FinaliseSizesExt<'data>,
+        format_specific: &Self::FinaliseSizesExt<'data>,
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
         let mut fixup_table_size = CHAINED_FIXUP_TABLE_BASE_SIZE;
@@ -1529,6 +1609,11 @@ impl platform::Platform for MachO {
             part_id::EXPORTS_TRIE,
             crate::trie::build(&mut exports).len() as u64,
         );
+
+        mem_sizes.increment(
+            part_id::INIT_OFFSETS,
+            format_specific.init_functions.len() as u64 * INIT_OFFSET_ENTRY_SIZE,
+        );
     }
 
     fn finalise_sizes_all<'data>(
@@ -1539,12 +1624,16 @@ impl platform::Platform for MachO {
 
     fn finalise_layout_epilogue<'data>(
         _epilogue_state: &mut Self::EpilogueLayoutExt,
-        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        _format_specific: &Self::FinaliseSizesExt<'data>,
+        format_specific: &Self::FinaliseSizesExt<'data>,
         _dynsym_start_index: u32,
         _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
     ) -> Result {
+        memory_offsets.increment(
+            part_id::INIT_OFFSETS,
+            format_specific.init_functions.len() as u64 * INIT_OFFSET_ENTRY_SIZE,
+        );
         Ok(())
     }
 
@@ -1841,6 +1930,7 @@ impl platform::Platform for MachO {
             &custom.exec,
             SegmentName::TEXT,
         );
+        builder.add_section(output_section_id::INIT_OFFSETS);
 
         builder.add_section(output_section_id::PLT_GOT);
         add_sections_in_segment(&mut builder, output_sections, &custom.ro, SegmentName::TEXT);
@@ -2068,6 +2158,14 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         min_alignment: Alignment { exponent: 2 },
         ..DEFAULT_DEFS
     };
+    defs[output_section_id::INIT_OFFSETS.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionIdentity::new(
+            SectionName(b"__init_offsets"),
+            Some(SegmentName::TEXT),
+        )),
+        section_flags: macho::S_INIT_FUNC_OFFSETS.to_flags(),
+        min_alignment: Alignment { exponent: 2 },
+    };
 
     defs
 };
@@ -2107,6 +2205,7 @@ fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
 }
 
 const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
+    SectionRule::exact(b"__mod_init_func", SectionRuleOutcome::InitFunc),
     // TODO: Add a Mach-O output section ID and rule for `__compact_unwind`.
 ];
 

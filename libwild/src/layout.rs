@@ -4161,6 +4161,7 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
         let mut frame_section_indices = SmallVec::<[SectionIndex; 2]>::new();
         let mut note_gnu_property_section = None;
         let mut riscv_attributes_section = None;
+        let mut init_func_section_indices = SmallVec::<[SectionIndex; 1]>::new();
 
         let no_gc = !resources.symbol_db.args.should_gc_sections();
 
@@ -4195,6 +4196,9 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                 SectionSlot::RiscvVAttributes(index) => {
                     riscv_attributes_section = Some(*index);
                 }
+                SectionSlot::InitFunc(index) => {
+                    init_func_section_indices.push(*index);
+                }
                 _ => (),
             }
         }
@@ -4222,6 +4226,17 @@ impl<'data, P: Platform<GcUnit = SectionGcUnit>> ObjectLayoutState<'data, P> {
                 riscv_attributes_index,
             )
             .context("Cannot parse .riscv.attributes section")?;
+        }
+
+        for init_function_section_index in init_func_section_indices {
+            <A::Platform as Platform>::process_init_func_section::<A>(
+                self,
+                common,
+                init_function_section_index,
+                resources,
+                queue,
+                scope,
+            )?;
         }
 
         Ok(())
@@ -4257,7 +4272,8 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             | SectionSlot::FrameData(..)
             | SectionSlot::LoadedDebugInfo(..)
             | SectionSlot::NoteGnuProperty(..)
-            | SectionSlot::RiscvVAttributes(..) => {}
+            | SectionSlot::RiscvVAttributes(..)
+            | SectionSlot::InitFunc(..) => {}
             SectionSlot::MergeStrings(_) => {
                 // We currently always load everything in merge-string sections. i.e. we don't GC
                 // unreferenced data. So the only thing we need to do here is propagate section
@@ -4465,6 +4481,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                     let address = P::frame_data_base_address(memory_offsets);
                     SectionResolution { address }
                 }
+                SectionSlot::InitFunc(..) => SectionResolution::none(),
                 _ => SectionResolution::none(),
             };
             section_resolutions.push(resolution);

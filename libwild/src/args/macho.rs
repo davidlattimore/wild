@@ -65,6 +65,8 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     // Mach-O appears to always demangle symbols.
     "demangle",
     "dynamic",
+    // __init_offsets is emitted by default
+    "init_offsets",
 ];
 
 const IGNORED_FLAGS: &[&str] = &[];

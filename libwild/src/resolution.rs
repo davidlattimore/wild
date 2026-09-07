@@ -717,6 +717,9 @@ pub(crate) enum SectionSlot {
     /// The section contains frame data, e.g. .eh_frame or equivalent.
     FrameData(object::SectionIndex),
 
+    /// The section contains initializer function pointers that are processed by the platform.
+    InitFunc(object::SectionIndex),
+
     /// The section is a string-merge section.
     MergeStrings(StringMergeSectionSlot),
 
@@ -1470,6 +1473,12 @@ fn resolve_section<'data, P: Platform>(
                 crate::part_id::UNMAPPED,
             ));
         }
+        SectionRuleOutcome::InitFunc => {
+            return Ok((
+                SectionSlot::InitFunc(input_section_index),
+                crate::part_id::UNMAPPED,
+            ));
+        }
         SectionRuleOutcome::NoteGnuProperty => {
             return Ok((
                 SectionSlot::NoteGnuProperty(input_section_index),
@@ -1764,7 +1773,10 @@ impl SectionSlot {
     pub(crate) fn is_loaded(&self) -> bool {
         !matches!(
             self,
-            SectionSlot::Discard | SectionSlot::Unloaded(..) | SectionSlot::NoteGnuProperty(..)
+            SectionSlot::Discard
+                | SectionSlot::Unloaded(..)
+                | SectionSlot::InitFunc(..)
+                | SectionSlot::NoteGnuProperty(..)
         )
     }
 
