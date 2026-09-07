@@ -30,6 +30,12 @@ pub(crate) const DEFAULT_ENTRY: &str = "_start";
 /// Default export name for the module's linear memory.
 pub(crate) const DEFAULT_MEMORY_EXPORT_NAME: &str = "memory";
 
+/// Default module name used when importing the linear memory (`--import-memory`).
+pub(crate) const DEFAULT_MEMORY_IMPORT_MODULE: &str = "env";
+
+/// Default field name used when importing the linear memory (`--import-memory`).
+pub(crate) const DEFAULT_MEMORY_IMPORT_NAME: &str = "memory";
+
 #[derive(Debug)]
 pub struct WasmArgs {
     pub(crate) common: super::CommonArgs,
@@ -50,6 +56,7 @@ pub struct WasmArgs {
     // Emit a shared linear memory (`memory.shared`). Requires the `atomics` and `bulk-memory`
     // target features.
     pub(crate) shared_memory: bool,
+    pub(crate) import_memory: bool,
     pub(crate) gc_sections: bool,
     pub(crate) allow_undefined: bool,
     pub(crate) allow_multiple_definition: bool,
@@ -84,6 +91,7 @@ impl Default for WasmArgs {
             initial_memory: None,
             max_memory: None,
             shared_memory: false,
+            import_memory: false,
             export_memory: None,
             gc_sections: true,
             allow_undefined: false,
@@ -419,6 +427,15 @@ fn setup_argument_parser() -> ArgumentParser<WasmArgs> {
         .help("Use shared linear memory")
         .execute(|args, _modifier_stack| {
             args.shared_memory = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("import-memory")
+        .help("Import the module's memory from the default module of env with the name memory")
+        .execute(|args, _modifier_stack| {
+            args.import_memory = true;
             Ok(())
         });
 
