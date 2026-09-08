@@ -5098,6 +5098,7 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
             .zip(shards.into_par_iter())
             .enumerate()
             .map(|(group_idx, (group, (range_start, shard)))| {
+                verbose_timing_phase!("Compute addresses for group");
                 let mut offsets = starting_offsets[group_idx].clone();
 
                 group
@@ -5310,6 +5311,7 @@ fn relaxation_scan_pass<'data, A: Arch>(
             .par_iter_mut()
             .enumerate()
             .map(|(group_idx, group)| {
+                verbose_timing_phase!("Relaxation scan for group");
                 let mut reductions = section_part_sizes.new_empty_like();
                 let mut file_rescans: Vec<SmallVec<[(usize, u64); 16]>> =
                     Vec::with_capacity(group.files.len());
