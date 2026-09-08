@@ -660,7 +660,7 @@ impl OutputFileDefaults {
         let mut defaults = Self {
             write_mode: FileWriteMode::Mmap,
             fallocate: false,
-            madvise_huge_pages: false,
+            madvise_huge_pages: true,
         };
 
         cfg_select! {
@@ -688,13 +688,11 @@ impl OutputFileDefaults {
                     // well as ext4.
                     statfs::EXT4_SUPER_MAGIC => {
                         defaults.fallocate = true;
-                        defaults.madvise_huge_pages = true;
                     }
                     // For some reason statfs doesn't define the XFS constant when target is musl.
                     #[cfg(not(target_env = "musl"))]
                     statfs::XFS_SUPER_MAGIC => {
                         defaults.fallocate = true;
-                        defaults.madvise_huge_pages = true;
                     }
                     _ => {}
                 }
