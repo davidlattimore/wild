@@ -138,6 +138,7 @@ use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator as _;
+use rayon::iter::IntoParallelRefIterator as _;
 use rayon::iter::IntoParallelRefMutIterator as _;
 use rayon::iter::ParallelBridge as _;
 use rayon::iter::ParallelIterator as _;
@@ -2059,92 +2060,109 @@ fn build_sym_index_map<C: ElfClass>(layout: &ElfLayout<'_, C>) -> Vec<Option<u32
     let total_syms = layout.symbol_db.num_symbols();
     let mut map: Vec<Option<u32>> = vec![None; total_syms];
 
-    // TODO: Use a ShardedWriter to parallelize this loop
-    for group in &layout.group_layouts {
-        let mut group_global_base = num_all_locals + group.symtab_global_start_index;
-        let mut group_local_base = group.symtab_local_start_index;
+    let mut remaining = map.as_mut_slice();
+    let work = layout
+        .symbol_db
+        .groups
+        .iter()
+        .map(|group| {
+            let range = group.symbol_id_range();
+            let group_map = remaining.split_off_mut(..range.len()).unwrap();
+            (group_map, range.start().as_usize())
+        })
+        .collect::<Vec<_>>();
+    debug_assert!(remaining.is_empty());
 
-        for file in &group.files {
-            let FileLayout::Object(object) = file else {
-                continue;
-            };
+    // The epilogue group has no input symbols.
+    layout.group_layouts[..work.len()]
+        .par_iter()
+        .zip_eq(work)
+        .for_each(|(group, (map, start_symbol_index))| {
+            let mut group_global_base = num_all_locals + group.symtab_global_start_index;
+            let mut group_local_base = group.symtab_local_start_index;
 
-            for ((sym_index, sym), flags) in object
-                .object
-                .enumerate_symbols()
-                .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
-            {
-                let symbol_id = object.symbol_id_range.input_to_id(sym_index);
+            for file in &group.files {
+                let FileLayout::Object(object) = file else {
+                    continue;
+                };
 
-                if sym.st_type() == object::elf::STT_SECTION
-                    && let Ok(Some(input_section_index)) =
-                        object.object.symbol_section(sym, sym_index)
+                for ((sym_index, sym), flags) in object
+                    .object
+                    .enumerate_symbols()
+                    .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
                 {
-                    if let Some(singleton) = object.sections[input_section_index.0].singleton() {
-                        map[symbol_id.as_usize()] =
-                            Some(singleton_section_sym_base + singleton.ordinal);
-                    } else if let Some(output_section_id) =
-                        match object.sections[input_section_index.0] {
-                            SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => Some(
-                                object
-                                    .section_part_id(
-                                        input_section_index,
-                                        &layout.symbol_db.section_part_ids,
-                                    )
-                                    .output_section_id::<elf::Elf<C>>(),
-                            ),
-                            SectionSlot::FrameData(..) => Some(output_section_id::EH_FRAME),
-                            _ => None,
-                        }
+                    let symbol_id = object.symbol_id_range.input_to_id(sym_index);
+
+                    if sym.st_type() == object::elf::STT_SECTION
+                        && let Ok(Some(input_section_index)) =
+                            object.object.symbol_section(sym, sym_index)
                     {
-                        let primary_id = layout
-                            .output_sections
-                            .primary_output_section(output_section_id);
-                        let sym_idx = section_sym_indices.get(primary_id);
-                        map[symbol_id.as_usize()] = Some(*sym_idx);
+                        if let Some(singleton) = object.sections[input_section_index.0].singleton()
+                        {
+                            map[symbol_id.as_usize() - start_symbol_index] =
+                                Some(singleton_section_sym_base + singleton.ordinal);
+                        } else if let Some(output_section_id) =
+                            match object.sections[input_section_index.0] {
+                                SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => Some(
+                                    object
+                                        .section_part_id(
+                                            input_section_index,
+                                            &layout.symbol_db.section_part_ids,
+                                        )
+                                        .output_section_id::<elf::Elf<C>>(),
+                                ),
+                                SectionSlot::FrameData(..) => Some(output_section_id::EH_FRAME),
+                                _ => None,
+                            }
+                        {
+                            let primary_id = layout
+                                .output_sections
+                                .primary_output_section(output_section_id);
+                            let sym_idx = section_sym_indices.get(primary_id);
+                            map[symbol_id.as_usize() - start_symbol_index] = Some(*sym_idx);
+                        }
+                    }
+
+                    if SymbolCopyInfo::new(
+                        object.object,
+                        sym_index,
+                        sym,
+                        symbol_id,
+                        &layout.symbol_db,
+                        flags.get(),
+                        &object.sections,
+                    )
+                    .is_some()
+                    {
+                        if flags.get().is_symtab_local(sym) {
+                            map[symbol_id.as_usize() - start_symbol_index] = Some(group_local_base);
+                            group_local_base += 1;
+                        } else {
+                            map[symbol_id.as_usize() - start_symbol_index] =
+                                Some(group_global_base);
+                            group_global_base += 1;
+                        }
                     }
                 }
 
-                if SymbolCopyInfo::new(
-                    object.object,
-                    sym_index,
-                    sym,
-                    symbol_id,
-                    &layout.symbol_db,
-                    flags.get(),
-                    &object.sections,
-                )
-                .is_some()
-                {
-                    if flags.get().is_symtab_local(sym) {
-                        map[symbol_id.as_usize()] = Some(group_local_base);
-                        group_local_base += 1;
-                    } else {
-                        let canonical = layout.symbol_db.definition(symbol_id);
-                        map[canonical.as_usize()] = Some(group_global_base);
+                let e = LittleEndian;
+                for (sym_index, sym) in object.object.symbols.enumerate() {
+                    if !sym.is_undefined(e) {
+                        continue;
+                    }
+                    let symbol_id = object.symbol_id_range.input_to_id(sym_index);
+                    if !layout.symbol_db.is_canonical(symbol_id) {
+                        continue;
+                    }
+                    if let Ok(name) = object.object.symbol_name(sym)
+                        && !name.is_empty()
+                    {
+                        map[symbol_id.as_usize() - start_symbol_index] = Some(group_global_base);
                         group_global_base += 1;
                     }
                 }
             }
-
-            let e = LittleEndian;
-            for (sym_index, sym) in object.object.symbols.enumerate() {
-                if !sym.is_undefined(e) {
-                    continue;
-                }
-                let symbol_id = object.symbol_id_range.input_to_id(sym_index);
-                if !layout.symbol_db.is_canonical(symbol_id) {
-                    continue;
-                }
-                if let Ok(name) = object.object.symbol_name(sym)
-                    && !name.is_empty()
-                {
-                    map[symbol_id.as_usize()] = Some(group_global_base);
-                    group_global_base += 1;
-                }
-            }
-        }
-    }
+        });
 
     map
 }
