@@ -478,6 +478,9 @@ pub(crate) fn build_import_section(imports: &[OutputImport<'_>]) -> Result<Impor
             OutputImportEntity::Global(ty) => {
                 wasm_encoder::EntityType::Global(convert_global_type(ty)?)
             }
+            OutputImportEntity::Memory(ty) => {
+                wasm_encoder::EntityType::Memory(convert_memory_type(ty))
+            }
         };
         section.import(import.module, import.name, entity);
     }
@@ -568,6 +571,7 @@ pub(crate) struct OutputImport<'a> {
 pub(crate) enum OutputImportEntity {
     Function { type_index: u32 },
     Global(wasmparser::GlobalType),
+    Memory(wasmparser::MemoryType),
 }
 
 #[derive(Debug, Clone)]

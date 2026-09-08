@@ -1692,6 +1692,7 @@ fn build_name_section<'data>(
                 set_name_first_wins(&mut global_names, next_global_import, import.name);
                 next_global_import += 1;
             }
+            crate::wasm_writer::OutputImportEntity::Memory(_) => {}
         }
     }
 
@@ -1835,6 +1836,7 @@ fn count_output_imports(layout: &WasmLayout<'_>) -> (usize, usize) {
         match import.entity {
             crate::wasm_writer::OutputImportEntity::Function { .. } => functions += 1,
             crate::wasm_writer::OutputImportEntity::Global(_) => globals += 1,
+            crate::wasm_writer::OutputImportEntity::Memory(_) => {}
         }
     }
     (functions, globals)
@@ -5604,6 +5606,18 @@ fn linker_output_memory_type(inputs: &[WasmObjectLayoutInput<'_>], shared: bool)
     }
 }
 
+/// Moves the output memory into the import section so that the module imports its memory from
+/// the host rather than defining it (`--import-memory`).
+fn import_output_memory(layout: &mut WasmLayout<'_>) {
+    for memory in layout.memories.drain(..) {
+        layout.imports.push(OutputImport {
+            module: crate::args::wasm::DEFAULT_MEMORY_IMPORT_MODULE,
+            name: crate::args::wasm::DEFAULT_MEMORY_IMPORT_NAME,
+            entity: crate::wasm_writer::OutputImportEntity::Memory(memory),
+        });
+    }
+}
+
 fn ensure_memory_export<'data>(exports: &mut Vec<OutputExport<'data>>, name: &'data str) {
     exports.retain(|export| !matches!(export.kind, wasmparser::ExternalKind::Memory));
     exports.push(OutputExport {
@@ -5910,6 +5924,9 @@ where
     let initial_memory = symbol_db.args.initial_memory;
     let max_memory = symbol_db.args.max_memory;
     let shared_memory = symbol_db.args.shared_memory;
+    let import_memory = symbol_db.args.import_memory;
+    let export_memory = &symbol_db.args.export_memory;
+
     if stack_size > 0 {
         ensure_stack_size_aligned(stack_size)?;
     }
@@ -6042,7 +6059,7 @@ where
                 .memories
                 .push(linker_output_memory_type(&layout_inputs, shared_memory));
         }
-        if !layout.memories.is_empty() {
+        if !layout.memories.is_empty() && (!import_memory || export_memory.is_some()) {
             ensure_memory_export(&mut layout.exports, symbol_db.args.memory_export_name());
         }
         layout.data_end = memory_cursor;
@@ -6060,6 +6077,11 @@ where
         } else {
             Some(heap_end_from_initial_pages(initial_pages)?)
         };
+        if import_memory {
+            // The output memory is imported rather than defined using --import-memory,
+            // so remove the memory section and add an import instead.
+            import_output_memory(&mut layout);
+        }
         let data_end = layout.data_end;
         compute_data_addresses(
             &mut layout.object_index_maps,

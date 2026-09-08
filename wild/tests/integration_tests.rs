@@ -90,6 +90,12 @@
 //! ExpectSharedMemory:{bool} (Wasm) When true, asserts that the output module defines a shared
 //! linear memory with a maximum.
 //!
+//! ExpectMemoryImport:{module}/{name} [properties] (Wasm) Asserts that the output module
+//! imports a linear memory with the given module and field name. Optional properties:
+//!   initial=M: Asserts the memory has the specified initial size.
+//!   max=N: Asserts the memory has the specified maximum size.
+//!   shared=true|false: Asserts the memory is shared.
+//!
 //! ExpectSection:{section_name} [properties] Checks that the specified section exists in the
 //! output binary. Optional properties:
 //!   max_entries=N: Asserts the section has at most N entries (uses the section's sh_entsize,
@@ -557,6 +563,7 @@ struct WasmModuleInfo {
     defined_global_i32: Vec<Option<i32>>,
     export_global_indices: HashMap<String, u32>,
     memories: Vec<wasmparser::MemoryType>,
+    memory_imports: Vec<(String, String, wasmparser::MemoryType)>,
 }
 
 fn i32_const_from_expr(expr: &wasmparser::ConstExpr<'_>) -> Option<i32> {
@@ -583,6 +590,7 @@ impl WasmModuleInfo {
         let mut defined_global_i32 = Vec::new();
         let mut export_global_indices = HashMap::new();
         let mut memories = Vec::new();
+        let mut memory_imports = Vec::new();
 
         for payload in Parser::new(0).parse_all(&bytes) {
             match payload? {
@@ -618,6 +626,13 @@ impl WasmModuleInfo {
                         }
                         if matches!(import.ty, wasmparser::TypeRef::Global(_)) {
                             imported_global_count += 1;
+                        }
+                        if let wasmparser::TypeRef::Memory(memory) = import.ty {
+                            memory_imports.push((
+                                import.module.to_owned(),
+                                import.name.to_owned(),
+                                memory,
+                            ));
                         }
                     }
                 }
@@ -689,6 +704,7 @@ impl WasmModuleInfo {
             defined_global_i32,
             export_global_indices,
             memories,
+            memory_imports,
         })
     }
 
@@ -831,6 +847,66 @@ impl WasmModuleInfo {
                     .map(|(i, t)| format!("{i}:{t}"))
                     .collect::<Vec<_>>()
                     .join(", ")
+            );
+        }
+        Ok(())
+    }
+
+    fn ensure_memory_import(
+        &self,
+        expected: Option<&ExpectedMemoryImport>,
+        linker_name: &str,
+    ) -> Result {
+        let Some(exp) = expected else {
+            return Ok(());
+        };
+        let matching = self
+            .memory_imports
+            .iter()
+            .filter(|(module, name, _)| module == &exp.module && name == &exp.name)
+            .collect::<Vec<_>>();
+        ensure!(
+            matching.len() == 1,
+            "Expected exactly one memory import `{}/{}` in {linker_name} output ({}), \
+             found {} (all: {:?})",
+            exp.module,
+            exp.name,
+            self.path.display(),
+            matching.len(),
+            self.memory_imports
+        );
+        let (_, _, actual) = matching[0];
+        if let Some(shared) = exp.assertions.shared {
+            ensure!(
+                actual.shared == shared,
+                "Expected memory import `{}/{}` shared={shared} in {linker_name} output ({}), \
+                 found shared={}",
+                exp.module,
+                exp.name,
+                self.path.display(),
+                actual.shared
+            );
+        }
+        if let Some(initial) = exp.assertions.initial {
+            ensure!(
+                actual.initial == initial,
+                "Expected memory import `{}/{}` initial={initial} page(s) in {linker_name} \
+                 output ({}), found initial={}",
+                exp.module,
+                exp.name,
+                self.path.display(),
+                actual.initial
+            );
+        }
+        if let Some(max) = exp.assertions.max {
+            ensure!(
+                actual.maximum == Some(max),
+                "Expected memory import `{}/{}` max={max} page(s) in {linker_name} output ({}), \
+                 found max={:?}",
+                exp.module,
+                exp.name,
+                self.path.display(),
+                actual.maximum
             );
         }
         Ok(())
@@ -1924,6 +2000,8 @@ struct Assertions {
     expected_func_import_count: Option<usize>,
     /// Wasm: require a shared linear memory with a maximum.
     expect_shared_memory: bool,
+    /// Wasm: require the linear memory to be imported as `module/name`.
+    expected_memory_import: Option<ExpectedMemoryImport>,
     relr_count: Option<u64>,
     expected_gdb_index_cu_count: Option<usize>,
     expected_gdb_index_symbols: Vec<String>,
@@ -1943,9 +2021,24 @@ struct ExpectedSectionBytes {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedMemoryImport {
+    module: String,
+    name: String,
+    assertions: MemoryImportAssertions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ExpectedSection {
     section_name: String,
     assertions: SectionAssertions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct MemoryImportAssertions {
+    initial: Option<u64>,
+    max: Option<u64>,
+    shared: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -2489,6 +2582,23 @@ fn process_directive(
         }
         "ExpectSharedMemory" => {
             config.assertions.expect_shared_memory = arg.parse()?;
+        }
+        "ExpectMemoryImport" => {
+            // module/name [initial=<pages>,max=<pages>,shared=<bool>]
+            let arg = arg.trim();
+            let (path, assertions) = if let Some((path, props)) = arg.split_once(' ') {
+                (path, serde_keyvalue::from_key_values(props.trim())?)
+            } else {
+                (arg, MemoryImportAssertions::default())
+            };
+            let (module, name) = path
+                .split_once('/')
+                .with_context(|| format!("ExpectMemoryImport requires module/name, got `{arg}`"))?;
+            config.assertions.expected_memory_import = Some(ExpectedMemoryImport {
+                module: module.to_owned(),
+                name: name.to_owned(),
+                assertions,
+            });
         }
         "ExpectSection" => {
             let arg = arg.trim();
@@ -5001,6 +5111,7 @@ impl Assertions {
             expected_func_imports: self.expected_func_imports.clone(),
             expected_func_import_count: self.expected_func_import_count,
             expect_shared_memory: self.expect_shared_memory,
+            expected_memory_import: self.expected_memory_import.clone(),
             ..Default::default()
         };
         ensure!(
@@ -5033,6 +5144,7 @@ impl Assertions {
         info.ensure_func_types_unique(linker_name)?;
         info.ensure_exports(&self.expected_symtab_entries, &self.no_sym, linker_name)?;
         info.ensure_shared_memory(self.expect_shared_memory, linker_name)?;
+        info.ensure_memory_import(self.expected_memory_import.as_ref(), linker_name)?;
         self.verify_strings(&info.bytes)?;
         Ok(())
     }
