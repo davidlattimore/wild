@@ -5927,46 +5927,86 @@ fn write_partial_link_singleton_headers<C: ElfClass>(
         return Ok(());
     }
 
-    for group in &layout.group_layouts {
-        for file in &group.files {
-            let FileLayout::Object(object) = file else {
-                continue;
-            };
+    verbose_timing_phase!("Write partial link singleton headers");
 
-            for (raw_index, slot) in object.sections.iter().enumerate() {
-                let section_index = object::SectionIndex(raw_index);
-                let Some(singleton) = slot.singleton() else {
+    let mut work = Vec::with_capacity(layout.group_layouts.len());
+    for (group, (header_count, name_bytes)) in layout
+        .group_layouts
+        .iter()
+        .zip(layout.partial_link.group_sizes())
+    {
+        let headers = table_writer
+            .section_headers
+            .split_off_mut(..header_count)
+            .ok_or_else(|| insufficient_allocation("section headers"))?;
+        let names = table_writer
+            .shstrtab
+            .split_off_mut(..name_bytes)
+            .ok_or_else(|| insufficient_allocation(".shstrtab"))?;
+        if header_count != 0 {
+            work.push((group, headers, names, *name_offset));
+        }
+        *name_offset += name_bytes as u32;
+    }
+
+    work.into_par_iter().try_for_each(
+        |(group, mut headers, mut names, mut name_offset)| -> Result {
+            for file in &group.files {
+                let FileLayout::Object(object) = file else {
                     continue;
                 };
 
-                write_partial_link_singleton_header(
-                    table_writer,
-                    layout,
-                    object,
-                    section_index,
-                    singleton,
-                    *name_offset,
-                )
-                .with_context(|| {
-                    format!(
-                        "Failed to write partial-link singleton header for {} in {}",
-                        object.object.section_display_name(section_index),
-                        object.input,
-                    )
-                })?;
+                for (raw_index, slot) in object.sections.iter().enumerate() {
+                    let section_index = object::SectionIndex(raw_index);
+                    let Some(singleton) = slot.singleton() else {
+                        continue;
+                    };
 
-                let name = object.object.section_name(section_index)?;
-                table_writer.write_section_header_string(name)?;
-                *name_offset += name.len() as u32 + 1;
+                    let header_out = headers
+                        .split_off_first_mut()
+                        .ok_or_else(|| insufficient_allocation("section headers"))?;
+                    write_partial_link_singleton_header(
+                        header_out,
+                        layout,
+                        object,
+                        section_index,
+                        singleton,
+                        name_offset,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "Failed to write partial-link singleton header for {} in {}",
+                            object.object.section_display_name(section_index),
+                            object.input,
+                        )
+                    })?;
+
+                    let name = object.object.section_name(section_index)?;
+                    let out = names
+                        .split_off_mut(..=name.len())
+                        .ok_or_else(|| insufficient_allocation(".shstrtab"))?;
+                    out[..name.len()].copy_from_slice(name);
+                    out[name.len()] = 0;
+                    name_offset += name.len() as u32 + 1;
+                }
             }
-        }
-    }
+            ensure!(
+                headers.is_empty(),
+                "Excess partial-link singleton header allocation"
+            );
+            ensure!(
+                names.is_empty(),
+                "Excess partial-link singleton name allocation"
+            );
+            Ok(())
+        },
+    )?;
 
     Ok(())
 }
 
 fn write_partial_link_singleton_header<C: ElfClass>(
-    table_writer: &mut TableWriter<C>,
+    header_out: &mut elf::SectionHeader<C>,
     layout: &Layout<elf::Elf<C>>,
     object: &ObjectLayout<elf::Elf<C>>,
     section_index: object::SectionIndex,
@@ -5987,7 +6027,6 @@ fn write_partial_link_singleton_header<C: ElfClass>(
         .checked_sub(part_layout.mem_offset)
         .context("Partial-link singleton precedes its output section part")?;
 
-    let header_out = table_writer.take_section_header()?;
     header_out.set_address(0)?;
     header_out.set_size(singleton.section.size)?;
     let section_type = input_header.sh_type(e);
