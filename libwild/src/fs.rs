@@ -674,10 +674,15 @@ impl OutputFileDefaults {
                 };
 
                 match fs_type {
-                    // Multi-threaded write performance with BTRFS is terrible. It's substantially
-                    // faster to just buffer it all in memory then write it afterwards.
-                    statfs::BTRFS_SUPER_MAGIC => {
+                    // Multi-threaded write performance with BTRFS is terrible without huge pages
+                    // and when using huge pages with Linux < 7.2.
+                    // It's substantially faster to just buffer it all in memory
+                    // then write it afterwards.
+                    statfs::BTRFS_SUPER_MAGIC
+                        if kernel_version().is_none_or(|version| version < (7, 2)) =>
+                    {
                         defaults.write_mode = FileWriteMode::BufferThenWrite;
+                        defaults.madvise_huge_pages = false;
                     }
                     // vfat isn't quite as bad as BTRFS in this regard, but it's still at least
                     // 4-10% faster if we avoid mmap.
@@ -739,4 +744,15 @@ pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
             PathBuf::from(path)
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn kernel_version() -> Option<(u64, u64)> {
+    let uname = nix::sys::utsname::uname().ok()?;
+    let release = uname.release().to_string_lossy();
+    let mut parts = release.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+
+    Some((major, minor))
 }
