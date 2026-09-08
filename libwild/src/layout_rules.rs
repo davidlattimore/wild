@@ -209,28 +209,28 @@ impl<'data> LayoutRulesBuilder<'data> {
 
         for cmd in &input.script.commands {
             if let linker_script::Command::Provide(provide) = cmd {
-                let placement = SymbolPlacement::Redirect(Redirect {
-                    kind: RedirectKind::Script,
-                    expression: provide.value.clone(),
-                    loc: loc_for_global_expr(&provide.value, current_section_id),
-                });
+                let placement = SymbolPlacement::Redirect(Redirect::new(
+                    RedirectKind::Script,
+                    provide.value.clone(),
+                    loc_for_global_expr(&provide.value, current_section_id),
+                ));
                 symbol_defs.push(
                     crate::parsing::InternalSymDefInfo::new(placement, provide.name)
                         .with_hidden(provide.hidden),
                 );
             } else if let linker_script::Command::SymbolDefinition { name, value } = cmd {
-                let placement = SymbolPlacement::Redirect(Redirect {
-                    kind: RedirectKind::Script,
-                    expression: value.to_owned(),
-                    loc: loc_for_global_expr(value, current_section_id),
-                });
+                let placement = SymbolPlacement::Redirect(Redirect::new(
+                    RedirectKind::Script,
+                    value.to_owned(),
+                    loc_for_global_expr(value, current_section_id),
+                ));
                 symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
             } else if let linker_script::Command::SetLocation(loc) = cmd {
-                let placement = SymbolPlacement::Redirect(Redirect {
-                    kind: RedirectKind::Script,
-                    expression: loc.address.clone(),
-                    loc: loc_for_global_expr(&loc.address, current_section_id),
-                });
+                let placement = SymbolPlacement::Redirect(Redirect::new(
+                    RedirectKind::Script,
+                    loc.address.clone(),
+                    loc_for_global_expr(&loc.address, current_section_id),
+                ));
                 symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, b""));
             } else if let linker_script::Command::Sections(sections) = cmd {
                 let mut section_start_lc_idx = last_lc_idx;
@@ -360,22 +360,22 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         last_symbol_loc = SymbolLoc::SectionEndRelative(section_id);
                                     }
                                     ContentsCommand::SymbolAssignment(assignment) => {
-                                        let placement = SymbolPlacement::Redirect(Redirect {
-                                            kind: RedirectKind::Script,
-                                            expression: assignment.expr.clone(),
-                                            loc: last_symbol_loc.clone(),
-                                        });
+                                        let placement = SymbolPlacement::Redirect(Redirect::new(
+                                            RedirectKind::Script,
+                                            assignment.expr.clone(),
+                                            last_symbol_loc.clone(),
+                                        ));
                                         symbol_defs.push(InternalSymDefInfo::new(
                                             placement,
                                             assignment.name,
                                         ));
                                     }
                                     ContentsCommand::Provide(provide) => {
-                                        let placement = SymbolPlacement::Redirect(Redirect {
-                                            kind: RedirectKind::Script,
-                                            expression: provide.value.clone(),
-                                            loc: last_symbol_loc.clone(),
-                                        });
+                                        let placement = SymbolPlacement::Redirect(Redirect::new(
+                                            RedirectKind::Script,
+                                            provide.value.clone(),
+                                            last_symbol_loc.clone(),
+                                        ));
                                         symbol_defs.push(
                                             InternalSymDefInfo::new(placement, provide.name)
                                                 .with_hidden(provide.hidden),
@@ -398,11 +398,11 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     // (https://sourceware.org/binutils/docs/ld/Output-Section-Keywords.html#index-CONSTRUCTORS)
                                     ContentsCommand::Constructors => (),
                                     ContentsCommand::Assert(assert_cmd) => {
-                                        let placement = SymbolPlacement::Redirect(Redirect {
-                                            kind: RedirectKind::Script,
-                                            expression: Expression::Assert(assert_cmd.clone()),
-                                            loc: last_symbol_loc.clone(),
-                                        });
+                                        let placement = SymbolPlacement::Redirect(Redirect::new(
+                                            RedirectKind::Script,
+                                            Expression::Assert(assert_cmd.clone()),
+                                            last_symbol_loc.clone(),
+                                        ));
                                         symbol_defs.push(InternalSymDefInfo::new(placement, b""));
                                     }
                                 }
@@ -435,40 +435,40 @@ impl<'data> LayoutRulesBuilder<'data> {
                             last_lc_idx += 1;
                         }
                         SectionCommand::Assert(assert_cmd) => {
-                            let placement = SymbolPlacement::Redirect(Redirect {
-                                kind: RedirectKind::Script,
-                                expression: Expression::Assert(assert_cmd.clone()),
-                                loc: loc.clone(),
-                            });
+                            let placement = SymbolPlacement::Redirect(Redirect::new(
+                                RedirectKind::Script,
+                                Expression::Assert(assert_cmd.clone()),
+                                loc.clone(),
+                            ));
                             symbol_defs.push(InternalSymDefInfo::new(placement, b""));
                         }
                         SectionCommand::Provide(provide) => {
-                            let placement = SymbolPlacement::Redirect(Redirect {
-                                kind: RedirectKind::Script,
-                                expression: provide.value.clone(),
-                                loc: loc.clone(),
-                            });
+                            let placement = SymbolPlacement::Redirect(Redirect::new(
+                                RedirectKind::Script,
+                                provide.value.clone(),
+                                loc.clone(),
+                            ));
                             symbol_defs.push(
                                 InternalSymDefInfo::new(placement, provide.name)
                                     .with_hidden(provide.hidden),
                             );
                         }
                         SectionCommand::SymbolAssignment(assignment) => {
-                            let placement = SymbolPlacement::Redirect(Redirect {
-                                kind: RedirectKind::Script,
-                                expression: assignment.expr.clone(),
-                                loc: loc.clone(),
-                            });
+                            let placement = SymbolPlacement::Redirect(Redirect::new(
+                                RedirectKind::Script,
+                                assignment.expr.clone(),
+                                loc.clone(),
+                            ));
                             symbol_defs.push(InternalSymDefInfo::new(placement, assignment.name));
                         }
                     }
                 }
             } else if let linker_script::Command::Assert(assert_cmd) = cmd {
-                let placement = SymbolPlacement::Redirect(Redirect {
-                    kind: RedirectKind::Script,
-                    expression: Expression::Assert(assert_cmd.clone()),
-                    loc: loc_for_global_expr(&assert_cmd.expression, None),
-                });
+                let placement = SymbolPlacement::Redirect(Redirect::new(
+                    RedirectKind::Script,
+                    Expression::Assert(assert_cmd.clone()),
+                    loc_for_global_expr(&assert_cmd.expression, None),
+                ));
                 symbol_defs.push(InternalSymDefInfo::new(placement, b""));
             } else if let linker_script::Command::Memory(regions) = cmd {
                 memory_regions = regions.clone();

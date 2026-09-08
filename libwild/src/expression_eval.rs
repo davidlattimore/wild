@@ -71,7 +71,6 @@ fn evaluate_symbol_value<P: Platform>(
         .map(|id| output_sections.primary_output_section(id));
     match symbol_value {
         SymbolValue::Absolute(value) => {
-            value_kind.contains_absolute = true;
             Ok(*value)
         }
         SymbolValue::SectionRelative {
@@ -436,10 +435,10 @@ fn evaluate_expression_value<'data, P: Platform>(
         Expression::Absolute(expression) => {
             let mut inner_kind = ExpressionValueKind::default();
             let val = eval!(expression, &mut inner_kind)?;
+            value_kind.contains_absolute = true;
             if inner_kind.contains_section_relative
                 && let Some(id) = expr_loc.relative_section_id()
             {
-                value_kind.contains_absolute = true;
                 let primary_id = output_sections.primary_output_section(id);
                 let section_layout = section_layouts.get(primary_id);
                 return Ok(val.wrapping_add(section_layout.mem_offset));
@@ -1119,11 +1118,11 @@ mod tests {
                     .iter()
                     .map(|assertion| {
                         InternalSymDefInfo::new(
-                            SymbolPlacement::Redirect(Redirect {
-                                kind: RedirectKind::Script,
-                                expression: Expression::Assert(assertion.clone()),
-                                loc: SymbolLoc::None,
-                            }),
+                            SymbolPlacement::Redirect(Redirect::new(
+                                RedirectKind::Script,
+                                Expression::Assert(assertion.clone()),
+                                SymbolLoc::None,
+                            )),
                             b"",
                         )
                     })

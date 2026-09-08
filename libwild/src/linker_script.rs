@@ -336,8 +336,39 @@ impl<'a> Expression<'a> {
     }
 
     pub(crate) fn is_absolute(&self) -> bool {
-        matches!(self, Expression::Absolute(_))
+        self.expr_kind() == ExprKind::Absolute
     }
+
+    fn expr_kind(&self) -> ExprKind {
+        match self {
+            Expression::Number(_) => ExprKind::PlainNumber,
+            Expression::Absolute(_) => ExprKind::Absolute,
+            Expression::Add(l, r)
+            | Expression::Subtract(l, r)
+            | Expression::Multiply(l, r)
+            | Expression::Divide(l, r)
+            | Expression::Modulo(l, r)
+            | Expression::BitwiseAnd(l, r)
+            | Expression::BitwiseOr(l, r)
+            | Expression::BitwiseXor(l, r)
+            | Expression::LeftShift(l, r)
+            | Expression::RightShift(l, r) => match (l.expr_kind(), r.expr_kind()) {
+                (ExprKind::PlainNumber, ExprKind::PlainNumber) => ExprKind::PlainNumber,
+                (ExprKind::Absolute, ExprKind::PlainNumber)
+                | (ExprKind::PlainNumber, ExprKind::Absolute) => ExprKind::Absolute,
+                _ => ExprKind::SectionRelative,
+            },
+            Expression::Negate(e) | Expression::BitwiseNot(e) => e.expr_kind(),
+            _ => ExprKind::SectionRelative,
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ExprKind {
+    PlainNumber,
+    Absolute,
+    SectionRelative,
 }
 
 impl<'data> LinkerScript<'data> {
