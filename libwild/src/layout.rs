@@ -839,6 +839,7 @@ pub struct Layout<'data, P: Platform> {
 #[derive(Debug, Default)]
 pub(crate) struct PartialLinkSingletons {
     output_indexes: std::ops::Range<u32>,
+    groups: Vec<SingletonGroupPlan>,
 }
 
 #[derive(Debug)]
@@ -848,9 +849,10 @@ struct PartialLinkPlan {
     section_name_bytes: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SingletonGroupPlan {
     ordinals: std::ops::Range<u32>,
+    section_name_bytes: u64,
 }
 
 impl PartialLinkPlan {
@@ -920,6 +922,7 @@ impl PartialLinkPlan {
                 section_name_bytes += name_bytes;
                 Ok(SingletonGroupPlan {
                     ordinals: start..singleton_count,
+                    section_name_bytes: name_bytes,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -933,6 +936,12 @@ impl PartialLinkPlan {
 }
 
 impl PartialLinkSingletons {
+    pub(crate) fn group_sizes(&self) -> impl Iterator<Item = (usize, usize)> {
+        self.groups
+            .iter()
+            .map(|group| (group.ordinals.len(), group.section_name_bytes as usize))
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.output_indexes.is_empty()
     }
@@ -3678,6 +3687,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         let partial_link = partial_link_plan.map_or_else(PartialLinkSingletons::default, |plan| {
             PartialLinkSingletons {
                 output_indexes: next_output_index..next_output_index + plan.singleton_count,
+                groups: plan.groups.clone(),
             }
         });
 
