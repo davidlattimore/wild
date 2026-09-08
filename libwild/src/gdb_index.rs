@@ -623,7 +623,7 @@ fn build_address_entries<C: ElfClass>(
             };
 
             for (si, slot) in obj.sections.iter().enumerate() {
-                let SectionSlot::Loaded(section) = slot else {
+                let Some(section) = slot.loaded_section() else {
                     continue;
                 };
                 if section.size == 0 {

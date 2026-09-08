@@ -365,6 +365,7 @@ enum RegularSectionId {
     GccExceptTable,
     NoteAbiTag,
     DataRelRo,
+    PartialLinkingSingletons,
 
     // Must be last.
     Count,
@@ -483,6 +484,8 @@ pub(crate) mod output_section_id {
     pub(crate) const NOTE_ABI_TAG: OutputSectionId =
         RegularSectionId::NoteAbiTag.output_section_id();
     pub(crate) const DATA_REL_RO: OutputSectionId = RegularSectionId::DataRelRo.output_section_id();
+    pub(crate) const PARTIAL_LINKING_SINGLETONS: OutputSectionId =
+        RegularSectionId::PartialLinkingSingletons.output_section_id();
 }
 
 #[derive(derive_more::Debug)]
@@ -679,6 +682,8 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
     const SFRAME_SECTION_ID: Option<OutputSectionId> = Some(output_section_id::SFRAME);
     const RELRO_PADDING_SECTION_ID: Option<OutputSectionId> =
         Some(output_section_id::RELRO_PADDING);
+    const PARTIAL_SINGLETONS_ID: Option<OutputSectionId> =
+        Some(output_section_id::PARTIAL_LINKING_SINGLETONS);
 
     const CUSTOM_PHDR_EXCLUDED_SECTION_IDS: &'static [OutputSectionId] = &[
         output_section_id::PROGRAM_HEADERS,
@@ -2405,15 +2410,18 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         _args: &Self::Args,
     ) {
         sizes.increment(crate::part_id::FILE_HEADER, u64::from(C::FILE_HEADER_SIZE));
+
         sizes.increment(
             part_id::PROGRAM_HEADERS,
             program_headers_size::<C>(header_info),
         );
+
         sizes.increment(
             part_id::SECTION_HEADERS,
             section_headers_size::<C>(header_info),
         );
-        prelude.format_specific.shstrtab_size = output_sections
+
+        let regular_strtab_size = output_sections
             .ids_with_info()
             .filter(|(id, _info)| output_sections.output_index_of_section(*id).is_some())
             .map(|(_id, info)| {
@@ -2424,6 +2432,10 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
                 }
             })
             .sum::<u64>();
+
+        prelude.format_specific.shstrtab_size =
+            regular_strtab_size + header_info.partial_link_section_name_bytes;
+
         sizes.increment(part_id::SHSTRTAB, prelude.format_specific.shstrtab_size);
     }
 
@@ -2549,6 +2561,7 @@ impl<C: ElfClass> platform::Platform for Elf<C> {
         builder.add_section(output_section_id::SYMTAB_LOCAL);
         builder.add_section(output_section_id::SYMTAB_SHNDX_LOCAL);
         builder.add_section(output_section_id::STRTAB);
+        builder.add_section(output_section_id::PARTIAL_LINKING_SINGLETONS);
 
         builder.build()
     }
