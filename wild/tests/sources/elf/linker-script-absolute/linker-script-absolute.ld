@@ -27,7 +27,13 @@ SECTIONS
         absolute_last = ABSOLUTE(. + ABSOLUTE(0));
         absolute_first = ABSOLUTE(ABSOLUTE(0) + .);
 
+        ASSERT(ABSOLUTE(.) == ., "absolute location must equal relative location");
+        ASSERT(. == ABSOLUTE(.), "absolute location must equal relative location");
+
+        ASSERT(text_start == ABSOLUTE(text_start), "ABSOLUTE(text_start) == text_start");
+        ASSERT(ABSOLUTE(text_start) == text_start, "ABSOLUTE(text_start) == text_start");
         ASSERT(a == ABSOLUTE(text_start) + 0x20, "a failed");
+        ASSERT(ABSOLUTE(text_start) + 0x20 == a, "absolute+const == relative");
 
         ASSERT(abs_global == 0x1000, "abs_global failed");
         ASSERT(abs_global_calc == 0x1500, "abs_global_calc failed");
@@ -36,6 +42,7 @@ SECTIONS
         ASSERT(abs_dot == ABSOLUTE(text_start), "abs_dot failed");
         ASSERT(abs_dot != text_start, "abs_dot failed");
         ASSERT((abs_dot * 2) == (ABSOLUTE(text_start) * 2), "abs_dot failed");
+        ASSERT((ABSOLUTE(text_start) * 2) == (abs_dot * 2), "abs_dot failed");
         ASSERT((abs_dot * 2) != (text_start * 2), "abs_dot failed");
 
         ASSERT(abs_sym_a == ABSOLUTE(text_start) + 0x20, "abs_sym_a failed");
@@ -45,6 +52,7 @@ SECTIONS
         ASSERT(abs_sum_two != text_start * 2 + 0x30, "abs_sum_two failed");
 
         ASSERT(abs_max_func == ABSOLUTE(text_start) + 0x20, "abs_max_func failed");
+        ASSERT(ABSOLUTE(text_start) + 0x20 == abs_max_func, "abs_max_func failed");
         ASSERT(abs_max_func != text_start + 0x20, "abs_max_func failed");
 
         ASSERT(abs_nested == ABSOLUTE(text_start) + 0x20, "abs_nested failed");

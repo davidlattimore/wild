@@ -2,6 +2,7 @@
 //#Object:runtime.c
 //#LinkerScript:linker-script-absolute.ld
 //#SkipArch:riscv64
+//#ExpectSym:absolute_plus address=24
 
 #include "../common/runtime.h"
 

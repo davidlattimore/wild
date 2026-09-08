@@ -264,18 +264,24 @@ fn evaluate_expression_value<'data, P: Platform>(
         let mut l_kind = ExpressionValueKind::default();
         let mut r_kind = ExpressionValueKind::default();
         let mut l_val = eval!(l, &mut l_kind)?;
-        let r_val = eval!(r, &mut r_kind)?;
+        let mut r_val = eval!(r, &mut r_kind)?;
 
         if let Some(id) = expr_loc.relative_section_id() {
             let primary_id = output_sections.primary_output_section(id);
             let section_base = section_layouts.get(primary_id).mem_offset;
 
-            let l_needs_base = l_kind.contains_section_relative
+            if l_kind.contains_section_relative
                 && !l_kind.contains_absolute
-                && r_kind.contains_absolute;
-
-            if l_needs_base {
+                && r_kind.contains_absolute
+            {
                 l_val = l_val.wrapping_add(section_base);
+            }
+
+            if r_kind.contains_section_relative
+                && !r_kind.contains_absolute
+                && l_kind.contains_absolute
+            {
+                r_val = r_val.wrapping_add(section_base);
             }
         }
 
