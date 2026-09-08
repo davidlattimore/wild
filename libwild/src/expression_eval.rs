@@ -70,9 +70,7 @@ fn evaluate_symbol_value<P: Platform>(
         .relative_section_id()
         .map(|id| output_sections.primary_output_section(id));
     match symbol_value {
-        SymbolValue::Absolute(value) => {
-            Ok(*value)
-        }
+        SymbolValue::Absolute(value) => Ok(*value),
         SymbolValue::SectionRelative {
             section_id,
             address,
