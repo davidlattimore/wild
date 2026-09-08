@@ -58,13 +58,14 @@ use crate::verbose_timing_phase;
 use atomic_take::AtomicTake;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
-use hashbrown::HashMap;
 use object::SectionIndex;
 use rayon::Scope;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
+use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
+use std::hash::BuildHasher as _;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -971,36 +972,70 @@ fn assign_section_ids_partial<'data, P: Platform>(
     let singletons_id: OutputSectionId = P::PARTIAL_SINGLETONS_ID
         .expect("Tried to do partial linking on platform that doesn't support it");
 
-    let mut section_counts: HashMap<SectionIdentity<P>, u32> = Default::default();
-
-    for group in resolved.iter() {
-        for file in &group.files {
-            if let ResolvedFile::Object(s) = file {
-                for section in &s.custom_sections {
-                    if !is_partial_link_singleton_candidate(s, section.index) {
+    let num_buckets = args.common().available_threads.get();
+    let per_group_buckets = resolved
+        .par_iter()
+        .map(|group| {
+            let mut buckets = vec![Vec::new(); num_buckets];
+            let hasher = foldhash::fast::FixedState::default();
+            for file in &group.files {
+                let ResolvedFile::Object(object) = file else {
+                    continue;
+                };
+                for custom in &object.custom_sections {
+                    if !is_partial_link_singleton_candidate(object, custom.index) {
                         continue;
                     }
-                    *section_counts.entry(section.identity).or_default() += 1;
+                    let hash = hasher.hash_one(custom.identity);
+                    buckets[hash as usize % num_buckets].push((
+                        PreHashed::new(custom.identity, hash),
+                        object.section_id_range.input_to_id(custom.index),
+                        singletons_id.part_id_with_alignment::<P>(custom.alignment),
+                    ));
                 }
             }
+            buckets
+        })
+        .collect::<Vec<_>>();
+
+    let singletons = (0..num_buckets)
+        .into_par_iter()
+        .map(|bucket| {
+            let mut first_sections: PassThroughHashMap<SectionIdentity<P>, _> = Default::default();
+            first_sections.reserve(
+                per_group_buckets
+                    .iter()
+                    .map(|group| group[bucket].len())
+                    .sum(),
+            );
+            for group in &per_group_buckets {
+                for &(identity, section_id, part_id) in &group[bucket] {
+                    first_sections
+                        .entry(identity)
+                        .and_modify(|first| *first = None)
+                        .or_insert(Some((section_id, part_id)));
+                }
+            }
+            first_sections.into_values().flatten().collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    for bucket in singletons {
+        for (section_id, part_id) in bucket {
+            section_part_ids[section_id.as_usize()] = part_id;
         }
     }
 
+    // Allocate non-singleton sections.
     for group in resolved {
-        for file in &mut group.files {
-            if let ResolvedFile::Object(s) = file {
-                for custom in &s.custom_sections {
-                    let obj_part_ids = &mut section_part_ids[s.section_id_range.as_usize()];
-
-                    let part_id = if !is_partial_link_singleton_candidate(s, custom.index)
-                        || section_counts[&custom.identity] >= 2
-                    {
-                        output_sections.get_or_create_custom_section_part(args, custom)
-                    } else {
-                        singletons_id.part_id_with_alignment::<P>(custom.alignment)
-                    };
-
-                    obj_part_ids[custom.index.0] = part_id;
+        for file in &group.files {
+            if let ResolvedFile::Object(object) = file {
+                let obj_part_ids = &mut section_part_ids[object.section_id_range.as_usize()];
+                for custom in &object.custom_sections {
+                    let part_id = &mut obj_part_ids[custom.index.0];
+                    if *part_id != singletons_id.part_id_with_alignment::<P>(custom.alignment) {
+                        *part_id = output_sections.get_or_create_custom_section_part(args, custom);
+                    }
                 }
             }
         }
