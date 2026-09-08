@@ -9,7 +9,7 @@ use std::convert::TryInto;
 // Magic value identifying an SFrame section.
 const SFRAME_MAGIC: u16 = 0xdee2;
 // Current supported SFrame version.
-const SFRAME_VERSION_2: u8 = 2;
+const SFRAME_VERSION_3: u8 = 3;
 
 const FLAG_FDE_SORTED: u8 = 0x1;
 const FLAG_FRAME_POINTER: u8 = 0x2;
@@ -17,7 +17,9 @@ const FLAG_FUNC_START_PCREL: u8 = 0x4;
 const FLAG_AARCH64_PAUTH: u8 = 0x8;
 
 const HEADER_SIZE: usize = 0x1c;
-const FDE_SIZE: usize = 20;
+const FDE_INDEX_SIZE: usize = 16;
+// const FDE_ATTR_SIZE: usize = 5;
+// const FDE_SIZE: usize = FDE_INDEX_SIZE + FDE_ATTR_SIZE;
 
 // Field offsets in the SFrame header
 const VERSION_FIELD: usize = 0x02;
@@ -33,9 +35,9 @@ const FDE_START_OFFSET_FIELD: usize = 0x14;
 const FRE_START_OFFSET_FIELD: usize = 0x18;
 
 struct Entry {
-    bytes: [u8; FDE_SIZE],
+    fde_index_bytes: [u8; FDE_INDEX_SIZE],
     func_addr: i128,
-    fre_bytes: Vec<u8>,
+    fde_attr_and_fre_bytes: Vec<u8>,
 }
 
 #[derive(Debug, derive_more::Display)]
@@ -46,10 +48,14 @@ pub enum SframeError {
     BadMagicBytes(u16),
 }
 
-struct Header {
+struct Preamble {
     magic: u16,
     version: u8,
     flags: u8,
+}
+
+struct Header {
+    preamble: Preamble,
     abi_arch: u8,
     cfa_fixed_fp_offset: i8,
     cfa_fixed_ra_offset: i8,
@@ -69,14 +75,18 @@ impl Header {
         }
 
         let version = data[VERSION_FIELD];
-        if version != SFRAME_VERSION_2 {
+        if version != SFRAME_VERSION_3 {
             return Err(SframeError::UnsupportedVersion(version));
         }
 
-        Ok(Header {
+        let preamble = Preamble {
             magic,
             version,
             flags: data[FLAGS_FIELD],
+        };
+
+        Ok(Header {
+            preamble,
             abi_arch: data[ABI_ARCH_FIELD],
             cfa_fixed_fp_offset: data[CFA_FIXED_FP_OFFSET_FIELD] as i8,
             cfa_fixed_ra_offset: data[CFA_FIXED_RA_OFFSET_FIELD] as i8,
@@ -90,9 +100,9 @@ impl Header {
     }
 
     fn write(&self, data: &mut [u8]) {
-        data[0..2].copy_from_slice(&self.magic.to_le_bytes());
-        data[VERSION_FIELD] = self.version;
-        data[FLAGS_FIELD] = self.flags;
+        data[0..2].copy_from_slice(&self.preamble.magic.to_le_bytes());
+        data[VERSION_FIELD] = self.preamble.version;
+        data[FLAGS_FIELD] = self.preamble.flags;
         data[ABI_ARCH_FIELD] = self.abi_arch;
         data[CFA_FIXED_FP_OFFSET_FIELD] = self.cfa_fixed_fp_offset as u8;
         data[CFA_FIXED_RA_OFFSET_FIELD] = self.cfa_fixed_ra_offset as u8;
@@ -115,12 +125,12 @@ fn read_u32(data: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
 }
 
-fn read_i32(data: &[u8], offset: usize) -> i32 {
-    i32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+fn read_i64(data: &[u8], offset: usize) -> i64 {
+    i64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
 }
 
-fn write_i32(data: &mut [u8], offset: usize, value: i32) {
-    data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+fn write_i64(data: &mut [u8], offset: usize, value: i64) {
+    data[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
 /// Sort the SFrame FDE array in-place by the functions' start addresses.
@@ -166,21 +176,21 @@ pub(crate) fn sort_sframe_section(
             Err(e) => bail!("Failed to parse SFrame header at offset {}: {}", offset, e),
         };
 
-        let pc_rel = header.flags & FLAG_FUNC_START_PCREL != 0;
+        let pc_rel = header.preamble.flags & FLAG_FUNC_START_PCREL != 0;
         let aux_len = header.aux_len as usize;
 
         if first_section {
-            output_flags = header.flags;
+            output_flags = header.preamble.flags;
             output_abi_arch = header.abi_arch;
             output_cfa_fixed_fp_offset = header.cfa_fixed_fp_offset;
             output_cfa_fixed_ra_offset = header.cfa_fixed_ra_offset;
             output_aux_len = aux_len;
             first_section = false;
         } else {
-            if (header.flags & FLAG_FRAME_POINTER) == 0 {
+            if (header.preamble.flags & FLAG_FRAME_POINTER) == 0 {
                 output_flags &= !FLAG_FRAME_POINTER;
             }
-            if (header.flags & FLAG_AARCH64_PAUTH) != 0 {
+            if (header.preamble.flags & FLAG_AARCH64_PAUTH) != 0 {
                 output_flags |= FLAG_AARCH64_PAUTH;
             }
         }
@@ -195,11 +205,11 @@ pub(crate) fn sort_sframe_section(
         let fre_start = offset + header_end_offset + header.fre_start_offset as usize;
 
         let num_fdes = header.num_fdes as usize;
-        let total_fde_bytes = FDE_SIZE
+        let total_fde_index_bytes = FDE_INDEX_SIZE
             .checked_mul(num_fdes)
             .context("SFrame FDE array size overflow")?;
 
-        let fde_end = fde_start + total_fde_bytes;
+        let fde_end = fde_start + total_fde_index_bytes;
 
         if fde_end > offset + len {
             bail!("SFrame FDE array truncated");
@@ -207,8 +217,8 @@ pub(crate) fn sort_sframe_section(
 
         let mut fre_offsets = Vec::with_capacity(num_fdes + 1);
         for i in 0..num_fdes {
-            let offset_in_section = fde_start + i * FDE_SIZE;
-            let fre_offset = read_u32(section, offset_in_section + 8);
+            let offset_in_section = fde_start + i * FDE_INDEX_SIZE;
+            let fre_offset = read_u32(section, offset_in_section + 12);
             fre_offsets.push(fre_offset);
         }
 
@@ -222,18 +232,19 @@ pub(crate) fn sort_sframe_section(
         fre_offsets.dedup();
 
         for index in 0..num_fdes {
-            let offset_in_section = fde_start + index * FDE_SIZE;
-            let mut bytes = [0u8; FDE_SIZE];
-            bytes.copy_from_slice(&section[offset_in_section..offset_in_section + FDE_SIZE]);
+            let offset_in_section = fde_start + index * FDE_INDEX_SIZE;
+            let mut fde_index_bytes = [0u8; FDE_INDEX_SIZE];
+            fde_index_bytes
+                .copy_from_slice(&section[offset_in_section..offset_in_section + FDE_INDEX_SIZE]);
 
-            let start_value = i128::from(read_i32(&bytes, 0));
+            let start_value = i128::from(read_i64(&fde_index_bytes, 0));
             let func_addr = if pc_rel {
                 section_base + (offset_in_section as i128) + start_value
             } else {
                 section_base + start_value
             };
 
-            let curr_fre_offset = read_u32(&bytes, 8);
+            let curr_fre_offset = read_u32(&fde_index_bytes, 12);
 
             // Find the length of the FRE data for this function.
             // It extends from curr_fre_offset to the next offset in our sorted list.
@@ -252,13 +263,13 @@ pub(crate) fn sort_sframe_section(
                 bail!("SFrame FRE data truncated");
             }
 
-            let fre_bytes =
+            let fde_attr_and_fre_bytes =
                 section[curr_fre_abs_start..curr_fre_abs_start + curr_fre_len].to_owned();
 
             entries.push(Entry {
-                bytes,
+                fde_index_bytes,
                 func_addr,
-                fre_bytes,
+                fde_attr_and_fre_bytes,
             });
         }
     }
@@ -273,20 +284,24 @@ pub(crate) fn sort_sframe_section(
     let header_end_offset = HEADER_SIZE + output_aux_len;
 
     let fde_offset = 0;
-    let fde_size = num_fdes * FDE_SIZE;
+    let fde_size = num_fdes * FDE_INDEX_SIZE;
     let fre_offset = fde_size;
 
-    let total_fre_size: usize = entries.iter().map(|e| e.fre_bytes.len()).sum();
+    let total_fre_size: usize = entries.iter().map(|e| e.fde_attr_and_fre_bytes.len()).sum();
     let total_size = header_end_offset + fde_size + total_fre_size;
 
     if total_size > section.len() {
         bail!("Merged SFrame section too large");
     }
 
-    let header = Header {
+    let preamble = Preamble {
         magic: SFRAME_MAGIC,
-        version: SFRAME_VERSION_2,
+        version: SFRAME_VERSION_3,
         flags: output_flags | FLAG_FDE_SORTED,
+    };
+
+    let header = Header {
+        preamble,
         abi_arch: output_abi_arch,
         cfa_fixed_fp_offset: output_cfa_fixed_fp_offset,
         cfa_fixed_ra_offset: output_cfa_fixed_ra_offset,
@@ -304,27 +319,28 @@ pub(crate) fn sort_sframe_section(
     let fre_start_idx = header_end_offset + fre_offset;
 
     for (index, entry) in entries.iter().enumerate() {
-        let mut fde_bytes = entry.bytes;
+        let mut fde_bytes = entry.fde_index_bytes;
 
-        let fde_pos_in_section = fde_start_idx + index * FDE_SIZE;
-        let pc_rel = header.flags & FLAG_FUNC_START_PCREL != 0;
+        let fde_pos_in_section = fde_start_idx + index * FDE_INDEX_SIZE;
+        let pc_rel = header.preamble.flags & FLAG_FUNC_START_PCREL != 0;
 
         let new_value = if pc_rel {
             entry.func_addr - (section_base + fde_pos_in_section as i128)
         } else {
             entry.func_addr - section_base
         };
-        let new_value_i32 = i32::try_from(new_value)
+        let new_value_i64 = i64::try_from(new_value)
             .context("Function start address out of 32-bit range for SFrame entry")?;
-        write_i32(&mut fde_bytes, 0, new_value_i32);
+        write_i64(&mut fde_bytes, 0, new_value_i64);
 
-        fde_bytes[8..12].copy_from_slice(&(current_fre_rel_offset as u32).to_le_bytes());
+        fde_bytes[12..16].copy_from_slice(&(current_fre_rel_offset as u32).to_le_bytes());
 
-        section[fde_pos_in_section..fde_pos_in_section + FDE_SIZE].copy_from_slice(&fde_bytes);
+        section[fde_pos_in_section..fde_pos_in_section + FDE_INDEX_SIZE]
+            .copy_from_slice(&fde_bytes);
 
-        let fre_len = entry.fre_bytes.len();
+        let fre_len = entry.fde_attr_and_fre_bytes.len();
         let fre_pos = fre_start_idx + current_fre_rel_offset;
-        section[fre_pos..fre_pos + fre_len].copy_from_slice(&entry.fre_bytes);
+        section[fre_pos..fre_pos + fre_len].copy_from_slice(&entry.fde_attr_and_fre_bytes);
 
         current_fre_rel_offset += fre_len;
     }
