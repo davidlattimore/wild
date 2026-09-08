@@ -740,3 +740,14 @@ pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+fn kernel_version() -> Option<(u64, u64)> {
+    let uname = nix::sys::utsname::uname().ok()?;
+    let release = uname.release().to_string_lossy();
+    let mut parts = release.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+
+    Some((major, minor))
+}
