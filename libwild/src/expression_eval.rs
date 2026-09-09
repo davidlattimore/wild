@@ -218,7 +218,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
         0
     };
 
-    Ok(value + offset)
+    Ok(value.wrapping_add(offset))
 }
 
 fn evaluate_expression_value<'data, P: Platform>(
