@@ -455,7 +455,10 @@ fn populate_file_header<C: ElfClass, A: Arch<Platform = elf::Elf<C>>>(
         u64::from(C::FILE_HEADER_SIZE)
     })?;
     header.set_section_header_offset(
-        u64::from(C::FILE_HEADER_SIZE) + crate::elf::program_headers_size::<C>(header_info),
+        layout
+            .section_layouts
+            .get(output_section_id::SECTION_HEADERS)
+            .file_offset as u64,
     )?;
     header.set_flags(layout.format_specific.eflags);
     header.set_header_size(C::FILE_HEADER_SIZE);
