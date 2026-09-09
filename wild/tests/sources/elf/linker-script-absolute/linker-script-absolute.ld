@@ -25,6 +25,14 @@ SECTIONS
         absolute_max = MAX(ABSOLUTE(16), ABSOLUTE(24));
         ASSERT(absolute_max == 24, "MAX must preserve absolute symbol classification");
 
+        abs_land = ABSOLUTE(1) && ADDR(.text);
+        abs_lor = ABSOLUTE(0) || ADDR(.text);
+        abs_lnot = !ABSOLUTE(ADDR(.text));
+
+        ASSERT(abs_land == text_start + 1, "abs_land inside failed");
+        ASSERT(abs_lor == text_start + 1, "abs_lor inside failed");
+        ASSERT(abs_lnot == 0, "abs_lnot inside failed");
+
         padding = ABSOLUTE(16);
         . += padding;
         after_padding = .;
@@ -90,3 +98,7 @@ SECTIONS
 
 ASSERT(absolute_aligned == text_start, "absolute_aligned failed");
 ASSERT(sum_absolute == text_start + 24, "sum of absolute operands must be section relative");
+
+ASSERT(abs_land == text_start + 1, "abs_land global failed");
+ASSERT(abs_lor == text_start + 1, "abs_lor global failed");
+ASSERT(abs_lnot == 0, "abs_lnot global failed");

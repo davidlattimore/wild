@@ -365,7 +365,9 @@ impl<'a> Expression<'a> {
                     _ => ExprKind::SectionRelative,
                 }
             }
-            Expression::Negate(e) | Expression::BitwiseNot(e) => e.expr_kind(),
+            Expression::Negate(e) | Expression::BitwiseNot(e) | Expression::LogicalNot(e) => {
+                e.expr_kind()
+            }
             _ => ExprKind::SectionRelative,
         }
     }

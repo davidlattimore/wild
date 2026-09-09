@@ -384,9 +384,9 @@ fn evaluate_expression_value<'data, P: Platform>(
         Expression::BitwiseXor(l, r) => Ok(eval!(l)? ^ eval!(r)?),
         Expression::LeftShift(l, r) => Ok(eval!(l)?.wrapping_shl(eval!(r)? as u32)),
         Expression::RightShift(l, r) => Ok(eval!(l)?.wrapping_shr(eval!(r)? as u32)),
-        Expression::LogicalAnd(l, r) => Ok(u64::from(eval!(l)? != 0 && eval!(r)? != 0)),
-        Expression::LogicalOr(l, r) => Ok(u64::from(eval!(l)? != 0 || eval!(r)? != 0)),
-        Expression::LogicalNot(e) => Ok(u64::from(eval!(e)? == 0)),
+        Expression::LogicalAnd(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a != 0 && b != 0)),
+        Expression::LogicalOr(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a != 0 || b != 0)),
+        Expression::LogicalNot(e) => eval_cmp(e, e, false, |a, _| u64::from(a == 0)),
         Expression::BitwiseNot(e) => Ok(!eval!(e)?),
         Expression::Negate(e) => Ok(eval!(e)?.wrapping_neg()),
 
