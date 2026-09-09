@@ -4924,6 +4924,7 @@ fn get_symbol_attributes<C: ElfClass>(
             let def_info = &script.internal_symbols.symbol_definitions[local_index.0];
             let shndx = if let crate::parsing::SymbolPlacement::Redirect(redirect) =
                 &def_info.placement
+                && !redirect.is_absolute
                 && let SymbolLoc::SectionEnd(section_id) = redirect.loc
             {
                 let section_id = layout.output_sections.primary_output_section(section_id);
@@ -4985,6 +4986,9 @@ fn get_defsym_attributes<C: ElfClass>(
             Err(redirect.missing_target(target_name))
         }
     } else {
+        if redirect.is_absolute {
+            return Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE));
+        }
         let shndx = match redirect.loc {
             SymbolLoc::SectionEnd(os) => {
                 let os = layout.output_sections.primary_output_section(os);

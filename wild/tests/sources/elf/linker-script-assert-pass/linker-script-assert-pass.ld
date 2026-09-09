@@ -2,6 +2,12 @@ ENTRY(_start)
 
 SECTIONS {
     .text : {
+        text_start = .;
+
+        neg1 = ~0;
+        neg2 = . - 4;
+        neg3 = -4;
+
         *(.text*)
         symbol3 = 0x3000;
     }
@@ -73,3 +79,7 @@ symbol12 = ASSERT(ASSERT(0x5000 < 0x10000, "0x5000 < 0x10000 must be true") == 1
 . = ASSERT(symbol12 == 1, "must be 1");
 ASSERT(ALIGN(0x38, 16) == 0x40, "ALIGN value is incorrect");
 ASSERT(ALIGN(0x38, 18) == 0x48, "ALIGN value is incorrect");
+
+ASSERT(neg1 == text_start - 1, "sym_not_0 inside failed");
+ASSERT(neg2 == text_start - 4, "sym_neg_4 inside failed");
+ASSERT(neg3 == text_start - 4, "sym_sub_4 inside failed");

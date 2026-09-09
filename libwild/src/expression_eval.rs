@@ -70,10 +70,7 @@ fn evaluate_symbol_value<P: Platform>(
         .relative_section_id()
         .map(|id| output_sections.primary_output_section(id));
     match symbol_value {
-        SymbolValue::Absolute(value) => {
-            value_kind.contains_absolute = true;
-            Ok(*value)
-        }
+        SymbolValue::Absolute(value) => Ok(*value),
         SymbolValue::SectionRelative {
             section_id,
             address,
@@ -143,7 +140,13 @@ fn evaluate_location<'data, P: Platform>(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections<'data, P>,
     resolved_location_counters: &[ResolvedLocationCounter],
+    value_kind: &mut ExpressionValueKind,
 ) -> Result<u64> {
+    if expr_loc.relative_section_id().is_some() {
+        value_kind.contains_section_relative = true;
+    } else {
+        value_kind.contains_absolute = true;
+    }
     match expr_loc {
         SymbolLoc::SectionStartRelative(_) => Ok(0),
         SymbolLoc::SectionEndRelative(id) => {
@@ -203,7 +206,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
         symbol_resolution_callback,
     )?;
 
-    let offset = if value_kind.needs_section_base() {
+    let offset = if !expr.is_absolute() && value_kind.needs_section_base() {
         if let Some(id) = expr_loc.relative_section_id() {
             let primary_id = output_sections.primary_output_section(id);
             let section_layout = section_layouts.get(primary_id);
@@ -215,7 +218,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
         0
     };
 
-    Ok(value + offset)
+    Ok(value.wrapping_add(offset))
 }
 
 fn evaluate_expression_value<'data, P: Platform>(
@@ -234,6 +237,9 @@ fn evaluate_expression_value<'data, P: Platform>(
 ) -> Result<u64> {
     macro_rules! eval {
         ($e:expr) => {
+            eval!($e, value_kind)
+        };
+        ($e:expr, $value_kind:expr) => {
             evaluate_expression_value(
                 $e,
                 expr_loc,
@@ -244,47 +250,62 @@ fn evaluate_expression_value<'data, P: Platform>(
                 symbol_db,
                 sizeof_headers,
                 resolved_location_counters,
-                value_kind,
+                $value_kind,
                 laid_out_mem_offsets,
                 symbol_resolution_callback,
             )
         };
     }
 
-    macro_rules! eval_abs {
-        ($e:expr) => {
-            evaluate_expression(
-                $e,
-                expr_loc,
-                input_ref,
-                section_layouts,
-                output_sections,
-                memory_regions,
-                symbol_db,
-                sizeof_headers,
-                resolved_location_counters,
-                laid_out_mem_offsets,
-                symbol_resolution_callback,
-            )
-        };
-    }
+    let mut eval_cmp = |l, r, update_kind: bool, op: fn(u64, u64) -> u64| -> Result<u64> {
+        let mut l_kind = ExpressionValueKind::default();
+        let mut r_kind = ExpressionValueKind::default();
+        let mut l_val = eval!(l, &mut l_kind)?;
+        let mut r_val = eval!(r, &mut r_kind)?;
+
+        if let Some(id) = expr_loc.relative_section_id() {
+            let primary_id = output_sections.primary_output_section(id);
+            let section_base = section_layouts.get(primary_id).mem_offset;
+
+            if l_kind.contains_section_relative
+                && !l_kind.contains_absolute
+                && r_kind.contains_absolute
+            {
+                l_val = l_val.wrapping_add(section_base);
+            }
+
+            if r_kind.contains_section_relative
+                && !r_kind.contains_absolute
+                && l_kind.contains_absolute
+            {
+                r_val = r_val.wrapping_add(section_base);
+            }
+        }
+
+        if update_kind {
+            if l_kind.contains_absolute || r_kind.contains_absolute {
+                value_kind.contains_absolute = true;
+            }
+            if (l_kind.contains_section_relative || r_kind.contains_section_relative)
+                && !value_kind.contains_absolute
+            {
+                value_kind.contains_section_relative = true;
+            }
+        }
+
+        Ok(op(l_val, r_val))
+    };
 
     match expr {
         Expression::Number(n) => Ok(*n),
 
-        Expression::LocationCounter => {
-            if expr_loc.relative_section_id().is_some() {
-                value_kind.contains_section_relative = true;
-            } else {
-                value_kind.contains_absolute = true;
-            }
-            evaluate_location(
-                expr_loc,
-                section_layouts,
-                output_sections,
-                resolved_location_counters,
-            )
-        }
+        Expression::LocationCounter => evaluate_location(
+            expr_loc,
+            section_layouts,
+            output_sections,
+            resolved_location_counters,
+            value_kind,
+        ),
 
         Expression::Symbol(name) => {
             let value = symbol_resolution_callback(name)?;
@@ -318,12 +339,12 @@ fn evaluate_expression_value<'data, P: Platform>(
         }
 
         // Comparisons return 1 (true) or 0 (false)
-        Expression::LessThan(l, r) => Ok(u64::from(eval_abs!(l)? < eval_abs!(r)?)),
-        Expression::GreaterThan(l, r) => Ok(u64::from(eval_abs!(l)? > eval_abs!(r)?)),
-        Expression::LessEqual(l, r) => Ok(u64::from(eval_abs!(l)? <= eval_abs!(r)?)),
-        Expression::GreaterEqual(l, r) => Ok(u64::from(eval_abs!(l)? >= eval_abs!(r)?)),
-        Expression::Equal(l, r) => Ok(u64::from(eval_abs!(l)? == eval_abs!(r)?)),
-        Expression::NotEqual(l, r) => Ok(u64::from(eval_abs!(l)? != eval_abs!(r)?)),
+        Expression::LessThan(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a < b)),
+        Expression::GreaterThan(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a > b)),
+        Expression::LessEqual(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a <= b)),
+        Expression::GreaterEqual(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a >= b)),
+        Expression::Equal(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a == b)),
+        Expression::NotEqual(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a != b)),
 
         Expression::Sizeof(name) => Ok(section_size(name, section_layouts, output_sections)),
         Expression::Alignof(name) => Ok(section_align(name, section_layouts, output_sections)),
@@ -342,30 +363,30 @@ fn evaluate_expression_value<'data, P: Platform>(
             if align == 0 {
                 bail!("ALIGN(0) is invalid");
             }
-            let expr = expr.as_ref().map_or_else(
-                || {
-                    evaluate_location(
-                        expr_loc,
-                        section_layouts,
-                        output_sections,
-                        resolved_location_counters,
-                    )
-                },
-                |e| eval!(e),
-            )?;
-            Ok(expr.next_multiple_of(align))
+            let value = if let Some(expr) = expr {
+                eval!(expr)?
+            } else {
+                evaluate_location(
+                    expr_loc,
+                    section_layouts,
+                    output_sections,
+                    resolved_location_counters,
+                    value_kind,
+                )?
+            };
+            Ok(value.next_multiple_of(align))
         }
 
-        Expression::Min(l, r) => Ok(eval!(l)?.min(eval!(r)?)),
-        Expression::Max(l, r) => Ok(eval!(l)?.max(eval!(r)?)),
+        Expression::Min(l, r) => eval_cmp(l, r, true, u64::min),
+        Expression::Max(l, r) => eval_cmp(l, r, true, u64::max),
         Expression::BitwiseAnd(l, r) => Ok(eval!(l)? & eval!(r)?),
         Expression::BitwiseOr(l, r) => Ok(eval!(l)? | eval!(r)?),
         Expression::BitwiseXor(l, r) => Ok(eval!(l)? ^ eval!(r)?),
         Expression::LeftShift(l, r) => Ok(eval!(l)?.wrapping_shl(eval!(r)? as u32)),
         Expression::RightShift(l, r) => Ok(eval!(l)?.wrapping_shr(eval!(r)? as u32)),
-        Expression::LogicalAnd(l, r) => Ok(u64::from(eval!(l)? != 0 && eval!(r)? != 0)),
-        Expression::LogicalOr(l, r) => Ok(u64::from(eval!(l)? != 0 || eval!(r)? != 0)),
-        Expression::LogicalNot(e) => Ok(u64::from(eval!(e)? == 0)),
+        Expression::LogicalAnd(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a != 0 && b != 0)),
+        Expression::LogicalOr(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a != 0 || b != 0)),
+        Expression::LogicalNot(e) => eval_cmp(e, e, false, |a, _| u64::from(a == 0)),
         Expression::BitwiseNot(e) => Ok(!eval!(e)?),
         Expression::Negate(e) => Ok(eval!(e)?.wrapping_neg()),
 
@@ -398,7 +419,8 @@ fn evaluate_expression_value<'data, P: Platform>(
         }
         Expression::SizeofHeaders => Ok(sizeof_headers),
         Expression::Ternary(cond, if_true, if_false) => {
-            let cond = eval!(cond)?;
+            let mut cond_kind = ExpressionValueKind::default();
+            let cond = eval!(cond, &mut cond_kind)?;
             if cond != 0 {
                 eval!(if_true)
             } else {
@@ -420,12 +442,27 @@ fn evaluate_expression_value<'data, P: Platform>(
             }
             Ok(result)
         }
+        Expression::Absolute(expression) => {
+            let mut inner_kind = ExpressionValueKind::default();
+            let val = eval!(expression, &mut inner_kind)?;
+            if inner_kind.contains_section_relative
+                && let Some(id) = expr_loc.relative_section_id()
+            {
+                value_kind.contains_absolute = true;
+                let primary_id = output_sections.primary_output_section(id);
+                let section_layout = section_layouts.get(primary_id);
+                return Ok(val.wrapping_add(section_layout.mem_offset));
+            }
+            value_kind.contains_absolute |= inner_kind.contains_absolute;
+            Ok(val)
+        }
     }
 }
 
 pub(crate) fn evaluate_const<'data>(expr: &Expression<'data>) -> Result<u64> {
     match expr {
         Expression::Number(n) => Ok(*n),
+        Expression::Absolute(expression) => evaluate_const(expression),
         Expression::Add(l, r) => Ok(evaluate_const(l)?.wrapping_add(evaluate_const(r)?)),
         Expression::Subtract(l, r) => Ok(evaluate_const(l)?.wrapping_sub(evaluate_const(r)?)),
         Expression::Multiply(l, r) => Ok(evaluate_const(l)?.wrapping_mul(evaluate_const(r)?)),
@@ -630,9 +667,8 @@ fn evaluate_early_expression_internal_symbol<'data, P: Platform>(
             );
             visited_nodes.remove(&canonical_id);
             let value = value?;
-            let symbol_section = redirect
-                .loc
-                .relative_section_id()
+            let symbol_section = symbol_db
+                .output_section_id(canonical_id)
                 .map(|id| output_sections.primary_output_section(id));
             if let Some(symbol_section) = symbol_section {
                 Ok(SymbolValue::SectionRelative {
@@ -1093,11 +1129,11 @@ mod tests {
                     .iter()
                     .map(|assertion| {
                         InternalSymDefInfo::new(
-                            SymbolPlacement::Redirect(Redirect {
-                                kind: RedirectKind::Script,
-                                expression: Expression::Assert(assertion.clone()),
-                                loc: SymbolLoc::None,
-                            }),
+                            SymbolPlacement::Redirect(Redirect::new(
+                                RedirectKind::Script,
+                                Expression::Assert(assertion.clone()),
+                                SymbolLoc::None,
+                            )),
                             b"",
                         )
                     })

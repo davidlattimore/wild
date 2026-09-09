@@ -199,7 +199,7 @@ pub(crate) struct OutputFormat<'a> {
 /// - Logical: &&, ||
 /// - Unary: -, !, ~
 /// - Functions: SIZEOF, ALIGNOF, LENGTH, ORIGIN, ADDR, LOADADDR, ALIGN, MIN, MAX, SEGMENT_START,
-///   DEFINED
+///   DEFINED, ABSOLUTE
 /// - Numbers (hex/decimal), symbols, location counter (.)
 /// - Parentheses for grouping
 /// - Ternary operator (? :)
@@ -261,6 +261,7 @@ pub(crate) enum Expression<'a> {
     ),
     Defined(&'a [u8]),
     Assert(AssertCommand<'a>),
+    Absolute(Box<Expression<'a>>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -323,7 +324,8 @@ impl<'a> Expression<'a> {
             | Expression::LogicalNot(e)
             | Expression::BitwiseNot(e)
             | Expression::Negate(e)
-            | Expression::Assert(AssertCommand { expression: e, .. }) => e.visit_expressions(cb),
+            | Expression::Assert(AssertCommand { expression: e, .. })
+            | Expression::Absolute(e) => e.visit_expressions(cb),
             Expression::SegmentStart(_, default_expr) => default_expr.visit_expressions(cb),
             Expression::Ternary(expression, expression1, expression2) => {
                 expression.visit_expressions(cb);
@@ -332,6 +334,50 @@ impl<'a> Expression<'a> {
             }
         }
     }
+
+    pub(crate) fn is_absolute(&self) -> bool {
+        self.expr_kind() == ExprKind::Absolute
+    }
+
+    fn expr_kind(&self) -> ExprKind {
+        match self {
+            Expression::Number(_) => ExprKind::PlainNumber,
+            Expression::Absolute(_) => ExprKind::Absolute,
+            Expression::Add(l, r)
+            | Expression::Subtract(l, r)
+            | Expression::Multiply(l, r)
+            | Expression::Divide(l, r)
+            | Expression::Modulo(l, r)
+            | Expression::BitwiseAnd(l, r)
+            | Expression::BitwiseOr(l, r)
+            | Expression::BitwiseXor(l, r)
+            | Expression::LeftShift(l, r)
+            | Expression::RightShift(l, r) => match (l.expr_kind(), r.expr_kind()) {
+                (ExprKind::PlainNumber, ExprKind::PlainNumber) => ExprKind::PlainNumber,
+                (ExprKind::Absolute, ExprKind::PlainNumber)
+                | (ExprKind::PlainNumber, ExprKind::Absolute) => ExprKind::Absolute,
+                _ => ExprKind::SectionRelative,
+            },
+            Expression::Min(l, r) | Expression::Max(l, r) | Expression::Ternary(_, l, r) => {
+                match (l.expr_kind(), r.expr_kind()) {
+                    (ExprKind::PlainNumber, ExprKind::PlainNumber) => ExprKind::PlainNumber,
+                    (ExprKind::Absolute, _) | (_, ExprKind::Absolute) => ExprKind::Absolute,
+                    _ => ExprKind::SectionRelative,
+                }
+            }
+            Expression::Negate(e) | Expression::BitwiseNot(e) | Expression::LogicalNot(e) => {
+                e.expr_kind()
+            }
+            _ => ExprKind::SectionRelative,
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ExprKind {
+    PlainNumber,
+    Absolute,
+    SectionRelative,
 }
 
 impl<'data> LinkerScript<'data> {
@@ -1037,6 +1083,14 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
             b"ASSERT" => {
                 let assert = parse_assert.parse_next(input)?;
                 Ok(Expression::Assert(assert))
+            }
+            b"ABSOLUTE" => {
+                '('.parse_next(input)?;
+                skip_comments_and_whitespace(input)?;
+                let expr = parse_expression.parse_next(input)?;
+                skip_comments_and_whitespace(input)?;
+                ')'.parse_next(input)?;
+                Ok(Expression::Absolute(Box::new(expr)))
             }
             _ => Err(ContextError::default()),
         }

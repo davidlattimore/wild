@@ -137,6 +137,19 @@ pub(crate) struct Redirect<'data> {
     pub(crate) kind: RedirectKind,
     pub(crate) expression: Expression<'data>,
     pub(crate) loc: SymbolLoc,
+    pub(crate) is_absolute: bool,
+}
+
+impl<'data> Redirect<'data> {
+    pub(crate) fn new(kind: RedirectKind, expression: Expression<'data>, loc: SymbolLoc) -> Self {
+        let is_absolute = expression.is_absolute();
+        Self {
+            kind,
+            expression,
+            loc,
+            is_absolute,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,11 +263,11 @@ impl<'data, P: Platform> Prelude<'data, P> {
                 let expr = crate::linker_script::parse_expression(&mut value)
                     .with_context(|| format!("Failed to parse --defsym {name}={value}"))?;
 
-                let placement = SymbolPlacement::Redirect(Redirect {
-                    kind: RedirectKind::DefSym,
-                    expression: expr,
-                    loc: SymbolLoc::None,
-                });
+                let placement = SymbolPlacement::Redirect(Redirect::new(
+                    RedirectKind::DefSym,
+                    expr,
+                    SymbolLoc::None,
+                ));
                 symbols.add_symbol(InternalSymDefInfo::new(placement, name.as_bytes()));
                 Ok(())
             })?;
