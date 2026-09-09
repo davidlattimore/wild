@@ -1,0 +1,68 @@
+version = 1
+
+[[annotations]]
+path = [
+  ".cargo/**",
+  ".dockerignore",
+  ".git-blame-ignore-revs",
+  ".github/**",
+  ".gitignore",
+  ".gitmodules",
+  ".helix/**",
+  ".typos.toml",
+  ".vscode/**",
+  ".yamlfmt",
+  ".zed/**",
+  "BENCHMARKING.md",
+  "CHANGELOG.md",
+  "CODE_OF_CONDUCT.md",
+  "CONTRIBUTING.md",
+  "Cargo.lock",
+  "Cargo.toml",
+  "DESIGN.md",
+  "GOVERNANCE.md",
+  "LICENSE-APACHE",
+  "LICENSE-MIT",
+  "LINKER_SCRIPT_SUPPORT.md",
+  "PACKAGING.md",
+  "README.md",
+  "RELEASING.md",
+  "REUSE.toml",
+  "benchmarks/**",
+  "cackle.toml",
+  "cliff.toml",
+  "default.nix",
+  "deny.toml",
+  "docker/**",
+  "fakes-debug/**",
+  "fakes/**",
+  "flake.lock",
+  "flake.nix",
+  "images/wild.png",
+  "libwild/**",
+  "linker-diff/**",
+  "linker-layout/**",
+  "linker-trace/**",
+  "linker-utils/**",
+  "nix/**",
+  "rustfmt.toml",
+  "taplo.toml",
+  "test-config-ci.toml",
+  "test-config.toml.sample",
+  "tests/**",
+  "wild/**",
+]
+
+precedence = "override"
+SPDX-FileCopyrightText = "Copyright 2024-2026 Wild Linker Contributors"
+SPDX-License-Identifier = "MIT OR Apache-2.0"
+[[annotations]]
+path = ["external_test_suites/mold/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "Copyright 2020-2026 Rui Ueyama"
+SPDX-License-Identifier = "MIT"
+[[annotations]]
+path = ["external_test_suites/lld/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "Copyright 2003-2026 The LLVM Developers"
+SPDX-License-Identifier = "Apache-2.0 WITH LLVM-exception"
