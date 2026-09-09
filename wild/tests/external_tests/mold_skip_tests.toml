@@ -21,7 +21,6 @@ tests = [
   "icf.sh",                                # `--icf`  
   "icf-alignment-bug.sh",
   "icf-preemption.sh",
-  "image-base.sh",
   "init-in-dso.sh",
   "init.sh",
   "library.sh",
