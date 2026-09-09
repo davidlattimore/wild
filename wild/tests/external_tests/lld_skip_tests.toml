@@ -3,6 +3,7 @@ reason = "Wild uses immediate binding or different load address; output differs 
 tests = [
   "x86-64-tlsdesc-ld.s",
   "x86-64-tlsdesc-gd-mixed.s",
+  "x86-64-plt-high-addr.s",
   "x86-64-reloc-gotoff64.s",
   "x86-64-reloc-gotpc64.s",
   "x86-64-reloc-pltoff64.s",
@@ -90,6 +91,7 @@ tests = [
   "x86-64-reloc-size.s",
   "x86-64-reloc-size-shared.s",
   "x86-64-split-stack-prologue-adjust-shared.s",
+  "aarch64-undefined-weak.s",
   "x86-64-split-stack-prologue-adjust-silent.s",
   "x86-64-tls-opt-noplt.s",
   "x86-64-tls-pie.s",
@@ -153,14 +155,10 @@ tests = [
 [skipped_groups.missing_flag_support]
 reason = "Wild doesn't recognize a flag this test uses"
 tests = [
-  "x86-64-reloc-32.s",
   "x86-64-branch-to-branch.s",
   "x86-64-gotpc-relax.s",
-  "x86-64-plt-high-addr.s",
   "x86-64-relax-jump-tables.s",
   "aarch64-branch-to-branch.s",
-  "aarch64-thunk-align.s",
-  "aarch64-undefined-weak.s",
 ]
 
 [skipped_groups.missing_validation]
@@ -170,6 +168,7 @@ tests = [
   "x86-64-dyn-rel-error.s",
   "x86-64-dyn-rel-error5.s",
   "x86-64-reloc-error.s",
+  "x86-64-reloc-32.s",
   "x86-64-reloc-pc32.s",
   "x86-64-reloc-range.s",
   "x86-64-reloc-8-16.s",
@@ -220,7 +219,11 @@ tests = [
 
 [skipped_groups.thunk_for_absolute_symbol]
 reason = "Wild does not allocate thunks for out-of-range branches to absolute symbols"
-tests = ["aarch64-call26-thunk.s", "aarch64-jump26-thunk.s"]
+tests = [
+  "aarch64-call26-thunk.s",
+  "aarch64-jump26-thunk.s",
+  "aarch64-thunk-align.s",
+]
 
 [skipped_groups.gc_sections_skips_validation]
 reason = "Wild skips validation for GC'd sections by design"

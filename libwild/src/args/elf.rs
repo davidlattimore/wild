@@ -101,6 +101,9 @@ pub struct ElfArgs {
     pub(crate) tdata: Option<u64>,
     pub(crate) tbss: Option<u64>,
 
+    /// Base address for the output binary from --image-base.
+    pub(crate) image_base: Option<u64>,
+
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
 
@@ -372,6 +375,7 @@ impl Default for ElfArgs {
             defsym: Vec::new(),
             section_start: HashMap::new(),
             ttext: None,
+            image_base: None,
             tdata: None,
             tbss: None,
             got_plt_syms: false,
@@ -1533,6 +1537,18 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
     parser
         .declare_with_param()
+        .long("image-base")
+        .help("Set the base address of the output binary")
+        .execute(|args, _modifier_stack, value| {
+            args.image_base = Some(
+                parse_number(value)
+                    .with_context(|| format!("Invalid address `{value}` in --image-base"))?,
+            );
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
         .long("hash-style")
         .help("Set hash style")
         .execute(|args, _modifier_stack, value| {
@@ -1944,6 +1960,10 @@ impl platform::Args for ElfArgs {
 
     fn rosegment(&self) -> bool {
         self.rosegment
+    }
+
+    fn image_base(&self) -> Option<u64> {
+        self.image_base
     }
 
     fn common(&self) -> &crate::args::CommonArgs {

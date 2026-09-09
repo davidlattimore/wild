@@ -336,8 +336,18 @@ impl<F: FileSystem> Linker<F> {
 
         let mut output = file_writer::Output::new::<P>(args, output_kind, self.file_system.clone());
 
-        let mut output_sections =
-            OutputSections::with_base_address(A::start_memory_address(output_kind), output_kind);
+        let mut output_sections = OutputSections::with_base_address(
+            args.image_base()
+                .unwrap_or_else(|| A::start_memory_address(output_kind)),
+            output_kind,
+        );
+        // Warn if image_base is not a multiple of the page size, matching lld behavior.
+        if let Some(base) = args.image_base() {
+            let page_size = args.loadable_segment_alignment().value();
+            if base % page_size != 0 {
+                eprintln!("warning: --image-base: address isn't multiple of page size: {base:#x}");
+            }
+        }
         output_sections.set_rosegment(args.rosegment());
 
         let mut layout_rules_builder = LayoutRulesBuilder::default();
