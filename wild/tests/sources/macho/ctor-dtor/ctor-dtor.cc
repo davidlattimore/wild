@@ -4,11 +4,13 @@
 //#DiffIgnore:section.__unwind_info
 //#DiffIgnore:section.__gcc_except_tab
 
+// The test verifies we can actually relax 2 GOT-relative relocations
+// pointing to a symbol defined in this translation unit:
+// ARM64_RELOC_GOT_LOAD_PAGE21, ARM64_RELOC_GOT_LOAD_PAGEOFF12
+
 #include <iostream>
 
 int v = 0;
-
-namespace {
 
 class Tracer {
  public:
@@ -18,8 +20,6 @@ class Tracer {
   }
   ~Tracer() { std::cout << "destroy\n"; }
 };
-
-}  // namespace
 
 Tracer globalA;
 

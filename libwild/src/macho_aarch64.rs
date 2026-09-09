@@ -242,6 +242,26 @@ impl crate::platform::Arch for MachOAArch64 {
                     rel_info: relocation,
                 })
             }
+            object::macho::ARM64_RELOC_GOT_LOAD_PAGE21
+                if flags.has_link_time_address() && !interposable =>
+            {
+                let mut rel = relocation_kind;
+                rel.r_type = object::macho::ARM64_RELOC_PAGE21;
+                Some(Relaxation {
+                    kind: RelaxationKind::NoOp,
+                    rel_info: MachOAArch64::relocation_from_raw(rel).unwrap(),
+                })
+            }
+            object::macho::ARM64_RELOC_GOT_LOAD_PAGEOFF12
+                if flags.has_link_time_address() && !interposable =>
+            {
+                let mut rel = relocation_kind;
+                rel.r_type = object::macho::ARM64_RELOC_PAGEOFF12;
+                Some(Relaxation {
+                    kind: RelaxationKind::LdrToAdd,
+                    rel_info: MachOAArch64::relocation_from_raw(rel).unwrap(),
+                })
+            }
             _ => None,
         }
     }
