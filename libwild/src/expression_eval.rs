@@ -257,7 +257,7 @@ fn evaluate_expression_value<'data, P: Platform>(
         };
     }
 
-    let mut eval_cmp = |l, r, cmp: fn(u64, u64) -> bool| {
+    let mut eval_cmp = |l, r, update_kind: bool, op: fn(u64, u64) -> u64| -> Result<u64> {
         let mut l_kind = ExpressionValueKind::default();
         let mut r_kind = ExpressionValueKind::default();
         let mut l_val = eval!(l, &mut l_kind)?;
@@ -282,7 +282,18 @@ fn evaluate_expression_value<'data, P: Platform>(
             }
         }
 
-        Ok(u64::from(cmp(l_val, r_val)))
+        if update_kind {
+            if l_kind.contains_absolute || r_kind.contains_absolute {
+                value_kind.contains_absolute = true;
+            }
+            if (l_kind.contains_section_relative || r_kind.contains_section_relative)
+                && !value_kind.contains_absolute
+            {
+                value_kind.contains_section_relative = true;
+            }
+        }
+
+        Ok(op(l_val, r_val))
     };
 
     match expr {
@@ -328,12 +339,12 @@ fn evaluate_expression_value<'data, P: Platform>(
         }
 
         // Comparisons return 1 (true) or 0 (false)
-        Expression::LessThan(l, r) => eval_cmp(l, r, |a, b| a < b),
-        Expression::GreaterThan(l, r) => eval_cmp(l, r, |a, b| a > b),
-        Expression::LessEqual(l, r) => eval_cmp(l, r, |a, b| a <= b),
-        Expression::GreaterEqual(l, r) => eval_cmp(l, r, |a, b| a >= b),
-        Expression::Equal(l, r) => eval_cmp(l, r, |a, b| a == b),
-        Expression::NotEqual(l, r) => eval_cmp(l, r, |a, b| a != b),
+        Expression::LessThan(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a < b)),
+        Expression::GreaterThan(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a > b)),
+        Expression::LessEqual(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a <= b)),
+        Expression::GreaterEqual(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a >= b)),
+        Expression::Equal(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a == b)),
+        Expression::NotEqual(l, r) => eval_cmp(l, r, false, |a, b| u64::from(a != b)),
 
         Expression::Sizeof(name) => Ok(section_size(name, section_layouts, output_sections)),
         Expression::Alignof(name) => Ok(section_align(name, section_layouts, output_sections)),
@@ -366,8 +377,8 @@ fn evaluate_expression_value<'data, P: Platform>(
             Ok(value.next_multiple_of(align))
         }
 
-        Expression::Min(l, r) => Ok(eval!(l)?.min(eval!(r)?)),
-        Expression::Max(l, r) => Ok(eval!(l)?.max(eval!(r)?)),
+        Expression::Min(l, r) => eval_cmp(l, r, true, u64::min),
+        Expression::Max(l, r) => eval_cmp(l, r, true, u64::max),
         Expression::BitwiseAnd(l, r) => Ok(eval!(l)? & eval!(r)?),
         Expression::BitwiseOr(l, r) => Ok(eval!(l)? | eval!(r)?),
         Expression::BitwiseXor(l, r) => Ok(eval!(l)? ^ eval!(r)?),
@@ -408,7 +419,8 @@ fn evaluate_expression_value<'data, P: Platform>(
         }
         Expression::SizeofHeaders => Ok(sizeof_headers),
         Expression::Ternary(cond, if_true, if_false) => {
-            let cond = eval!(cond)?;
+            let mut cond_kind = ExpressionValueKind::default();
+            let cond = eval!(cond, &mut cond_kind)?;
             if cond != 0 {
                 eval!(if_true)
             } else {
@@ -433,14 +445,15 @@ fn evaluate_expression_value<'data, P: Platform>(
         Expression::Absolute(expression) => {
             let mut inner_kind = ExpressionValueKind::default();
             let val = eval!(expression, &mut inner_kind)?;
-            value_kind.contains_absolute = true;
             if inner_kind.contains_section_relative
                 && let Some(id) = expr_loc.relative_section_id()
             {
+                value_kind.contains_absolute = true;
                 let primary_id = output_sections.primary_output_section(id);
                 let section_layout = section_layouts.get(primary_id);
                 return Ok(val.wrapping_add(section_layout.mem_offset));
             }
+            value_kind.contains_absolute |= inner_kind.contains_absolute;
             Ok(val)
         }
     }

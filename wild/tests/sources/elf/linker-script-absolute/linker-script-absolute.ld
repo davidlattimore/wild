@@ -19,6 +19,11 @@ SECTIONS
         abs_nested = ABSOLUTE(ABSOLUTE(a));
         absolute_aligned = ABSOLUTE(ALIGN(16));
         absolute_plus = ABSOLUTE(16) + 8;
+        sum_absolute = ABSOLUTE(16) + ABSOLUTE(8);
+        absolute_ternary = 1 ? ABSOLUTE(24) : ABSOLUTE(32);
+        ASSERT(absolute_ternary == 24, "ternary must preserve absolute symbol classification");
+        absolute_max = MAX(ABSOLUTE(16), ABSOLUTE(24));
+        ASSERT(absolute_max == 24, "MAX must preserve absolute symbol classification");
 
         padding = ABSOLUTE(16);
         . += padding;
@@ -84,3 +89,4 @@ SECTIONS
 }
 
 ASSERT(absolute_aligned == text_start, "absolute_aligned failed");
+ASSERT(sum_absolute == text_start + 24, "sum of absolute operands must be section relative");

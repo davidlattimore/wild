@@ -358,6 +358,13 @@ impl<'a> Expression<'a> {
                 | (ExprKind::PlainNumber, ExprKind::Absolute) => ExprKind::Absolute,
                 _ => ExprKind::SectionRelative,
             },
+            Expression::Min(l, r) | Expression::Max(l, r) | Expression::Ternary(_, l, r) => {
+                match (l.expr_kind(), r.expr_kind()) {
+                    (ExprKind::PlainNumber, ExprKind::PlainNumber) => ExprKind::PlainNumber,
+                    (ExprKind::Absolute, _) | (_, ExprKind::Absolute) => ExprKind::Absolute,
+                    _ => ExprKind::SectionRelative,
+                }
+            }
             Expression::Negate(e) | Expression::BitwiseNot(e) => e.expr_kind(),
             _ => ExprKind::SectionRelative,
         }
